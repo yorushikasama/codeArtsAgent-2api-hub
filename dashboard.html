@@ -277,6 +277,20 @@ button.mini{padding:3px 9px;font-size:11px}
 .step.active .n{border-color:var(--accent);background:rgba(37,99,235,.1);color:var(--accent);font-weight:700}
 .step.done .n{border-color:var(--accent2);background:rgba(22,163,74,.1);color:var(--accent2);font-weight:700}
 .step .t{font-size:13px}
+/* 码道 CodeArts（华为云）账号行：与 WorkBuddy 账号池分开呈现 */
+.ca-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:10px 12px;border:1px solid var(--line);border-radius:10px;margin:8px 0;
+  background:var(--panel2)}
+.ca-row .ca-main{min-width:0;display:flex;flex-direction:column;gap:3px}
+.ca-row .ca-name{font-size:13px;font-weight:600;color:var(--fg)}
+.ca-row .ca-sub{font-size:11.5px;color:var(--dim);word-break:break-all;line-height:1.5}
+.ca-row .ca-actions{display:flex;gap:6px;flex:0 0 auto}
+.ca-badge{display:inline-block;margin-left:6px;padding:0 6px;border-radius:6px;
+  font-size:10.5px;line-height:16px;border:1px solid var(--line);color:var(--dim);
+  vertical-align:middle;font-weight:500}
+.ca-badge.ok{color:var(--accent2);border-color:var(--accent2)}
+.ca-badge.warn{color:var(--warn);border-color:var(--warn)}
+.ca-badge.bad{color:var(--bad);border-color:var(--bad)}
 footer{color:var(--dim);font-size:12px;text-align:center;margin-top:28px}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
@@ -3441,6 +3455,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <div class="collapse-inner">
     <div class="toolbar">
     <button onclick="openLoginModal()">添加</button>
+    <!-- 码道 CodeArts（华为云）账号走的是完全不同的授权链路（PKCE + DPoP +
+         本地回跳），凭证形态也不同（STS 临时 AK/SK + refresh_token），
+         所以单独一个入口、单独存、单独列。 -->
+    <button class="sec" onclick="openCodeartsLogin()" title="添加华为云码道 CodeArts 账号（PKCE + DPoP 授权，会话单独存放，不参与 WorkBuddy 账号池调度）">码道账号</button>
     <div class="tb-group">
     <!-- 桌面客户端自 2026-09-24 起把 token 改成加密存储（$wbEncrypted 信封）。
          网关现在会从正在运行的桌面端进程内存里回收静态密钥来解密（只读、密钥
@@ -4481,6 +4499,36 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   </div>
 </div>
 
+<div class="modal-mask" id="codeartsLoginModal">
+  <div class="modal" role="dialog" aria-modal="true" style="width:min(720px,100%)">
+    <div class="modal-hd">
+      <h2>码道 CodeArts 账号（华为云）</h2>
+      <button class="modal-x" onclick="closeCodeartsLogin()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint" style="margin-top:0">
+        走华为云 PKCE + DPoP 授权。拿到的是 <b>STS 临时 AK/SK</b>（有效期数小时）
+        加一张 <b>30 天可续期</b>的 refresh_token；续期要用登录时那把 DPoP 私钥，
+        所以私钥会随会话一起存在网关里。会话落在 <code>accounts/codearts/</code>，
+        与上面的 WorkBuddy 账号池互不相干，也不参与请求调度。
+      </p>
+      <h3 style="font-size:13px;margin:18px 0 6px">已连接的码道账号</h3>
+      <div id="codeartsList"><p class="hint">正在读取…</p></div>
+      <h3 style="font-size:13px;margin:18px 0 6px">添加账号</h3>
+      <div class="step" id="caStep1"><div class="n">1</div><div class="t" id="caStep1Text">正在生成授权链接…</div></div>
+      <div class="step" id="caStep2"><div class="n">2</div><div class="t">在浏览器里打开下方链接，完成华为云登录</div></div>
+      <div id="codeartsLinkBox"></div>
+      <div class="step" id="caStep3"><div class="n">3</div><div class="t">等待回调（浏览器直接跳回本机网关，无需手动复制）</div></div>
+      <p class="hint" id="codeartsStatus" style="font-weight:500"></p>
+    </div>
+    <div class="modal-ft">
+      <button class="sec" onclick="loadCodeartsAccounts()">刷新列表</button>
+      <button class="sec" onclick="closeCodeartsLogin()">关闭</button>
+      <button onclick="restartCodeartsLogin()">重新生成链接</button>
+    </div>
+  </div>
+</div>
+
 <div class="modal-mask" id="testAllModal">
   <div class="modal" role="dialog" aria-modal="true" style="width:min(820px,100%)">
     <div class="modal-hd">
@@ -4712,6 +4760,170 @@ function switchLoginRealm(realm){
 function restartLogin(){
   triggerLoginForSelectedRealm();
 }
+
+/* ---------------- 码道 CodeArts（华为云）账号 ----------------
+   与上面 WorkBuddy 的 state + authUrl 轮询不同：码道是 PKCE + DPoP + 本地回跳。
+   浏览器被华为云 307 回 http://127.0.0.1:{网关端口}/oauth/callback?code=…，
+   网关当场换 token 落盘，前端只是轮询结果。所以这里没有「复制凭证」这一步。 */
+let caLoginState = null, caLoginTimer = null;
+
+function caSetStep(n, cls){
+  const el = document.getElementById("caStep" + n);
+  if(el) el.className = "step" + (cls ? " " + cls : "");
+}
+
+function caLeft(seconds){
+  const s = Math.max(0, Math.round(Number(seconds) || 0));
+  if(s < 60) return s + " 秒";
+  const m = Math.floor(s / 60);
+  if(m < 60) return m + " 分钟";
+  const h = Math.floor(m / 60);
+  if(h < 48) return h + " 小时" + (m % 60 ? String(m % 60).padStart(2, "0") + " 分" : "");
+  return Math.floor(h / 24) + " 天" + (h % 24 ? (h % 24) + " 小时" : "");
+}
+
+function openCodeartsLogin(){
+  const m = document.getElementById("codeartsLoginModal");
+  if(m) m.classList.add("show");
+  loadCodeartsAccounts();
+  startCodeartsLogin();
+}
+
+function closeCodeartsLogin(){
+  const m = document.getElementById("codeartsLoginModal");
+  if(m) m.classList.remove("show");
+  if(caLoginTimer){ clearInterval(caLoginTimer); caLoginTimer = null; }
+  if(caLoginState){ postJSON("/accounts/codearts/login/cancel", {state: caLoginState}).catch(()=>{}); caLoginState = null; }
+}
+
+function restartCodeartsLogin(){ startCodeartsLogin(); }
+
+async function startCodeartsLogin(){
+  if(caLoginTimer){ clearInterval(caLoginTimer); caLoginTimer = null; }
+  if(caLoginState){ postJSON("/accounts/codearts/login/cancel", {state: caLoginState}).catch(()=>{}); caLoginState = null; }
+  const box = document.getElementById("codeartsLinkBox");
+  const status = document.getElementById("codeartsStatus");
+  const t1 = document.getElementById("caStep1Text");
+  if(box) box.innerHTML = "";
+  if(status) status.textContent = "";
+  caSetStep(1, "active"); caSetStep(2, ""); caSetStep(3, "");
+  if(t1) t1.textContent = "正在生成授权链接…";
+  try{
+    const r = await postJSON("/accounts/codearts/login/start", {theme: 1});
+    caLoginState = r.state;
+    caSetStep(1, "done"); caSetStep(2, "active");
+    if(t1) t1.textContent = "授权链接已生成";
+    if(box) box.innerHTML =
+      '<a class="login-link" id="codeartsLink" href="' + esc(r.authUrl) + '" target="_blank" rel="noopener">' + esc(r.authUrl) + '</a>'
+      + '<button class="sec mini" onclick="copyCodeartsLink()">复制授权链接</button>'
+      + '<div class="hint">回调地址固定是 <code>http://127.0.0.1:' + esc(String(r.port)) + '/oauth/callback</code>，'
+      + '所以浏览器必须能访问到本机这个端口。网关跑在别的机器 / 容器里时，先把该端口映射出来再用。</div>';
+    pollCodeartsLogin();
+    caLoginTimer = setInterval(pollCodeartsLogin, 2000);
+  }catch(e){
+    caSetStep(1, "");
+    if(status) status.textContent = "发起失败：" + e.message;
+  }
+}
+
+async function copyCodeartsLink(){
+  const link = document.getElementById("codeartsLink");
+  if(!link) return;
+  try{
+    await writeClipboard(link.getAttribute("href"));
+    toast("已复制授权链接", "ok");
+  }catch(e){ toast("复制失败：" + e.message, "bad"); }
+}
+
+async function pollCodeartsLogin(){
+  if(!caLoginState) return;
+  let r;
+  try{ r = await getJSON("/accounts/codearts/login/poll?state=" + encodeURIComponent(caLoginState)); }
+  catch(e){ return; }
+  const status = document.getElementById("codeartsStatus");
+  if(status) status.textContent = r.message || r.status || "";
+  if(r.status === "ok"){
+    caSetStep(3, "done");
+    if(status) status.textContent = "登录成功：" + ((r.summary && r.summary.account) || "账号") + " 已加入";
+    if(caLoginTimer){ clearInterval(caLoginTimer); caLoginTimer = null; }
+    caLoginState = null;
+    toast("码道账号已添加", "ok");
+    loadCodeartsAccounts();
+  }else if(r.status === "pending"){
+    caSetStep(3, "active");
+  }else{
+    if(caLoginTimer){ clearInterval(caLoginTimer); caLoginTimer = null; }
+    caLoginState = null;
+  }
+}
+
+async function loadCodeartsAccounts(){
+  const box = document.getElementById("codeartsList");
+  if(!box) return;
+  let r;
+  try{ r = await getJSON("/accounts/codearts"); }
+  catch(e){ box.innerHTML = '<p class="hint">读取失败：' + esc(e.message) + '</p>'; return; }
+  const list = (r && r.accounts) || [];
+  if(!list.length){
+    box.innerHTML = '<p class="hint">还没有码道账号。走完下面一次授权就能添加一个。</p>';
+    return;
+  }
+  box.innerHTML = list.map(function(a){
+    let badge = '<span class="ca-badge ok">有效</span>';
+    let when = a.expires_at ? ("STS 到期 " + fmtTime(Date.parse(a.expires_at) / 1000)) : "STS 到期时间未知";
+    if(a.sts_expired){
+      badge = '<span class="ca-badge bad">STS 已过期</span>';
+    }else if(a.sts_remaining_seconds != null){
+      when = "STS 剩 " + caLeft(a.sts_remaining_seconds);
+      if(a.sts_remaining_seconds < 1800) badge = '<span class="ca-badge warn">即将过期</span>';
+    }
+    const renew = a.renewable ? "可续期" : "不可续期（需重新登录）";
+    const id = esc(a.account_id || "");
+    return '<div class="ca-row"><div class="ca-main">'
+      + '<span class="ca-name">' + esc(a.account || "(未命名)") + badge + '</span>'
+      + '<span class="ca-sub">' + esc(when) + " · " + esc(renew)
+      + (a.domain_id ? " · 账号域 " + esc(String(a.domain_id).slice(0, 8)) + "…" : "")
+      + '</span></div><div class="ca-actions">'
+      + (a.renewable ? '<button class="sec mini" data-ca-id="' + id + '" onclick="refreshCodeartsAccount(this)">续期</button>' : "")
+      + '<button class="sec mini" data-ca-id="' + id + '" onclick="deleteCodeartsAccount(this)">删除</button>'
+      + '</div></div>';
+  }).join("");
+}
+
+async function refreshCodeartsAccount(btn){
+  const id = btn && btn.getAttribute("data-ca-id");
+  if(!id) return;
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "续期中…";
+  try{
+    const r = await postJSON("/accounts/codearts/refresh", {accountId: id});
+    if(r.ok){
+      const s = r.summary || {};
+      toast("续期成功，STS 剩 " + caLeft(s.sts_remaining_seconds || 0), "ok");
+    }else{
+      toast("续期失败：" + (r.msg || "未知原因"), "bad");
+    }
+  }catch(e){
+    toast("续期失败：" + e.message, "bad");
+  }finally{
+    btn.disabled = false; btn.textContent = old;
+    loadCodeartsAccounts();
+  }
+}
+
+async function deleteCodeartsAccount(btn){
+  const id = btn && btn.getAttribute("data-ca-id");
+  if(!id) return;
+  if(!confirm("删除这个码道账号的本地会话？重新登录才能恢复。")) return;
+  try{
+    await postJSON("/accounts/codearts/delete", {accountId: id});
+    toast("已删除", "ok");
+  }catch(e){
+    toast("删除失败：" + e.message, "bad");
+  }
+  loadCodeartsAccounts();
+}
+
 
 async function triggerLoginForSelectedRealm(){
   const realm = "cn";

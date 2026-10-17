@@ -133,7 +133,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 149 个套件：112 个 Python + 37 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 150 个套件：113 个 Python + 37 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_mobile_check.py` 是独立的 Playwright 手机/桌面布局检查器（需自行安装 Playwright），按需手动运行，不在上面的套件集里。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12（3.9 是本项目声称的最低版本），Windows 上 python 3.12；推送 `v*` tag 时额外断言 **tag == 源码版本**（`-ci` 演练 tag 豁免）。
 
@@ -338,6 +338,24 @@ python wb_agents.py restore --client codex                 # 随时字节级还�
 
 手动粘贴接受两种写法（都不用自己换算）：64 位 hex 的保护密钥，或 44 字符 base64 的 `atRestSecretKey`。拿不到密钥时，macOS / Linux 上请直接用方式一走浏览器登录。提示权限不足时，以管理员身份启动网关再试一次。
 
+### 方式三：码道 CodeArts（华为云）账号
+
+账号区工具栏的「码道账号」按钮走的是**华为云那套授权**，与上面 WorkBuddy 的 OAuth 完全无关：它用 PKCE + DPoP 向码道门户申请授权，拿到的是 **STS 临时 AK/SK + securitytoken**（数小时到期）外加一张 **30 天可续期**的 refresh_token。
+
+1. 点「码道账号」→ 弹窗里点「授权链接」在浏览器打开；
+2. 在华为云登录页完成登录（已登录则直接确认授权）；
+3. 浏览器会被 307 回跳 `http://127.0.0.1:<网关端口>/oauth/callback?code=…`，网关当场换 token 落盘，弹窗自动显示「登录成功」。
+
+几个必须知道的边界：
+
+- **浏览器必须能访问到网关端口**。回跳地址写死成 `127.0.0.1:<端口>`（跟官方客户端一致），所以网关跑在 NAS / 容器 / 别的机器上时，要先把该端口映射到你自己这台机器，否则回跳会打在空处。授权链接里带的 `port` 就是当前网关的监听端口。
+- **DPoP 私钥与 refresh_token 绑定**，`cnf.jkt` 把 token 钉在登录时那把 P-256 私钥上，所以续期必须用同一把私钥签 proof。私钥随会话一起存在 `accounts/codearts/<账号ID>.json`（明文，与其它凭证同等待遇），别把该目录同步出去。
+- **refresh_token 是一次性轮换**的：每次「续期」成功都会换一张新的，旧的立即作废。若提示 `STS5.1806`（refresh token 无效 / 已过期 / 已被使用），说明这张被别的客户端用掉了或已过 30 天，只能重新登录。
+- **STS 到期不等于账号失效**：AK/SK 只是几小时的临时凭据，到期后点「续期」即可换新的一批，不需要重新走浏览器。
+- **不参与 WorkBuddy 账号池调度**：这批账号独立存放、独立展示，不会被选来服务 `/v1` 请求（WorkBuddy 的对话上游用的是它自己的 token，两套凭证体系互不相通）。
+
+> 该链路按码道 5.4.2 的 `huaweicloud.authentication` 扩展实现：ES256（P-256）DPoP proof、`client_id = codearts-agent`、`plugin-name = snap_AIIDE`、`iamSts = sts.cn-north-4.myhuaweicloud.com`。P-256 与 JWS 由 `wb_codearts.py` 自己实现，不引入 `cryptography` / `jose` 之类的第三方依赖。
+
 ---
 
 ## 四、客户端配置与接入
@@ -401,6 +419,12 @@ export ANTHROPIC_API_KEY="你在看板设置中添加并绑定的API_Key"
 | GET | /activity/history | 账号每日活动历史：签到与每日活跃的每一次真实尝试（`range` / `uid` / `task` / `result` / `limit`，最新在前） |
 
 | GET | /accounts/credits/grants | 积分获取历史：各账号积分包（发放时间 / 面额 / 剩余 / 到期 / 状态），只读内存快照、不发上游请求 |
+| GET | /accounts/codearts | 码道（华为云）账号列表：账号名 / STS 剩余时间 / 是否可续期（需面板会话） |
+| POST | /accounts/codearts/login/start | 生成码道授权链接（PKCE + DPoP），返回 `authUrl` 与 `state`（需面板会话） |
+| GET | /accounts/codearts/login/poll?state= | 轮询码道登录结果：`pending` / `ok` / `error` / `expired`（需面板会话） |
+| POST | /accounts/codearts/refresh | 用存档里的 DPoP 私钥 + refresh_token 续一次 STS（需面板会话） |
+| POST | /accounts/codearts/delete | 删除某个码道账号的本地会话（需面板会话） |
+| GET | /oauth/callback | 华为云授权回跳端点（**免面板鉴权**：浏览器 307 裸跳转带不上会话；`secret` 一跳继续放行，`code` 一跳当场换 token） |
 | GET | /usage/remaining | 剩余用量估算：每个账号 × 模型在当前 24h 窗口的已用 / 预算 / 剩余（预算取撞线账号的平均用量；需面板会话） |
 
 ---

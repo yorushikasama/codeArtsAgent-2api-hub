@@ -61,6 +61,7 @@ import wb_accounts
 import wb_activity
 import wb_atrest
 import wb_catalog
+import wb_codearts
 import wb_egress
 import wb_ipintel
 import wb_logstore
@@ -5740,6 +5741,9 @@ POOL = None
 SCHEDULER = None
 PRICING = None
 CREDITS_REFRESHER = None
+# CodeArts（华为云）账号登录：与 WorkBuddy 账号池完全独立的一套凭证体系，
+# 只共用 accounts/ 目录（落在 accounts/codearts/ 子目录里）。
+CODEARTS_LOGIN = None
 # Release discovery only - the checker never downloads or installs anything.
 UPDATES = None
 ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'accounts')
@@ -16428,6 +16432,11 @@ class Handler(BaseHTTPRequestHandler):
         # same wb_agents.py shipped in the repository, no secrets inside).
         if path == "/agents/cli":
             return self._get_agents_cli()
+        # 华为云登录回跳。必须早于面板鉴权：这是浏览器被服务端 307 过来的
+        # 裸跳转，既带不上面板 cookie 也没法让用户补密码，拦下来就等于把
+        # 登录链路掐断。端点本身不泄露信息（成功只渲染一句话，失败只回原因）。
+        if path == wb_codearts.AUTH_REDIRECT_PATH:
+            return self._get_codearts_callback(query)
         if self._is_panel_route(path) and not self._panel_ok():
             return self._error(401, "panel password required", "invalid_request_error")
         if path in ("/", "/dashboard", "/ui"):
@@ -16456,6 +16465,10 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_accounts_export(query)
         if path == "/accounts/login/poll":
             return self._get_accounts_login_poll(query)
+        if path == "/accounts/codearts":
+            return self._get_codearts_accounts()
+        if path == "/accounts/codearts/login/poll":
+            return self._get_codearts_login_poll(query)
         if path == "/usage/analytics":
             return self._get_usage_analytics(query)
         if path == "/usage/by-account":
@@ -16724,6 +16737,142 @@ class Handler(BaseHTTPRequestHandler):
             return
         state = (query.get("state") or [""])[0]
         return self._json(200, POOL.poll_login(state))
+
+    # -- 码道 CodeArts（华为云）账号 ------------------------------------
+    #
+    # 与上面 WorkBuddy 那套 state + authUrl 轮询不同：码道是 PKCE + DPoP +
+    # 本地回跳，所以「添加账号」的流程是
+    #   start → 浏览器打开 authUrl → 华为云登录 → 307 回 /oauth/callback
+    #   → hub 当场换 token 落盘 → 前端 poll 拿到 ok
+    # 会话存在 accounts/codearts/ 下，不进 AccountPool（两套凭证体系互不相干）。
+
+    def _codearts_html(self, status, body):
+        raw = body.encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(raw)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(raw)
+
+    @staticmethod
+    def _codearts_redirect_ok(target):
+        """回调里的 redirect 是外部可控输入，只放行华为云自家的地址。
+
+        官方客户端拿到就跳，但 hub 可能挂在公网上，照抄就等于开了个
+        开放重定向。
+        """
+        parts = urllib.parse.urlsplit(str(target or ""))
+        if parts.scheme not in ("http", "https") or not parts.hostname:
+            return False
+        host = parts.hostname.lower()
+        if host in ("127.0.0.1", "localhost", "::1"):
+            return True
+        # 华为云有两个顶级域：门户在 huaweicloud.com，STS / snap-manager
+        # 在 myhuaweicloud.com。必须按「等于，或点号前缀」比对 —— 用
+        # endswith('huaweicloud.com') 会放行 huaweicloud.com.evil.com。
+        for suffix in ("huaweicloud.com", "myhuaweicloud.com"):
+            if host == suffix or host.endswith("." + suffix):
+                return True
+        return False
+
+    def _get_codearts_callback(self, query):
+        if CODEARTS_LOGIN is None:
+            return self._codearts_html(503, wb_codearts.callback_page(
+                False, "网关未就绪", "登录管理器尚未初始化"))
+        code = (query.get("code") or [""])[0]
+        secret = (query.get("secret") or [""])[0]
+        redirect_to = (query.get("redirect") or [""])[0]
+        kind, detail = CODEARTS_LOGIN.accept_callback(code=code, secret=secret)
+        if kind == "redirect":
+            # old_login 的中间一跳：必须把浏览器继续放行，否则流程走不到 code
+            if not self._codearts_redirect_ok(redirect_to):
+                return self._codearts_html(400, wb_codearts.callback_page(
+                    False, "回调地址不被信任", "网关拒绝跳转到 %s" % (redirect_to or "空地址")))
+            self.send_response(307)
+            self.send_header("Location", redirect_to)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        if kind == "ok":
+            return self._codearts_html(200, wb_codearts.callback_page(
+                True, "登录成功", "华为云账号 %s 已加入网关" % (detail or "")))
+        return self._codearts_html(400, wb_codearts.callback_page(
+            False, "登录失败", detail))
+
+    def _get_codearts_accounts(self):
+        if not self._authorized():
+            return
+        items = []
+        for session in wb_codearts.load_sessions(ACCOUNTS_DIR):
+            info = wb_codearts.summarize(session)
+            info["file"] = os.path.basename(
+                wb_codearts.session_path(ACCOUNTS_DIR, info.get("account_id") or ""))
+            items.append(info)
+        try:
+            port = self.server.server_address[1]
+        except Exception:
+            port = None
+        return self._json(200, {
+            "accounts": items,
+            "count": len(items),
+            "port": port,
+            "callbackPath": wb_codearts.AUTH_REDIRECT_PATH,
+        })
+
+    def _get_codearts_login_poll(self, query):
+        if not self._authorized():
+            return
+        if CODEARTS_LOGIN is None:
+            return self._json(503, {"status": "error", "message": "登录管理器尚未初始化"})
+        CODEARTS_LOGIN.sweep()
+        state = (query.get("state") or [""])[0]
+        return self._json(200, CODEARTS_LOGIN.poll(state))
+
+    def _route_codearts_login_start(self, payload):
+        if CODEARTS_LOGIN is None:
+            return self._error(503, "登录管理器尚未初始化")
+        try:
+            port = int(self.server.server_address[1])
+        except Exception:
+            return self._error(500, "无法确定监听端口")
+        try:
+            theme = int(payload.get("theme") or 1)
+        except (TypeError, ValueError):
+            theme = 1
+        try:
+            started = CODEARTS_LOGIN.start(port, theme=theme,
+                                           locale=str(payload.get("locale") or "zh-cn"))
+        except Exception as exc:
+            return self._error(502, "could not start codearts login: %s" % exc)
+        log("codearts login started (ticket=%s…, port=%s)"
+            % (started["state"][:8], port))
+        return self._json(200, started)
+
+    def _route_codearts_login_cancel(self, payload):
+        if CODEARTS_LOGIN is None:
+            return self._json(200, {"cancelled": False})
+        return self._json(200, {"cancelled": CODEARTS_LOGIN.cancel(payload.get("state") or "")})
+
+    def _route_codearts_refresh(self, payload):
+        account_id = str(payload.get("accountId") or "").strip()
+        if not account_id:
+            return self._error(400, "accountId required")
+        try:
+            session = wb_codearts.refresh_session(ACCOUNTS_DIR, account_id)
+        except wb_codearts.CodeArtsError as exc:
+            log("codearts refresh failed: %s" % exc, level="WARN")
+            return self._json(200, {"ok": False, "msg": str(exc)})
+        except Exception as exc:
+            log("codearts refresh failed: %r" % exc, level="WARN")
+            return self._json(200, {"ok": False, "msg": repr(exc)})
+        return self._json(200, {"ok": True, "summary": wb_codearts.summarize(session)})
+
+    def _route_codearts_delete(self, payload):
+        account_id = str(payload.get("accountId") or "").strip()
+        if not account_id:
+            return self._error(400, "accountId required")
+        return self._json(200, {"removed": wb_codearts.delete_session(ACCOUNTS_DIR, account_id)})
 
     def _get_usage_analytics(self, query):
         if not self._authorized():
@@ -17947,6 +18096,14 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_accounts_login_start(payload)
         if path == "/accounts/login/cancel":
             return self._route_accounts_login_cancel(payload)
+        if path == "/accounts/codearts/login/start":
+            return self._route_codearts_login_start(payload)
+        if path == "/accounts/codearts/login/cancel":
+            return self._route_codearts_login_cancel(payload)
+        if path == "/accounts/codearts/refresh":
+            return self._route_codearts_refresh(payload)
+        if path == "/accounts/codearts/delete":
+            return self._route_codearts_delete(payload)
         if path == "/accounts/import/desktop":
             return self._route_accounts_import_desktop(payload)
         if path == "/accounts/refresh":
@@ -19515,7 +19672,7 @@ def _probe_running_instance(args):
 
 def _bootstrap_runtime(args):
     global POOL, ACCOUNTS_DIR, API_KEY, SYSTEM_PROMPT
-    global API_KEY_FILE_SET, SCHEDULER, LOG_STORE
+    global API_KEY_FILE_SET, SCHEDULER, LOG_STORE, CODEARTS_LOGIN
     api_key_generated = False
     API_KEY = args.api_key
     SYSTEM_PROMPT = args.system_prompt
@@ -19548,6 +19705,7 @@ def _bootstrap_runtime(args):
     POOL.load()
     POOL.apply_proxy_slots()
     POOL.apply_reserve_credits()
+    CODEARTS_LOGIN = wb_codearts.LoginManager(ACCOUNTS_DIR, log=log)
     # WB_MAX_CONCURRENT_CHAT=auto: size the chat ceiling from the pool that was
     # just loaded. Runs before the listener exists, so no request can hold a
     # slot yet and the semaphore swap is safe.
