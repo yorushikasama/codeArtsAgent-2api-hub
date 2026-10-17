@@ -211,6 +211,11 @@ def record_attempt(account, task, trigger, result):
 
     trigger=None 表示这一步属于外层同一次尝试，由外层记一次就够，不该在历史里
     多出一行（嵌套调用的场景）。
+
+    码道领取走 wb_codearts.record_claim 而不走这里：会话不是 Account 实例，
+    属性名（account.id / account.label）对不上。留这个函数是因为它仍是「把一个
+    Account 的动作记成一行」的正确写法，将来账号侧再新增会记历史的任务时不必
+    重造一遍。
     """
     if trigger is None:
         return None

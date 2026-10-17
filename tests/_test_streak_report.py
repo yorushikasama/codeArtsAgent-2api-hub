@@ -43,13 +43,6 @@ def make_account(uid="u1", realm="cn", **extra):
 
 
 class CanReportActivityTests(unittest.TestCase):
-    def test_can_checkin_skips_enterprise(self):
-        acc = make_account(uid="ent-chk", realm="cn", enterpriseId="ent-1")
-        self.assertFalse(acc.can_checkin())
-        res = acc.checkin()
-        self.assertFalse(res.get("ok"))
-        self.assertIn("enterprise", res.get("error", ""))
-
     def test_can_report_activity_skips_enterprise(self):
         acc = make_account(uid="ent-rep", realm="cn", enterpriseId="ent-1")
         self.assertFalse(acc.can_report_activity())
@@ -138,7 +131,6 @@ class SchedulerActivityReportTests(unittest.TestCase):
     def test_scheduler_runs_report_for_cn_accounts(self):
         # 单出口：池里只会有 cn 账号（写死 intl 的读回来也是 cn）。
         cn_acc = make_account(uid="cn-due", realm="cn")
-        cn_acc.last_checkin = time.strftime("%Y-%m-%d %H:%M:%S")
 
         pool = type("Pool", (), {"accounts": [cn_acc]})()
         scheduler = wb_scheduler.Scheduler(pool)

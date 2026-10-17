@@ -48,6 +48,7 @@ WorkBuddy 那套是 `state + authUrl` 轮询、一次一个 state；码道这套
 
 import base64
 import hashlib
+import hmac
 import json
 import os
 import re
@@ -393,7 +394,9 @@ def _http(method, url, headers=None, body=None, timeout=DEFAULT_TIMEOUT):
     except json.JSONDecodeError:
         payload = {"_raw": text}
     code = str(payload.get("error_code") or "")
-    if status >= 400 or code:
+    # 码道有两种错误约定：换 token 那套只看 HTTP 状态码（成功时没有 error_code），
+    # 业务接口（网关配置等）则是 HTTP 200 + error_code，"0000" 表示成功。
+    if status >= 400 or (code and code != "0000"):
         hint = ERROR_CODES.get(code, "")
         message = payload.get("error_msg") or payload.get("message") or text[:200] or f"HTTP {status}"
         raise CodeArtsError(
@@ -595,6 +598,409 @@ def summarize(session, now=None):
         "renewable": bool(token),
         "mode": "new_iam_login" if token else "old_login",
     }
+
+
+# ---------------------------------------------------------------------------
+# 对话网关：模型清单与推理入口
+# ---------------------------------------------------------------------------
+#
+# 与登录链路是两码事。登录只用了 DPoP；这里要的是**华为云 AK/SK 请求签名**
+# （SDK-HMAC-SHA256，ROA 那套），因为码道所有业务接口都走 APIG 网关、只认签名。
+#
+# 权威模型表不是「内置模型」那个接口，而是网关配置：
+#   GET https://opengw.developer.huaweicloud.com/api/v1/gateway/config
+#   → {"error_code":"0000","result":{"base_url":".../v2","models":[{model_id,
+#      model_name, context_window, max_tokens, sort}, ...]}}
+# 它同时给出**推理入口**和**这账号能用的对话模型**，比 PromptCenter 的
+# /v1/model/builtin 权威 —— 后者是 IDE 聊天用的目录（GLM-5.2 / Qwen3-VL /
+# 盘古那批），两者不是一回事。
+
+GATEWAY_HOST = "https://opengw.developer.huaweicloud.com"
+GATEWAY_CONFIG_PATH = "/api/v1/gateway/config"
+
+# 出站身份：内核用的就是这两个（OPENCODE_SERVICE_NAME 默认 CodeAgent3.0，
+# tracing 层名 Kernel），照抄以免被网关按客户端特征拦。
+GATEWAY_USER_AGENT = "CodeAgent3.0-Kernel"
+GATEWAY_SERVICE_NAME = "w3"
+
+SIGN_ALGORITHM = "SDK-HMAC-SHA256"
+EMPTY_BODY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+# 官方 noEscape 表：只有字母数字与 - . _ 不转义
+_UNRESERVED = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._")
+
+
+def url_encode(text):
+    out = []
+    for byte in str(text).encode("utf-8"):
+        ch = chr(byte)
+        out.append(ch if ch in _UNRESERVED else "%%%02X" % byte)
+    return "".join(out)
+
+
+def canonical_uri(path):
+    """分段编码后用 / 连接，**末尾补一个斜杠**。
+
+    补斜杠是官方 AKSKSigner 的行为，漏掉它签名就对不上——踩过一次，报的是
+    「verify ak sk signature fail」而不是更具体的错。
+    """
+    uri = "/".join(url_encode(part) for part in path.split("/"))
+    return uri if uri.endswith("/") else uri + "/"
+
+
+def aksk_sign(access_key, secret_key, method, url, query=None, headers=None,
+              payload_hash=None):
+    """给请求补上 Authorization / X-Sdk-Date / Host。
+
+    逐条对齐官方 AKSKSigner：头名小写排序后用 ; 拼成 SignedHeaders，
+    canonical headers 的**值不裁空白**，query 取自 query_params 而不是
+    url 里的原始顺序。
+    """
+    if not access_key or not secret_key:
+        raise CodeArtsError("缺少 AK/SK，无法给业务接口签名")
+    parts = urllib.parse.urlsplit(url)
+    netloc = parts.hostname or ""
+    if parts.port and not ((parts.scheme == "https" and parts.port == 443)
+                           or (parts.scheme == "http" and parts.port == 80)):
+        netloc = "%s:%d" % (netloc, parts.port)
+
+    now = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    merged = dict(headers or {})
+    merged["X-Sdk-Date"] = now
+    merged["Host"] = netloc
+
+    names = sorted(merged, key=lambda k: k.lower())
+    signed_headers = ";".join(names).lower()
+    canonical_headers = "".join("%s:%s\n" % (k.lower(), merged[k]) for k in names)
+    query = query or {}
+    canonical_query = "&".join("%s=%s" % (url_encode(k), url_encode(query[k]))
+                               for k in sorted(query))
+    canonical = "\n".join([method.upper(), canonical_uri(parts.path),
+                           canonical_query, canonical_headers,
+                           signed_headers, payload_hash or EMPTY_BODY_SHA256])
+    string_to_sign = "\n".join([
+        SIGN_ALGORITHM, now,
+        base64.b16encode(hashlib.sha256(canonical.encode("utf-8")).digest())
+        .decode("ascii").lower()])
+    signature = hmac.new(secret_key.encode("utf-8"),
+                         string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
+
+    signed = dict(headers or {})
+    signed["Host"] = netloc
+    signed["X-Sdk-Date"] = now
+    signed["Authorization"] = "%s Access=%s, SignedHeaders=%s, Signature=%s" % (
+        SIGN_ALGORITHM, access_key, signed_headers, signature)
+    return signed
+
+
+def gateway_config(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
+    """取对话网关配置：推理入口 + 这账号可用的对话模型。
+
+    返回 {"base_url": ..., "models": [...]}；models 已按 sort 排好序。
+    """
+    url = GATEWAY_HOST + GATEWAY_CONFIG_PATH
+    # security token 是**参与签名**的头，必须在签名前就放进请求头里。
+    # 先签一次再补 token、再拿补过的头去签第二次是错的：第二次会把第一次
+    # 产出的 Authorization / Host / X-Sdk-Date 一起签进去，对不上。
+    base = {
+        "Content-Type": "application/json",
+        "User-Agent": GATEWAY_USER_AGENT,
+        "x-snap-traceid": secrets.token_hex(16),
+    }
+    if security_token:
+        base["X-Security-Token"] = security_token
+    headers = aksk_sign(access_key, secret_key, "GET", url, {}, base)
+    payload = _http("GET", url, headers=headers, timeout=timeout)
+    if str(payload.get("error_code") or "") not in ("", "0000"):
+        raise CodeArtsError(
+            "网关配置返回 %s：%s" % (payload.get("error_code"), payload.get("error_msg")),
+            code=str(payload.get("error_code")), payload=payload)
+    result = payload.get("result") or {}
+    models = result.get("models") or []
+    models.sort(key=lambda m: (m.get("sort") if isinstance(m.get("sort"), (int, float))
+                               else 999))
+    return {"base_url": result.get("base_url") or result.get("endpoint") or "",
+            "models": models}
+
+
+def normalize_models(models):
+    """码道网关的模型条目 → 网关内部统一的模型对象形状。
+
+    网关这份只给 id / 名字 / 上下文窗口 / 最大输出，没有能力标签与定价，
+    所以 supportsImages 一律 False、credits 不给（不给 = 非免费，避免被
+    「有免费兄弟模型」的逻辑误判）。
+    """
+    out = []
+    for raw in models or []:
+        mid = str(raw.get("model_id") or "").strip()
+        if not mid:
+            continue
+        try:
+            ctx = int(raw.get("context_window") or 0)
+        except (TypeError, ValueError):
+            ctx = 0
+        try:
+            out_tokens = int(raw.get("max_tokens") or 0)
+        except (TypeError, ValueError):
+            out_tokens = 0
+        out.append({
+            "id": mid,
+            "name": str(raw.get("model_name") or mid),
+            "maxInputTokens": ctx,
+            "maxOutputTokens": out_tokens,
+            "contextWindow": ctx,
+            "maxAllowedSize": ctx,
+            "supportsImages": False,
+            "supportsReasoning": True,
+            "supportsToolCall": True,
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 推理入口（实测确认）
+# ---------------------------------------------------------------------------
+#
+# 注意别和上面的 GATEWAY_HOST 搞混——那是**权益**网关（免费额度 / claim / config），
+# 推理走的是另一个基址。扩展里拼的是 `${agentChatDomain}/api/v2/`，
+# 而 agentChatDomain 在 prod 下就是 snap-engine 那台主机。
+#
+# 实测（AK/SK 签名 + X-Security-Token，2026-10-17）：
+#   POST {CHAT_BASE}chat/completions  model=deepseek-v4.1-flash → 429 TPM 超限
+#   同一个请求换另外三个模型名 → 404 InferHub.002002009「model is not registered」
+# 429 而不是 401，说明签名与令牌都被接受、请求确实打到了模型服务；被卡住的是
+# 账号自己的 TPM 配额，不是协议。注意**权益网关那份 4 模型清单不能当推理清单用**，
+# 其中只有 deepseek-v4.1-flash 真正可路由。
+
+CHAT_HOST = "https://snap-access.cn-north-4.myhuaweicloud.com"
+CHAT_BASE = CHAT_HOST + "/api/v2/"
+CHAT_PATH = CHAT_BASE + "chat/completions"
+
+# 实测可路由的推理模型（其余三个名字服务端不认）
+CHAT_MODELS = ("deepseek-v4.1-flash",)
+
+
+def chat_headers(access_key, secret_key, security_token, payload_hash,
+                 stream=False):
+    """推理请求头：与网关配置同一套签名，只是多一个 Accept。"""
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": GATEWAY_USER_AGENT,
+        "x-snap-traceid": secrets.token_hex(16),
+        "Accept": "text/event-stream" if stream else "application/json",
+    }
+    if security_token:
+        headers["X-Security-Token"] = security_token
+    return aksk_sign(access_key, secret_key, "POST", CHAT_PATH, {}, headers,
+                     payload_hash=payload_hash)
+
+
+# ---------------------------------------------------------------------------
+# 每日福利领取
+# ---------------------------------------------------------------------------
+#
+# 这就是码道客户端「限时福利 → 每日领取」的落点，也是「签到」在码道这边
+# 的对应物：每个账号每天可以领一份当日有效的推理额度（实测 daily_token_limit
+# 为 1000 万 token，0 点清零、不累计）。领取接口本身**幂等** —— 同一天重复调
+# 都返回 error_code 0000，不会叠加额度，所以不需要客户端自己去重；「今天领没领」
+# 要靠余额接口的发放时间来判断，见 balance_summary。
+#
+# 端点取自 vscode-codebot/out/extension.js 的 Uce()：
+#   非 gamma 版（isGammaVersion=false，普通用户走这条）
+#     claim   = opengw.developer.huaweicloud.com/api/v1/benefit/claim
+#     balance = opengw.developer.huaweicloud.com/api/v1/user/tokens/balance
+#   gamma 版则是 snapengine-apig.cn-north-7.myhuaweicloud.com 下的同名路径，
+#   且**必须**额外带 x-auth-token（普通版走 AK/SK 签名，不需要那个头）。
+#
+# 注意两件事，都实测踩过：
+#   1. 成功判据是 error_code == "0000"，不是 HTTP 状态码 —— 服务端全程 200，
+#      业务失败也回 200，判 status 会把失败当成功。
+#   2. POST 同路径是 enableBenefitClaim（开启领取开关），**不是领取**，别混用。
+
+BENEFIT_CLAIM_PATH = "/api/v1/benefit/claim"
+TOKENS_BALANCE_PATH = "/api/v1/user/tokens/balance"
+
+
+def credit_headers(access_key, secret_key, security_token, path, method="GET",
+                   body=None):
+    """权益接口（领取 / 余额）的请求头。
+
+    POST 时 body 会参与签名：payload hash 必须算进 body 的 SHA-256。漏掉这一项
+    报的是 APIG.0301「verify ak sk signature fail」，看起来像 AK/SK 错了，实际
+    是签名串里少了 payload hash。
+    """
+    url = GATEWAY_HOST + path
+    payload = b"" if body is None else json.dumps(body).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": GATEWAY_USER_AGENT,
+        "x-snap-traceid": secrets.token_hex(16),
+    }
+    if security_token:
+        headers["X-Security-Token"] = security_token
+    return aksk_sign(access_key, secret_key, method, url, {}, headers,
+                     payload_hash=hashlib.sha256(payload).hexdigest())
+
+
+def claim_benefit(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
+    """领取当日额度。
+
+    返回 {"ok": bool, "msg": str, "user_name": str, "raw": dict}。
+    幂等：当天已领过也返回 ok=True，所以这里的 ok 只说明「领取动作被接受」，
+    至于额度有没有涨，要用 balance_summary 交叉核对。
+    """
+    headers = credit_headers(access_key, secret_key, security_token,
+                             BENEFIT_CLAIM_PATH, "GET")
+    payload = _http("GET", GATEWAY_HOST + BENEFIT_CLAIM_PATH, headers=headers,
+                    timeout=timeout)
+    # _http 已经在 error_code 非空时报错；能走到这里就是业务成功
+    result = payload.get("result") or {}
+    return {
+        "ok": True,
+        "msg": payload.get("error_msg") or "ok",
+        "user_name": result.get("user_name") or "",
+        "domain_id": result.get("domain_id") or "",
+        "raw": result,
+    }
+
+
+def enable_benefit_claim(access_key, secret_key, security_token,
+                         timeout=DEFAULT_TIMEOUT):
+    """开启「登录后自动领取」的开关（客户端点「开启领取」时调的那个）。"""
+    headers = credit_headers(access_key, secret_key, security_token,
+                             BENEFIT_CLAIM_PATH, "POST", body={})
+    payload = _http("POST", GATEWAY_HOST + BENEFIT_CLAIM_PATH, headers=headers,
+                    body=b"{}", timeout=timeout)
+    return {"ok": True, "msg": payload.get("error_msg") or "ok",
+            "raw": payload.get("result") or {}}
+
+
+def tokens_balance(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
+    """额度余额（只读）。返回服务端 result 原样。"""
+    headers = credit_headers(access_key, secret_key, security_token,
+                             TOKENS_BALANCE_PATH, "GET")
+    payload = _http("GET", GATEWAY_HOST + TOKENS_BALANCE_PATH, headers=headers,
+                    timeout=timeout)
+    return payload.get("result") or {}
+
+
+def _ms_to_iso(value):
+    if not value:
+        return ""
+    try:
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(value) / 1000))
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
+def balance_summary(access_key, secret_key, security_token,
+                    timeout=DEFAULT_TIMEOUT):
+    """余额 → 面板直接显示的形状。
+
+    ``updated_at`` 来自服务端的 update_time。它在连续领取时**不刷新**（实测是
+    账号开通那一刻的时间），所以只作展示，不能拿它判「今天领没领」—— 判据见
+    claim_and_verify 的 ``_is_full``。
+    """
+    result = tokens_balance(access_key, secret_key, security_token, timeout=timeout)
+    stamp = _ms_to_iso(result.get("update_time"))
+    limit = result.get("daily_token_limit") or 0
+    total = result.get("total_balance") or 0
+    used_today = result.get("daily_tokens_used") or 0
+    return {
+        "channel": result.get("channel") or "",
+        "user_name": result.get("user_name") or "",
+        "domain_id": result.get("domain_id") or "",
+        "daily_limit": limit,
+        "total_balance": total,
+        "used_today": used_today,
+        "remaining": max(0, limit - used_today) if limit else 0,
+        # expire_time 为 0 表示「当日有效、0 点清零」，不是一个具体时刻
+        "expires_at_today": result.get("expire_time") == 0,
+        "updated_at": stamp,
+        "used_percent": round(100.0 * used_today / limit, 2) if limit else None,
+    }
+
+
+def _is_full(balance):
+    """额度是否已经满额且今日未动过 —— 也就是「今天的已经领了」。"""
+    limit = balance.get("daily_limit") or 0
+    return bool(limit) and balance.get("total_balance") >= limit \
+        and not (balance.get("used_today") or 0)
+
+
+def record_claim(session, result, trigger="unknown"):
+    """把一次领取尝试记进活动历史，形状与旧的 WorkBuddy 签到一致。
+
+    会话不是 Account 实例，所以这里自己拼那几项而不是复用
+    wb_activity.record_attempt（那个按属性取值，码道会话的属性名对不上）。
+    写失败不会改变领取结论 —— 记录只是审计，不是控制流。
+    """
+    try:
+        import wb_activity
+        account = session.get("account") or {}
+        balance = (result or {}).get("balance") or {}
+        ok = bool((result or {}).get("ok"))
+        message = ((result or {}).get("msg") or ("成功" if ok else "失败"))
+        if balance.get("total_balance") is not None:
+            message = "%s（余额 %s / %s）" % (
+                message, balance.get("total_balance"), balance.get("daily_limit"))
+        return wb_activity.record(
+            uid=account.get("id") or "",
+            nickname=account.get("label") or "",
+            realm="cn",
+            task=wb_activity.TASK_CHECKIN,
+            trigger=trigger,
+            ok=ok,
+            message=message)
+    except Exception:
+        return None
+
+
+def claim_and_verify(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT,
+                     session=None, trigger="unknown"):
+    """领取 → 回查余额，返回一条可直接落进活动历史的记录。
+
+    「今天领没领」的判据是**余额是否满额**，不是服务端的时间戳：实测 update_time
+    在连续领取的情况下并不刷新（账号开通后一直是同一个值），拿它当判据会把
+    「今天还没领」误判成「已领」，于是永远领不到。满额（余额 == 每日上限且今日
+    消耗为 0）就意味着今天的额度已在手上且还没动过，重复领取是空操作。
+
+    给了 session 就顺手写一行活动历史（trigger 沿用旧的 scheduler / manual
+    口径），没给就不写 —— 这样纯单元测试不必准备历史目录。
+    """
+    before = balance_summary(access_key, secret_key, security_token,
+                             timeout=timeout)
+    if _is_full(before):
+        result = {"ok": True, "skipped": True,
+                  "msg": "今日已领取（余额 %s / %s，未消耗）" % (
+                      before["total_balance"], before["daily_limit"]),
+                  "balance": before}
+    else:
+        try:
+            claimed = claim_benefit(access_key, secret_key, security_token,
+                                    timeout=timeout)
+        except Exception as exc:
+            # 上游抛错也要留一行：否则「今天没领到」在历史里是空白，
+            # 事后分不清是没跑还是跑了但失败。
+            result = {"ok": False, "skipped": False, "msg": "领取失败: %s" % exc}
+            if session is not None:
+                record_claim(session, result, trigger=trigger)
+            raise
+        after = balance_summary(access_key, secret_key, security_token,
+                               timeout=timeout)
+        result = {
+            "ok": True,
+            "skipped": False,
+            "msg": "%s，余额 %s → %s（今日已用 %s）" % (
+                claimed["msg"], before["total_balance"], after["total_balance"],
+                after["used_today"]),
+            "grew": after["total_balance"] > before["total_balance"],
+            "user_name": claimed.get("user_name") or after.get("user_name") or "",
+            "balance": after,
+        }
+    if session is not None:
+        record_claim(session, result, trigger=trigger)
+    return result
 
 
 # ---------------------------------------------------------------------------

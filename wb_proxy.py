@@ -16699,6 +16699,15 @@ class Handler(BaseHTTPRequestHandler):
         return self._codearts_html(400, wb_codearts.callback_page(
             False, "登录失败", detail))
 
+    def _codearts_session_of(self, account_id):
+        """按账号 id 取会话；取不到返回 None（调用方负责报错）。"""
+        if not account_id:
+            return None
+        for session in wb_codearts.load_sessions(ACCOUNTS_DIR):
+            if (session.get("account") or {}).get("id") == account_id:
+                return session
+        return None
+
     def _get_codearts_accounts(self):
         if not self._authorized():
             return
@@ -16707,6 +16716,16 @@ class Handler(BaseHTTPRequestHandler):
             info = wb_codearts.summarize(session)
             info["file"] = os.path.basename(
                 wb_codearts.session_path(ACCOUNTS_DIR, info.get("account_id") or ""))
+            # 额度是签到这件事的**唯一真相**：领取接口幂等、无法反查「今天领没领」，
+            # 只有余额能看出来（满额且未消耗 == 今天的已经在手上）。读失败就留空，
+            # 不让一次上游抖动把整个列表打挂。
+            try:
+                info["balance"] = wb_codearts.balance_summary(
+                    session.get("accessKey"), session.get("secretKey"),
+                    session.get("securitytoken"))
+            except Exception as exc:
+                info["balance"] = None
+                info["balanceError"] = str(exc)
             items.append(info)
         try:
             port = self.server.server_address[1]
@@ -16718,6 +16737,42 @@ class Handler(BaseHTTPRequestHandler):
             "port": port,
             "callbackPath": wb_codearts.AUTH_REDIRECT_PATH,
         })
+
+    def _route_codearts_claim(self, payload):
+        """领取当日额度。accountId 为空则逐个领取全部会话。"""
+        account_id = payload.get("accountId") or ""
+        sessions = wb_codearts.load_sessions(ACCOUNTS_DIR)
+        if account_id:
+            sessions = [s for s in sessions
+                        if (s.get("account") or {}).get("id") == account_id]
+            if not sessions:
+                return self._error(404, "codearts account not found",
+                                   "invalid_request_error")
+        results = []
+        for session in sessions:
+            acct = session.get("account") or {}
+            label = acct.get("label") or acct.get("id") or "码道账号"
+            try:
+                res = wb_codearts.claim_and_verify(
+                    session.get("accessKey"), session.get("secretKey"),
+                    session.get("securitytoken"), session=session,
+                    trigger="manual")
+                res["accountId"] = acct.get("id") or ""
+                res["label"] = label
+                if res.get("skipped"):
+                    add_log_entry(f"[账号] 码道 [{label}] {res.get('msg')}", tag="accounts")
+                else:
+                    add_log_entry(f"[账号] 码道 [{label}] 领取每日额度: {res.get('msg')}",
+                                  tag="accounts")
+            except Exception as exc:
+                res = {"ok": False, "skipped": False,
+                       "msg": "领取失败: %s" % exc,
+                       "accountId": acct.get("id") or "", "label": label,
+                       "balance": None}
+                add_log_entry(f"[账号] 码道 [{label}] 领取每日额度失败: {exc}",
+                              level="WARN", tag="accounts")
+            results.append(res)
+        return self._json(200, {"results": results})
 
     def _get_codearts_login_poll(self, query):
         if not self._authorized():
@@ -17723,8 +17778,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_logs_clear(payload)
         if path == "/realm":
             return self._route_realm(payload)
-        if path == "/accounts/checkin":
-            return self._route_accounts_checkin(payload)
         if path == "/accounts/login/start":
             return self._route_accounts_login_start(payload)
         if path == "/accounts/login/cancel":
@@ -17735,6 +17788,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_codearts_login_cancel(payload)
         if path == "/accounts/codearts/refresh":
             return self._route_codearts_refresh(payload)
+        if path == "/accounts/codearts/claim":
+            return self._route_codearts_claim(payload)
         if path == "/accounts/codearts/delete":
             return self._route_codearts_delete(payload)
         if path == "/accounts/import/desktop":
@@ -18067,21 +18122,6 @@ class Handler(BaseHTTPRequestHandler):
         if new_realm == "cn":
             save_persisted_realm(new_realm)
         return self._json(200, {"ok": True, "current": CURRENT_REALM, "persisted": True})
-
-    def _route_accounts_checkin(self, payload):
-        uid = payload.get("uid")
-        invalidate_tasks_cache()          # 签到会改连续打卡状态，成长任务快照随之作废
-        targets = [POOL.get(uid)] if uid else [a for a in (POOL.accounts if POOL else []) if a.realm == "cn"]
-        results = []
-        for account in targets:
-            if account is None:
-                continue
-            res = account.checkin(trigger="manual")
-            nick = account.nickname or account.uid[:8]
-            add_log_entry(f"[任务福利] 账号 [{nick}] 每日签到: {res.get('msg') if res.get('ok') else res.get('error')}",
-                          level="INFO" if res.get("ok") else "WARN", tag="tasks")
-            results.append({"uid": account.uid, "nickname": account.nickname, **res})
-        return self._json(200, {"results": results, "accounts": account_views()})
 
     def _route_accounts_login_start(self, payload):
         platform = payload.get("platform") or "CLI"
@@ -19331,6 +19371,8 @@ def _bootstrap_runtime(args):
     global SCHEDULER
     from wb_scheduler import Scheduler
     SCHEDULER = Scheduler(POOL)
+    # 码道每日领取要自己读 accounts/codearts/，调度器拿不到账号池之外的目录。
+    SCHEDULER.accounts_dir = ACCOUNTS_DIR
     SCHEDULER.start()
     # 目录兜底：每天至少从上游 API 取一次（活跃使用的部署里 300s 缓存早就
     # 刷得更新，这个线程只兜长时间没人访问 / 一直吃缓存文件或内置快照）。

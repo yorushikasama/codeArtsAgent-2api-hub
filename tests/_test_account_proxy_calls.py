@@ -80,17 +80,26 @@ try:
     check("fetch_credits() passes the account proxy", seen and seen[0] == PROXY,
           repr(seen[:1]))
 
-    print("[3] checkin() (cn realm only)")
+    print("[3] report_activity() (cn realm only)")
+    # report_activity 先经 wb_tasks.report_events 发写请求、再回读连登天数，
+    # 后者走的是 wb_accounts.urlopen 而不是 http_json，所以两条路都得打桩 ——
+    # 只挂一条会漏掉另一半的代理传递。
     cn_proxy = "http://10.0.0.2:17902"
     cn = wb_accounts.Account(dict(DATA, realm="cn", domain="www.codebuddy.cn"))
     cn.proxy = cn_proxy
     del seen[:]
+    import wb_tasks
+    _real_report = wb_tasks.report_events
+    wb_tasks.report_events = lambda acc, events, base=None: (
+        seen.append(acc.proxy) or True)
     try:
-        cn.checkin()
+        cn.report_activity()
     except Exception:
         pass
-    check("checkin() issued a request", bool(seen))
-    check("checkin() passes the account proxy", seen and seen[0] == cn_proxy,
+    finally:
+        wb_tasks.report_events = _real_report
+    check("report_activity() issued a request", bool(seen))
+    check("report_activity() passes the account proxy", seen and seen[0] == cn_proxy,
           repr(seen[:1]))
 
     print("[4] an unproxied account passes empty, not a stale value")

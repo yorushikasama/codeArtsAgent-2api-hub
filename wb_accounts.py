@@ -168,7 +168,6 @@ REALM_CONFIGS = {
         "billing_ua": "WorkBuddy/5.5.6",
         "info_filename": "workbuddy-desktop.info",
         "cache_dir_name": ".workbuddy",
-        "has_checkin": True,
     },
 }
 
@@ -176,7 +175,6 @@ AUTH_STATE_PATH = "/v2/plugin/auth/state"
 AUTH_TOKEN_PATH = "/v2/plugin/auth/token"
 LOGIN_ACCOUNT_PATH = "/v2/plugin/login/account"
 REFRESH_PATH = "/v2/plugin/auth/token/refresh"
-CHECKIN_PATH = "/v2/billing/meter/daily-checkin"
 GET_RESOURCE_PATH = "/v2/billing/meter/get-user-resource"
 RESOURCE_SUMMARY_PATH = "/billing/meter/get-user-resource-summary"
 RESOURCE_FREE_PACKAGES_PATH = "/billing/meter/get-user-resource-free-packages"
@@ -563,9 +561,8 @@ class Account(object):
         # 最近一次记失败的时刻：FAIL_WINDOW 用它判断「连续」是否还成立。
         self.last_fail_at = 0.0
         self.credits = data.get("credits") or None
-        self.last_checkin = data.get("lastCheckin") or None
         # 国内版每天一次的「对话活跃上报」（点亮官方 growth 连登/热力墙）上次
-        # 成功的时刻；与 lastCheckin 同款：只按「今天成功过没有」做闸门。
+        # 成功的时刻：只按「今天成功过没有」做闸门。
         self.last_activity_report = data.get("lastActivityReport") or None
         # 上游「窗口额度用满」的记录（429 / code 6004）：model -> {"at": 撞线时刻,
         # "reset": 上游给的恢复时刻}。**持久化**（与其它节流窗口不同）：重启后
@@ -672,7 +669,6 @@ class Account(object):
             "lastError": self.last_error,
             "cooldownUntil": self.cooldown_until,
             "credits": self.credits,
-            "lastCheckin": self.last_checkin,
             "lastActivityReport": self.last_activity_report,
             # 持久化：6004 的恢复时间是上游给的事实，重启后仍然成立（见 __init__）。
             "modelCaps": {mid: dict(entry) for mid, entry in self.model_caps.items()},
@@ -761,9 +757,7 @@ class Account(object):
                                   for k, v in self.model_daily_tokens.items()}
                                  if isinstance(self.model_daily_tokens, dict)
                                  else None),
-            "lastCheckin": self.last_checkin,
             "lastActivityReport": self.last_activity_report,
-            "canCheckin": self.realm == "cn" and not self.is_enterprise(),
             "canReportActivity": self.realm == "cn" and not self.is_enterprise(),
             "machineId": derive_id(self.uid, "machine"),
             "sessionId": session_id(self.uid),
@@ -1290,16 +1284,6 @@ class Account(object):
             self.save(os.path.dirname(self.path))
         return True
 
-    def can_checkin(self):
-        if self.realm != "cn":
-            return False
-        if self.is_enterprise():
-            return False
-        if not self.last_checkin:
-            return True
-        today_str = time.strftime("%Y-%m-%d")
-        return not str(self.last_checkin).startswith(today_str)
-
     def can_report_activity(self):
         """国内版每天一次的对话活跃上报（点亮 growth 连登）是否还没做过。"""
         if self.realm != "cn":
@@ -1310,53 +1294,6 @@ class Account(object):
             return True
         today_str = time.strftime("%Y-%m-%d")
         return not str(self.last_activity_report).startswith(today_str)
-
-    def checkin(self, trigger="unknown"):
-        """国内版每日签到。
-
-        trigger 只用于活动历史的来源标注（scheduler / manual / account_add /
-        account_import）；记录写失败不会改变签到结果。
-        """
-        if self.realm != "cn":
-            return {"ok": False, "error": "checkin is only available for CN realm accounts"}
-        if self.is_enterprise():
-            return {"ok": False, "error": "enterprise accounts do not support checkin"}
-        res = self._checkin_upstream()
-        wb_activity.record_attempt(self, wb_activity.TASK_CHECKIN, trigger, res)
-        return res
-
-    def _checkin_upstream(self):
-        """签到的实际请求；返回形状见 checkin。"""
-        cfg = get_realm_config("cn")
-        url = cfg["billing_upstream"] + CHECKIN_PATH
-        headers = self.headers(purpose="billing")
-        try:
-            payload = http_json(url, data=b"{}", method="POST", headers=headers, timeout=15,
-                                proxy=self.proxy)
-            code = payload.get("code", -1)
-            msg = payload.get("msg") or "ok"
-            self.last_checkin = time.strftime("%Y-%m-%d %H:%M:%S")
-            if self.path and os.path.exists(os.path.dirname(self.path)):
-                self.save(os.path.dirname(self.path))
-            return {"ok": (code == 0 or code == 10001), "code": code, "msg": msg, "data": payload.get("data")}
-        except urllib.error.HTTPError as exc:
-            try:
-                raw_b = exc.read().decode("utf-8") or "{}"
-                body = json.loads(raw_b)
-                code = body.get("code")
-                msg = body.get("msg") or ("HTTP %d" % exc.code)
-                # 上游如果在今日已签到时返回 HTTP 400 且 code 为 10001 / "今天已签到"
-                # 这说明今日事实上已经处于签到完成状态，按成功处理，并记录最后签到时间
-                if code == 10001 or "今天已签到" in msg or "已签到" in msg:
-                    self.last_checkin = time.strftime("%Y-%m-%d %H:%M:%S")
-                    if self.path and os.path.exists(os.path.dirname(self.path)):
-                        self.save(os.path.dirname(self.path))
-                    return {"ok": True, "code": code, "msg": msg, "data": body.get("data")}
-                return {"ok": False, "error": msg}
-            except Exception:
-                return {"ok": False, "error": "HTTP %d" % exc.code}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
 
     def report_activity(self):
         """国内版对话活跃上报：一条 /v2/report 点亮官方 growth 连登。
@@ -2324,8 +2261,6 @@ class AccountPool(object):
                 account.path = existing.path
                 if not account.credits and existing.credits:
                     account.credits = existing.credits
-                if not account.last_checkin and existing.last_checkin:
-                    account.last_checkin = existing.last_checkin
                 if not account.proxy_slot and existing.proxy_slot:
                     account.proxy_slot = existing.proxy_slot
                 if not account.proxy_legacy and existing.proxy_legacy:
@@ -3068,9 +3003,6 @@ class AccountPool(object):
             "enabled": True,
         })
         self.add(account)
-        if realm == "cn":
-            try: account.checkin(trigger="account_add")
-            except Exception: pass
         with self._lock: self.logins.pop(state, None)
         return {"status": "ok", "account": account.public()}
 
@@ -3117,9 +3049,6 @@ class AccountPool(object):
             "enabled": True,
         })
         self.add(account)
-        if detected_realm == "cn":
-            try: account.checkin(trigger="account_import")
-            except Exception: pass
         return account
 
 def desktop_atrest_key(force=False, log=None):
@@ -3299,7 +3228,7 @@ EXPORT_VERSION = 1
 # Fields that describe live state rather than the credential itself. They are
 # exported for inspection but never trusted on import: a stale cooldown or a
 # disabled flag from another machine would silently cripple the target pool.
-VOLATILE_FIELDS = ("cooldownUntil", "lastError", "credits", "lastCheckin",
+VOLATILE_FIELDS = ("cooldownUntil", "lastError", "credits",
                    "lastActivityReport", "modelCaps")
 
 # The subset of VOLATILE_FIELDS that must not round-trip through the local

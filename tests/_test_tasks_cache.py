@@ -31,13 +31,6 @@ class StubAccount(object):
         self.nickname = uid[:8]
         self.realm = realm
         self.enabled = True
-        self.checkins = 0
-
-    # 与 wb_accounts.Account.checkin 同形：调用方会带 trigger（手动/定时），
-    # 桩只关心调用发生了没有。
-    def checkin(self, trigger="unknown"):
-        self.checkins += 1
-        return {"ok": True, "code": 0, "msg": "ok"}
 
     def public(self):
         return {"uid": self.uid, "nickname": self.nickname, "realm": self.realm,
@@ -94,6 +87,10 @@ class FakeUpstream(object):
     def travel(self, acc):
         self.actions.append(("travel", acc.uid))
         return {"action": "travel", "msg": "ok", "credit": 3}
+
+    def streak_bonus(self, acc):
+        self.actions.append(("streak_bonus", acc.uid))
+        return {"logs": ["bonus"]}
 
 
 def capturing_handler():
@@ -195,12 +192,13 @@ class ActionInvalidationTests(unittest.TestCase):
     def setUp(self):
         self.upstream = FakeUpstream()
         self._orig = (T.fetch_growth_tasks, T.fetch_growth_summary,
-                      T.run_growth_tasks, T.do_cat_travel)
+                      T.run_growth_tasks, T.do_cat_travel, T.run_streak_bonus)
         self._ttl = P.TASKS_CACHE_TTL
         T.fetch_growth_tasks = self.upstream.tasks
         T.fetch_growth_summary = self.upstream.summary
         T.run_growth_tasks = self.upstream.run_tasks
         T.do_cat_travel = self.upstream.travel
+        T.run_streak_bonus = self.upstream.streak_bonus
         self.account = StubAccount("uid-a")
         self._pool = P.POOL
         P.POOL = FakePool([self.account])
@@ -208,7 +206,7 @@ class ActionInvalidationTests(unittest.TestCase):
 
     def tearDown(self):
         (T.fetch_growth_tasks, T.fetch_growth_summary,
-         T.run_growth_tasks, T.do_cat_travel) = self._orig
+         T.run_growth_tasks, T.do_cat_travel, T.run_streak_bonus) = self._orig
         P.TASKS_CACHE_TTL = self._ttl
         P.POOL = self._pool
         P.invalidate_tasks_cache()
@@ -259,14 +257,13 @@ class ActionInvalidationTests(unittest.TestCase):
         self.assertIn(("travel", "uid-a"), self.upstream.actions)
         self.assert_refetched(warm, "/tasks/travel")
 
-    def test_account_checkin_invalidates_the_snapshot(self):
+    def test_streak_bonus_invalidates_the_snapshot(self):
         warm = self.warm()
         self.upstream.bump()
-        response = self.drive("/accounts/checkin", {"uid": "uid-a"})
-        self.assertEqual(len(response.get("results") or []), 1,
-                         "签到动作没有真的跑起来: %r" % response)
-        self.assertEqual(self.account.checkins, 1, "签到没有被调用")
-        self.assert_refetched(warm, "/accounts/checkin")
+        response = self.drive("/tasks/streak-bonus", {"uid": "uid-a"})
+        self.assertTrue(response.get("ok"), "连登管家没有真的跑起来: %r" % response)
+        self.assertIn(("streak_bonus", "uid-a"), self.upstream.actions)
+        self.assert_refetched(warm, "/tasks/streak-bonus")
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import inspect
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -261,12 +262,37 @@ class PersistenceTests(IsolatedCase):
 
 
 class RecordingTests(IsolatedCase):
-    def test_cn_checkin_success_and_failure_write_one_row_each(self):
-        account = self.account("cn", "cn-1")
-        with mock.patch.object(wb_accounts, "http_json",
-                               lambda url, **kw: {"code": 0, "msg": "签到成功"}):
-            res = account.checkin(trigger="manual")
+    """码道领取是现在唯一会写 checkin 历史的任务，记账口径与旧的签到一致。"""
+
+    SESSION = {"account": {"id": "cn-1", "label": "nick-cn-1"},
+               "accessKey": "AK", "secretKey": "SK", "securitytoken": "TOK"}
+    FULL = {"daily_limit": 1000, "total_balance": 1000, "used_today": 0}
+    EMPTY = {"daily_limit": 1000, "total_balance": 0, "used_today": 0}
+
+    def claim(self, before, after=None, ok=True, msg="领取成功"):
+        import wb_codearts
+        seq = [dict(before), dict(after if after is not None else before)]
+        seen = []
+
+        def fake_balance(ak, sk, tok, timeout=None):
+            return seq.pop(0) if len(seq) > 1 else seq[0]
+
+        def fake_claim(ak, sk, tok, timeout=None, **kw):
+            seen.append(1)
+            if not ok:
+                raise RuntimeError("APIG.0303 app not found")
+            return {"ok": True, "msg": msg, "user_name": "hid", "raw": {}}
+
+        with mock.patch.object(wb_codearts, "balance_summary", fake_balance), \
+                mock.patch.object(wb_codearts, "claim_benefit", fake_claim):
+            res = wb_codearts.claim_and_verify(
+                "AK", "SK", "TOK", session=dict(self.SESSION), trigger="manual")
+        return res, seen
+
+    def test_a_claim_writes_exactly_one_row(self):
+        res, seen = self.claim(self.EMPTY, self.FULL)
         self.assertTrue(res.get("ok"), res)
+        self.assertEqual(len(seen), 1)
         rows = self.rows()
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["task"], "checkin")
@@ -275,54 +301,93 @@ class RecordingTests(IsolatedCase):
         self.assertEqual(rows[0]["uid"], "cn-1")
         self.assertEqual(rows[0]["nickname"], "nick-cn-1")
         self.assertTrue(rows[0]["ok"])
-        self.assertIn("签到成功", rows[0]["message"])
+        self.assertIn("领取成功", rows[0]["message"])
 
-        with mock.patch.object(
-                wb_accounts, "http_json",
-                lambda url, **kw: {"code": 500, "msg": "签到失败：活动未开始"}):
-            res = account.checkin(trigger="scheduler")
-        self.assertFalse(res.get("ok"))
+    def test_the_row_carries_the_balance_alongside_the_message(self):
+        self.claim(self.EMPTY, self.FULL, msg="success")
+        self.assertIn("1000", self.rows()[0]["message"])
+
+    def test_a_skipped_claim_still_writes_a_row(self):
+        # 「今天已经领过」是一次真实发生的事，事后要能查到，所以照样记一行。
+        res, seen = self.claim(self.FULL)
+        self.assertTrue(res["skipped"], res)
+        self.assertEqual(seen, [], "已领过就不该再发请求")
         rows = self.rows()
-        self.assertEqual(len(rows), 2)
-        self.assertFalse(rows[-1]["ok"])
-        self.assertEqual(rows[-1]["trigger"], "scheduler")
-        self.assertIn("活动未开始", rows[-1]["message"])
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]["ok"])
+        self.assertIn("已领取", rows[0]["message"])
+
+    def test_an_upstream_failure_is_recorded_as_a_failure(self):
+        # 上游抛错也要留一行：否则「今天没领到」在历史里是空白，
+        # 事后分不清是没跑还是跑了但失败。异常本身仍然向上抛，
+        # 让调度器能把它计入 failed 而不是假装成功。
+        with self.assertRaises(RuntimeError):
+            self.claim(self.EMPTY, ok=False)
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["ok"])
+        self.assertIn("APIG.0303", rows[0]["message"])
         self.assertEqual(self.latest()["ok"], False)
+
+    def test_a_failed_upstream_still_leaves_one_row(self):
+        # record_claim 自身吞掉写失败，所以真正的失败必须由调用方补记一行。
+        import wb_codearts
+        res = {"ok": False, "msg": "APIG.0303 app not found"}
+        wb_codearts.record_claim(dict(self.SESSION), res, trigger="scheduler")
+        rows = self.rows()
+        self.assertEqual(len(rows), 1)
+        self.assertFalse(rows[0]["ok"])
+        self.assertEqual(rows[0]["trigger"], "scheduler")
+        self.assertIn("APIG.0303", rows[0]["message"])
+        self.assertEqual(self.latest()["ok"], False)
+
 
 class SchedulerRecordingTests(IsolatedCase):
     def test_the_scheduler_records_only_the_attempts_it_makes(self):
-        due = self.account("cn", "cn-due")
-        done = self.account("cn", "cn-done")
-        done.last_checkin = time.strftime("%Y-%m-%d %H:%M:%S")
-        pool = type("Pool", (), {"accounts": [due, done]})()
-
+        import wb_codearts
         calls = []
 
-        def fake_http_json(url, **kwargs):
-            calls.append(url)
-            return {"code": 0, "msg": "签到成功"}
+        def fake_verify(ak, sk, tok, timeout=None, session=None, trigger="unknown"):
+            # 打桩的是 claim_and_verify 整体，所以 record_claim 轮不到自己执行；
+            # 这里补上那一步，才是在验「调度器传的 session 与 trigger 是对的」——
+            # 记账能发生正说明两者都到位了。
+            calls.append(session["account"]["id"])
+            result = {"ok": True, "skipped": True, "msg": "今日已领取",
+                      "balance": dict(RecordingTests.FULL)}
+            wb_codearts.record_claim(session, result, trigger=trigger)
+            return result
 
-        with mock.patch.object(wb_accounts, "http_json", fake_http_json), \
-                mock.patch.object(wb_accounts, "urlopen", _web_urlopen()), \
-                mock.patch.object(wb_accounts.Account, "fetch_credits",
-                                  lambda self: {"ok": True}), \
-                mock.patch.object(wb_scheduler, "do_cat_travel",
-                                  lambda acc: {"action": None}), \
-                mock.patch.object(wb_scheduler.wb_tasks, "run_night_growth",
-                                  lambda acc: {"logs": []}), \
-                mock.patch.object(wb_scheduler.time, "sleep", lambda *_: None):
-            scheduler = wb_scheduler.Scheduler(pool)
-            scheduler.cat_hours = []
-            scheduler._run_cycle("测试第一轮")
-            first_round = len(self.rows())
-            scheduler._run_cycle("测试第二轮")
+        tmp = tempfile.mkdtemp(prefix="wb-activity-sched-")
+        os.makedirs(os.path.join(tmp, wb_codearts.SESSION_SUBDIR))
+        for name, uid in (("a.json", "cn-due"), ("b.json", "cn-done")):
+            with open(os.path.join(tmp, wb_codearts.SESSION_SUBDIR, name),
+                      "w", encoding="utf-8") as fh:
+                json.dump({"account": {"id": uid, "label": "nick-" + uid},
+                           "accessKey": "AK", "secretKey": "SK",
+                           "securitytoken": "TOK"}, fh)
+
+        try:
+            with mock.patch.object(wb_codearts, "claim_and_verify", fake_verify):
+                scheduler = wb_scheduler.Scheduler(None)
+                scheduler.accounts_dir = tmp
+                scheduler._run_cycle("测试第一轮")
+                first_round = len(self.rows())
+                scheduler._run_cycle("测试第二轮")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
         rows = self.rows()
-        self.assertEqual(first_round, 1, "只有到期的那一个账号记一行")
-        self.assertEqual(len(rows), 1, "已完成的账号第二轮不该刷出假成功")
-        self.assertEqual(sorted(r["task"] for r in rows), ["checkin"])
+        # 领取是幂等的，每轮都会对每个会话判一次，所以两轮共四行 —— 这一点与
+        # 旧的 WorkBuddy 签到不同：那边靠本地 lastCheckin 闸门，一天才记一次。
+        self.assertEqual(first_round, 2, "两个码道会话各记一行")
+        self.assertEqual(len(rows), 4, "两轮各对两个会话记一行")
+        self.assertEqual(sorted(r["task"] for r in rows),
+                         ["checkin"] * 4)
         self.assertTrue(all(r["trigger"] == "scheduler" for r in rows))
-        self.assertEqual(len(calls), 1, "只有真正到期的那个账号签了一次")
+        self.assertEqual(sorted(r["uid"] for r in rows),
+                         ["cn-done", "cn-done", "cn-due", "cn-due"],
+                         "每行都要落在自己的会话上")
+        self.assertEqual(len(calls), 4, "每轮对每个会话判一次，共四轮判定")
 
 
 class CallSiteAuditTests(unittest.TestCase):
@@ -341,21 +406,24 @@ class CallSiteAuditTests(unittest.TestCase):
                         offenders.append("%s:%d" % (name, number))
         self.assertEqual(offenders, [], "这些调用点没有说明触发来源")
 
-    def test_account_add_and_import_carry_their_own_trigger(self):
-        # OAuth 添加账号在 poll_login 里落地，桌面端导入在 import_desktop_credential
-        # 里落地；两条路径都顺手签一次到，来源要各自说清楚。
-        self.assertIn('checkin(trigger="account_add")',
-                      inspect.getsource(wb_accounts.AccountPool.poll_login))
-        self.assertIn('checkin(trigger="account_import")',
-                      inspect.getsource(
-                          wb_accounts.AccountPool.import_desktop_credential))
+    def test_every_claim_call_site_names_its_trigger(self):
+        # 领取有两条触发路径（调度器与面板手动），来源必须各自说清楚；
+        # 漏掉会写成 unknown，事后没法从历史里分辨是谁领的。
+        bare = re.compile(r"claim_and_verify\((?:(?!trigger)[^)])*\)")
+        offenders = []
+        for name in ("wb_proxy.py", "wb_scheduler.py"):
+            with open(os.path.join(self.ROOT, name), encoding="utf-8") as fh:
+                for number, line in enumerate(fh, 1):
+                    if bare.search(line):
+                        offenders.append("%s:%d" % (name, number))
+        self.assertEqual(offenders, [], "这些调用点没有说明触发来源")
 
-    def test_the_attempt_methods_are_the_recording_points(self):
-        # 国际版每日活跃随该区域一并删除，签到是唯一还会写历史的任务。
-        for name, task in (("checkin", "TASK_CHECKIN"),):
-            source = inspect.getsource(getattr(wb_accounts.Account, name))
-            self.assertIn("wb_activity.record_attempt", source, name)
-            self.assertIn(task, source, name)
+    def test_the_claim_records_through_the_shared_task_name(self):
+        # 领取与旧的签到共用 wb_activity.TASK_CHECKIN，历史页与筛选下拉不用改。
+        import wb_codearts
+        self.assertIn("wb_activity.record(", inspect.getsource(
+            wb_codearts.record_claim))
+        self.assertIn("TASK_CHECKIN", inspect.getsource(wb_codearts.record_claim))
 
 
 class ReadApiTests(IsolatedCase):

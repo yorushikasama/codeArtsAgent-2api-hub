@@ -2,13 +2,15 @@
 
 负责常驻后台自动执行：
 1. Token 保活 (Keepalive)：定期检查 Token 剩余寿命，不足 2 小时自动调用 Refresh Token。
-2. 每日签到 (Daily Checkin)：每日定时为所有国内版账号自动签到领积分。
+2. 码道每日领取 (Daily Token Claim)：为 accounts/codearts/ 下的每个华为云会话
+   领取当日推理额度（码道侧的「签到」），每日两次。
 3. 对话活跃上报 (Activity Report)：每日定时为国内版账号上报轻量会话事件，点亮连登与热力墙。
 4. 猫猫旅行与日常结算 (Cat Travel & Welfare)：自动派出猫猫旅行或领取归来奖励。
 5. 状态持久化与看板展示：暴露状态、执行记录、支持手动立即触发与开关切换。
 """
 import threading
 import time
+import wb_codearts
 import wb_tasks
 from wb_tasks import do_cat_travel
 
@@ -17,10 +19,11 @@ class Scheduler:
     def __init__(self, pool):
         self.pool = pool
         # 对齐 Sliverkiss/workbuddy2api 官方默认排程 (CST 24小时制)
-        self.checkin_hours = [9, 21]     # 每日 09:00、21:00 签到
+        self.checkin_hours = [9, 21]     # 每日 09:00、21:00 领取当日额度
         self.travel_hours = [9, 21]      # 每日 09:00 派出、21:00 领奖闭环
         self.keepalive_hours = [22]      # 每日 22:00 集中 Token 保活检查
         self.cat_hours = [1]             # 每日 01:00 夜猫子专属任务
+        self.accounts_dir = None         # 领取要走码道会话目录，由网关注入
         self.all_hours = sorted(list(set(self.checkin_hours + self.travel_hours + self.keepalive_hours + self.cat_hours)))
         self.enabled = True
         self._stop_event = threading.Event()
@@ -128,15 +131,62 @@ class Scheduler:
         finally:
             self._run_lock.release()
 
+    def claim_daily_tokens(self):
+        """为每个码道会话领取当日推理额度（码道侧的「签到」）。
+
+        与账号池完全独立：会话存在 accounts/codearts/，不走 /v1 调度，所以这里
+        自己读目录、自己记账。领取接口幂等，额度已满时会被识别成跳过而不是一次
+        成功的假领取 —— 每天固定两次正好覆盖「早上领了、晚上用完了再补一次」。
+        """
+        if not self.accounts_dir:
+            return {"ok": False, "skipped": 0, "claimed": 0, "failed": 0,
+                    "error": "scheduler has no accounts directory"}
+        sessions = wb_codearts.load_sessions(self.accounts_dir)
+        if not sessions:
+            return {"ok": True, "skipped": 0, "claimed": 0, "failed": 0,
+                    "logs": []}
+        claimed = skipped = failed = 0
+        logs = []
+        for sess in sessions:
+            acct = sess.get("account") or {}
+            label = acct.get("label") or acct.get("id") or "码道账号"
+            key = (sess.get("accessKey"), sess.get("secretKey"),
+                   sess.get("securitytoken"))
+            if not all(key):
+                failed += 1
+                logs.append("! %s 缺少 AK/SK 或令牌，已跳过（需重新登录）" % label)
+                continue
+            try:
+                res = wb_codearts.claim_and_verify(*key, session=sess, trigger="scheduler")
+            except Exception as exc:
+                failed += 1
+                logs.append("! %s 领取失败: %s" % (label, exc))
+                continue
+            if res.get("skipped"):
+                skipped += 1
+                logs.append("· %s %s" % (label, res.get("msg")))
+            else:
+                claimed += 1
+                logs.append("✓ %s %s" % (label, res.get("msg")))
+            time.sleep(0.5)
+        return {"ok": True, "claimed": claimed, "skipped": skipped,
+                "failed": failed, "logs": logs}
+
     def _run_cycle(self, trigger_reason="周期巡检"):
         self.last_run_time = time.strftime("%Y-%m-%d %H:%M:%S")
         self.log(f"开始执行任务 ({trigger_reason})...")
+
+        # 码道领取放在账号池之外：账号池空了也不该跳过它，那意味着用户只在用
+        # 码道账号、没配 WorkBuddy 账号，此时领取恰恰是唯一该做的事。
+        claim = self.claim_daily_tokens()
+        for line in claim.get("logs") or []:
+            self.log(f"🎁 码道 {line}")
+
         if not self.pool or not self.pool.accounts:
             self.log("暂无可用的活跃账号，跳过本次巡检")
             return
 
         refreshed_count = 0
-        checkin_count = 0
         report_count = 0
         travel_count = 0
 
@@ -152,18 +202,8 @@ class Scheduler:
                 else:
                     self.log(f"! 账号 [{uid8}] Token 保活刷新失败: {acc.last_error}")
 
-            # 2. 如果是国内版账号，检查每日签到与猫猫旅行
+            # 2. 如果是国内版账号，检查猫猫旅行与连登
             if acc.realm == "cn":
-                if acc.can_checkin():
-                    self.log(f"检测到国内版账号 [{uid8}] 今日尚未签到，执行自动签到...")
-                    res = acc.checkin(trigger="scheduler")
-                    if res.get("ok"):
-                        checkin_count += 1
-                        self.log(f"✓ 账号 [{uid8}] 自动签到成功: {res.get('msg')}")
-                    else:
-                        self.log(f"! 账号 [{uid8}] 自动签到未成功: {res.get('error') or res.get('msg')}")
-                    time.sleep(1.0)
-
                 if acc.can_report_activity():
                     self.log(f"检测到国内版账号 [{uid8}] 今日尚未活跃上报，执行对话活跃上报...")
                     res = acc.report_activity()
@@ -197,13 +237,13 @@ class Scheduler:
                     time.sleep(1.0)
 
 
-        self.log(f"巡检完成：Token保活 {refreshed_count} 个，国内签到 {checkin_count} 个，活跃上报 {report_count} 个，猫猫日常 {travel_count} 个")
+        self.log(f"巡检完成：Token保活 {refreshed_count} 个，码道领取 {claim.get('claimed', 0)} 个（跳过 {claim.get('skipped', 0)} · 失败 {claim.get('failed', 0)}），活跃上报 {report_count} 个，猫猫日常 {travel_count} 个")
 
     def status(self):
         return {
             "enabled": self.enabled,
-            "mode": "整点排程 (09:00/21:00 签到旅行 · 每日活跃上报 · 22:00 保活 · 01:00 夜猫)",
-            "mode_cn": "整点排程 (09:00/21:00 签到旅行 · 每日活跃上报 · 22:00 保活 · 01:00 夜猫)",
+            "mode": "整点排程 (09:00/21:00 码道领取 · 旅行 · 每日活跃上报 · 22:00 保活 · 01:00 夜猫)",
+            "mode_cn": "整点排程 (09:00/21:00 码道领取 · 旅行 · 每日活跃上报 · 22:00 保活 · 01:00 夜猫)",
             "last_run_time": self.last_run_time or "尚未运行",
             "next_run_time": self.next_run_time or "待调度",
             "logs": self.logs[-20:],

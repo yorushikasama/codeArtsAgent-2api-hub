@@ -13,6 +13,7 @@
 import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -450,6 +451,203 @@ check("拒绝被当作子域名的钓鱼串",
 check("拒绝非 http(s) 协议", not _allow("javascript:alert(1)"))
 check("拒绝空地址", not _allow(""))
 check("拒绝 file 协议", not _allow("file:///C:/Windows/win.ini"))
+
+
+# ---------------------------------------------------------------------------
+# 每日领取：判据与签名
+# ---------------------------------------------------------------------------
+
+print()
+print("== 每日领取 ==")
+check("领取路径取自官方扩展", C.BENEFIT_CLAIM_PATH == "/api/v1/benefit/claim",
+      C.BENEFIT_CLAIM_PATH)
+check("余额路径取自官方扩展",
+      C.TOKENS_BALANCE_PATH == "/api/v1/user/tokens/balance",
+      C.TOKENS_BALANCE_PATH)
+check("权益接口挂在权益网关而不是权益消费网关",
+      C.GATEWAY_HOST == "https://opengw.developer.huaweicloud.com",
+      C.GATEWAY_HOST)
+
+# POST 必须把 body 的 hash 算进签名，否则回 APIG.0301「verify ak sk signature
+# fail」—— 看起来像 AK/SK 错了，实际是签名串少了 payload hash。
+_get = C.credit_headers("AK", "SK", "TOK", C.BENEFIT_CLAIM_PATH, "GET")
+_post = C.credit_headers("AK", "SK", "TOK", C.BENEFIT_CLAIM_PATH, "POST", body={})
+check("GET 带令牌头", _get.get("X-Security-Token") == "TOK", sorted(_get))
+check("POST 带令牌头", _post.get("X-Security-Token") == "TOK", sorted(_post))
+check("两种方法都签了名", "Authorization" in _get and "Authorization" in _post)
+check("带 traceid 便于上游排障", bool(_get.get("x-snap-traceid")))
+
+
+# 服务端时间戳换算
+check("毫秒时间戳换成本地时间",
+      C._ms_to_iso(1792054192998).startswith("2026-"), C._ms_to_iso(1792054192998))
+check("0 换出空串而不是 1970", C._ms_to_iso(0) == "", repr(C._ms_to_iso(0)))
+check("None 不炸", C._ms_to_iso(None) == "")
+check("非数字不炸", C._ms_to_iso("abc") == "")
+
+# 「今天领没领」的唯一判据是余额满不满，不是服务端时间戳：实测 update_time 在
+# 连续领取时不刷新，拿它判会把「还没领」误判成「已领」，于是永远领不到。
+check("满额且未消耗 = 已领", C._is_full(
+    {"daily_limit": 1000, "total_balance": 1000, "used_today": 0}))
+check("额度不足 = 未领", not C._is_full(
+    {"daily_limit": 1000, "total_balance": 400, "used_today": 0}))
+check("满额但已消耗 = 未领（今天的还能再领）", not C._is_full(
+    {"daily_limit": 1000, "total_balance": 1000, "used_today": 300}))
+check("服务端没给上限时不算已领", not C._is_full(
+    {"daily_limit": 0, "total_balance": 0, "used_today": 0}))
+check("上限为 None 也不算已领", not C._is_full(
+    {"daily_limit": None, "total_balance": 500, "used_today": 0}))
+
+
+# 余额摘要：口径都是「上限 / 余额 / 今日已用」
+class _FakeBalance(object):
+    def __init__(self, payload):
+        self.payload = payload
+
+    def __call__(self, ak, sk, tok, timeout=None):
+        return self.payload
+
+
+def with_balance(payload, fn, *a, **k):
+    saved = C.tokens_balance
+    C.tokens_balance = _FakeBalance(payload)
+    try:
+        return fn(*a, **k)
+    finally:
+        C.tokens_balance = saved
+
+
+# 键名照抄服务端返回的 result，不是摘要里的名字 —— 摘要的键是转换后的
+# daily_limit，服务端那个是 daily_token_limit。
+BASE = {"channel": "codearts", "daily_token_limit": 10000000,
+        "total_balance": 10000000, "daily_tokens_used": 2500000,
+        "monthly_token_limit": 0, "monthly_tokens_used": 0,
+        "expire_time": 0, "update_time": 1792054192998}
+
+sum_ = with_balance(BASE, C.balance_summary, "AK", "SK", "TOK")
+check("摘要带每日上限", sum_["daily_limit"] == 10000000, sum_)
+check("摘要带今日已用", sum_["used_today"] == 2500000, sum_)
+check("剩余 = 上限 - 已用", sum_["remaining"] == 7500000, sum_)
+check("已用百分比", sum_["used_percent"] == 25.0, sum_)
+check("expire_time=0 读作当日清零", sum_["expires_at_today"] is True, sum_)
+check("updated_at 是展示用的时间戳", bool(sum_["updated_at"]), sum_)
+check("没有 granted_today 这个误导性字段",
+      "granted_today" not in sum_, sorted(sum_))
+# 摘要与原始 result 的键名不同，别让以后有人把两者混用
+check("摘要用 daily_limit，原始 result 是 daily_token_limit",
+      "daily_limit" in sum_ and "daily_token_limit" in BASE, sorted(sum_))
+
+# 用完了也别算出负数
+spent = with_balance(dict(BASE, daily_tokens_used = 12000000),
+                     C.balance_summary, "AK", "SK", "TOK")
+check("超额消耗时剩余不取负", spent["remaining"] == 0, spent)
+
+# 服务端没给上限时不做除法
+nolimit = with_balance({"expire_time": 0},
+                       C.balance_summary, "AK", "SK", "TOK")
+check("缺上限时百分比为 None", nolimit["used_percent"] is None, nolimit)
+check("缺上限时剩余为 0", nolimit["remaining"] == 0, nolimit)
+
+
+# claim_and_verify 的三条分支
+def fake_verify(balance_before, claim_ok=True, grew=True, balance_after=None):
+    seq = [balance_before, balance_after if balance_after is not None else balance_before]
+
+    def fake_balance(ak, sk, tok, timeout=None):
+        return seq.pop(0) if len(seq) > 1 else seq[0]
+
+    saved_bal, saved_claim = C.balance_summary, C.claim_benefit
+    C.balance_summary = fake_balance
+    calls = []
+
+    def fake_claim(ak, sk, tok, timeout=None):
+        calls.append(1)
+        if not claim_ok:
+            raise RuntimeError("APIG.0301")
+        return {"ok": True, "msg": "success", "user_name": "hid_x",
+                "domain_id": "D", "raw": {}}
+
+    C.claim_benefit = fake_claim
+    try:
+        return C.claim_and_verify("AK", "SK", "TOK"), len(calls)
+    finally:
+        C.balance_summary, C.claim_benefit = saved_bal, saved_claim
+
+
+# claim_and_verify 的契约是「传进来一个**摘要**（balance_summary 的产物），
+# 而不是服务端原始 result」—— 摘要的键是 daily_limit / used_today。
+FULL = {"daily_limit": 1000, "total_balance": 1000, "used_today": 0}
+EMPTY = {"daily_limit": 1000, "total_balance": 0, "used_today": 0}
+
+res, calls = fake_verify(FULL)
+check("已满额时跳过", res["skipped"] is True and res["ok"] is True, res)
+check("跳过时不发领取请求", calls == 0, calls)
+check("跳过时带出可读的说明", "已领取" in res["msg"], res["msg"])
+check("跳过时把额度摘要原样带回来",
+      res["balance"]["daily_limit"] == 1000, res["balance"])
+
+res, calls = fake_verify(EMPTY, balance_after=FULL)
+check("未领时不跳过", res["skipped"] is False, res)
+check("未领时发一次领取请求", calls == 1, calls)
+check("领取后报告额度是否涨了", res["grew"] is True, res)
+check("领取结果带上新余额", res["balance"]["total_balance"] == 1000, res)
+check("领取结果带上账号名", res["user_name"] == "hid_x", res)
+
+res, calls = fake_verify({"daily_limit": 1000, "total_balance": 1000,
+                          "used_today": 400})
+check("已消耗后可以再领", res["skipped"] is False, res)
+
+# 领取失败要往上抛，让调度器记 failed 而不是假装成功
+saved_claim = C.claim_benefit
+saved_bal = C.balance_summary
+C.balance_summary = lambda *a, **k: dict(EMPTY)
+C.claim_benefit = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+try:
+    raised = False
+    try:
+        C.claim_and_verify("AK", "SK", "TOK")
+    except RuntimeError:
+        raised = True
+    check("领取失败向上抛而不吞掉", raised)
+finally:
+    C.claim_benefit, C.balance_summary = saved_claim, saved_bal
+
+
+# 调度器能独立跑领取
+import wb_scheduler  # noqa: E402
+
+_sched = wb_scheduler.Scheduler(pool=None)
+check("没注入目录时明确失败",
+      _sched.claim_daily_tokens().get("ok") is False)
+_sched.accounts_dir = tempfile.mkdtemp(prefix="wb-sched-")
+try:
+    _empty = _sched.claim_daily_tokens()
+    check("没有会话时是成功的空转",
+          _empty == {"ok": True, "skipped": 0, "claimed": 0, "failed": 0,
+                     "logs": []}, _empty)
+
+    # 放一个 AK 在、SK 与令牌为空的会话：load_sessions 只按 accessKey 过滤
+    # （accessKey 来自 STS 签发时就不可能为空），所以凭证不全只可能缺后两者 ——
+    # 续期失败就会留下这种会话。它必须被记成 failed，不能拿着空串去打上游。
+    os.makedirs(os.path.join(_sched.accounts_dir, C.SESSION_SUBDIR), exist_ok=True)
+    with open(os.path.join(_sched.accounts_dir, C.SESSION_SUBDIR, "broken.json"),
+              "w", encoding="utf-8") as _fh:
+        json.dump({"id": "s1", "account": {"id": "a1", "label": "hid_broken"},
+                   "accessKey": "AK", "secretKey": "", "securitytoken": ""}, _fh)
+    _res = _sched.claim_daily_tokens()
+    check("凭证不全的会话计为失败", _res["failed"] == 1, _res)
+    check("失败原因写进日志",
+          "重新登录" in (_res.get("logs") or [""])[0], _res.get("logs"))
+    check("凭证不全时不发请求", _res["claimed"] == 0, _res)
+
+    # 空 accessKey 的文件根本不会被当成会话（load_sessions 直接滤掉）
+    with open(os.path.join(_sched.accounts_dir, C.SESSION_SUBDIR, "empty.json"),
+              "w", encoding="utf-8") as _fh:
+        json.dump({"id": "s2", "account": {"id": "a2"}, "accessKey": ""}, _fh)
+    _res2 = _sched.claim_daily_tokens()
+    check("没有 AK 的文件不算会话", _res2["failed"] == 1, _res2)
+finally:
+    shutil.rmtree(_sched.accounts_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

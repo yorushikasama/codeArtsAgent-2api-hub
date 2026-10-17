@@ -74,7 +74,7 @@ def build_fixtures():
             "proxySlot": slot,
             "proxy": "",
             "credits": {"remain": 42, "used": 8, "size": 50, "packages": []},
-            "lastCheckin": None,
+            "lastActivityReport": None,
         }
 
     accounts = [

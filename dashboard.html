@@ -1768,8 +1768,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '每日活跃打卡': 'Daily activity check-in',
     '成功': 'succeeded',
     '按包名与面额推断（官方规则：每日活跃 30 / Pro 50 积分）': 'Inferred from the package name and size (official rule: 30 for daily activity, 50 on Pro)',
-    '每日签到 (国内版)': 'Daily check-in (China)',
-    'Buddy 加油站签到': 'Buddy gas station check-in',
     '每日签到:': 'Daily check-in:',
     '每账号每日上限（token）': 'Daily cap per account (tokens)',
     '每账号每日上限（积分）': 'Daily cap per account (credits)',
@@ -2481,9 +2479,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "正在申请授权登录链接…": "正在申請授權登入連結…",
     "每 5 秒自动刷新 · 数据来自本机反代": "每 5 秒自動重新整理 · 資料來自本機反代",
     "每个账号固定绑定一个出口代理槽。槽位地址变化时绑定账号自动跟随；禁用或删除后回退直连。": "每個帳號固定繫結一個出口代理槽。槽位地址變化時繫結帳號自動跟隨；禁用或刪除後回退直連。",
-    "每日签到 (国内版)": "每日簽到 (國內版)",
-    "Buddy 加油站签到": "Buddy 加油站簽到",
-    "本期 Buddy 加油站活动": "本期 Buddy 加油站活動",
     "当前连续登录天数": "目前連續登入天數",
     "WorkBuddy 成长计划": "WorkBuddy 成長計劃",
     "每日签到:": "每日簽到:",
@@ -3451,9 +3446,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <button class="sec" onclick="testAccounts(this)" title="逐个真发一条最小请求，并同时检查本机到上游的网络：能分清「账号坏了」和「本机断网了」，测试通过还会清掉该账号的熔断/降权计数">一键测试</button>
     </div>
     <div class="tb-group">
-    <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">Buddy 加油站签到</button>
-    </div>
-    <div class="tb-group">
     <button class="sec" onclick="autoAssignSlots()" title="把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响">一键分配代理</button>
     <button class="sec" id="btnProductAll" onclick="cycleAllProducts(this)" title="把全部账号（含另一个版本）的出站身份切到下一个：WB → VSC → CLI">一键切换所有出站身份：<span id="productAllLabel">WB</span></button>
     <button class="sec" onclick="setAll(true, this)">全部启用</button>
@@ -3517,7 +3509,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   <!-- 页面头部：标题 + 一行说明，与其它页面的头部结构保持一致 -->
   <div style="margin-bottom:16px">
     <h2 style="margin:0;font-size:17px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em">任务与福利</h2>
-    <div style="font-size:12px;color:var(--dim);margin-top:4px">每日活跃打卡、Buddy 加油站、成长任务与福利积分总览。</div>
+    <div style="font-size:12px;color:var(--dim);margin-top:4px">每日活跃打卡、成长任务与福利积分总览。</div>
   </div>
   <!-- 国内版专属成长任务与日常福利 -->
   <section id="sectionGrowthTasks">
@@ -3530,7 +3522,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <select id="growthAcctSelect" onchange="switchGrowthAccount(this.value)" style="background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-size:12px;color:var(--fg);font-family:inherit">
           <option value="all">全部国内账号 (批量)</option>
         </select>
-        <button class="primary" id="btnPageCheckin" onclick="triggerBuddyCheckin(this)">Buddy 加油站签到</button>
         <button class="primary" id="btnRunTasks" onclick="runGrowthTasks(this)">一键做任务领积分</button>
         <button id="btnCatTravel" onclick="triggerCatTravel(this)">猫猫旅行</button>
         <button id="btnRunStreakBonus" onclick="triggerStreakBonus(this)">连登管家与抽奖</button>
@@ -3538,11 +3529,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     </div>
 
     <div class="cards" style="margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(185px,1fr))">
-      <div class="card accent2" title="活动 Season: 10 (第 10 期)&#10;活动开始时间: 2026-09-30 00:00:00&#10;活动截止时间: 2026-10-15 23:59:59">
-        <div class="k">本期 Buddy 加油站活动</div>
-        <div class="v" id="cnTodayCheckinState" style="font-size:17px;letter-spacing:-.2px">-</div>
-        <div style="font-size:11px;color:var(--dim);margin-top:4px">第 10 期 (至 10-15 23:59 止)</div>
-      </div>
       <div class="card" title="WorkBuddy 成长计划连续登录活跃天数；达到 7/14/28 天可兑换连登奖励">
         <div class="k">当前连续登录天数</div>
         <div class="v" id="stkDays" style="color:var(--accent2)">-</div>
@@ -4791,11 +4777,51 @@ async function loadCodeartsAccounts(){
       + '<span class="ca-name">' + esc(a.account || "(未命名)") + badge + '</span>'
       + '<span class="ca-sub">' + esc(when) + " · " + esc(renew)
       + (a.domain_id ? " · 账号域 " + esc(String(a.domain_id).slice(0, 8)) + "…" : "")
-      + '</span></div><div class="ca-actions">'
+      + '</span>'
+      + caBalanceHtml(a.balance, a.balanceError)
+      + '</div><div class="ca-actions">'
+      + '<button class="sec mini" data-ca-id="' + id + '" onclick="claimCodeartsBenefit(this)">领取今日额度</button>'
       + (a.renewable ? '<button class="sec mini" data-ca-id="' + id + '" onclick="refreshCodeartsAccount(this)">续期</button>' : "")
       + '<button class="sec mini" data-ca-id="' + id + '" onclick="deleteCodeartsAccount(this)">删除</button>'
       + '</div></div>';
   }).join("");
+}
+
+// 额度是「今天领没领」的唯一可信依据：领取接口幂等、查不到自己的履历，只有
+// 余额能反推。满额且未消耗 = 今天的已经在手上，零消耗 = 额度没用过。
+function caBalanceHtml(b, err){
+  if(err) return '<span class="ca-sub">额度读取失败：' + esc(err) + '</span>';
+  if(!b) return '';
+  const left = fmt(b.remaining) + " / " + fmt(b.daily_limit) + " token";
+  let state = "今日已领";
+  if(!b.daily_limit) state = "未开通额度";
+  else if(b.used_today > 0) state = "今日已用 " + b.used_percent + "%";
+  const reset = b.expires_at_today ? "· 当日有效、0 点清零" : "";
+  return '<span class="ca-sub">今日额度 ' + esc(left) + " · " + esc(state)
+    + (b.updated_at ? " · 更新于 " + esc(b.updated_at) : "") + esc(reset) + '</span>';
+}
+
+async function claimCodeartsBenefit(btn){
+  const id = btn && btn.getAttribute("data-ca-id");
+  if(!id) return;
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "领取中…";
+  try{
+    const r = await postJSON("/accounts/codearts/claim", {accountId: id});
+    const res = (r && r.results && r.results[0]) || {};
+    const b = res.balance || {};
+    if(res.skipped){
+      toast("今日已领取：" + fmt(b.total_balance || 0) + " token", "ok");
+    }else if(res.ok){
+      toast("领取成功：" + (res.msg || ""), "ok");
+    }else{
+      toast("领取失败：" + (res.msg || "未知原因"), "bad");
+    }
+    await loadCodeartsAccounts();
+  }catch(e){
+    toast("领取失败：" + e.message, "bad");
+    btn.disabled = false; btn.textContent = old;
+  }
 }
 
 async function refreshCodeartsAccount(btn){
@@ -4948,8 +4974,6 @@ function updateUI(){
     cardGw.style.background = "rgba(220,38,38,.03)";
   }
 
-  const btnCheckin = document.getElementById("btnCheckin");
-  if(btnCheckin) btnCheckin.style.display = (window.VIEW_REALM === "cn" ? "inline-block" : "none");
 
   // 计算当前绑定与生效的 Key 数量
   const keys = (typeof API_KEY_ROWS !== 'undefined' && API_KEY_ROWS.length) ? API_KEY_ROWS : (window.API_KEY_ROWS || []);
@@ -5308,7 +5332,6 @@ async function loadGrowthTasks(){
       sel.innerHTML = opts;
     }
 
-    if(typeof updateTaskPageCheckinCards === 'function') updateTaskPageCheckinCards();
 
     const elStk = document.getElementById("stkDays");
     if(elStk) elStk.textContent = streak + ' 天';
@@ -5443,25 +5466,6 @@ async function triggerCatTravel(btn){
   }
 }
 
-async function triggerBuddyCheckin(btn){
-  btn.disabled = true; const ot = btn.textContent; btn.textContent = "签到中...";
-  try {
-    const payload = {};
-    if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
-      payload.uid = CURRENT_GROWTH_UID;
-    }
-    const r = await postJSON("/accounts/checkin", payload);
-    const res = r.results || [];
-    if(!res.length) toast("未发现国内版账号", "warn");
-    else {
-      const summary = res.map(x => (x.nickname||x.uid.slice(0,6)) + ": " + (x.ok ? "签到成功 (+100积分)" : (x.error||x.msg))).join("；");
-      toast("Buddy 加油站签到: " + summary, res.some(x => x.ok) ? "ok" : "warn");
-    }
-    await loadAccounts(); await loadGrowthTasks();
-  }catch(e){ toast("签到失败: " + e.message, "bad"); }
-  finally { btn.disabled = false; btn.textContent = ot; }
-}
-
 async function triggerStreakBonus(btn){
   if(btn){ btn.disabled = true; btn.textContent = '执行中...'; }
   try{
@@ -5533,21 +5537,6 @@ function filterRealm(m){
   if(el("fltCn")) el("fltCn").className = m === "cn" ? "active" : "";
   renderAccounts();
 }
-async function doCheckin(btn){
-  btn.disabled = true; const ot = btn.textContent; btn.textContent = "签到中...";
-  try {
-    const r = await postJSON("/accounts/checkin", {});
-    const res = r.results || [];
-    if(!res.length) toast("未发现国内版账号", "warn");
-    else {
-      const summary = res.map(x => (x.nickname||x.uid.slice(0,6)) + ": " + (x.ok ? "签到成功" : (x.error||x.msg))).join("；");
-      toast("每日签到: " + summary, res.some(x => x.ok) ? "ok" : "warn");
-    }
-    await refreshActiveRealm(); window.updateUI(); loadAccounts(); loadModels();
-  }catch(e){ toast("签到失败: " + e.message, "bad"); }
-  finally { btn.disabled = false; btn.textContent = ot; }
-}
-
 const fmt = n => (n ?? 0).toLocaleString('en-US');
 /* Token 数的紧凑显示：<1 万精确显示（千分位），≥1 万 K，≥100 万 M，≥10 亿 B；
    小数位随量级收缩（123K / 12.3K / 1.23K），尾零去掉。单位用大写 K/M/B，
@@ -6312,10 +6301,10 @@ function modelLimitPills(a){
 
 // ---- 每日活动（国内签到 / 国际活跃）------------------------------------
 // GET /activity/history 是唯一事实来源。账号行上的状态只由「今天已记录的事件」
-// 推导：**没有记录不等于失败**，所以缺记录时给的是中性文案而不是红色。账号自带
-// 的 lastCheckin / lastDailyChat 只在「今天确实完成过、但这一版还没留下历史行」
-// 时补一个中性的「今日已完成」，不据此伪造事件、时间或说明。
-//
+// 推导：**没有记录不等于失败**，所以缺记录时给的是中性文案而不是红色。账号自带的
+// lastActivityReport 只在「今天确实完成过、但这一版还没留下历史行」时补一个中性的
+// 「今日已完成」，不据此伪造事件、时间或说明。
+// WorkBuddy 那套每日签到（lastCheckin）已随码道领取上线而移除，此处不再回落。
 // 关联键始终是 uid：切区域、刷新账号都只是重画同一份按 uid 建的表，另一个账号的
 // 事件不会画到这一行上。
 let ACTIVITY_TODAY = {byUid: {}, error: '', loaded: false};
@@ -6332,41 +6321,12 @@ function todayStamp(){
 }
 
 // 一个账号今天的活动状态。
-// 国际版每日活跃已随该区域移除，这里只剩国内签到一项。
-// 国内版有两项独立活动：
-//   1. Buddy 加油站（checkin 流水或 lastCheckin）
-//   2. 成长计划签到（连登活跃上报 lastActivityReport）
+// 国际版每日活跃已随该区域移除，这里只剩国内版一项：成长计划连登打卡
+//（lastActivityReport）。WorkBuddy 每日签到（lastCheckin）也已移除，签到改由码道
+// 账号区的「领取每日 Token」承担 —— 那边读的是服务端余额而不是这里的历史流水，
+// 所以两者不共用状态字段。
 function activityStatusOf(a){
   const uid = String((a && a.uid) || '');
-  const isCn = (a && a.realm) === 'cn';
-  if(!isCn){
-    const label = '今日活跃';
-    const done = a && a.lastDailyChat;
-    const event = ACTIVITY_TODAY.byUid[uid];
-    if(event){
-      return {kind: event.ok ? 'ok' : 'failed', label: label,
-              state: event.ok ? '成功' : '失败',
-              at: String(event.ts || '').replace('T', ' ').slice(0, 19),
-              message: String(event.message || '')};
-    }
-    if(done && String(done).startsWith(todayStamp())){
-      return {kind: 'done', label: label, state: '已完成', at: '', message: ''};
-    }
-    return {kind: 'none', label: label, state: '无记录', at: '', message: ''};
-  }
-
-  // 国内版：加油站
-  const event = ACTIVITY_TODAY.byUid[uid];
-  const gasDone = a && a.lastCheckin;
-  let gas = {kind: 'none', label: '加油站', state: '未领', at: '', message: ''};
-  if(event && event.task === 'checkin'){
-    gas = {kind: event.ok ? 'ok' : 'failed', label: '加油站',
-           state: event.ok ? '已领' : '失败',
-           at: String(event.ts || '').replace('T', ' ').slice(0, 19),
-           message: String(event.message || '')};
-  } else if(gasDone && String(gasDone).startsWith(todayStamp())){
-    gas = {kind: 'done', label: '加油站', state: '已领', at: '', message: ''};
-  }
 
   // 国内版：成长计划连登打卡
   const streakDone = a && a.lastActivityReport;
@@ -6375,51 +6335,19 @@ function activityStatusOf(a){
     streak = {kind: 'done', label: '成长连登', state: '已打卡', at: String(streakDone), message: '连登活跃已上报'};
   }
 
-  return {isCn: true, gas: gas, streak: streak,
-          // 整体是否算已完成（供任务页统计卡片判断）
-          kind: (gas.kind === 'ok' || gas.kind === 'done') ? 'done' : 'none'};
+  return {isCn: true, streak: streak,
+          kind: streak.kind === 'done' ? 'done' : 'none'};
 }
 
 function activityStatusChip(a){
   const status = activityStatusOf(a);
   const uidAttr = esc(String((a && a.uid) || '').replace(/[^\w.@-]/g, ''));
-  if(!status.isCn){
-    const cls = status.kind === 'ok' ? 'badge ok'
-              : status.kind === 'failed' ? 'badge bad'
-              : status.kind === 'done' ? 'badge ok' : 'badge off';
-    const tip = status.kind === 'none'
-      ? status.label + '：今天还没有记录（没有记录不等于失败）'
-      : (status.label + '：' + status.state
-         + (status.at ? ' · ' + status.at : '')
-         + (status.message ? ' · ' + status.message : ''));
-    return '<span class="' + cls + '" style="cursor:pointer" title="' + esc(tip) + '"'
-      + ' onclick="openActivityHistory(&quot;' + uidAttr + '&quot;)">'
-      + esc(status.label + ' · ' + status.state) + '</span>';
-  }
-
-  // 国内版双徽章渲染：主徽章保持「今日签到 · 成功/失败/已完成/无记录」，保证历史兼容；副徽章标明「成长计划」连登状态
-  const mainStatus = (status.gas.kind === 'ok') ? {cls: 'badge ok', text: '今日签到 · 成功', tip: status.gas.message}
-                   : (status.gas.kind === 'failed') ? {cls: 'badge bad', text: '今日签到 · 失败', tip: status.gas.message}
-                   : (status.gas.kind === 'done') ? {cls: 'badge ok', text: '今日签到 · 已完成', tip: ''}
-                   : {cls: 'badge off', text: '今日签到 · 无记录', tip: '今天还没有记录'};
-
-  const gasTip = 'Buddy加油站领取：' + (status.gas.state === '已领' ? '今日已领' : status.gas.state)
-               + (status.gas.at ? ' · ' + status.gas.at : '')
-               + (mainStatus.tip ? ' · ' + mainStatus.tip : '');
-
   const stkCls = (status.streak.kind === 'done') ? 'badge ok' : 'badge off';
   const stkTip = '成长计划连登活跃：' + status.streak.state
                + (status.streak.at ? ' · ' + status.streak.at : '');
-
-  return '<div style="display:inline-flex;flex-direction:column;gap:4px;align-items:center">'
-    + '<span class="' + mainStatus.cls + '" style="cursor:pointer;white-space:nowrap" title="' + esc(gasTip) + '"'
+  return '<span class="' + stkCls + '" style="cursor:pointer;white-space:nowrap" title="' + esc(stkTip) + '"'
     + ' onclick="openActivityHistory(&quot;' + uidAttr + '&quot;)">'
-    + esc('Buddy 加油站 · ' + (status.gas.kind === 'none' ? '未领' : status.gas.state)) + '</span>'
-    + '<span class="' + stkCls + '" style="cursor:pointer;white-space:nowrap" title="' + esc(stkTip) + '"'
-    + ' onclick="openActivityHistory(&quot;' + uidAttr + '&quot;)">'
-    + esc('成长计划 · ' + (status.streak.kind === 'done' ? '已签到' : '未签到')) + '</span>'
-    + '</div>'
-    + '<span style="display:none">' + esc(mainStatus.text) + '</span>';
+    + esc('成长计划 · ' + (status.streak.kind === 'done' ? '已签到' : '未签到')) + '</span>';
 }
 
 // 今天的事件，按 uid 建表。rows 是最新在前，所以第一次见到的就是最近一次。
@@ -6439,34 +6367,6 @@ async function loadActivityToday(){
   }
 }
 
-// 任务与福利页面的今日打卡/签到卡片状态：与网关与账号页面的今日活跃/今日签到完全同一口径
-// 统一通过 activityStatusOf(a) 判定（以今天真实流水为准，回落到本日本地时间前缀）。
-function updateTaskPageCheckinCards(){
-  const allList = window.ACCOUNTS || [];
-  const chkStateEl = document.getElementById("cnTodayCheckinState");
-  if(chkStateEl){
-    let targetAccts = allList.filter(a => a.realm === 'cn' && a.enabled);
-    if(typeof CURRENT_GROWTH_UID !== 'undefined' && CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
-      targetAccts = targetAccts.filter(a => a.uid === CURRENT_GROWTH_UID);
-    }
-    if(!targetAccts.length){
-      chkStateEl.textContent = '无国内账号';
-    } else {
-      const isDone = a => {
-        const s = activityStatusOf(a);
-        return s.kind === 'ok' || s.kind === 'done';
-      };
-      const doneCount = targetAccts.filter(isDone).length;
-      if(doneCount === targetAccts.length){
-        chkStateEl.innerHTML = '<span style="color:var(--accent2)">今日已领 (' + doneCount + '/' + targetAccts.length + ')</span>';
-      } else if(doneCount > 0){
-        chkStateEl.innerHTML = '<span style="color:var(--accent)">部分已领 (' + doneCount + '/' + targetAccts.length + ')</span>';
-      } else {
-        chkStateEl.innerHTML = '<span style="color:var(--warn)">今日未领 (0/' + targetAccts.length + ')</span>';
-      }
-    }
-  }
-}
 
 
 // 面板拼查询串，筛选在服务端做；写错的取值服务端会回 400，这里原样透出。
@@ -6985,7 +6885,6 @@ async function loadActivityBoard(showToast, more){
 function renderAccounts(){
   // Same data source as the account cards, so the two views can never disagree.
   renderDisabled();
-  if(typeof updateTaskPageCheckinCards === 'function') updateTaskPageCheckinCards();
   const box = document.getElementById('accounts');
   const currentView = (window.VIEW_REALM || "cn");
   let list = accountsInView();
@@ -7014,7 +6913,6 @@ function renderAccounts(){
       +   '请先登录或导入一个 ' + viewName + ' 账号，之后相关请求都会走该账号'
       + '</div>'
       + '<button onclick="openLoginModal()" style="font-size:14px;padding:10px 22px">'
-      +   '登录新账号 (OAuth)'
       + '</button>'
       + '</div>';
     return;
@@ -12045,9 +11943,7 @@ function renderCreditGrants(data){
     const tone = (r.status === 'expired' || r.status === 'used_up') ? 'bad'
       : (r.status === 'active' ? 'ok' : '');
     const expiry = r.no_expiry ? '不过期' : String(r.expire_iso || '').slice(5, 16) || '—';
-    // 来源：上游给了发放原因就用它的原文（如「Buddy 加油站签到」「成长计划奖励」），
-    // 没有就用空。本机
-    // 签到 / 每日活跃的记录按时间对得上时一并挂进悬停提示，指出这次发放对应哪次动作。
+    // 来源：上游给了发放原因就用它的原文（如「成长计划奖励」），没有就用空。
     const reason = String(r.grant_reason || '').trim();
     // 过去这里还有一条「Bonus Pack 30 = 每日活跃奖励」的推断，只对国际版成立；
     // 该区域删除后上游不再出现那种包，规则一并去掉，来源只认上游给的原因。

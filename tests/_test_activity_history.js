@@ -27,17 +27,22 @@ const stamp = (d) => {
 };
 const TODAY = stamp(new Date());
 
-// One account per state, and both realms, so a chip taken from the wrong row
-// changes the answer rather than duplicating it.
+// One account per state, and a stale-completion account besides, so a chip taken
+// from the wrong row changes the answer rather than duplicating it.
+//
+// The account row's chip reports the 成长计划 streak (lastActivityReport). The
+// WorkBuddy daily check-in chip is gone with the check-in feature itself; 码道
+// claim lives in its own panel section and reads the server-side balance, not
+// this history stream.
 const ACCOUNTS = [
   {uid: 'cn-uid-0001', nickname: '甲 · 国内', realm: 'cn', enabled: true,
-   source: 'panel', lastCheckin: null},
+   source: 'panel', lastActivityReport: TODAY + ' 10:00:00'},
   {uid: 'cn-uid-0004', nickname: '丁 · 失败', realm: 'cn', enabled: true,
-   source: 'panel', lastCheckin: null},
+   source: 'panel', lastActivityReport: null},
   {uid: 'intl-uid-0002', nickname: '乙 · 国际', realm: 'intl', enabled: true,
-   source: 'panel', lastDailyChat: TODAY + ' 09:00:00'},
+   source: 'panel', lastActivityReport: '2026-10-07 09:30:00'},
   {uid: 'cn-uid-0003', nickname: '丙 · 无记录', realm: 'cn', enabled: true,
-   source: 'panel', lastCheckin: null},
+   source: 'panel', lastActivityReport: null},
 ];
 
 // Newest first, as the API returns them.
@@ -136,38 +141,33 @@ const check = (label, cond, extra) => {
   check('every account in the view renders exactly one row',
         ['甲 · 国内', '丁 · 失败', '丙 · 无记录'].every(n => accountRow(out, n) !== null));
   check('the other realm is not in this view', accountRow(out, '乙 · 国际') === null);
-  check('a CN account with a recorded success says so on its own row',
-        (chipOf(out, '甲 · 国内') || '').includes('今日签到 · 成功'),
+  check('an account that reported the streak today is labelled 已签到',
+        (chipOf(out, '甲 · 国内') || '').includes('成长计划 · 已签到'),
         JSON.stringify(chipOf(out, '甲 · 国内')));
-  check('a CN account with a recorded failure says so on its own row',
-        (chipOf(out, '丁 · 失败') || '').includes('今日签到 · 失败'),
-        JSON.stringify(chipOf(out, '丁 · 失败')));
-  check('an account with no event and no completion says 无记录, not a failure',
-        chipText(chipOf(out, '丙 · 无记录')) === '今日签到 · 无记录'
+  check('that chip is a success badge, not a failure',
+        (chipOf(out, '甲 · 国内') || '').includes('badge ok'),
+        JSON.stringify(chipOf(out, '甲 · 国内')));
+  check('an account that has not reported today says 未签到, not a failure',
+        chipText(chipOf(out, '丙 · 无记录')) === '成长计划 · 未签到'
         && (chipOf(out, '丙 · 无记录') || '').includes('badge off'),
         JSON.stringify(chipOf(out, '丙 · 无记录')));
-  check('the failure chip is rendered as a failure, not as a success',
-        (chipOf(out, '丁 · 失败') || '').includes('badge bad'),
-        JSON.stringify(chipOf(out, '丁 · 失败')));
-  check('no other row claims the failure',
+  check('no row claims a failure when nothing failed',
         !chipText(chipOf(out, '甲 · 国内')).includes('失败')
-        && !chipText(chipOf(out, '丙 · 无记录')).includes('失败'),
-        JSON.stringify([chipText(chipOf(out, '甲 · 国内')), chipText(chipOf(out, '丙 · 无记录'))]));
+        && !chipText(chipOf(out, '丙 · 无记录')).includes('失败')
+        && !chipText(chipOf(out, '丁 · 失败')).includes('失败'),
+        JSON.stringify([chipText(chipOf(out, '甲 · 国内')),
+                        chipText(chipOf(out, '丙 · 无记录'))]));
   check('exactly one row carries the success state',
-        (out.match(/今日签到 · 成功/g) || []).length === 1,
-        (out.match(/今日签到 · 成功/g) || []).length);
-  check('exactly one row carries the failure state',
-        (out.match(/今日签到 · 失败/g) || []).length === 1,
-        (out.match(/今日签到 · 失败/g) || []).length);
+        (out.match(/成长计划 · 已签到/g) || []).length === 1,
+        (out.match(/成长计划 · 已签到/g) || []).length);
   check('the 今日活动 cell is labelled for the phone layout',
         (chipOf(out, '甲 · 国内') !== null));
 
   window.VIEW_REALM = 'intl';
   api.renderAccounts();
   out = accountsOut();
-  check('an INTL account that completed today is labelled 今日活跃, not 今日签到',
-        (chipOf(out, '乙 · 国际') || '').includes('今日活跃 · 已完成')
-        && !(chipOf(out, '乙 · 国际') || '').includes('今日签到'),
+  check('a completion from another day is not shown as today\'s',
+        (chipOf(out, '乙 · 国际') || '').includes('成长计划 · 未签到'),
         JSON.stringify(chipOf(out, '乙 · 国际')));
 
   console.log();
@@ -264,9 +264,9 @@ const check = (label, cond, extra) => {
   out = accountsOut();
   check('a failed activity read leaves the account area intact',
         accountRow(out, '甲 · 国内') !== null && accountRow(out, '丙 · 无记录') !== null);
-  check('and the chips fall back to the neutral state, not to a failure',
-        chipText(chipOf(out, '甲 · 国内')) === '今日签到 · 无记录'
-        && (chipOf(out, '甲 · 国内') || '').includes('badge off'),
+  check('and the chips fall back to the account field, not to the history read',
+        chipText(chipOf(out, '甲 · 国内')) === '成长计划 · 已签到'
+        && (chipOf(out, '丁 · 失败') || '').includes('badge off'),
         JSON.stringify(chipOf(out, '甲 · 国内')));
   check('loadAccounts asks for today\u2019s activity',
         calls.some(u => u === '/activity/history?range=today&limit=200'), JSON.stringify(calls));
@@ -281,17 +281,17 @@ const check = (label, cond, extra) => {
   check('the CN view shows the CN accounts',
         accountRow(out, '甲 · 国内') !== null && accountRow(out, '丁 · 失败') !== null);
   check('the CN view drops the INTL account', accountRow(out, '乙 · 国际') === null);
-  check('the success stays on 甲 after the realm switch',
-        (chipOf(out, '甲 · 国内') || '').includes('今日签到 · 成功'),
+  check('the streak status stays on 甲 after the realm switch',
+        (chipOf(out, '甲 · 国内') || '').includes('成长计划 · 已签到'),
         JSON.stringify(chipOf(out, '甲 · 国内')));
-  check('the failure stays on 丁 after the realm switch',
-        (chipOf(out, '丁 · 失败') || '').includes('今日签到 · 失败'),
+  check('the un-reported status stays on 丁 after the realm switch',
+        (chipOf(out, '丁 · 失败') || '').includes('成长计划 · 未签到'),
         JSON.stringify(chipOf(out, '丁 · 失败')));
   window.VIEW_REALM = 'intl';
   api.renderAccounts();
   out = accountsOut();
-  check('the INTL view shows the completion on 乙, not on a CN row',
-        (chipOf(out, '乙 · 国际') || '').includes('今日活跃 · 已完成'),
+  check('a stale completion is not carried into the other realm view',
+        (chipOf(out, '乙 · 国际') || '').includes('成长计划 · 未签到'),
         JSON.stringify(chipOf(out, '乙 · 国际')));
 
   console.log();
