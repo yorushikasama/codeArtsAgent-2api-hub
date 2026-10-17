@@ -784,6 +784,8 @@ CHAT_PATH = CHAT_BASE + "chat/completions"
 # 限时福利里只有 glm-5.3 是死的（400 空响应体）。早期只探过限时福利那组的 4 个，
 # 当时把另外 3 个判成「服务端不认」—— 那个结论只对那一组成立，内置那组整体可路由。
 CHAT_MODELS = ("deepseek-v4.1-flash",
+               "glm-5.3", "deepseek-v4-flash-0731", "glm-5.3-flash",
+               "deepseek-v4-pro-0813",
                "GLM-5.2", "Qwen3-VL-235B", "kimi-k2.6-vl",
                "openpangu-2.0-flash", "openpangu-2.0-pro",
                "glm-5.2-sft-harmony")
@@ -814,9 +816,28 @@ BUILTIN_MODELS_PATH = "/v1/model/builtin"
 #: PromptCenter 所在的主机，与推理入口同一台（agentChatDomain 在 prod 下就是它）
 SNAP_HOST = CHAT_HOST
 
-#: 推理入口实测不可路由的内置模型（原因见上）。保留在清单里但标成不可用，
-#: 这样面板能看到「服务端报了它、但打不通」，而不是让它静默消失。
-BUILTIN_UNROUTABLE = {"glm-5.3"}
+#: 限时福利渠道的 maas_type 值（见 chat_headers 的注释 —— 这是分组开关）
+MAAS_BENEFIT = "benefit"
+
+#: 限时福利 4 个模型名 → 它们必须带 maas_type: benefit
+BENEFIT_MODELS = frozenset({
+    "deepseek-v4-flash-0731", "glm-5.3-flash",
+    "deepseek-v4-pro-0813", "deepseek-v4.1-flash",
+})
+
+
+def model_group(model_id):
+    """按模型名判分组。限时福利那 4 个来自权益网关清单，其余都算内置。"""
+    return GROUP_BENEFIT if model_id in BENEFIT_MODELS else GROUP_BUILTIN
+
+#: 推理入口实测不可路由的内置模型。目前是空的 —— 清单里 7 个内置模型全部可用。
+#: 留着这个集合是为了以后真出现不通的模型时有地方标；「routable」字段的语义
+#: 也依赖它，面板按它决定是否显示「推理不可达」。
+#:
+#: 别急着往里加：曾经把 glm-5.3 放进来过，理由是「连续两次 400 且响应体为空」。
+#: 那是误判 —— glm-5.3 只收 stream=true，非流式才回 400 空响应体（见
+#: chat_body）。**把某个模型加进来之前，先用流式形态复测一遍。**
+BUILTIN_UNROUTABLE = set()
 
 #: UI 的两分组，与客户端侧一致。
 GROUP_BENEFIT = "benefit"
@@ -927,8 +948,20 @@ def model_catalog(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOU
 
 
 def chat_headers(access_key, secret_key, security_token, payload_hash,
-                 stream=False):
-    """推理请求头：与网关配置同一套签名，只是多一个 Accept。"""
+                 stream=False, maas_type=None, model=None):
+    """推理请求头：与网关配置同一套签名，只是多一个 Accept。
+
+    ``maas_type`` 是**分组开关，不是通用头** —— 这是从一次全套头对照实验里
+    得出的硬结论（2026-10-17）：
+      · 限时福利 4 个模型不带 ``maas_type: benefit`` 时全部回 404
+        InferHub.002002009「model is not registered」，带上立刻全通；
+      · 内置 7 个模型带上它反而回 InferHub.4005.200「unsupported model」，
+        不带才通。
+    所以 benefit 组必须带、builtin 组必须不带，由调用方按模型所属分组传。
+
+    客户端还带一套 x-ot-* 观测头（trace/span/model-name 等），实测**不带也通**，
+    这里就不复制了 —— 复制只会让签名串更长、排障更难。
+    """
     headers = {
         "Content-Type": "application/json",
         "User-Agent": GATEWAY_USER_AGENT,
@@ -937,8 +970,48 @@ def chat_headers(access_key, secret_key, security_token, payload_hash,
     }
     if security_token:
         headers["X-Security-Token"] = security_token
+    if maas_type:
+        headers["maas_type"] = maas_type
     return aksk_sign(access_key, secret_key, "POST", CHAT_PATH, {}, headers,
                      payload_hash=payload_hash)
+
+
+def chat_body(model, messages, max_tokens=256, stream=True):
+    """推理请求体。
+
+    **stream 默认 True，这不是随便定的。** `glm-5.3` 只收流式：传
+    ``stream=false`` 服务端回 **400 且响应体为空**，看起来像「模型不存在」，
+    实际上换 ``stream=true`` 立刻 200 并正常吐出内容。客户端一直走流式，
+    所以人用着没问题；按 OpenAI 习惯默认非流式的探针会误判它已死。
+    """
+    return {"model": model, "messages": messages,
+            "max_tokens": max_tokens, "stream": stream}
+
+
+def chat_for_model(access_key, secret_key, security_token, model, messages,
+                   max_tokens=256, stream=True, timeout=DEFAULT_TIMEOUT):
+    """按模型所属分组自动选对请求头，发一次真实推理。
+
+    分组 → maas_type 的映射在这里集中维护（见 chat_headers 的注释）：
+      benefit 组 → maas_type: benefit
+      builtin 组 → 不带
+    返回 (http 状态码, 原始响应体)。**不走 _http** —— 那个函数会把非 JSON 的
+    SSE 流包成 {"_raw": ...}，还会把流式帧里的 error_code 当业务错误抛掉，
+    推理这边需要的是原样字节，判定交给调用方。
+    """
+    maas = MAAS_BENEFIT if model_group(model) == GROUP_BENEFIT else None
+    body = json.dumps(chat_body(model, messages, max_tokens=max_tokens,
+                                stream=stream), ensure_ascii=False).encode("utf-8")
+    headers = chat_headers(access_key, secret_key, security_token,
+                           hashlib.sha256(body).hexdigest(),
+                           stream=stream, maas_type=maas)
+    req = urllib.request.Request(CHAT_PATH, data=body, headers=headers,
+                                 method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
 
 
 # ---------------------------------------------------------------------------

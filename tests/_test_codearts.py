@@ -661,14 +661,45 @@ check("内置目录在 PromptCenter 那台主机上",
 check("两个分组都定义了",
       C.MODEL_GROUPS == (C.GROUP_BENEFIT, C.GROUP_BUILTIN), C.MODEL_GROUPS)
 
-# 曾经把内置这一组判成「IDE 聊天目录」排除掉，那是错的：7 个里 6 个真能推理。
-# CHAT_MODELS 必须同时覆盖两组，否则网关宣告的模型里有大半打不通。
-check("可路由清单覆盖两组",
-      "deepseek-v4.1-flash" in C.CHAT_MODELS and "GLM-5.2" in C.CHAT_MODELS,
+# 这几行曾经两次判错过，都是被**假信号**带偏的：
+#   · 限时福利 4 个全 404/429 → 被判「不在推理入口注册」，其实是限流不是不支持
+#   · glm-5.3 连续 400 且响应体为空 → 被判「真的不通」，其实它只收 stream=true
+# 所以不只钉「谁在清单里」，还要把这两个判据本身钉住。
+check("清单 11 个模型，两组都在",
+      len(C.CHAT_MODELS) == 11
+      and "deepseek-v4.1-flash" in C.CHAT_MODELS
+      and "GLM-5.2" in C.CHAT_MODELS
+      and "glm-5.3" in C.CHAT_MODELS,
       C.CHAT_MODELS)
-check("glm-5.3 标为推理不可达",
-      "glm-5.3" in C.BUILTIN_UNROUTABLE and "glm-5.2-sft-harmony" not in C.BUILTIN_UNROUTABLE,
-      C.BUILTIN_UNROUTABLE)
+check("限时福利 4 个全在清单里（限流不等于不支持）",
+      all(m in C.CHAT_MODELS for m in
+          ("deepseek-v4.1-flash", "glm-5.3", "deepseek-v4-flash-0731",
+           "glm-5.3-flash", "deepseek-v4-pro-0813")),
+      [m for m in C.CHAT_MODELS if "deepseek" in m or m.startswith("glm")])
+check("glm-5.3 不再被标为不可路由（它只收流式，不是死的）",
+      "glm-5.3" not in C.BUILTIN_UNROUTABLE, C.BUILTIN_UNROUTABLE)
+
+# 请求体默认必须流式 —— glm-5.3 传非流式回 400 空响应体，看着像模型不存在
+_body = C.chat_body("glm-5.3", [{"role": "user", "content": "hi"}])
+check("chat_body 默认流式", _body["stream"] is True, _body)
+check("chat_body 带模型名与消息", _body["model"] == "glm-5.3" and _body["messages"],
+      _body)
+check("chat_body 可显式关掉流式",
+      C.chat_body("x", [], stream=False)["stream"] is False)
+check("chat_body 的 max_tokens 默认 256", C.chat_body("x", [])["max_tokens"] == 256,
+      C.chat_body("x", []))
+
+# maas_type 是**分组开关**：全套头对照实验（2026-10-17）证明
+#   · 限时福利 4 个不带 maas_type: benefit → 全部 404「model is not registered」
+#   · 内置 7 个带上它 → 全部 InferHub.4005.200「unsupported model」
+# 所以 benefit 组必须带、builtin 组必须不带，缺一不可。
+check("分组判定：限时福利 4 个归 benefit",
+      all(C.model_group(m) == C.GROUP_BENEFIT for m in
+          ("deepseek-v4-flash-0731", "glm-5.3-flash",
+           "deepseek-v4-pro-0813", "deepseek-v4.1-flash")))
+check("分组判定：内置归 builtin", C.model_group("GLM-5.2") == C.GROUP_BUILTIN)
+check("benefit 模型集合与 CHAT_MODELS 一致",
+      C.BENEFIT_MODELS <= set(C.CHAT_MODELS), C.BENEFIT_MODELS)
 
 # credit 是按 token 数分段的价格表，面板只要一个代表值
 check("分段计费取第一档",
@@ -709,8 +740,12 @@ check("多模态标记取服务端而非猜",
       [norm[1]["supportsImages"], norm[0]["supportsImages"]])
 check("未定价时倍率是 None 而不是 0",
       norm[1]["creditRatio"] is None, norm[1])
-check("推理打不通的模型仍列出但标记",
-      norm[2]["routable"] is False and norm[0]["routable"] is True, norm[2])
+check("routable 由 BUILTIN_UNROUTABLE 决定",
+      all(m["routable"] is True for m in norm), norm[2])
+# 集合本身当前是空的：清单里 11 个模型实测全通。留个断言钉住「现在是空的」，
+# 以后真出现不通的模型时这条会失败、提醒更新注释里的说明。
+check("当前没有已知不通的内置模型", C.BUILTIN_UNROUTABLE == set(),
+      C.BUILTIN_UNROUTABLE)
 check("分类与描述带出",
       norm[0]["category"] == "文本生成" and norm[0]["provider"] == "zhipu", norm[0])
 check("服务端没给上下文窗口时不编造",
