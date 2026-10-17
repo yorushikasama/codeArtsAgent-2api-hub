@@ -54,7 +54,7 @@ P.record_usage("hy3", USAGE, stream=False, elapsed_ms=900, effort=None)
 check("a request without an effort writes no field",
       "reasoning_effort" not in rows()[-1], rows()[-1].get("reasoning_effort"))
 
-P.record_usage("gemini-3.5-flash", USAGE, stream=False, elapsed_ms=900, effort="medium")
+P.record_usage("glm-5.1", USAGE, stream=False, elapsed_ms=900, effort="medium")
 check("a fixed-effort model records its fixed value",
       rows()[-1].get("reasoning_effort") == "medium", rows()[-1].get("reasoning_effort"))
 
@@ -64,7 +64,7 @@ latest = got["rows"][0]
 check("recent_usage passes the field through",
       latest.get("reasoning_effort") == "medium", latest.get("reasoning_effort"))
 check("recent_usage still returns the other fields",
-      latest.get("model") == "gemini-3.5-flash" and latest.get("total_tokens") == 15,
+      latest.get("model") == "glm-5.1" and latest.get("total_tokens") == 15,
       latest)
 old = [r for r in got["rows"] if r.get("model") == "hy3"][0]
 check("a row written without the field stays without it",
@@ -161,43 +161,43 @@ check("and that value lands on the usage row",
 # A model the catalog pins to one level runs there whether or not the client
 # says anything - and the gateway writes nothing into the body for it, so the
 # body alone reports no effort at all.
-check("the catalog pins gemini-3.5-flash", P.model_fixed_effort("gemini-3.5-flash") == "medium",
-      P.model_fixed_effort("gemini-3.5-flash"))
+check("the catalog pins glm-5.1", P.model_fixed_effort("glm-5.1") == "medium",
+      P.model_fixed_effort("glm-5.1"))
 check("and it declares no default",
-      P.model_default_effort("gemini-3.5-flash") is None,
-      P.model_default_effort("gemini-3.5-flash"))
-plain = P.build_upstream_body(chat("gemini-3.5-flash"))
+      P.model_default_effort("glm-5.1") is None,
+      P.model_default_effort("glm-5.1"))
+plain = P.build_upstream_body(chat("glm-5.1"))
 check("a plain request to it carries no effort in the body",
       P.client_effort_of(plain) is None, P.client_effort_of(plain))
-effort = open_with(chat("gemini-3.5-flash"))
+effort = open_with(chat("glm-5.1"))
 check("open_upstream still reports the pinned level", effort == "medium", effort)
-P.record_usage("gemini-3.5-flash", USAGE, stream=False, elapsed_ms=900, effort=effort)
+P.record_usage("glm-5.1", USAGE, stream=False, elapsed_ms=900, effort=effort)
 check("so the pinned level reaches the usage row",
       rows()[-1].get("reasoning_effort") == "medium", rows()[-1].get("reasoning_effort"))
-check("kimi-k3 is pinned the same way", open_with(chat("kimi-k3")) == "medium",
-      open_with(chat("kimi-k3")))
+check("glm-5v-turbo is pinned the same way", open_with(chat("glm-5v-turbo")) == "medium",
+      open_with(chat("glm-5v-turbo")))
 check("a pinned model ignores a level the request carries anyway",
-      open_with(chat("gemini-3.5-flash", reasoning_effort="max")) == "medium",
-      open_with(chat("gemini-3.5-flash", reasoning_effort="max")))
+      open_with(chat("glm-5.1", reasoning_effort="max")) == "medium",
+      open_with(chat("glm-5.1", reasoning_effort="max")))
 
 # A selectable model with no client value runs at its declared default, and the
 # client's own value wins when it sends one.
-check("gpt-6-astra declares a default", P.model_default_effort("gpt-6-astra") == "high",
-      P.model_default_effort("gpt-6-astra"))
+check("deepseek-v4.1-flash declares a default", P.model_default_effort("deepseek-v4.1-flash") == "high",
+      P.model_default_effort("deepseek-v4.1-flash"))
 check("a selectable model falls back to that default",
-      open_with(chat("gpt-6-astra")) == "high", open_with(chat("gpt-6-astra")))
+      open_with(chat("deepseek-v4.1-flash")) == "high", open_with(chat("deepseek-v4.1-flash")))
 check("the client's own value still wins",
-      open_with(chat("gpt-6-astra", reasoning_effort="low")) == "low",
-      open_with(chat("gpt-6-astra", reasoning_effort="low")))
+      open_with(chat("deepseek-v4.1-flash", reasoning_effort="low")) == "low",
+      open_with(chat("deepseek-v4.1-flash", reasoning_effort="low")))
 
 # Switching thinking off is an answer, not a gap: it must not be filled in with
 # the model's default.
 check("a request that disables thinking reports none",
-      open_with(chat("gpt-6-astra", thinking={"type": "disabled"})) == "none",
-      open_with(chat("gpt-6-astra", thinking={"type": "disabled"})))
+      open_with(chat("deepseek-v4.1-flash", thinking={"type": "disabled"})) == "none",
+      open_with(chat("deepseek-v4.1-flash", thinking={"type": "disabled"})))
 check("an explicit none reports none",
-      open_with(chat("gpt-6-astra", reasoning_effort="none")) == "none",
-      open_with(chat("gpt-6-astra", reasoning_effort="none")))
+      open_with(chat("deepseek-v4.1-flash", reasoning_effort="none")) == "none",
+      open_with(chat("deepseek-v4.1-flash", reasoning_effort="none")))
 check("a model with no reasoning metadata stays unknown",
       P.upstream_effort_of(chat("hy3"), "hy3") in (None, "low", "high"),
       P.upstream_effort_of(chat("hy3"), "hy3"))

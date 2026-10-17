@@ -85,7 +85,6 @@ for(const [zh, en] of [['签到与活跃记录', 'Check-in & activity log'],
                        ['时间区间', 'Time range'],
                        ['全部任务', 'All tasks'],
                        ['国内版签到', 'China check-in'],
-                       ['国际版每日活跃', 'Global daily activity'],
                        ['加载更多', 'Load more'],
                        ['来源', 'Trigger'],
                        ['网关', 'Gateway'],
@@ -232,7 +231,7 @@ function check(label, ok, detail){
      realm: 'cn', task: 'checkin', trigger: 'scheduler', ok: true,
      message: '签到成功，奖励 30 积分'},
     {ts: '2026-10-08T08:00:00+08:00', uid: 'uid-abcdef1234', nickname: '',
-     realm: 'intl', task: 'daily_chat', trigger: 'manual', ok: false, message: ''},
+     realm: 'cn', task: 'checkin', trigger: 'manual', ok: false, message: ''},
   ]};
   await api.loadActivityBoard();
   const h = listHtml();
@@ -240,8 +239,8 @@ function check(label, ok, detail){
   check('昵称进账号列', h.includes('老王'));
   check('昵称标记为不翻译', h.includes('<span data-no-i18n>老王</span>'));
   check('没有昵称时回落到 uid 前 8 位', h.includes('uid-abcd'), h.slice(0, 400));
-  check('区域列', h.includes('国内版') && h.includes('国际版'));
-  check('任务列', h.includes('国内版签到') && h.includes('国际版每日活跃'));
+  check('区域列', h.includes('国内版'));
+  check('任务列', h.includes('国内版签到'));
   check('来源列', h.includes('定时') && h.includes('手动'));
   check('结果徽章', h.includes('<span class="badge ok">成功</span>')
                  && h.includes('<span class="badge bad">失败</span>'));

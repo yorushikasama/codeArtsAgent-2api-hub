@@ -55,7 +55,7 @@ const keys = [
         models_other: { model: '(其他)', other: true, models: 2, requests: 5, tokens: 900, reasoning: 0 } }),
   key({ key: 'k2', name: '乙', enabled: false, realm: '', cross_realm: true,
         window: stat({ requests: 3, total_tokens: 100 }) }),
-  key({ key: 'launcher', name: '启动参数', source: 'launcher', realm: 'intl',
+  key({ key: 'launcher', name: '启动参数', source: 'launcher', realm: '',
         window: stat({ requests: 2, total_tokens: 50 }) }),
   key({ key: '__before_keys__', name: '(切换前)', source: 'bucket',
         window: stat({ requests: 9, total_tokens: 9999, credit: 12 }) }),
@@ -111,8 +111,9 @@ const noKeyRow = rowFor(out, '(无 key)');
 check('the cn-bound key is labelled 国内版 on its own row',
       cnRow !== null && cellOf(cnRow, '出口').includes('国内版'),
       show(cnRow, '出口'));
-check('the intl-bound key is labelled 国际版 on its own row',
-      intlRow !== null && cellOf(intlRow, '出口').includes('国际版'),
+// 国际版删除后没有第二个出口可绑，未绑定出口的 Key 一律显示「跟随」。
+check('the launcher key follows the only exit, labelled 跟随',
+      intlRow !== null && cellOf(intlRow, '出口').includes('跟随'),
       show(intlRow, '出口'));
 check('the key that used both exits is flagged 跟随 · 混合 on its own row',
       crossRow !== null && cellOf(crossRow, '出口').includes('跟随 · 混合'),
@@ -181,7 +182,6 @@ check('a model name is escaped', !out.includes('<b>bold</b>') && out.includes('&
 console.log();
 console.log('[5] the footer explains what the reader cannot infer');
 const note = document.getElementById('analyticsKeyNote').innerHTML;
-check('the cross-exit count is called out', note.includes('1 把 Key 没有绑定出口'), note);
 check('the upgrade cut-off is stated once', note.includes('(切换前)'));
 api.renderKeyTable({ keys: [key({ name: 'x', realm: 'cn' })] });
 check('the footer does not cry wolf about cross-exit keys when there are none',

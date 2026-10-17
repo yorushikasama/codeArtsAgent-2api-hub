@@ -251,8 +251,11 @@ check("today 窗口只数窗口内（含重复 at 行的最后值、整数 at �
       perf_today["sampled"] == 9, perf_today["sampled"])
 check("all 数到全部可解析行", perf_all["sampled"] == len(LOG_LINES) - 1,
       perf_all["sampled"])
-check("realm 过滤与窗口叠加（cn 的字段行 + 模型前缀归属的老行）",
-      perf_cn_today["sampled"] == 3, perf_cn_today["sampled"])
+# 国际版删除后只剩一个出口：任何区域名（含已删的 intl、以及没有 realm 字段
+# 的老行）都归一到 cn，所以按 cn 过滤与不过滤是同一批行。
+check("realm 过滤与窗口叠加（唯一出口：cn 过滤 == 不过滤）",
+      perf_cn_today["sampled"] == perf_today["sampled"],
+      (perf_cn_today["sampled"], perf_today["sampled"]))
 check("重复 at 的行按解析结果（最后一个 at）进了窗口",
       "m-b" in perf_today["by_model"], list(perf_today["by_model"]))
 check("整数 at 的行也在窗口里", "m-c" in perf_today["by_model"],
@@ -276,29 +279,29 @@ print("[2] count_usage_rows 增量折叠：与旧全量扫描（参考实现）�
 
 
 def ref_count(realm=None):
-    """改动前 _count_usage_rows_uncached 的逐字复制（参考实现）。"""
-    needles = ()
-    if realm:
-        needles = ('"realm": "%s"' % realm, '"realm":"%s"' % realm)
+    """参考实现：逐行解析、按 row_realm 归属。(慢，但显然正确)
+
+    旧版这里是「按文本里的 `"realm": "x"` 数」的逐字复制。国际版删除后，
+    同一行可能写着已删区域（intl），按字面数出来的数字不再等于「这一行属于
+    哪个出口」，所以改成解析后归属——它仍然是独立于增量折叠的一份实现，
+    对拍的意义不变。解析不了的行只算进总数（与折叠同口径）。
+    """
+    realm = P.realm_scope(realm)
     n = 0
     try:
         with open(USAGE_LOG, encoding="utf-8") as fh:
             for line in fh:
                 if not line.strip():
                     continue
-                if not needles:
+                if not realm:
                     n += 1
                     continue
-                if any(x in line for x in needles):
-                    n += 1
-                    continue
-                if '"realm"' in line:
-                    continue          # realm 字段存在但值不同
                 try:
-                    if P.row_matches_realm(json.loads(line), realm):
-                        n += 1
+                    row = json.loads(line)
                 except Exception:
-                    pass
+                    continue
+                if P.row_realm(row) == realm:
+                    n += 1
     except FileNotFoundError:
         pass
     except Exception:
@@ -327,11 +330,16 @@ def compare_all(label):
 compare_all("冷启动：四个 realm 的增量计数都等于全量扫描")
 check("总数把坏 JSON 的非空行也算进去（与旧实现同口径）",
       count_via_uncached(None) == len(LOG_LINES), count_via_uncached(None))
-check("没有 realm 字段的老行按模型前缀归属（gpt-* -> intl，minimax-* -> cn）",
-      count_via_uncached("intl") == ref_count("intl")
-      and count_via_uncached("cn") == ref_count("cn"),
-      (count_via_uncached("intl"), ref_count("intl"),
-       count_via_uncached("cn"), ref_count("cn")))
+# 老行（没有 realm 字段）按账号→模型前缀归属；两个分支现在都落到 cn。
+# ref_count 是「按文本里的 "realm": "xx" 数」的旧口径，双区域时代才有意义，
+# 这里改钉新口径：任何区域名数出来的都是同一批行。
+# 老行（没有 realm 字段）按账号→模型前缀归属，两个分支现在都落到 cn；
+# 唯一数不进任何区域的是那一行坏 JSON（解析不了，只能算进总数）。
+check("没有 realm 字段的老行也归到唯一出口（cn == intl == 总数 - 坏行）",
+      count_via_uncached("cn") == count_via_uncached(None) - 1
+      and count_via_uncached("intl") == count_via_uncached("cn"),
+      (count_via_uncached("intl"), count_via_uncached("cn"),
+       count_via_uncached(None)))
 check("realm_scope('all') 与 None 同值（总数）",
       P.count_usage_rows("all") == P.count_usage_rows(None))
 
@@ -409,17 +417,18 @@ with io.open(USAGE_LOG, "a", encoding="utf-8", newline="\n") as fh:
 check("半行不数：总数停在最后一个完整行", count_via_uncached(None) == len(LOG_LINES),
       (count_via_uncached(None), len(LOG_LINES)))
 check("半行不数：realm 计数与全量一致（半行对 realm 无贡献）",
-      all(count_via_uncached(r) == ref_count(P.realm_scope(r))
+      all(count_via_uncached(r) == count_via_uncached(None) - 1
           for r in ("intl", "cn")),
-      {r: (count_via_uncached(r), ref_count(P.realm_scope(r)))
-       for r in ("intl", "cn")})
+      {r: count_via_uncached(r) for r in ("intl", "cn", None)})
 append_log([', "realm": "intl"}'])
 check("半行补全后总数与全量一致（收敛到旧实现的数字）",
       count_via_uncached(None) == ref_count(None),
       (count_via_uncached(None), ref_count(None)))
 check("半行补全后 realm 计数也一致",
-      count_via_uncached("intl") == ref_count("intl"),
-      (count_via_uncached("intl"), ref_count("intl")))
+      count_via_uncached("intl") == count_via_uncached("cn")
+      == count_via_uncached(None) - 1,
+      (count_via_uncached("intl"), count_via_uncached("cn"),
+       count_via_uncached(None)))
 
 # 非法 UTF-8 的坏行：折叠停在它前面，这一次返回已数到的部分，下一次重数也
 # 停在同一个位置（结果稳定）；坏行被截掉后折叠继续。旧实现的文本层按块解码，

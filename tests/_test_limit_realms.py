@@ -27,44 +27,44 @@ def account(uid, realm):
 
 
 class LimitStorageTests(unittest.TestCase):
-    def test_global_default_covers_both_realms(self):
+    def test_global_default_covers_the_realm(self):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
             wb_settings.set_daily_token_limit(d, 1000)
             self.assertEqual(wb_settings.daily_token_limit(d), 1000)
-            self.assertEqual(wb_settings.daily_token_limit(d, "intl"), 1000)
             self.assertEqual(wb_settings.daily_token_limit(d, "cn"), 1000)
+            # 已删区域传进来也按现存的出口读，不会读到一个不存在的作用域。
+            self.assertEqual(wb_settings.daily_token_limit(d, "intl"), 1000)
             self.assertEqual(wb_settings.limit_values(d, "daily_token_limit"),
-                             {"global": 1000, "intl": 1000, "cn": 1000})
+                             {"global": 1000, "cn": 1000})
 
     def test_override_wins_for_its_realm_only(self):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
             wb_settings.set_limit(d, "daily_token_limit", "global", 1000)
             wb_settings.set_limit(d, "daily_token_limit", "cn", 50)
-            self.assertEqual(wb_settings.daily_token_limit(d, "intl"), 1000)
             self.assertEqual(wb_settings.daily_token_limit(d, "cn"), 50)
+            # 已删区域的查询同样落到 cn，读到的是这条覆盖值。
+            self.assertEqual(wb_settings.daily_token_limit(d, "intl"), 50)
             self.assertEqual(wb_settings.limit_values(d, "daily_token_limit"),
-                             {"global": 1000, "intl": 1000, "cn": 50})
+                             {"global": 1000, "cn": 50})
 
     def test_zero_override_is_distinct_from_inherit(self):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
             wb_settings.set_limit(d, "reserve_credits", "global", 10)
             wb_settings.set_limit(d, "reserve_credits", "cn", 0)
             self.assertEqual(wb_settings.reserve_credits(d, "cn"), 0)
-            self.assertEqual(wb_settings.reserve_credits(d, "intl"), 10)
             self.assertEqual(wb_settings.limit_values(d, "reserve_credits"),
-                             {"global": 10, "intl": 10, "cn": 0})
+                             {"global": 10, "cn": 0})
 
     def test_clearing_an_override_falls_back_to_the_global(self):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
             wb_settings.set_limit(d, "reserve_credits", "global", 10)
-            wb_settings.set_limit(d, "reserve_credits", "intl", 3)
-            self.assertEqual(wb_settings.reserve_credits(d, "intl"), 3)
-            wb_settings.set_limit(d, "reserve_credits", "intl", None)
-            self.assertEqual(wb_settings.reserve_credits(d, "intl"), 10)
+            wb_settings.set_limit(d, "reserve_credits", "cn", 3)
+            self.assertEqual(wb_settings.reserve_credits(d, "cn"), 3)
+            wb_settings.set_limit(d, "reserve_credits", "cn", None)
+            self.assertEqual(wb_settings.reserve_credits(d, "cn"), 10)
             wb_settings.set_limit(d, "reserve_credits", "cn", "")
             self.assertEqual(wb_settings.reserve_credits(d, "cn"), 10)
             snapshot = wb_settings.limits_snapshot(d)
-            self.assertIsNone(snapshot["reserve_credits"]["intl"])
             self.assertIsNone(snapshot["reserve_credits"]["cn"])
             self.assertEqual(snapshot["reserve_credits"]["global"], 10)
 
@@ -73,7 +73,7 @@ class LimitStorageTests(unittest.TestCase):
             snapshot = wb_settings.limits_snapshot(d)
             self.assertEqual(set(snapshot), set(wb_settings.LIMIT_KEYS))
             for entry in snapshot.values():
-                self.assertEqual(set(entry), {"global", "intl", "cn"})
+                self.assertEqual(set(entry), {"global", "cn"})
 
     def test_junk_and_negatives_collapse(self):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
@@ -83,10 +83,10 @@ class LimitStorageTests(unittest.TestCase):
             self.assertEqual(stored["global"], 0)
             # An override that cannot be read becomes "inherit", not "off".
             wb_settings.set_limit(d, "reserve_credits", "global", 7)
-            wb_settings.set_limit(d, "reserve_credits", "intl", "abc")
+            wb_settings.set_limit(d, "reserve_credits", "cn", "abc")
             self.assertIsNone(
-                wb_settings.limits_snapshot(d)["reserve_credits"]["intl"])
-            self.assertEqual(wb_settings.reserve_credits(d, "intl"), 7)
+                wb_settings.limits_snapshot(d)["reserve_credits"]["cn"])
+            self.assertEqual(wb_settings.reserve_credits(d, "cn"), 7)
 
     def test_unknown_key_or_scope_is_refused(self):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
@@ -126,7 +126,7 @@ class LimitStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
             self.assertEqual(wb_settings.set_reserve_credits(d, 12), 12)
             self.assertEqual(wb_settings.reserve_credits(d), 12)
-            self.assertEqual(wb_settings.reserve_credits(d, "intl"), 12)
+            self.assertEqual(wb_settings.reserve_credits(d, "cn"), 12)
             self.assertEqual(
                 wb_settings.limits_snapshot(d)["reserve_credits"]["global"], 12)
 
@@ -148,34 +148,33 @@ class LimitPoolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
             wb_settings.set_limit(d, "daily_token_limit", "global", 100)
             wb_settings.set_limit(d, "daily_token_limit", "cn", 40)
-            pool = self._pool(d, ["intl", "cn", ""])
+            pool = self._pool(d, ["cn", ""])
             pool.apply_daily_token_limit()
             got = {a.realm: a.daily_token_limit for a in pool.accounts}
-            self.assertEqual(got["intl"], 100)
             self.assertEqual(got["cn"], 40)
             # An account whose realm could not be detected follows the global.
             self.assertEqual(got[""], 100)
 
     def test_pool_still_accepts_one_number_for_everyone(self):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
-            pool = self._pool(d, ["intl", "cn"])
-            pool.apply_daily_token_limit(250, {"uid-intl": 0, "uid-cn": 0})
+            pool = self._pool(d, ["cn"])
+            pool.apply_daily_token_limit(250, {"uid-cn": 0})
             self.assertEqual({a.daily_token_limit for a in pool.accounts}, {250})
 
     def test_each_guard_lands_on_its_own_field(self):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
             wb_settings.set_limit(d, "reserve_credits", "global", 11)
-            wb_settings.set_limit(d, "daily_credit_limit", "intl", 22)
+            wb_settings.set_limit(d, "daily_credit_limit", "cn", 22)
             wb_settings.set_limit(d, "model_daily_token_limit", "cn", 33)
-            pool = self._pool(d, ["intl", "cn"])
+            pool = self._pool(d, ["cn"])
             pool.apply_reserve_credits()
             pool.apply_daily_credit_limit()
             pool.apply_model_daily_token_limit()
-            intl, cn = pool.accounts
-            self.assertEqual((intl.reserve_credits, cn.reserve_credits), (11, 11))
-            self.assertEqual((intl.daily_credit_limit, cn.daily_credit_limit), (22, 0))
-            self.assertEqual(
-                (intl.model_daily_token_limit, cn.model_daily_token_limit), (0, 33))
+            cn, = pool.accounts
+            # 每条护栏只落到自己那个字段上，互不串味；储备积分只有全局值。
+            self.assertEqual(cn.reserve_credits, 11)
+            self.assertEqual(cn.daily_credit_limit, 22)
+            self.assertEqual(cn.model_daily_token_limit, 33)
 
     def test_override_parks_only_that_realms_account(self):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
@@ -220,18 +219,17 @@ class SettingsSaveTests(unittest.TestCase):
     def test_grouped_payload_round_trips(self):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
             request = self._save(d, {"limits": {
-                "reserve_credits": {"global": 5, "intl": 2, "cn": None},
+                "reserve_credits": {"global": 5, "cn": 2},
                 "daily_token_limit": {"global": 1000},
             }})
             self.assertEqual(request.status, 200)
             self.assertEqual(wb_settings.reserve_credits(d), 5)
-            self.assertEqual(wb_settings.reserve_credits(d, "intl"), 2)
-            self.assertEqual(wb_settings.reserve_credits(d, "cn"), 5)
+            self.assertEqual(wb_settings.reserve_credits(d, "cn"), 2)
             self.assertEqual(wb_settings.daily_token_limit(d), 1000)
             self.assertEqual(request.reply["reserve_credits"], 5)
             self.assertEqual(
                 request.reply["limits"]["reserve_credits"],
-                {"global": 5, "intl": 2, "cn": None})
+                {"global": 5, "cn": 2})
 
     def test_flat_payload_still_sets_the_global(self):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
@@ -256,8 +254,8 @@ class SettingsSaveTests(unittest.TestCase):
                 {"limits": []},
                 {"limits": {"reserve_credits": {"global": "abc"}}},
                 {"limits": {"reserve_credits": {"global": -1}}},
-                {"limits": {"reserve_credits": {"intl": "abc"}}},
-                {"limits": {"reserve_credits": {"intl": -1}}},
+                {"limits": {"reserve_credits": {"cn": "abc"}}},
+                {"limits": {"reserve_credits": {"cn": -1}}},
                 {"limits": {"reserve_credits": {"global": True}}},
                 {"daily_token_limit": "abc"},
             ]
@@ -277,11 +275,11 @@ class SettingsSaveTests(unittest.TestCase):
     def test_settings_view_exposes_the_grouped_map(self):
         with tempfile.TemporaryDirectory(prefix="limits-") as d:
             wb_settings.set_limit(d, "daily_token_limit", "global", 7)
-            wb_settings.set_limit(d, "daily_token_limit", "intl", 3)
+            wb_settings.set_limit(d, "daily_token_limit", "cn", 3)
             with mock.patch.object(proxy, "ACCOUNTS_DIR", d):
                 view = proxy.runtime_settings_view()
             self.assertEqual(view["limits"]["daily_token_limit"],
-                             {"global": 7, "intl": 3, "cn": None})
+                             {"global": 7, "cn": 3})
             # The flat keys stay for older panel builds; they read the global.
             self.assertEqual(view["daily_token_limit"], 7)
 

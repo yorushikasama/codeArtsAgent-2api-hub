@@ -30,12 +30,12 @@ const check = (label, cond, extra) => {
 // ---- 1. 页面里真的有这个区块与表头 -----------------------------------------
 const html = dashboardHtml();
 check('区块容器在页面里', html.includes('id="remainingUsageSection"'));
-check('两个区域的表体都在页面里',
-      html.includes('id="remainingTbodyIntl"') && html.includes('id="remainingTbodyCn"'));
-check('两个区域的预算条容器都在页面里',
-      html.includes('id="remainingBudgetsIntl"') && html.includes('id="remainingBudgetsCn"'));
-check('两个区域的标签在页面里',
-      html.includes('<b>国际版</b>') && html.includes('<b>国内版</b>'));
+// 国际版删除后只剩国内版这一块表体与预算条。
+check('国内版表体在页面里',
+      html.includes('id="remainingTbodyCn"') && !html.includes('id="remainingTbodyIntl"'));
+check('国内版预算条容器在页面里',
+      html.includes('id="remainingBudgetsCn"') && !html.includes('id="remainingBudgetsIntl"'));
+check('区块标签在页面里', html.includes('<b>国内版</b>'));
 for (const th of ['窗口起点', '窗口内已用', '估算剩余', '用量占比']) {
   check('表头「' + th + '」在页面里', html.includes('>' + th + '</th>'));
 }
@@ -60,16 +60,14 @@ const api = new Function(script + `
   return { renderRemainingUsage, loadRemainingUsage, toggleRemainingModelFilter };`)();
 
 // 渲染按区域拆成两块：断言用「两块拼起来」的视图，与拆分前逐条对应。
-const tbodyIntl = document.getElementById('remainingTbodyIntl');
 const tbodyCn = document.getElementById('remainingTbodyCn');
-const tbody = {get innerHTML(){ return tbodyIntl.innerHTML + tbodyCn.innerHTML; }};
-const budgetsIntl = document.getElementById('remainingBudgetsIntl');
+const tbody = {get innerHTML(){ return tbodyCn.innerHTML; }};
 const budgetsCn = document.getElementById('remainingBudgetsCn');
-const budgetsEl = {get innerHTML(){ return budgetsIntl.innerHTML + budgetsCn.innerHTML; }};
+const budgetsEl = {get innerHTML(){ return budgetsCn.innerHTML; }};
 const summaryEl = document.getElementById('remainingUsageSummary');
 
 const row = (over) => Object.assign({
-  uid: 'uid-1', nickname: 'meyadi', realm: 'intl', model: 'deepseek-v4.1-flash',
+  uid: 'uid-1', nickname: 'meyadi', realm: 'cn', model: 'deepseek-v4.1-flash',
   used: 50000000, budget: 200000000, budget_min: 190000000, budget_max: 200000000,
   samples: 4, remaining: 150000000, used_pct: 25.0,
   window_start: 1, window_iso: '2026-10-09 23:05:35',
@@ -78,7 +76,7 @@ const row = (over) => Object.assign({
 
 api.renderRemainingUsage({
   window_seconds: 86400,
-  budgets: [{realm: 'intl', model: 'deepseek-v4.1-flash', avg: 200000000,
+  budgets: [{realm: 'cn', model: 'deepseek-v4.1-flash', avg: 200000000,
              min: 190000000, max: 200000000, n: 4}],
   rows: [
     row({}),
@@ -124,16 +122,16 @@ check('空载荷时预算条说明来源',
 // innerHTML 是白付的解析与布局。用哨兵验证——同一载荷再来一次时 DOM 不动，
 // 换了载荷才重画。
 const same = {window_seconds: 86400,
-              budgets: [{realm: 'intl', model: 'deepseek-v4.1-flash', avg: 200000000,
+              budgets: [{realm: 'cn', model: 'deepseek-v4.1-flash', avg: 200000000,
                          min: 190000000, max: 200000000, n: 4}],
               rows: [row({})]};
 api.renderRemainingUsage(same);
-// 指纹守卫看的是第一块（国际版）表体：哨兵打在它上面——同一载荷再来一次
-// DOM 不动，换了载荷才重画。
-tbodyIntl.innerHTML = 'SENTINEL';
+// 指纹守卫看的就是那块表体：哨兵打在它上面——同一载荷再来一次 DOM 不动，
+// 换了载荷才重画。
+tbodyCn.innerHTML = 'SENTINEL';
 api.renderRemainingUsage(same);
-check('同一载荷不重画（DOM 保持原样）', tbodyIntl.innerHTML === 'SENTINEL',
-      tbodyIntl.innerHTML);
+check('同一载荷不重画（DOM 保持原样）', tbodyCn.innerHTML === 'SENTINEL',
+      tbodyCn.innerHTML);
 api.renderRemainingUsage({window_seconds: 86400, budgets: same.budgets,
                           rows: [row({used: 60000000, remaining: 140000000,
                                       used_pct: 30.0})]});
@@ -148,13 +146,13 @@ api.renderRemainingUsage({
   window_seconds: 86400,
   activity_floor: 1, activity_floor_iso: '2026-10-09 00:00:00',
   budgets: [
-    {realm: 'intl', model: 'deepseek-v4.1-flash', avg: 200000000,
+    {realm: 'cn', model: 'deepseek-v4.1-flash', avg: 200000000,
      min: 190000000, max: 200000000, n: 4, active: true},
-    {realm: 'intl', model: 'glm-5.3', avg: 5000, min: 5000, max: 5000,
+    {realm: 'cn', model: 'glm-5.3', avg: 5000, min: 5000, max: 5000,
      n: 1, active: false},
   ],
   models: [
-    {realm: 'intl', model: 'deepseek-v4.1-flash', total_remaining: 380000000,
+    {realm: 'cn', model: 'deepseek-v4.1-flash', total_remaining: 380000000,
      budget: 200000000, pairs: 3, available: 2, cooling: 1, unknown: 0, estimated: 1},
   ],
   rows: [

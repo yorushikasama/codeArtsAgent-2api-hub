@@ -306,14 +306,13 @@ a:hover{text-decoration:underline}
 .key-action-btn.danger:hover{
   background:var(--bad);color:#ffffff;border-color:var(--bad);
 }
-.realm-badge-intl{color:#2c6e9e;background:rgba(106,155,204,.14);border:1px solid rgba(106,155,204,.35);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
 .realm-badge-cn{color:#a03c32;background:rgba(201,100,66,.12);border:1px solid rgba(201,100,66,.32);padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600}
 .badge-effort{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;line-height:1.4;white-space:nowrap;margin:1px 2px;background:var(--think-soft);color:var(--think);border:1px solid rgba(138,106,150,.3);font-weight:600}
 .realm-filter{display:inline-flex;gap:6px;margin-left:8px}
 .realm-filter button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);padding:3px 9px;font-size:11px}
 .realm-filter button.active{border-color:var(--accent);color:var(--accent);background:var(--panel)}
 /* 账号页页头的版本视图切换：与顶部主菜单同一套胶囊外观，只是按版本着色——
-   国际版走强调色、国内版走红色，与网关页那两张卡片一眼能对上。 */
+   国内版走红色，与网关页那张卡片一眼能对上。 */
 .realm-switch{display:inline-flex;gap:4px;background:var(--panel2);padding:4px;border-radius:10px;border:1px solid var(--line);flex:0 0 auto}
 .realm-switch button{background:transparent;border:1px solid transparent;color:var(--dim);padding:5px 13px;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s ease}
 .realm-switch button:hover{color:var(--fg);background:var(--panel)}
@@ -415,7 +414,6 @@ a:hover{text-decoration:underline}
 [data-theme="dark"] .badge.warn{color:#d9b25f;background:rgba(217,178,95,.16);border-color:rgba(217,178,95,.35)}
 [data-theme="dark"] .badge.bad{color:#d97b72;background:rgba(217,123,114,.16);border-color:rgba(217,123,114,.35)}
 [data-theme="dark"] .cool-pill{color:#d9b25f;background:rgba(217,178,95,.18);border-color:rgba(217,178,95,.38)}
-[data-theme="dark"] .realm-badge-intl{color:#8ab4d9;background:rgba(106,155,204,.2);border-color:rgba(106,155,204,.4)}
 [data-theme="dark"] .realm-badge-cn{color:#e09a80;background:rgba(201,100,66,.22);border-color:rgba(201,100,66,.42)}
 [data-theme="dark"] .realm-switch button.active#accountsRealmCn{color:var(--bad);border-color:var(--bad)}
 [data-theme="dark"] .modal-mask{background:rgba(0,0,0,.65)}
@@ -881,9 +879,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .who b{font-weight:600;font-size:12px;display:flex;align-items:center;gap:5px}
 #pageAnalytics .who span{font-size:10.5px;color:var(--dim2)}
 #pageAnalytics .realm-tag{font-size:10px;font-weight:650;border-radius:5px;padding:1px 6px;line-height:15px;letter-spacing:.02em}
-#pageAnalytics .realm-intl{color:#17527e;background:#d9e9f7;border:1px solid #b3d0e8}
 #pageAnalytics .realm-cn{color:#8a3a22;background:#f7ded2;border:1px solid #eabfa9}
-[data-theme="dark"] #pageAnalytics .realm-intl{color:#b5d6f5;background:rgba(106,155,204,.32);border-color:rgba(106,155,204,.5)}
 [data-theme="dark"] #pageAnalytics .realm-cn{color:#f5bd9f;background:rgba(201,100,66,.32);border-color:rgba(201,100,66,.55)}
 #pageAnalytics .minibar{position:relative;height:6px;border-radius:3px;background:var(--panel2);overflow:hidden;min-width:70px}
 #pageAnalytics .minibar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--bar-color,var(--accent));opacity:.75}
@@ -1177,7 +1173,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '下一页': 'Next',
     '下次': 'Next',
     '下载为 .log 文件': 'Download as a .log file',
-    '下面是本机桌面客户端里已登录的账号（只读检测，点击「导入」才会加入网关）。 国际版账号归入国际版列表，国内版账号归入国内版列表。': 'Below are the accounts already signed in on this machine, detected read-only: they join the gateway only when you click Import. Global accounts go to the Global list, China accounts to the China list.',
     '不可达': 'Unreachable',
     '与': 'and',
     '个': '',
@@ -1277,7 +1272,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '切换失败:': 'Switch failed:',
     '切换颜色主题': 'Switch color theme',
     '切换默认出口为【国内版】': 'Switch the default exit to China',
-    '切换默认出口为【国际版】': 'Switch the default exit to Global',
     '列表，点击上方选项卡即可查看': 'list; click the tab above to view it',
     '刚刚': 'just now',
     '创建': 'Created',
@@ -1354,7 +1348,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '回收密钥': 'Recover key',
     '导入密钥': 'Import key',
     '固定国内版出口': 'China exit only',
-    '固定国际版出口': 'Global exit only',
     '国内版': 'China',
     '顶部页签显示': 'Top tab visibility',
     '（国内版）': '(China)',
@@ -1364,13 +1357,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '国内版任务与福利': 'China tasks and perks',
     '国内版签到': 'China check-in',
     '国家未知': 'Country unknown',
-    '国际版': 'Global',
-    '（国际版）': '(Global)',
-    '国际版 (Global)': 'Global',
-    '国际版 (Global) · www.workbuddy.ai': 'Global · www.workbuddy.ai',
-    '国际版每日活跃': 'Global daily activity',
-    '国际版每日活跃打卡': 'Global daily activity check-in',
-    '国际版账号每日打卡时，除桌面端身分的轻量对话外，再走一次网页通道的会话。默认开启。': 'When a Global account checks in, besides the light desktop-identity chat it also runs one web-channel session. On by default.',
     '在家待命中': 'At home, idle',
     '在浏览器里打开下方链接并完成登录授权': 'Open the link below in a browser and finish the sign-in authorization',
     '域名': 'Domain',
@@ -1413,7 +1399,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '导出失败:': 'Export failed:',
     '导出日志失败:': 'Exporting logs failed:',
     '导出账号': 'Export accounts',
-    '将为每个已启用的国际版账号各建一个网页端会话。 这会真的起一次任务，用于计入官方「每日活跃」；活跃走免费模型（0.00x）。继续？': 'One web-side session will be created for every enabled Global account. This really runs a task, to count toward the official daily activity; the activity now runs on a free model (0.00x). Continue?',
     '将新增': 'Will add',
     '将覆盖': 'Will overwrite',
     '将覆盖同 UID 的现有账号（含其凭证），确定继续？': 'Existing accounts with the same UID, including their credentials, will be overwritten. Continue?',
@@ -1442,7 +1427,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '已关闭每日积分限额': 'Daily credit limit off',
     '已关闭自动切换出站身份': 'Outbound identity auto-switch off',
     '已关闭自动取价（仍可手动取一次）': 'Automatic price fetch off (you can still fetch once by hand)',
-    '已关闭：国际版打卡只发桌面端对话': 'Off: the Global check-in sends the desktop chat only',
     '已关闭：工具声明原样透传': 'Off: tool declarations pass through untouched',
     '已切换为': 'Switched to',
     '已删除 API Key': 'Deleted API key',
@@ -1452,7 +1436,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '已启用': 'Enabled',
     '已启用：429 时自动切换出站身份': 'On: switch the outbound identity automatically on 429',
     '已启用：余额低于': 'On: when the balance drops below',
-    '已启用：国际版打卡走网页通道': 'On: the Global check-in uses the web channel',
     '失败重试': 'Retry on failure',
     '最多尝试次数': 'Max attempts',
     '首轮等待': 'First wait',
@@ -1526,7 +1509,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '(默认)': '(default)',
     '已开启：账号独立成一个页签': 'On: accounts get their own tab',
     '已关闭：账号与网关回到同一页': 'Off: accounts are back on the gateway page',
-    '关闭（默认）时，账号列表、「当前禁用」与「签到与活跃记录」留在「网关与账号」页，位置与拆分前一致；开启后它们搬到独立的「账号」页，顶部页签变成 网关 → 账号 → 数据看板 → 智能体配置 → 设置 → 运行日志，网关页只剩网关自己的东西——账号多起来（国际版十几个）之后翻起来更短。两侧的区块与行为完全一样，只是分在哪一页；关闭后 ?tab=accounts 的书签会退回「网关与账号」页。': 'Off (the default) keeps the account list, "currently disabled" and the check-in & activity log on the "Gateway & accounts" page, where they were before the split; on moves them to an "Accounts" page of their own and the top tabs become Gateway -> Accounts -> Analytics -> Agents -> Settings -> Logs, leaving the gateway page with only gateway content - shorter to page through once you run a dozen Global accounts. The sections and their behaviour are the same either way, only the page they live on differs; with it off a ?tab=accounts bookmark falls back to the "Gateway & accounts" page.',
     '面板窗口限高': 'Panel window height cap',
     '每个窗口（区块）超过这个高度时在窗口内部滚动，不再把整页拉长；滚动时标题行固定在窗口顶部。单位像素；填 0 表示不限。': 'Each window scrolls internally once it is taller than this, instead of stretching the page; its title row stays pinned to the top while scrolling. In pixels; 0 means no limit.',
     '窗口最高高度（像素，0 = 不限）': 'Max window height (px, 0 = no limit)',
@@ -1567,7 +1549,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '扫描桌面客户端账号': 'Scan for desktop client accounts',
     '扫描桌面客户端': 'Scan desktop client',
     '批量操作失败:': 'Batch operation failed:',
-    '把 Key 没有绑定出口，它的积分由国际版与国内版两套价格相加而来，只能当量级看。': 'keys have no exit bound; their credits add the Global and China price sets together, so treat them as a rough magnitude only.',
     '把)': ')',
     '把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响': 'Assign enabled accounts with no exit to enabled proxy slots in order; accounts that are already bound are left alone',
     '拉取积分明细失败:': 'Fetching credit details failed:',
@@ -1657,7 +1638,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '未保存': 'Not saved',
     '未公布，按未命中价计': 'not published, charged at the unmatched price',
     '未发现国内版账号': 'No China account found',
-    '未发现国际版账号': 'No Global account found',
     '未命名': 'Unnamed',
     '未在本机检测到桌面客户端登录凭证。': 'No desktop client credentials found on this machine.',
     '未定价': 'Unpriced',
@@ -1726,7 +1706,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '次异常拦截': 'errors blocked',
     '次日 00:00 刷新': 'Resets at 00:00 the next day',
     '正在向 copilot.tencent.com (国内版) 申请授权...': 'Requesting authorization from copilot.tencent.com (China)...',
-    '正在向 www.workbuddy.ai (国际版) 申请授权...': 'Requesting authorization from www.workbuddy.ai (Global)...',
     '正在向上游同步最新积分与权益包明细…': 'Syncing the latest credits and package details from upstream...',
     '正在打开文件…': 'Opening the file...',
     '正在扫描 WorkBuddy.exe 内存…': 'Scanning WorkBuddy.exe memory...',
@@ -1741,12 +1720,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '每个账号固定绑定一个出口代理槽。槽位地址变化时绑定账号自动跟随；禁用或删除后回退直连。': 'Every account is pinned to one exit proxy slot. When the slot address changes the bound accounts follow automatically; disabling or deleting the slot falls back to a direct connection.',
     '每日 Token 限额': 'Daily token limit',
     '每日活跃:': 'Daily activity:',
-    '每日活跃打卡 (国际版)': 'Daily activity check-in (Global)',
     '未活跃打卡一键打卡': 'Check in the not-yet-active accounts',
     '未活跃打卡:': 'Inactive check-in:',
     '未活跃打卡失败:': 'Inactive check-in failed: ',
-    '未发现待打卡的国际版账号': 'No Global account is waiting for a check-in',
-    '国际版账号今天都已打卡': 'Every Global account has checked in today',
     '今日未打卡账号': 'Accounts not checked in today',
     '每日积分限额': 'Daily credit limit',
     '临期积分优先': 'Expiring credits first',
@@ -1895,20 +1871,16 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '面板密码与界面语言、API Key 与出口绑定、代理槽与限额、价格估算、出站身份与本地网络工具。': 'Panel password and UI language, API Keys and exit binding, proxy slots and quotas, price estimation, outbound identity and local web tools.',
     '估算价格': 'Estimated cost',
     '估算价格（国内版）': 'Estimated cost (China)',
-    '估算价格（国际版）': 'Estimated cost (Global)',
     '积分消耗': 'Credits used',
     '积分消耗（国内版）': 'Credits used (China)',
-    '积分消耗（国际版）': 'Credits used (Global)',
     '估算价值: ': 'Est. value: ',
     '估算剩余': 'Estimated left',
     '网关调用量': 'Gateway calls',
     '网关调用量（国内版）': 'Gateway calls (China)',
-    '网关调用量（国际版）': 'Gateway calls (Global)',
     '网关运行日志': 'Gateway logs',
     '网关默认上游已切换并永久保存为:': 'The default upstream is switched and permanently saved as:',
     '网关默认出口': 'Default gateway exit',
     '网络异常:': 'Network error:',
-    '网页通道打卡 (国际版)': 'Web-channel check-in (Global)',
     '网页通道打卡:': 'Web-channel check-in:',
     '网页通道打卡失败:': 'Web-channel check-in failed:',
     '耗时': 'Time',
@@ -1929,7 +1901,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '若要覆盖已存在的账号，请勾选下方「覆盖同 UID 账号」。': 'To overwrite existing accounts, tick Overwrite same-UID accounts below.',
     '获得奖励 +': 'Reward earned +',
     '虚拟别名（非实体模型）': 'virtual alias (not a real model)',
-    '融合首字延迟 (TTFT)、生成速度、耗时与 Token 统计 · 含国际版与国内版全部渠道': 'Combines time to first token (TTFT), generation speed, duration and token stats · covers every Global and China channel',
     '行日志': 'log lines',
     '行明细': 'detail rows',
     '补算：这条请求发生在该策略取到之前，用之后第一次取到的价补算': 'back-filled: this request happened before the policy was fetched, so it is priced with the first price fetched afterwards',
@@ -1964,7 +1935,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '检测本机已安装的 AI 编程客户端，一键把它们的配置指向本网关；原始文件会先备份，随时可一键还原。': 'Detect AI coding clients installed on this machine and point them at this gateway with one click; original files are backed up first and can be restored anytime.',
     '写入各客户端配置时使用的网关地址、鉴权 Key 与默认模型。': 'The gateway URL, auth key and default model written into each client config.',
     '重新检测本机客户端': 'Re-detect local clients',
-    '「全局 API Key」表示不在客户端配置里写入具体 Key，客户端沿用网关当前生效的全局 Key。': 'Global API Key means no concrete key is written into the client config; the client follows the gateway-level global key.',
     '检测到以下客户端安装在本机；点击「一键配置」即可让它改走本网关，原配置自动备份，可随时还原。': 'The following clients were detected on this machine; click One-click Setup to route it through this gateway. The original config is backed up automatically and can be restored anytime.',
     '任何支持 OpenAI 兼容或 Anthropic Messages 协议的客户端都可以手动接入本网关，把下面的地址填进客户端的 Base URL / API 地址即可；Key 到「设置」页复制。': 'Any client speaking OpenAI-compatible or Anthropic Messages protocol can join this gateway manually: paste the addresses below into the client Base URL / API URL field; copy the key from the Settings page.',
     '鉴权 Key 请前往「设置 → API Key 与出口绑定」页复制，填入客户端的 API Key / Token 字段。': 'Copy the auth key from Settings → API Key & Exit Binding and fill it into the client API Key / Token field.',
@@ -2009,7 +1979,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '请求': 'Requests',
     '请求成功率': 'Request success rate',
     '请求成功率（国内版）': 'Request success rate (China)',
-    '请求成功率（国际版）': 'Request success rate (Global)',
     '请求数': 'Requests',
     '请求次数': 'Requests',
     '请确认 WorkBuddy 桌面客户端正在运行并已登录；': 'Make sure the WorkBuddy desktop client is running and signed in;',
@@ -2049,7 +2018,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '默认模型（': 'Default model (',
     '每日活跃改用 ': 'Daily activity now uses ',
     '每日活跃恢复内置默认模型': 'Daily activity is back on the built-in default model',
-    '清单是国际版目录里的全部模型，标价 0.00x 的标成免费并排在前面。每日活跃只是一次「Hi」的会话，默认用内置的免费模型；换一个是为了把活跃挪出真实流量正在用的那个模型的窗口额度。选到付费模型的话，活跃就会按那个模型花积分。': 'The list holds every model in the Global catalog; the ones priced 0.00x are marked free and come first. The daily activity is a throwaway "Hi" conversation and uses the built-in free model by default; picking another one moves the activity off the window quota of the model your real traffic is using. Pick a paid model and the activity will spend credits at that model\'s rate.',
     '起），更早的请求未纳入这三列。': '), and earlier requests are not included in these three columns.',
     '跟随': 'Follow',
     '跟随 · 混合': 'Follow · mixed',
@@ -2178,7 +2146,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '% · 失败': '% · failed',
     '如 deepseek* 或 gpt-6-astra；多个用逗号分隔，支持 * 通配': 'such as deepseek* or gpt-6-astra; separate several with commas, * works as a wildcard',
     '如: Cursor / DSH / 本地测试': 'such as: Cursor / DSH / local test',
-    '（国际版共': '(Global total',
     '（国内版共': '(China total',
     '未找到指定账号': 'No matching account found',
     '账号池未初始化': 'The account pool is not initialized',
@@ -2194,7 +2161,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '查询失败': 'lookup failed',
     '沙箱未就绪（没有 link/token）': 'Sandbox not ready (no link/token)',
     '每日活跃对话成功完成': 'Daily activity chat completed',
-    '国际版不适用国内成长任务中心': 'The Global version has no China growth-task center',
     '猫猫今日已完成旅行，明日 00:00 刷新': 'The cat already finished its trip today; resets at 00:00 tomorrow',
     '猫猫正在旅行途中，请稍后再来查看！': 'The cat is still travelling; check again later!'
   };
@@ -2215,7 +2181,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     " 分钟)": " 分鐘)",
     " 分钟取一次价": " 分鐘取一次價",
     " 已加入账号池": " 已加入帳號池",
-    " 把 Key 没有绑定出口，它的积分由国际版与国内版两套价格相加而来，只能当量级看。": " 把 Key 沒有繫結出口，它的積分由國際版與國內版兩套價格相加而來，只能當量級看。",
     " 行日志": " 行日誌",
     " 账号，之后相关请求都会走该账号": " 帳號，之後相關請求都會走該帳號",
     "\" placeholder=\"如 deepseek* 或 gpt-6-astra；多个用逗号分隔，支持 * 通配\" ": "\" placeholder=\"如 deepseek* 或 gpt-6-astra；多個用逗號分隔，支援 * 通配\" ",
@@ -2269,7 +2234,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "上游中断": "上游中斷",
     "上游限流": "上游限流",
     "下载为 .log 文件": "下載為 .log 檔案",
-    "下面是本机桌面客户端里已登录的账号（只读检测，点击「导入」才会加入网关）。 国际版账号归入国际版列表，国内版账号归入国内版列表。": "下面是本機桌面客戶端裡已登入的帳號（只讀檢測，點選「匯入」才會加入閘道）。 國際版帳號歸入國際版列表，國內版帳號歸入國內版列表。",
     "与' + rangeLabel() + '相同：所选范围已覆盖日志中的全部请求": "與' + rangeLabel() + '相同：所選範圍已覆蓋日誌中的全部請求",
     "个未绑定账号分配代理出口": "個未繫結帳號分配代理出口",
     "个槽位，记得点「保存槽位」": "個槽位，記得點「儲存槽位」",
@@ -2315,7 +2279,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "分钟)": "分鐘)",
     "分钟取一次价": "分鐘取一次價",
     "切换默认出口为【国内版】": "切換預設出口為【國內版】",
-    "切换默认出口为【国际版】": "切換預設出口為【國際版】",
     "列表，点击上方选项卡即可查看": "列表，點選上方選項卡即可檢視",
     "创建": "建立",
     "创建 ' + esc(k.created_at) + '": "建立 ' + esc(k.created_at) + '",
@@ -2356,7 +2319,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "启用调度": "啟用排程",
     "回收密钥": "回收金鑰",
     "导入密钥": "匯入金鑰",
-    "国际版账号每日打卡时，除桌面端身分的轻量对话外，再走一次网页通道的会话。默认开启。": "國際版帳號每日打卡時，除桌面端身分的輕量對話外，再走一次網頁通道的會話。預設開啟。",
     "在浏览器里打开下方链接并完成登录授权": "在瀏覽器裡開啟下方連結並完成登入授權",
     "备注名称": "備註名稱",
     "复制": "複製",
@@ -2384,8 +2346,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "导出日志失败:": "匯出日誌失敗:",
     "导出日志失败: ": "匯出日誌失敗: ",
     "导出账号": "匯出帳號",
-    "将为每个已启用的国际版账号各建一个网页端会话。 这会真的起一次任务，用于计入官方「每日活跃」；活跃走免费模型（0.00x）。继续？": "將為每個已啟用的國際版帳號各建一個網頁端會話。 這會真的起一次任務，用於計入官方「每日活躍」；活躍預設走免費模型（0.00x）。繼續？",
-    "将为每个已启用的国际版账号各建一个网页端会话。\\n\\n这会真的起一次任务，用于计入官方「每日活跃」；活跃走免费模型（0.00x）。继续？": "將為每個已啟用的國際版帳號各建一個網頁端會話。\\n\\n這會真的起一次任務，用於計入官方「每日活躍」；活躍走免費模型（0.00x）。繼續？",
     "将覆盖同 UID 的现有账号（含其凭证），确定继续？": "將覆蓋同 UID 的現有帳號（含其憑證），確定繼續？",
     "将该账号的出站身份切换为": "將該帳號的出站身份切換為",
     "将该账号的出站身份切换为 ": "將該帳號的出站身份切換為 ",
@@ -2414,7 +2374,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "已启用 OpenRouter 价估算": "已啟用 OpenRouter 價估算",
     "已启用：429 时自动切换出站身份": "已啟用：429 時自動切換出站身份",
     "已启用：余额低于": "已啟用：餘額低於",
-    "已启用：国际版打卡走网页通道": "已啟用：國際版打卡走網頁通道",
     "失败重试": "失敗重試",
     "最多尝试次数": "最多嘗試次數",
     "首轮等待": "首輪等待",
@@ -2478,7 +2437,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "扫描桌面客户端": "掃描桌面客戶端",
     "批量操作失败:": "批次操作失敗:",
     "批量操作失败: ": "批次操作失敗: ",
-    "把 Key 没有绑定出口，它的积分由国际版与国内版两套价格相加而来，只能当量级看。": "把 Key 沒有繫結出口，它的積分由國際版與國內版兩套價格相加而來，只能當量級看。",
     "把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响": "把尚未繫結出口的已啟用帳號依次分配到已啟用的代理槽；已有繫結的帳號不受影響",
     "按 OpenRouter 公布的模型价折算的等价 token 花费": "按 OpenRouter 公佈的模型價折算的等價 token 花費",
     "按当前范围自动选择分钟/小时/天粒度；柱高为总 Token，折线为请求数。": "按目前範圍自動選擇分鐘/小時/天粒度；柱高為總 Token，折線為請求數。",
@@ -2505,7 +2463,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "未保存": "未儲存",
     "未公布，按未命中价计": "未公佈，按未命中價計",
     "未发现国内版账号": "未發現國內版帳號",
-    "未发现国际版账号": "未發現國際版帳號",
     "未在本机检测到桌面客户端登录凭证。": "未在本機檢測到桌面客戶端登入憑證。",
     "未找到可用的国内版账号": "未找到可用的國內版帳號",
     "未找到已启用的国内版账号": "未找到已啟用的國內版帳號",
@@ -2732,7 +2689,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "；变体继承当前已关闭": "；變體繼承目前已關閉",
     "未活跃打卡一键打卡": "未活躍打卡一鍵打卡",
     "今日未打卡账号": "今日未打卡帳號",
-    "国际版账号今天都已打卡": "國際版帳號今天都已打卡"
   };
   var HANT_TERMS = {"下拉菜单":"下拉選單","任务":"任務","会话":"會話","余额":"餘額","保存":"儲存","信息":"資訊","内存":"記憶體","凭证":"憑證","删除":"刪除","刷新":"重新整理","加载":"載入","启用":"啟用","响应":"回應","在线":"線上","复制":"複製","失败":"失敗","导入":"匯入","导出":"匯出","当前":"目前","按钮":"按鈕","搜索":"搜尋","支持":"支援","数据":"資料","文件":"檔案","日志":"日誌","权限":"權限","添加":"新增","用户":"使用者","登录":"登入","禁用":"停用","积分":"積分","端口":"埠","筛选":"篩選","粘贴":"貼上","统计":"統計","缓存":"快取","编辑":"編輯","网关":"閘道","网络":"網路","视频":"影片","计划":"計畫","设置":"設定","请求":"請求","账号":"帳號","账户":"帳戶","质量":"品質","软件":"軟體","输入框":"輸入框","运行":"執行","链接":"連結","错误":"錯誤","队列":"佇列","页面":"頁面","默认":"預設"};
   Object.keys(HANT_TERMS).forEach(function(k){ HANT_PHRASES[k] = HANT_TERMS[k]; });
@@ -2980,7 +2936,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "验": "驗"
   };
   var RULES = [
-    [/（国际版共 (\d+) 个，启用 (\d+) 个）/, function(m, n, e){ return '(Global: ' + n + ' total, ' + e + ' enabled)'; }],
     [/（国内版共 (\d+) 个，启用 (\d+) 个）/, function(m, n, e){ return '(China: ' + n + ' total, ' + e + ' enabled)'; }],
     [/有 (\d+) 把 Key 没有绑定出口/, function(m, n){ return n + ' keys have no exit bound'; }],
     [/共 (\d+) 条记录/, function(m, n){ return n + ' records'; }],
@@ -3345,25 +3300,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   <!-- 版本中枢控制栏 (三列等高对齐网格) -->
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:18px">
     
-    <!-- 卡片 1: 国际版 (Global) -->
-    <div id="tabIntl" class="realm-card active" onclick="switchViewRealm('intl')">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-          <span class="realm-badge-intl">国际版 (Global)</span>
-          <span id="tabIntlDefaultBadge" class="badge ok mini" style="font-weight:600;display:none">默认出口</span>
-          <span id="tabIntlViewBadge" class="badge s mini" style="display:inline-block">当前视图</span>
-        </div>
-      </div>
-      <div class="mono" style="font-size:11px;color:var(--dim);margin-bottom:8px">www.workbuddy.ai</div>
-      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px">
-        <div style="display:flex;align-items:baseline;gap:6px">
-          <span id="tabIntlCredits" style="font-size:22px;font-weight:700;color:var(--accent2);letter-spacing:-.5px" title="总剩余积分：全部账号（含停用）之和；「可用」只算启用且未触发限额护栏的账号">0</span>
-          <span style="font-size:12px;color:var(--dim)">剩余积分 · <span id="tabIntlAvailCred" style="color:var(--fg);font-weight:600">可用 —</span> · <span id="tabIntlAccts" style="color:var(--fg);font-weight:600">0/0 账号</span></span>
-        </div>
-        <span id="tabIntlKeyBadge" class="badge s mini" style="font-weight:600">0 个 Key</span>
-      </div>
-    </div>
-
     <!-- 卡片 2: 国内版 (China) -->
     <div id="tabCn" class="realm-card" onclick="switchViewRealm('cn')">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
@@ -3391,13 +3327,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       </div>
       <div style="display:flex;align-items:center;gap:8px;margin:2px 0 8px">
         <span id="gatewayDot" class="dot" style="width:9px;height:9px"></span>
-        <span id="activeGatewayName" style="font-size:20px;font-weight:700;color:var(--accent);letter-spacing:-.4px">国际版 (Global)</span>
+        <span id="activeGatewayName" style="font-size:20px;font-weight:700;color:var(--accent);letter-spacing:-.4px">国内版 (China)</span>
       </div>
-      <div style="margin-top:auto">
-        <button class="toggle-realm-btn" id="btnToggleRealm" onclick="toggleActiveGatewayRealm()" style="cursor:pointer;width:100%;padding:7px 12px;font-size:12px">
-          ⇄ 切换默认出口为【国内版】
-        </button>
-      </div>
+      <div class="mono" style="font-size:11px;color:var(--dim);margin-top:auto">copilot.tencent.com · 唯一出口</div>
     </div>
 
   </div>
@@ -3494,15 +3426,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <h2 style="margin:0;font-size:17px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em">账号</h2>
       <div style="font-size:12px;color:var(--dim);margin-top:4px">管理账号池：添加/导入/导出、启用停用、凭证与积分刷新、代理出口绑定，以及签到与每日活跃记录。</div>
     </div>
-    <!-- 版本视图切换：账号列表、「当前禁用」与签到记录都按当前视图区域取，所以
-         这一页自己得有个入口，不必为了换版本跑回网关页。它切的是视图
-         （window.VIEW_REALM），与网关页两张卡片的点击完全等价；改网关默认出口
-         仍然是网关页那张卡片上的按钮，两者是不同的事。合并模式下账号区块搬到
-         网关页，这个开关跟着搬（见 applyAccountsTabLayout），两种布局都在。 -->
-    <div id="accountsRealmSwitch" class="realm-switch" role="group" aria-label="版本视图">
-      <button type="button" id="accountsRealmIntl" onclick="switchViewRealm('intl')" aria-pressed="false">国际版</button>
-      <button type="button" id="accountsRealmCn" onclick="switchViewRealm('cn')" aria-pressed="false">国内版</button>
-    </div>
   </div>
   <!-- 拆分模式下三个区块的落点（页头之后、原顺序）；合并模式搬走之后这里就空着 -->
   <span id="accountsHomeAnchor" hidden></span>
@@ -3535,12 +3458,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     </div>
     <div class="tb-group">
     <button class="sec" id="btnCheckin" onclick="doCheckin(this)" style="display:none">Buddy 加油站签到</button>
-    <button class="sec" id="btnDailyChat" onclick="doDailyChat(this)" style="display:none">每日活跃打卡 (国际版)</button>
-    <!-- 网页通道打卡按钮不再上屏（2026-10-10 起）：网页通道那一步已经由设置里的
-         「国际版每日活跃打卡」自动带在「每日活跃打卡」里，手动补跑走
-         /accounts/daily-chat-web 即可。要放回面板：去掉下面的 display:none，
-         并在 updateUI() 里恢复它按视图显隐。 -->
-    <button class="sec" id="btnDailyChatWeb" onclick="doDailyChatWeb(this)" style="display:none">网页通道打卡 (国际版)</button>
     </div>
     <div class="tb-group">
     <button class="sec" onclick="autoAssignSlots()" title="把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响">一键分配代理</button>
@@ -3582,7 +3499,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <select id="activityTask" class="slot-select" onchange="loadActivityBoard()" aria-label="任务">
           <option value="">全部任务</option>
           <option value="checkin">国内版签到</option>
-          <option value="daily_chat">国际版每日活跃</option>
         </select>
         <select id="activityResult" class="slot-select" onchange="loadActivityBoard()" aria-label="结果">
           <option value="">全部结果</option>
@@ -3609,33 +3525,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <h2 style="margin:0;font-size:17px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em">任务与福利</h2>
     <div style="font-size:12px;color:var(--dim);margin-top:4px">每日活跃打卡、Buddy 加油站、成长任务与福利积分总览。</div>
   </div>
-  <!-- 国际版每日活跃福利 -->
-  <section id="sectionIntlTasks" style="margin-bottom:24px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-      <div>
-        <h2 style="margin:0">国际版每日活跃福利</h2>
-        <div style="font-size:12px;color:var(--dim)">国际版每日轻量会话与网页通道打卡，触发官方发放每日活跃 Bonus Pack (+30/+50 积分)</div>
-      </div>
-      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
-        <button class="primary" id="btnPageDailyChat" onclick="doDailyChat(this)">每日活跃打卡 (国际版)</button>
-        <!-- 未活跃打卡一键打卡：只补跑今天还没有活跃打卡记录的国际版账号。
-             要打的那批与左边「今日活跃打卡状态」卡片悬停时列出的名单完全同源，
-             所以不会把已经打过的账号再打一遍、白烧它的额度。 -->
-        <button class="primary" id="btnPageDailyChatPending" onclick="doDailyChatPending(this)">未活跃打卡一键打卡</button>
-      </div>
-    </div>
-    <div class="cards" style="margin-bottom:16px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
-      <div class="card accent2" id="cardIntlTodayActive">
-        <div class="k">今日活跃打卡状态</div>
-        <div class="v" id="intlTodayActiveState" style="font-size:20px">-</div>
-      </div>
-      <div class="card warn">
-        <div class="k">累计活跃奖励积分</div>
-        <div class="v" id="intlTotalGranted" style="color:var(--warn)">-</div>
-      </div>
-    </div>
-  </section>
-
   <!-- 国内版专属成长任务与日常福利 -->
   <section id="sectionGrowthTasks">
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
@@ -3867,26 +3756,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
           </div>
           <div style="font-size:12px;color:var(--dim)" id="remainingUsageSummary">-</div>
         </div>
-        <div style="margin-bottom:16px">
-          <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
-            <b>国际版</b>
-            <span style="font-size:12px;color:var(--dim)" id="remainingSummaryIntl">-</span>
-          </div>
-          <div id="remainingBudgetsIntl" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"></div>
-          <div style="overflow-x:auto;max-height:340px">
-            <table class="data-cards" id="remainingUsageTableIntl">
-              <thead><tr>
-                <th style="text-align:left">账号</th>
-                <th style="text-align:left">模型</th>
-                <th style="text-align:center">窗口起点</th>
-                <th style="text-align:right">窗口内已用</th>
-                <th style="text-align:right">估算剩余</th>
-                <th style="min-width:150px">用量占比</th>
-              </tr></thead>
-              <tbody id="remainingTbodyIntl"></tbody>
-            </table>
-          </div>
-        </div>
         <div>
           <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
             <b>国内版</b>
@@ -4019,7 +3888,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <div>
           <h2 style="margin:0">账号独立成一个页签 <em id="setAccountsSeparateState"></em></h2>
           <div style="font-size:12px;color:var(--dim);margin-top:4px">
-            关闭（默认）时，账号列表、「当前禁用」与「签到与活跃记录」留在「网关与账号」页，位置与拆分前一致；开启后它们搬到独立的「账号」页，顶部页签变成 网关 → 账号 → 数据看板 → 智能体配置 → 设置 → 运行日志，网关页只剩网关自己的东西——账号多起来（国际版十几个）之后翻起来更短。两侧的区块与行为完全一样，只是分在哪一页；关闭后 ?tab=accounts 的书签会退回「网关与账号」页。
+            关闭（默认）时，账号列表、「当前禁用」与「签到与活跃记录」留在「网关与账号」页，位置与拆分前一致；开启后它们搬到独立的「账号」页，顶部页签变成 网关 → 账号 → 数据看板 → 智能体配置 → 设置 → 运行日志，网关页只剩网关自己的东西——账号多起来之后翻起来更短。两侧的区块与行为完全一样，只是分在哪一页；关闭后 ?tab=accounts 的书签会退回「网关与账号」页。
           </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
@@ -4084,14 +3953,14 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <div>
           <h2 style="margin:0">账号限额 <em id="setLimitsState"></em></h2>
           <div style="font-size:12px;color:var(--dim);margin-top:4px">
-            五条护栏默认按<b>全局默认</b>生效，同时作用于<b>国际版</b>与<b>国内版</b>；需要时可单独给某一版本设值，留空即<b>继承全局</b>。每条护栏填 0 表示关闭该项。
+            五条护栏默认按<b>全局默认</b>生效；需要时可单独给国内版设值，留空即<b>继承全局</b>。每条护栏填 0 表示关闭该项。
           </div>
         </div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
           <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
             <input id="setLimitsPerRealm" type="checkbox" style="width:16px;height:16px"
                    onchange="toggleLimitRealms(this.checked)">
-            分别设置国际版 / 国内版
+            单独设置国内版
           </label>
           <button onclick="saveLimits(this)">保存限额</button>
         </div>
@@ -4103,7 +3972,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
             <tr>
               <th style="min-width:240px;width:46%">护栏</th>
               <th style="width:18%">全局默认</th>
-              <th class="limit-realm-col" style="width:18%;display:none">国际版</th>
               <th class="limit-realm-col" style="width:18%;display:none">国内版</th>
             </tr>
           </thead>
@@ -4116,7 +3984,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
                 </div>
               </td>
               <td data-label="全局默认"><input id="limitGlobalReserve" class="limit-input" type="number" min="0" step="1" value="0"></td>
-              <td class="limit-realm-col" style="display:none" data-label="国际版"><input id="limitIntlReserve" class="limit-input" type="number" min="0" step="1" placeholder="继承全局"></td>
               <td class="limit-realm-col" style="display:none" data-label="国内版"><input id="limitCnReserve" class="limit-input" type="number" min="0" step="1" placeholder="继承全局"></td>
             </tr>
             <tr>
@@ -4127,7 +3994,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
                 </div>
               </td>
               <td data-label="全局默认"><input id="limitGlobalDailyToken" class="limit-input" type="number" min="0" step="1000000" value="0"></td>
-              <td class="limit-realm-col" style="display:none" data-label="国际版"><input id="limitIntlDailyToken" class="limit-input" type="number" min="0" step="1000000" placeholder="继承全局"></td>
               <td class="limit-realm-col" style="display:none" data-label="国内版"><input id="limitCnDailyToken" class="limit-input" type="number" min="0" step="1000000" placeholder="继承全局"></td>
             </tr>
             <tr>
@@ -4138,7 +4004,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
                 </div>
               </td>
               <td data-label="全局默认"><input id="limitGlobalDailyCredit" class="limit-input" type="number" min="0" step="1" value="0"></td>
-              <td class="limit-realm-col" style="display:none" data-label="国际版"><input id="limitIntlDailyCredit" class="limit-input" type="number" min="0" step="1" placeholder="继承全局"></td>
               <td class="limit-realm-col" style="display:none" data-label="国内版"><input id="limitCnDailyCredit" class="limit-input" type="number" min="0" step="1" placeholder="继承全局"></td>
             </tr>
             <tr>
@@ -4149,7 +4014,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
                 </div>
               </td>
               <td data-label="全局默认"><input id="limitGlobalModelDailyToken" class="limit-input" type="number" min="0" step="1000000" value="0"></td>
-              <td class="limit-realm-col" style="display:none" data-label="国际版"><input id="limitIntlModelDailyToken" class="limit-input" type="number" min="0" step="1000000" placeholder="继承全局"></td>
               <td class="limit-realm-col" style="display:none" data-label="国内版"><input id="limitCnModelDailyToken" class="limit-input" type="number" min="0" step="1000000" placeholder="继承全局"></td>
             </tr>
             <tr>
@@ -4171,7 +4035,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
                 </div>
               </td>
               <td data-label="全局默认"><input id="limitGlobalExpiringWindow" class="limit-input" type="number" min="0" step="1" value="7"></td>
-              <td class="limit-realm-col" style="display:none" data-label="国际版"><input id="limitIntlExpiringWindow" class="limit-input" type="number" min="0" step="1" placeholder="继承全局"></td>
               <td class="limit-realm-col" style="display:none" data-label="国内版"><input id="limitCnExpiringWindow" class="limit-input" type="number" min="0" step="1" placeholder="继承全局"></td>
             </tr>
           </tbody>
@@ -4253,20 +4116,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
           </div>
         </section>
 
-              <h2 style="margin:0">免费额度耗尽回退积分版 <em id="setCreditFallbackState"></em></h2>
-              <div style="font-size:12px;color:var(--dim);margin-top:4px">
-                国际版 deepseek-v4.1-flash 免费额度在所有账号均耗尽（6004 撞线）后，自动回退到 deepseek-v4.1-flash-sg 付费通道。默认关闭。
-              </div>
-              <div style="font-size:12px;color:var(--warn);margin-top:4px">
-                注意：回退后将消耗账户中的真实积分（x0.03 倍率），请确认知晓积分成本后再开启。
-              </div>
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-                <input id="setCreditFallback" type="checkbox" style="width:16px;height:16px">
-                启用积分回退
-              </label>
-              <button onclick="saveCreditFallback(this)">保存</button>
             </div>
           </div>
         </section>
@@ -4286,57 +4135,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
             </label>
             <button onclick="saveAutoSwitchProduct(this)">保存</button>
           </div>
-        </div>
-      </section>
-
-      <section>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-          <div>
-            <h2 style="margin:0">国际版每日活跃打卡 <em id="setDailyChatWebState"></em></h2>
-            <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              国际版账号每日打卡时，除桌面端身分的轻量对话外，再走一次网页通道的会话。默认开启。
-            </div>
-          </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-              <input id="setDailyChatWeb" type="checkbox" style="width:16px;height:16px">
-              走网页通道
-            </label>
-            <button onclick="saveDailyChatWeb(this)">保存</button>
-          </div>
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <label style="font-size:13px;color:var(--dim)">活跃使用的模型</label>
-          <select id="setDailyChatModel" style="min-width:240px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit"></select>
-          <button onclick="saveDailyChatModel(this)">保存</button>
-          <span id="setDailyChatModelState" style="font-size:12px;color:var(--dim)"></span>
-        </div>
-        <div style="font-size:12px;color:var(--dim);margin-top:6px">
-          清单是国际版目录里的全部模型，标价 0.00x 的标成免费并排在前面。每日活跃只是一次「Hi」的会话，默认用内置的免费模型；换一个是为了把活跃挪出真实流量正在用的那个模型的窗口额度。选到付费模型的话，活跃就会按那个模型花积分。
-        </div>
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px">
-          <label class="switch">
-            <input id="setDailyChatWebRetry" type="checkbox" onchange="saveDailyChatWebRetry()">
-            <span class="switch-track"></span>
-            <span>失败重试</span>
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-            最多尝试次数
-            <input id="setDailyChatWebAttempts" type="number" min="1" step="1" style="width:70px">
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-            首轮等待
-            <input id="setDailyChatWebTimeout" type="number" min="1" step="1" style="width:90px">
-            秒
-          </label>
-          <button onclick="saveDailyChatWebTuning(this)">保存</button>
-          <span id="setDailyChatWebRetryState" style="font-size:12px;color:var(--dim)"></span>
-        </div>
-        <div style="font-size:12px;color:var(--dim);margin-top:6px">
-          网页通道一轮没跑完（会话还在 working）就再来一轮：最多尝试几次（含第一轮，可改），每轮等待时间是上一轮的两倍——默认 3 次、首轮 120 秒，也就是 120 / 240 / 480 秒。默认开启；会话只是慢的时候多等一轮通常就过了。
-        </div>
-        <div style="font-size:12px;color:var(--warn);margin-top:4px">
-          注意：等待时间逐轮翻倍，「次数」与「首轮等待」调大都是平方级的代价——一个始终跑不完的账号最坏能占住巡检 base×(2^次数−1) 秒（默认 120×7 = 840 秒 ≈ 14 分钟）。建议不超过客户端愿意空等的时长。
         </div>
       </section>
 
@@ -4670,19 +4468,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <button class="modal-x" onclick="closeLogin()" aria-label="关闭">×</button>
     </div>
     <div class="modal-bd">
-      <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:16px">
-        <div style="font-size:12px;color:var(--dim);margin-bottom:8px;font-weight:600">选择要登录的版本：</div>
-        <div style="display:flex;gap:18px;flex-wrap:wrap">
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-            <input type="radio" name="loginRealm" value="cn" id="radioCn" onchange="switchLoginRealm(this.value)">
-            <span><b>国内版</b> (copilot.tencent.com)</span>
-          </label>
-          <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px">
-            <input type="radio" name="loginRealm" value="intl" id="radioIntl" onchange="switchLoginRealm(this.value)">
-            <span><b>国际版</b> (www.workbuddy.ai)</span>
-          </label>
-        </div>
-      </div>
       <div class="step" id="step1"><div class="n">1</div><div class="t" id="step1Text">正在申请授权登录链接…</div></div>
       <div class="step" id="step2"><div class="n">2</div><div class="t">在浏览器里打开下方链接并完成登录授权</div></div>
       <div id="loginLinkBox"></div>
@@ -4725,7 +4510,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <div class="modal-bd">
       <p class="hint" style="margin-top:0">
         下面是本机桌面客户端里已登录的账号（只读检测，点击「导入」才会加入网关）。
-        国际版账号归入国际版列表，国内版账号归入国内版列表。
       </p>
       <div id="desktopScanBody"><p class="hint">正在检测…</p></div>
     </div>
@@ -4918,11 +4702,6 @@ function closeLogin(){
 
 function openLoginModal(){
   openLogin();
-  const isCn = (window.VIEW_REALM === "cn");
-  const rCn = document.getElementById("radioCn");
-  const rIntl = document.getElementById("radioIntl");
-  if(rCn) rCn.checked = isCn;
-  if(rIntl) rIntl.checked = !isCn;
   triggerLoginForSelectedRealm();
 }
 
@@ -4935,9 +4714,8 @@ function restartLogin(){
 }
 
 async function triggerLoginForSelectedRealm(){
-  const checkedRadio = document.querySelector('input[name="loginRealm"]:checked');
-  const realm = checkedRadio ? checkedRadio.value : (window.VIEW_REALM || "intl");
-  const isCn = (realm === "cn");
+  const realm = "cn";
+  const isCn = true;
 
   if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
   if(loginState){ postJSON("/accounts/login/cancel", {state: loginState}).catch(()=>{}); loginState = null; }
@@ -4955,7 +4733,7 @@ async function triggerLoginForSelectedRealm(){
   if(s3) s3.className = "step";
 
   const s1Text = document.getElementById("step1Text");
-  if(s1Text) s1Text.textContent = isCn ? "正在向 copilot.tencent.com (国内版) 申请授权..." : "正在向 www.workbuddy.ai (国际版) 申请授权...";
+  if(s1Text) s1Text.textContent = "正在向 copilot.tencent.com (国内版) 申请授权...";
 
   try{
     const r = await postJSON("/accounts/login/start", {platform: "CLI", realm: realm});
@@ -5007,40 +4785,23 @@ async function pollLogin(){
 }
 
 
-window.ACTIVE_GATEWAY_REALM = "intl";
-window.VIEW_REALM = "intl";
+window.ACTIVE_GATEWAY_REALM = "cn";
+window.VIEW_REALM = "cn";
 window.REALM_FILTER = "all";
 window.MODELS_DATA = [];
 window.ACCOUNTS = [];
 
 function updateUI(){
-  const isIntlView = (window.VIEW_REALM === "intl");
-  const tIntl = document.getElementById("tabIntl");
+  // 国际版已移除：只剩国内版一张卡片，视图恒为 cn。
   const tCn = document.getElementById("tabCn");
-  if(tIntl) tIntl.className = "realm-card" + (isIntlView ? " active" : "");
-  if(tCn) tCn.className = "realm-card" + (!isIntlView ? " active" : "");
-  const vbIntl = document.getElementById("tabIntlViewBadge");
-  if(vbIntl) vbIntl.style.display = isIntlView ? "inline-block" : "none";
+  if(tCn) tCn.className = "realm-card active";
   const vbCn = document.getElementById("tabCnViewBadge");
-  if(vbCn) vbCn.style.display = !isIntlView ? "inline-block" : "none";
-
-  // 账号页页头的版本切换与上面两张卡片同一份状态（VIEW_REALM），所以两边永远
-  // 一起亮：在账号页切过去，回网关页看到的就是刚切的那一版，反之亦然。
-  const rsIntl = document.getElementById("accountsRealmIntl");
-  if(rsIntl){
-    rsIntl.classList.toggle("active", isIntlView);
-    rsIntl.setAttribute("aria-pressed", isIntlView ? "true" : "false");
-  }
-  const rsCn = document.getElementById("accountsRealmCn");
-  if(rsCn){
-    rsCn.classList.toggle("active", !isIntlView);
-    rsCn.setAttribute("aria-pressed", !isIntlView ? "true" : "false");
-  }
+  if(vbCn) vbCn.style.display = "inline-block";
 
   // 区块标题上的出口标签：这几个区块的内容都按当前视图区域取（账号、禁用汇总、
-  // 最近请求、模型清单），标出来免得把国际版的数字看成全局的。用 <em> 承载：
+  // 最近请求、模型清单），标出来免得把数字看成全局的。用 <em> 承载：
   // 侧栏导航由 h2 生成时会剥掉 <em>，所以标签不会串进导航项。
-  const sectionRealm = isIntlView ? "（国际版）" : "（国内版）";
+  const sectionRealm = "（国内版）";
   ["disabledRealmTag", "recentRealmTag", "modelsRealmTag"].forEach(function(id){
     const el = document.getElementById(id);
     if(el) el.textContent = sectionRealm;
@@ -5050,50 +4811,34 @@ function updateUI(){
   // 版本），所以不看视图、只看 window.ACCOUNTS。
   updateProductAllButton();
 
-  const isIntlGw = (window.ACTIVE_GATEWAY_REALM === "intl");
-  const dbIntl = document.getElementById("tabIntlDefaultBadge");
-  if(dbIntl) dbIntl.style.display = isIntlGw ? "inline-block" : "none";
   const dbCn = document.getElementById("tabCnDefaultBadge");
-  if(dbCn) dbCn.style.display = !isIntlGw ? "inline-block" : "none";
+  if(dbCn) dbCn.style.display = "inline-block";
 
   const gwName = document.getElementById("activeGatewayName");
   if(gwName) {
-    gwName.textContent = isIntlGw ? "国际版 (Global)" : "国内版 (China)";
-    gwName.style.color = isIntlGw ? "var(--accent)" : "var(--bad)";
+    gwName.textContent = "国内版 (China)";
+    gwName.style.color = "var(--bad)";
   }
   const ep = document.getElementById("activeEndpoint");
-  if(ep) ep.textContent = isIntlGw ? "https://www.workbuddy.ai/v2" : "https://copilot.tencent.com/v2";
+  if(ep) ep.textContent = "https://copilot.tencent.com/v2";
 
-  const btnToggle = document.getElementById("btnToggleRealm");
-  if(btnToggle) {
-    btnToggle.textContent = isIntlGw ? "切换默认出口为【国内版】" : "切换默认出口为【国际版】";
-    btnToggle.style.borderColor = isIntlGw ? "var(--bad)" : "var(--accent)";
-    btnToggle.style.color = isIntlGw ? "var(--bad)" : "var(--accent)";
-  }
   const cardGw = document.getElementById("cardGatewayCtrl");
   if(cardGw){
-    cardGw.style.borderColor = isIntlGw ? "rgba(37,99,235,.28)" : "rgba(220,38,38,.28)";
-    cardGw.style.background = isIntlGw ? "rgba(37,99,235,.03)" : "rgba(220,38,38,.03)";
+    cardGw.style.borderColor = "rgba(220,38,38,.28)";
+    cardGw.style.background = "rgba(220,38,38,.03)";
   }
 
   const btnCheckin = document.getElementById("btnCheckin");
   if(btnCheckin) btnCheckin.style.display = (window.VIEW_REALM === "cn" ? "inline-block" : "none");
-  const btnDailyChat = document.getElementById("btnDailyChat");
-  if(btnDailyChat) btnDailyChat.style.display = (window.VIEW_REALM === "intl" ? "inline-block" : "none");
-  // btnDailyChatWeb 不上屏（见按钮上的注释），所以这里不再按视图显隐它。
 
   // 计算当前绑定与生效的 Key 数量
   const keys = (typeof API_KEY_ROWS !== 'undefined' && API_KEY_ROWS.length) ? API_KEY_ROWS : (window.API_KEY_ROWS || []);
-  const intlKeys = keys.filter(k => k.enabled !== false && k.realm === 'intl').length;
   const cnKeys = keys.filter(k => k.enabled !== false && k.realm === 'cn').length;
   const followKeys = keys.filter(k => k.enabled !== false && !k.realm).length;
-  const activeKeysTotal = isIntlGw ? (intlKeys + followKeys) : (cnKeys + followKeys);
+  const activeKeysTotal = cnKeys + followKeys;
 
   const elGwKeyBadge = document.getElementById("activeGatewayKeyCount");
   if(elGwKeyBadge) elGwKeyBadge.textContent = activeKeysTotal + ' 个 Key 生效';
-
-  const elIntlKey = document.getElementById("tabIntlKeyBadge");
-  if(elIntlKey) elIntlKey.textContent = intlKeys + ' 个 Key';
 
   const elCnKey = document.getElementById("tabCnKeyBadge");
   if(elCnKey) elCnKey.textContent = cnKeys + ' 个 Key';
@@ -5102,18 +4847,10 @@ function updateUI(){
   // 「可用」只算 isAcctActive（启用且未触发保留/限额护栏）的账号——与旁边
   // 的 N/M 账号计数同一个口径，两个数字才有可比性。
   const allAccts = window.ACCOUNTS || [];
-  const intlAccts = allAccts.filter(a => a.realm === 'intl' || !a.realm);
   const cnAccts = allAccts.filter(a => a.realm === 'cn');
 
   const isAcctActive = a => a.enabled && !a.reserveBlocked && !a.dailyLimitBlocked && !a.creditLimitReached;
 
-  let intlCred = 0, hasIntlCred = false, intlAvailCred = 0, hasIntlAvail = false;
-  intlAccts.forEach(a => {
-    if(a.credits && a.credits.remain != null){
-      intlCred += a.credits.remain; hasIntlCred = true;
-      if(isAcctActive(a)){ intlAvailCred += a.credits.remain; hasIntlAvail = true; }
-    }
-  });
   let cnCred = 0, hasCnCred = false, cnAvailCred = 0, hasCnAvail = false;
   cnAccts.forEach(a => {
     if(a.credits && a.credits.remain != null){
@@ -5122,15 +4859,7 @@ function updateUI(){
     }
   });
 
-  const intlActive = intlAccts.filter(isAcctActive).length;
   const cnActive = cnAccts.filter(isAcctActive).length;
-
-  const elIntlCred = document.getElementById("tabIntlCredits");
-  if(elIntlCred) elIntlCred.textContent = hasIntlCred ? fmt(intlCred) : "—";
-  const elIntlAvail = document.getElementById("tabIntlAvailCred");
-  if(elIntlAvail) elIntlAvail.innerHTML = '可用 <b style="color:var(--accent2)">' + (hasIntlAvail ? fmt(intlAvailCred) : "—") + '</b>';
-  const elIntlAcct = document.getElementById("tabIntlAccts");
-  if(elIntlAcct) elIntlAcct.innerHTML = '<b style="color:var(--accent)">' + intlActive + '</b>/' + intlAccts.length + ' 账号';
 
   const elCnCred = document.getElementById("tabCnCredits");
   if(elCnCred) elCnCred.textContent = hasCnCred ? fmt(cnCred) : "—";
@@ -5161,21 +4890,6 @@ async function switchViewRealm(r){
                      loadSchedulerStatus(), loadAnalytics(), refresh()]);
 };
 
-async function toggleActiveGatewayRealm(){
-  const next = (window.ACTIVE_GATEWAY_REALM === "intl" ? "cn" : "intl");
-  try {
-    const res = await postJSON("/realm", {realm: next});
-    window.ACTIVE_GATEWAY_REALM = res.current || next;
-    toast("网关默认上游已切换并永久保存为: " + (window.ACTIVE_GATEWAY_REALM === "intl" ? "国际版" : "国内版"));
-    setViewRealm(window.ACTIVE_GATEWAY_REALM);
-    window.updateUI();
-    await Promise.all([loadAccounts(), loadModels(), loadGrowthTasks(),
-                       loadSchedulerStatus(), loadAnalytics(), refresh()]);
-  }catch(e){
-    alert("切换失败: " + e.message);
-  }
-};
-
 async function refreshActiveRealm(){
   // Refresh which exit the gateway is switched to. Deliberately does NOT touch
   // VIEW_REALM: the view is the user's choice, and an account action taken from
@@ -5195,7 +4909,7 @@ async function initRealm(){
   await refreshActiveRealm();
   window.VIEW_REALM = window.ACTIVE_GATEWAY_REALM;
   const viewFromUrl = new URLSearchParams(window.location.search).get('view');
-  if(viewFromUrl && ['intl', 'cn'].includes(viewFromUrl)) window.VIEW_REALM = viewFromUrl;
+  if(viewFromUrl === 'cn') window.VIEW_REALM = viewFromUrl;
   const limitFromUrl = new URLSearchParams(window.location.search).get('limit');
   if(limitFromUrl && [10, 20, 50, 100].includes(parseInt(limitFromUrl, 10))) RECENT_LIMIT = parseInt(limitFromUrl, 10);
   window.updateUI();
@@ -5205,8 +4919,8 @@ async function refreshModelCatalog(btn){
   // 手动刷新模型清单：强制走一次上游 /v3/config（服务端执行，绕过 300s 缓存），
   // 只刷当前视图版本——这张表显示的是哪个版本，刷新按钮就只拉哪个版本，绝
   // 不跨区（服务端会挑该版本自己的账号发请求）。完成后立即重载表格。
-  const realm = window.VIEW_REALM === 'cn' ? 'cn' : 'intl';
-  const label = realm === 'cn' ? '国内版' : '国际版';
+  const realm = 'cn';
+  const label = '国内版';
   if(btn) btn.disabled = true;
   const prevText = btn ? btn.textContent : '';
   if(btn) btn.textContent = '刷新中...';
@@ -5313,7 +5027,7 @@ function renderAvailableModels(){
   tb.innerHTML = MODELS_DATA.map(m => {
     // 1. 倍率与折扣 —— 一律以 /v1/models 取回的 credits 为准（活目录优先、
     //    内置快照兜底）。以前这里还按模型 id 写死了 hy3 / hy4-preview-f /
-    //    国际版 deepseek-v4.1-flash 三个"限时免费"，与 credits 值是 OR 关系，
+    //    几个模型标着"限时免费"，与 credits 值是 OR 关系，
     //    上游一旦调价面板会继续宣传免费；cn 的夜间注记在 credits 缺失时还会
     //    兜底显示写死的 0.79x。现在取不到就不显示数字。
     let credBadge = '-';
@@ -5452,33 +5166,7 @@ async function switchGrowthAccount(uid){
   await loadGrowthTasks();
 }
 
-async function loadIntlTasks(){
-  try{
-    const [r, g] = await Promise.all([
-      getJSON('/accounts?realm=all'),
-      getJSON('/accounts/credits/grants').catch(() => ({}))
-    ]);
-    const accts = (r.accounts || []).filter(a => a.realm === 'intl' && a.enabled);
-    const countEl = document.getElementById("intlAcctCount");
-    if(countEl) countEl.textContent = accts.length + ' 个';
-    const bonusEl = document.getElementById("intlBonusCredits");
-    if(bonusEl) bonusEl.textContent = '30 / 50 积分';
-
-    const intlTotalEl = document.getElementById("intlTotalGranted");
-    if(intlTotalEl){
-      const gRows = (g.rows || []).filter(x => x.realm === 'intl' && (x.name === 'Bonus Pack' || (x.source_inferred && x.source_inferred.includes('活跃'))));
-      const totalAmt = gRows.reduce((acc, x) => acc + (Number(x.size || x.amount) || 0), 0);
-      intlTotalEl.textContent = '+' + fmt(totalAmt) + ' 积分';
-    }
-
-    if(typeof updateTaskPageCheckinCards === 'function') updateTaskPageCheckinCards();
-  }catch(e){
-    console.error('loadIntlTasks error:', e);
-  }
-}
-
 async function loadGrowthTasks(){
-  loadIntlTasks();
   const sec = document.getElementById("sectionGrowthTasks");
   if(!sec) return;
   sec.style.display = 'block';
@@ -5685,9 +5373,7 @@ async function loadSchedulerStatus(){
     const btnTrig = document.getElementById("btnTriggerSched");
 
     if(dot) dot.className = s.enabled ? 'dot' : 'dot off';
-    const modeText = (window.VIEW_REALM === 'intl')
-      ? (s.mode_intl || '账号 Token 自动保活与凭证常驻 (每日 22:00 集中巡检)')
-      : (s.mode_cn || s.mode || '整点排程');
+    const modeText = s.mode_cn || s.mode || '整点排程';
     if(txt) txt.textContent = s.enabled ? ('运行中 · ' + modeText) : '已暂停';
     if(times) times.textContent = '上次: ' + (s.last_run_time || '-') + ' · 下次: ' + (s.next_run_time || '-');
     if(btn) btn.textContent = s.enabled ? '暂停调度' : '启用调度';
@@ -5704,7 +5390,7 @@ async function triggerSchedulerNow(btn){
   }catch(e){
     toast("触发失败: " + e.message, "bad");
   }finally{
-    if(btn){ btn.disabled = false; btn.textContent = (window.VIEW_REALM === 'intl') ? '立即保活刷新' : '立即巡检保活'; }
+    if(btn){ btn.disabled = false; btn.textContent = '立即巡检保活'; }
   }
 }
 
@@ -5722,9 +5408,9 @@ async function toggleScheduler(btn){
 }
 function filterRealm(m){
   REALM_FILTER = m;
-  document.getElementById("fltAll").className = m === "all" ? "active" : "";
-  document.getElementById("fltIntl").className = m === "intl" ? "active" : "";
-  document.getElementById("fltCn").className = m === "cn" ? "active" : "";
+  const el = id => document.getElementById(id);
+  if(el("fltAll")) el("fltAll").className = m === "all" ? "active" : "";
+  if(el("fltCn")) el("fltCn").className = m === "cn" ? "active" : "";
   renderAccounts();
 }
 async function doCheckin(btn){
@@ -5739,76 +5425,6 @@ async function doCheckin(btn){
     }
     await refreshActiveRealm(); window.updateUI(); loadAccounts(); loadModels();
   }catch(e){ toast("签到失败: " + e.message, "bad"); }
-  finally { btn.disabled = false; btn.textContent = ot; }
-}
-
-async function doDailyChat(btn){
-  btn.disabled = true; const ot = btn.textContent; btn.textContent = "打卡中...";
-  try {
-    const r = await postJSON("/accounts/daily-chat", {});
-    const res = r.results || [];
-    if(!res.length) toast("未发现国际版账号", "warn");
-    else {
-      const summary = res.map(x => (x.nickname||x.uid.slice(0,6)) + ": " + (x.ok ? "活跃打卡成功" : (x.error||x.msg))).join("；");
-      toast("每日活跃: " + summary, res.some(x => x.ok) ? "ok" : "warn");
-    }
-    await refreshActiveRealm(); window.updateUI(); loadAccounts(); loadModels();
-  }catch(e){ toast("打卡失败: " + e.message, "bad"); }
-  finally { btn.disabled = false; btn.textContent = ot; }
-}
-
-/* 今天还没有活跃打卡记录的国际版账号。判定口径与「今日活跃打卡状态」卡片完全一致
- * （都用 activityStatusOf()），所以卡片上悬停看到的未打卡名单，就是下面按钮要打的那批。 */
-function pendingDailyChatAccounts(){
-  const all = window.ACCOUNTS || [];
-  return all.filter(a => a.realm === 'intl' && a.enabled).filter(a => {
-    const s = activityStatusOf(a);
-    return !(s.kind === 'ok' || s.kind === 'done');
-  });
-}
-
-// 卡片悬停提示：把未打卡账号逐个列出来，省得去账号页一个个比对。
-function pendingDailyChatTip(pending){
-  const MAX = 30;
-  const lines = pending.slice(0, MAX).map(a => '· ' + (a.nickname || String(a.uid || '').slice(0, 8)));
-  if(pending.length > MAX) lines.push('· …');
-  return '今日未打卡账号 (' + pending.length + ')：\n' + lines.join('\n');
-}
-
-/* 未活跃打卡一键打卡：只对今天还没打过卡的国际版账号补跑，名单交给服务端精确执行。
- * 全部已打卡时直接提示，不发请求——重复打卡不会多给积分，只会白烧账号额度。 */
-async function doDailyChatPending(btn){
-  const pending = pendingDailyChatAccounts();
-  if(!pending.length){ toast("国际版账号今天都已打卡", "ok"); return; }
-  btn.disabled = true; const ot = btn.textContent; btn.textContent = "打卡中...";
-  try {
-    const r = await postJSON("/accounts/daily-chat", {uids: pending.map(a => String(a.uid))});
-    const res = r.results || [];
-    if(!res.length) toast("未发现待打卡的国际版账号", "warn");
-    else {
-      const summary = res.map(x => (x.nickname||x.uid.slice(0,6)) + ": " + (x.ok ? "活跃打卡成功" : (x.error||x.msg))).join("；");
-      toast("未活跃打卡: " + summary, res.some(x => x.ok) ? "ok" : "warn");
-    }
-    await refreshActiveRealm(); window.updateUI(); loadAccounts(); loadModels();
-  }catch(e){ toast("未活跃打卡失败: " + e.message, "bad"); }
-  finally { btn.disabled = false; btn.textContent = ot; }
-}
-
-/* 网页通道打卡：只建网页端会话（官方每日活跃只认网页端对话）。
- * 会真的起一次任务，所以先确认一次。 */
-async function doDailyChatWeb(btn){
-  if(!confirm('将为每个已启用的国际版账号各建一个网页端会话。\n\n这会真的起一次任务，用于计入官方「每日活跃」；活跃走免费模型（0.00x）。继续？')) return;
-  btn.disabled = true; const ot = btn.textContent; btn.textContent = "打卡中...";
-  try {
-    const r = await postJSON("/accounts/daily-chat-web", {});
-    const res = r.results || [];
-    if(!res.length) toast("未发现国际版账号", "warn");
-    else {
-      const summary = res.map(x => (x.nickname||x.uid.slice(0,6)) + ": " + (x.ok ? ("已建会话 " + (x.conversation||"")) : (x.error||"失败"))).join("；");
-      toast("网页通道打卡: " + summary, res.some(x => x.ok) ? "ok" : "warn");
-    }
-    await refreshActiveRealm(); window.updateUI(); loadAccounts(); loadModels();
-  }catch(e){ toast("网页通道打卡失败: " + e.message, "bad"); }
   finally { btn.disabled = false; btn.textContent = ot; }
 }
 
@@ -6585,7 +6201,7 @@ function modelLimitPills(a){
 let ACTIVITY_TODAY = {byUid: {}, error: '', loaded: false};
 const ACT_FILTER = {range: '7d', uid: '', task: '', result: ''};
 
-const ACTIVITY_TASKS = {checkin: '国内签到', daily_chat: '国际活跃'};
+const ACTIVITY_TASKS = {checkin: '国内签到'};
 const ACTIVITY_TRIGGERS = {scheduler: '定时', manual: '手动',
                            account_add: '添加账号', account_import: '导入账号'};
 
@@ -6596,7 +6212,7 @@ function todayStamp(){
 }
 
 // 一个账号今天的活动状态。
-// 国际版只有一项：今日活跃（daily_chat 流水或 lastDailyChat）。
+// 国际版每日活跃已随该区域移除，这里只剩国内签到一项。
 // 国内版有两项独立活动：
 //   1. Buddy 加油站（checkin 流水或 lastCheckin）
 //   2. 成长计划签到（连登活跃上报 lastActivityReport）
@@ -6707,37 +6323,6 @@ async function loadActivityToday(){
 // 统一通过 activityStatusOf(a) 判定（以今天真实流水为准，回落到本日本地时间前缀）。
 function updateTaskPageCheckinCards(){
   const allList = window.ACCOUNTS || [];
-  const stateEl = document.getElementById("intlTodayActiveState");
-  const intlCard = document.getElementById("cardIntlTodayActive");
-  if(stateEl){
-    // 卡片（与卡片里的数值）都挂上同一个 title，鼠标落在卡片任何位置都能看到名单。
-    const setCardTip = tip => {
-      stateEl.title = tip;
-      if(intlCard) intlCard.title = tip;
-    };
-    const intlAccts = allList.filter(a => a.realm === 'intl' && a.enabled);
-    if(!intlAccts.length){
-      stateEl.textContent = '无国际账号';
-      setCardTip('');
-    } else {
-      const isDone = a => {
-        const s = activityStatusOf(a);
-        return s.kind === 'ok' || s.kind === 'done';
-      };
-      const pending = intlAccts.filter(a => !isDone(a));
-      const doneCount = intlAccts.length - pending.length;
-      if(doneCount === intlAccts.length){
-        stateEl.innerHTML = '<span style="color:var(--accent2)">今日已打卡 (' + doneCount + '/' + intlAccts.length + ')</span>';
-      } else if(doneCount > 0){
-        stateEl.innerHTML = '<span style="color:var(--accent)">部分已打卡 (' + doneCount + '/' + intlAccts.length + ')</span>';
-      } else {
-        stateEl.innerHTML = '<span style="color:var(--warn)">今日未打卡 (0/' + intlAccts.length + ')</span>';
-      }
-      // 悬停看未打卡名单：与「未活跃打卡一键打卡」按钮要打的那批同源，看到什么就打什么。
-      setCardTip(pending.length ? pendingDailyChatTip(pending) : '国际版账号今天都已打卡');
-    }
-  }
-
   const chkStateEl = document.getElementById("cnTodayCheckinState");
   if(chkStateEl){
     let targetAccts = allList.filter(a => a.realm === 'cn' && a.enabled);
@@ -6779,7 +6364,7 @@ function renderActivityFilters(){
     const accounts = Array.isArray(window.ACCOUNTS) ? window.ACCOUNTS : [];
     uidSel.innerHTML = '<option value="">全部账号</option>' + accounts.map(a =>
       '<option value="' + esc(String(a.uid || '')) + '">'
-      + esc((a.nickname || a.uid || '') + (a.realm === 'cn' ? ' · 国内版' : ' · 国际版'))
+      + esc((a.nickname || a.uid || '') + ' · 国内版')
       + '</option>').join('');
   }
   const bind = (id, value) => {
@@ -6872,9 +6457,7 @@ function closeActivityHistory(){
 const WEIGHT_TIP = '权重 >1 的账号优先接单，多个高权重账号按权重比分流量；它们都接不了单时其他账号照常顶上。已开始的会话保持粘性不换号，权重对新会话生效。1 = 不干预，临期积分优先等自动规则照旧。';
 
 function accountRow(a){
-  const realmBadge = a.realm === 'cn'
-    ? '<span class="realm-badge-cn">国内版</span>'
-    : '<span class="realm-badge-intl">国际版</span>';
+  const realmBadge = '<span class="realm-badge-cn">国内版</span>';
   // Inline handlers embed these in an HTML attribute, so they must survive
   // both the attribute and the quoted JS string. uid comes from an upstream
   // JWT; treat it as untrusted and keep it to a safe charset.
@@ -7016,7 +6599,7 @@ function ensureHoverTip(){
 // 全页只留这一处 realm 过滤表达式 —— 账号卡片与「当前禁用账号与模型」都走它，
 // 两处不会各写一份、然后各自漂移。视图的真源是 window.VIEW_REALM。
 function accountsInView(){
-  const view = window.VIEW_REALM || "intl";
+  const view = window.VIEW_REALM || "cn";
   return (window.ACCOUNTS || []).filter(a => !a.realm || a.realm === view);
 }
 
@@ -7024,7 +6607,7 @@ function accountsInView(){
 // 四类来源：①面板手动停用 ②上游账号级冷却 ③上游模型级冷却 ④本地日限额/积分护栏。
 // 全部读 window.ACCOUNTS，不额外发请求；数据与账号卡片同源，不会互相矛盾。
 // 只描述当前视图（accountsInView）：计数、分组与空状态都从这同一份过滤后的数据
-// 算出来，否则切到国内版时会看到国际版的停用状态（issue #31）。
+// 算出来，否则会看到陈旧的停用状态（issue #31）。
 function disabledRows(){
   const rows = [];
   const now = Math.floor(Date.now() / 1000);
@@ -7035,7 +6618,7 @@ function disabledRows(){
   })();
   accountsInView().forEach(a => {
     const who = (a.nickname || '?') + ' (' + String(a.uid || '').slice(0, 8) + ')';
-    const realm = a.realm === 'cn' ? '国内版' : '国际版';
+    const realm = '国内版';
     const detail = a.lastErrorDetail || '';
     if(!a.enabled){
       rows.push({who, realm, scope: '账号', kind: '本地停用', manual: true,
@@ -7142,7 +6725,7 @@ function renderDisabled(){
 }
 
 /* ---- 签到与活跃记录（GET /activity/history，issue #176）----
-   国内版签到与国际版每日活跃的每一次真实尝试，都由 wb_activity.py 落成一行：
+   国内版签到的每一次真实尝试，都由 wb_activity.py 落成一行：
    时间 / uid / 昵称 / 区域 / 任务 / 触发来源 / 结果 / 说明。筛选全部交给服务端
    （range/task/result/uid/limit），它还会校验认不出来的值并回 400——前端不再
    自己过滤一遍，两处各写一份筛选规则迟早会跑偏。
@@ -7153,10 +6736,10 @@ const ACTIVITY_MAX_LIMIT = 1000;
 let ACTIVITY_LIMIT = ACTIVITY_PAGE;
 let ACTIVITY_LOADING = false;
 
-const ACTIVITY_TASK_LABEL = {checkin: '国内版签到', daily_chat: '国际版每日活跃'};
+const ACTIVITY_TASK_LABEL = {checkin: '国内版签到'};
 const ACTIVITY_TRIGGER_LABEL = {scheduler: '定时', manual: '手动', account_add: '添加账号',
                                 account_import: '导入', unknown: '未知'};
-const ACTIVITY_REALM_LABEL = {cn: '国内版', intl: '国际版'};
+const ACTIVITY_REALM_LABEL = {cn: '国内版'};
 
 function activityValue(id){
   const el = document.getElementById(id);
@@ -7284,7 +6867,7 @@ function renderAccounts(){
   renderDisabled();
   if(typeof updateTaskPageCheckinCards === 'function') updateTaskPageCheckinCards();
   const box = document.getElementById('accounts');
-  const currentView = (window.VIEW_REALM || "intl");
+  const currentView = (window.VIEW_REALM || "cn");
   let list = accountsInView();
   // 排序：停用的永远沉底（备注/权重再高也一样）→ 备注是启用组内的加分项
   // （有备注的账号只在同权重时排前面，不再全局置顶）→ 权重高的在前 →
@@ -7300,7 +6883,7 @@ function renderAccounts(){
     })
     .map(pair => pair[0]);
   const usable = list.filter(a => a.enabled).length;
-  const viewName = currentView === 'cn' ? '国内版' : '国际版';
+  const viewName = '国内版';
   document.getElementById('acctCount').textContent =
     list.length ? ('（' + viewName + '共 ' + list.length + ' 个，启用 ' + usable + ' 个）') : '';
   if(!list.length){
@@ -7362,8 +6945,8 @@ async function loadAccounts(){
 
 async function fetchCredits(btn){
   if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
-  const currentView = (window.VIEW_REALM || "intl");
-  const viewName = currentView === 'cn' ? '国内版' : '国际版';
+  const currentView = (window.VIEW_REALM || "cn");
+  const viewName = '国内版';
   try{
     const r = await postJSON('/accounts/credits', {realm: currentView});
     await loadAccounts();
@@ -7600,7 +7183,7 @@ function renderTestAll(r){
       html += '<tr>'
         + '<td style="text-align:left"><b>' + esc(row.nickname || (row.uid || '').slice(0, 8)) + '</b>'
         + '<div class="mono" style="font-size:11px;color:var(--dim)">'
-        + esc((row.uid || '').slice(0, 8)) + ' · ' + esc(row.realm === 'cn' ? '国内版' : '国际版') + '</div></td>'
+        + esc((row.uid || '').slice(0, 8)) + ' · 国内版' + '</div></td>'
         + '<td style="text-align:center">' + badge + '</td>'
         + '<td style="text-align:center">' + esc(String(row.elapsed_ms || 0)) + 'ms</td>'
         + '<td style="text-align:left;font-size:12px">' + esc(detail + ladder) + '</td>'
@@ -7876,8 +7459,8 @@ async function openCreditsDetail(uid, forceRefresh = false){
   const tierEl = document.getElementById("creditsModalTier");
   if(titleEl) titleEl.textContent = (acct ? (acct.nickname || acct.uid.slice(0,8)) : uid.slice(0,8)) + " · 积分明细";
   if(realmEl && acct){
-    realmEl.className = acct.realm === 'cn' ? 'realm-badge-cn' : 'realm-badge-intl';
-    realmEl.textContent = acct.realm === 'cn' ? '国内版' : '国际版';
+    realmEl.className = 'realm-badge-cn';
+    realmEl.textContent = '国内版';
   }
   if(tierEl){
     if(acct && acct.credits && acct.credits.is_paid_user !== undefined){
@@ -8428,10 +8011,7 @@ function renderDesktopScan(list, atrest){
     return;
   }
   if(list.length){
-    html += section('国际版 (Global) · www.workbuddy.ai',
-                    valid.filter(d => d.realm !== 'cn'), '');
-    html += section('国内版 (China) · copilot.tencent.com',
-                    valid.filter(d => d.realm === 'cn'), '');
+    html += section('国内版 (China) · copilot.tencent.com', valid, '');
   }
 
   if(needKey.length){
@@ -8472,7 +8052,7 @@ async function doImportDesktop(btn, path, realm){
     try{
     const r = await postJSON('/accounts/import/desktop', {path: path, realm: realm});
     const a = (r.imported || [])[0] || {};
-    toast('已导入 ' + (a.nickname || (a.uid||'').slice(0,8)) + ' 到 ' + (a.realm === 'cn' ? '国内版' : '国际版'));
+    toast('已导入 ' + (a.nickname || (a.uid||'').slice(0,8)) + ' 到国内版');
     if(a.uid && window.SCAN_POOL) window.SCAN_POOL.add(a.uid);
     await loadAccounts();
     await refresh();
@@ -8481,12 +8061,6 @@ async function doImportDesktop(btn, path, realm){
       if(s.pool_uids) window.SCAN_POOL = new Set(s.pool_uids);
       renderDesktopScan(s.detected || [], s.atrest || null);
     } catch(e2) { /* keep the refreshed toasts; list will refresh on next scan */ }
-    // The scan list is filtered by the current view; tell the user where the
-    // account actually landed so this never looks like a no-op.
-    if(a.realm && a.realm !== window.VIEW_REALM){
-      toast('该账号属于' + (a.realm === 'cn' ? '国内版' : '国际版')
-            + '列表，点击上方选项卡即可查看', 'err');
-    }
   }catch(e){
     toast('导入失败: ' + e.message, 'err');
     btn.disabled = false;
@@ -8551,28 +8125,23 @@ async function refreshInner(gen){
   document.getElementById('logfile').textContent = t.log_file || '';
   const rEl = document.getElementById('realm'); if(rEl) rEl.textContent = t.realm ? ' · ' + t.realm : '';
 
-  // 分别统计国际版与国内版账号与积分
+  // 账号与积分统计（国际版已移除，只剩国内版一份）
   const accts = window.ACCOUNTS || [];
-  const intlAccts = accts.filter(a => a.realm === 'intl');
   const cnAccts = accts.filter(a => a.realm === 'cn');
 
   const isAcctActive = a => a.enabled && !a.reserveBlocked && !a.dailyLimitBlocked && !a.creditLimitReached;
-  const intlActive = intlAccts.filter(isAcctActive).length;
   const cnActive = cnAccts.filter(isAcctActive).length;
 
-  let intlRemain = 0, cnRemain = 0;
-  intlAccts.forEach(a => { if(a.credits) intlRemain += (a.credits.remain || 0); });
+  let cnRemain = 0;
   cnAccts.forEach(a => { if(a.credits) cnRemain += (a.credits.remain || 0); });
 
   const poolHtml =
     '<div class="v-split">' +
-      '<div class="v-row"><span class="v-label">国际</span><span class="v-num" style="color:var(--accent)">' + intlActive + '<span class="v-unit">/' + intlAccts.length + '</span></span></div>' +
       '<div class="v-row"><span class="v-label">国内</span><span class="v-num" style="color:var(--accent)">' + cnActive + '<span class="v-unit">/' + cnAccts.length + '</span></span></div>' +
     '</div>';
 
   const credHtml =
     '<div class="v-split">' +
-      '<div class="v-row"><span class="v-label">国际</span><span class="v-num" style="color:var(--accent2)">' + fmt(intlRemain) + '</span></div>' +
       '<div class="v-row"><span class="v-label">国内</span><span class="v-num" style="color:var(--accent2)">' + fmt(cnRemain) + '</span></div>' +
     '</div>';
 
@@ -8580,8 +8149,8 @@ async function refreshInner(gen){
   if(t.usd_cny) costUsdRate = Number(t.usd_cny) || costUsdRate;
 
   // 这三张卡的数字都按当前视图区域取（/usage 等接口带 realm），标题带上区域，
-  // 免得把国际版的用量看成全局的。
-  const realmTag = '（' + (window.VIEW_REALM === 'cn' ? '国内版' : '国际版') + '）';
+  // 免得把局部区域的用量看成全局的。
+  const realmTag = '（国内版）';
   document.getElementById('cards').innerHTML =
     card('网关调用量' + realmTag, fmt(t.requests) + ' <span style="font-size:13px;font-weight:500;color:var(--dim);margin-left:4px">次</span>', '', '') +
     card('积分消耗' + realmTag, (t.credit != null ? Number(t.credit).toFixed(2) : '0.00') + ' <span style="font-size:13px;font-weight:500;color:var(--dim);margin-left:4px">积分</span>', ((PRICING_ON && t.cost_cny != null) ? ('估算价值: ' + fmtCostBoth(t.cost_cny, 12)) : ''), 'warn') +
@@ -9681,7 +9250,6 @@ async function loadSettings(showToast){
         if(gaps) gaps.innerHTML = '';
       }
       const autoSwitch = data.auto_switch_product === true;
-      const creditFallback = data.free_model_credit_fallback === true;
       const anthropicMsg = data.enable_anthropic_messages === true;
       const anthropicMsgInput = document.getElementById('setAnthropicMessages');
       if(anthropicMsgInput) anthropicMsgInput.checked = anthropicMsg;
@@ -9690,55 +9258,12 @@ async function loadSettings(showToast){
         anthropicMsgState.textContent = anthropicMsg ? '(已启用)' : '(未启用)';
         anthropicMsgState.style.color = anthropicMsg ? 'var(--accent2)' : 'var(--dim)';
       }
-      const creditFallbackInput = document.getElementById('setCreditFallback');
-      if(creditFallbackInput) creditFallbackInput.checked = creditFallback;
-      const creditFallbackState = document.getElementById('setCreditFallbackState');
-      if(creditFallbackState){
-        creditFallbackState.textContent = creditFallback ? '(已启用)' : '(未启用)';
-        creditFallbackState.style.color = creditFallback ? 'var(--accent2)' : 'var(--dim)';
-      }
       const autoSwitchInput = document.getElementById('setAutoSwitch');
       if(autoSwitchInput) autoSwitchInput.checked = autoSwitch;
       const autoSwitchState = document.getElementById('setAutoSwitchState');
       if(autoSwitchState){
         autoSwitchState.textContent = autoSwitch ? '(已启用)' : '(未启用)';
         autoSwitchState.style.color = autoSwitch ? 'var(--accent2)' : 'var(--dim)';
-      }
-      const dailyWeb = data.daily_chat_web !== false;
-      const dailyWebInput = document.getElementById('setDailyChatWeb');
-      if(dailyWebInput) dailyWebInput.checked = dailyWeb;
-      const dailyWebState = document.getElementById('setDailyChatWebState');
-      if(dailyWebState){
-        dailyWebState.textContent = dailyWeb ? '(已启用)' : '(仅桌面端对话)';
-        dailyWebState.style.color = dailyWeb ? 'var(--accent2)' : 'var(--dim)';
-      }
-      renderDailyChatModel(data.daily_chat_model || '', data.daily_chat_model_default || '');
-      // 网页通道重试：没配过时后端给的是「开」，只有显式 false 才当关闭。
-      const dailyWebRetry = data.daily_chat_web_retry !== false;
-      const dailyWebRetryInput = document.getElementById('setDailyChatWebRetry');
-      if(dailyWebRetryInput) dailyWebRetryInput.checked = dailyWebRetry;
-      const dailyWebTimeoutDefault = Number(data.daily_chat_web_timeout_default || 120);
-      const dailyWebTimeout = Number(data.daily_chat_web_timeout || dailyWebTimeoutDefault);
-      const dailyWebAttemptsDefault = Number(data.daily_chat_web_attempts_default || 3);
-      const dailyWebAttempts = Number(data.daily_chat_web_attempts || dailyWebAttemptsDefault);
-      const dailyWebAttemptsInput = document.getElementById('setDailyChatWebAttempts');
-      if(dailyWebAttemptsInput){
-        dailyWebAttemptsInput.value = String(dailyWebAttempts);
-        // 关掉重试就只跑一轮，次数没有意义；等待时间仍对那唯一一轮有效，保持可改。
-        dailyWebAttemptsInput.disabled = !dailyWebRetry;
-      }
-      const dailyWebTimeoutInput = document.getElementById('setDailyChatWebTimeout');
-      if(dailyWebTimeoutInput) dailyWebTimeoutInput.value = String(dailyWebTimeout);
-      const dailyWebRetryState = document.getElementById('setDailyChatWebRetryState');
-      if(dailyWebRetryState){
-        // 状态行把实际的等待序列算出来，省得对着两个数字自己乘。
-        const waits = [];
-        const rounds = dailyWebRetry ? dailyWebAttempts : 1;
-        for(let i = 0; i < rounds; i++) waits.push(dailyWebTimeout * Math.pow(2, i));
-        dailyWebRetryState.textContent = dailyWebRetry
-          ? ('最多尝试 ' + dailyWebAttempts + ' 次 · ' + waits.join(' / ') + ' 秒')
-          : ('只跑一轮 · ' + dailyWebTimeout + ' 秒');
-        dailyWebRetryState.style.color = dailyWebRetry ? 'var(--accent2)' : 'var(--dim)';
       }
       const localWeb = data.local_web_tools === true;
       const localWebInput = document.getElementById('setLocalWebTools');
@@ -9913,7 +9438,7 @@ async function savePanelPassword(btn){
 }
 
 // ---- 限额（全局默认 + 可选分版本） -------------------------------------
-// 五个护栏共用一张表：一列一个作用域。国际版/国内版留空即继承全局默认，
+// 五个护栏共用一张表：一列一个作用域。国内版留空即继承全局默认，
 // 所以“不分版本”只是“两列都留空”的一个特例，不必再另存一套开关。
 const LIMIT_FIELDS = [
   {key:'reserve_credits',         id:'Reserve',         label:'保留积分'},
@@ -9924,7 +9449,6 @@ const LIMIT_FIELDS = [
 ];
 const LIMIT_SCOPES = [
   {scope:'global', prefix:'Global', label:'全局默认'},
-  {scope:'intl',   prefix:'Intl',   label:'国际版'},
   {scope:'cn',     prefix:'Cn',     label:'国内版'},
 ];
 
@@ -10294,21 +9818,6 @@ async function saveAnthropicMessages(btn){
   }
 }
 
-async function saveCreditFallback(btn){
-  const el = document.getElementById('setCreditFallback');
-  const value = !!(el && el.checked);
-  if(btn) btn.disabled = true;
-  try {
-    await postJSON('/settings/save', {free_model_credit_fallback: value});
-    toast(value ? '已启用：免费额度耗尽自动回退付费积分版' : '已关闭自动回退付费积分版', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-  } finally {
-    if(btn) btn.disabled = false;
-  }
-}
-
 async function saveAutoSwitchProduct(btn){
   const el = document.getElementById('setAutoSwitch');
   const value = !!(el && el.checked);
@@ -10316,132 +9825,6 @@ async function saveAutoSwitchProduct(btn){
   try {
     await postJSON('/settings/save', {auto_switch_product: value});
     toast(value ? '已启用：429 时自动切换出站身份' : '已关闭自动切换出站身份', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-  } finally {
-    if(btn) btn.disabled = false;
-  }
-}
-
-async function saveDailyChatWeb(btn){
-  const el = document.getElementById('setDailyChatWeb');
-  const value = !!(el && el.checked);
-  if(btn) btn.disabled = true;
-  try {
-    await postJSON('/settings/save', {daily_chat_web: value});
-    toast(value ? '已启用：国际版打卡走网页通道' : '已关闭：国际版打卡只发桌面端对话', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-  } finally {
-    if(btn) btn.disabled = false;
-  }
-}
-
-/* 网页通道失败重试。后端只接受严格布尔，所以这里直接发勾选状态；存失败时
-   把开关拨回去，免得界面显示一个其实没落盘的状态。 */
-async function saveDailyChatWebRetry(){
-  const el = document.getElementById('setDailyChatWebRetry');
-  const value = !!(el && el.checked);
-  try {
-    await postJSON('/settings/save', {daily_chat_web_retry: value});
-    toast(value ? '已启用：网页通道失败后最多重试 3 次（等待翻倍）'
-                : '已关闭：网页通道只跑一轮', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-    if(el) el.checked = !value;
-  }
-}
-
-/* 每轮等待时间（秒）与最多尝试次数。与「上游响应头超时」同一套收口：空值、
-   小数、非数字就地拦下，不发上去换一个 400 回来。上限由后端把关。 */
-async function saveDailyChatWebTuning(btn){
-  const attemptsEl = document.getElementById('setDailyChatWebAttempts');
-  const timeoutEl = document.getElementById('setDailyChatWebTimeout');
-  const attempts = Math.floor(Number(attemptsEl && attemptsEl.value));
-  const timeout = Math.floor(Number(timeoutEl && timeoutEl.value));
-  if(!isFinite(attempts) || attempts < 1){
-    toast('请输入不小于 1 的整数次数', 'bad');
-    return;
-  }
-  if(!isFinite(timeout) || timeout < 1){
-    toast('请输入不小于 1 的整数秒', 'bad');
-    return;
-  }
-  if(btn) btn.disabled = true;
-  try {
-    await postJSON('/settings/save', {daily_chat_web_attempts: attempts,
-                                      daily_chat_web_timeout: timeout});
-    toast('已保存：最多尝试 ' + attempts + ' 次，首轮等待 ' + timeout + ' 秒', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-  } finally {
-    if(btn) btn.disabled = false;
-  }
-}
-
-/* 每日活跃模型的候选项：国际版目录里的全部模型，免费（0.00x）的排前面并标出来。
-   面板本来就为「可用模型」取过同一份目录，这里另取一次 intl 的，
-   与当前查看的区域无关（每日活跃只对国际版存在）。 */
-let DAILY_CHAT_MODELS = null;
-async function loadDailyChatModels(){
-  if(DAILY_CHAT_MODELS) return DAILY_CHAT_MODELS;
-  try {
-    const r = await getJSON('/v1/models?realm=intl');
-    const out = [];
-    for(const m of (r.data || [])){
-      if(!m.id) continue;
-      const credits = String(m.credits == null ? '' : m.credits).trim();
-      const raw = credits.toLowerCase().replace(/^x/, '');
-      const free = (raw === '0.00' || raw === '0');
-      out.push({id: m.id, free: free, credits: credits});
-    }
-    // 免费的在前，其余在后，各自按 id 排序；默认模型由「默认」那一项负责。
-    out.sort((a, b) => (a.free === b.free ? a.id.localeCompare(b.id) : (a.free ? -1 : 1)));
-    DAILY_CHAT_MODELS = out;
-  } catch(e) {
-    DAILY_CHAT_MODELS = [];
-  }
-  return DAILY_CHAT_MODELS;
-}
-
-async function renderDailyChatModel(current, def){
-  const sel = document.getElementById('setDailyChatModel');
-  if(!sel) return;
-  const models = await loadDailyChatModels();
-  const label = m => {
-    if(!m.credits) return m.id;
-    const raw = m.credits.replace(/^x/i, '');
-    return m.free ? (m.id + '（免费 0.00x）') : (m.id + '（' + raw + 'x）');
-  };
-  const opts = ['<option value="">' + esc('默认模型（' + (def || '内置免费模型') + '，免费）') + '</option>'];
-  const seen = new Set(['']);
-  for(const m of models){
-    if(m.id === def || seen.has(m.id)) continue;   // 内置默认由「默认」那一项承担
-    seen.add(m.id);
-    opts.push('<option value="' + esc(m.id) + '">' + esc(label(m)) + '</option>');
-  }
-  // 已保存但不在目录里的值（上游下线了、或手工改过 settings.json）也要显示出来，
-  // 否则面板会把操作员的设置悄悄吞掉。
-  if(current && current !== def && !seen.has(current)){
-    opts.push('<option value="' + esc(current) + '">' + esc(current + '（不在当前目录里）') + '</option>');
-  }
-  sel.innerHTML = opts.join('');
-  sel.value = current || '';
-  const state = document.getElementById('setDailyChatModelState');
-  if(state) state.textContent = current ? '(已指定)' : '(默认)';
-}
-
-async function saveDailyChatModel(btn){
-  const sel = document.getElementById('setDailyChatModel');
-  const value = sel ? sel.value : '';
-  if(btn) btn.disabled = true;
-  try {
-    await postJSON('/settings/save', {daily_chat_model: value});
-    toast(value ? ('每日活跃改用 ' + value) : '每日活跃恢复内置默认模型', 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');
@@ -10695,7 +10078,6 @@ function randomKeyValue(){
 
 const REALM_CHOICES = [
   ['', '跟随面板切换'],
-  ['intl', '固定国际版出口'],
   ['cn', '固定国内版出口'],
 ];
 
@@ -10720,8 +10102,7 @@ function renderDeletedKeyRows(){
   if(!box) return;
   if(!DELETED_KEY_ROWS.length){ box.innerHTML = ''; return; }
   const rows = DELETED_KEY_ROWS.map(k => {
-    const realmLbl = (k.realm === 'intl') ? '固定国际版出口'
-      : ((k.realm === 'cn') ? '固定国内版出口' : '跟随面板切换');
+    const realmLbl = (k.realm === 'cn') ? '固定国内版出口' : '跟随面板切换';
     return '<div style="font-size:12px;color:var(--dim);display:flex;gap:14px;flex-wrap:wrap;padding:7px 0;border-top:1px solid var(--line)">'
       + '<span style="color:var(--fg);font-weight:600">' + esc(k.name || '未命名') + '</span>'
       + '<span>' + esc(realmLbl) + '</span>'
@@ -10799,9 +10180,7 @@ function renderKeyRows(){
       ? '<span class="badge ok" style="font-size:11px;font-weight:600;padding:2px 10px">已启用</span>'
       : '<span class="badge off" style="font-size:11px;font-weight:600;padding:2px 10px">已禁用</span>';
 
-    const realmBadge = (row.realm === 'intl')
-      ? '<span class="realm-badge-intl" style="font-size:11px">固定国际版出口</span>'
-      : (row.realm === 'cn')
+    const realmBadge = (row.realm === 'cn')
       ? '<span class="realm-badge-cn" style="font-size:11px">固定国内版出口</span>'
       : '<span class="badge s" style="font-size:11px">跟随面板切换</span>';
 
@@ -12416,21 +11795,14 @@ function renderPerfMatrix(usage, perf){
           if(info.realm) realms.add(info.realm);
         });
       }
-      if(realms.size === 1){
-        const r = Array.from(realms)[0];
-        realmCell = r === 'cn' ? '<span class="realm-badge-cn">国内版</span>' : '<span class="realm-badge-intl">国际版</span>';
-      } else if(realms.size > 1){
-        realmCell = '<span class="realm-badge-intl">国际版</span> <span class="realm-badge-cn">国内版</span>';
+      if(realms.size >= 1){
+        realmCell = '<span class="realm-badge-cn">国内版</span>';
       } else {
-        // No account attribution on these rows (a test call,
-        // say). Decide from the model id itself: this table
-        // spans both realms, so the gateway's current exit
-        // would mislabel domestic-only models.
-        const isIntlOnly = ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.3-codex', 'gemini-3.5-flash', 'grok-4.7'].includes(m.id);
+        // No account attribution on these rows (a test call, say).
+        // Decide from the model id itself rather than the gateway exit.
         const isCnOnly = ['deepseek-v4-pro', 'glm-5.1', 'glm-5v-turbo', 'kimi-k3-1', 'kimi-k2.7', 'minimax-m3'].includes(m.id);
-        realmCell = isIntlOnly ? '<span class="realm-badge-intl">国际版</span>'
-          : (isCnOnly ? '<span class="realm-badge-cn">国内版</span>'
-            : '<span style="color:var(--dim)">—</span>');
+        realmCell = isCnOnly ? '<span class="realm-badge-cn">国内版</span>'
+          : '<span style="color:var(--dim)">—</span>';
       }
       if(acctEntries.length === 1 && acctEntries[0][0] === '(unattributed)'){
         acctCell = '<span style="color:var(--dim)">—</span>';
@@ -12536,11 +11908,9 @@ function toggleRemainingModelFilter(model){
   if(lastRemainingData) renderRemainingUsage(lastRemainingData);
 }
 
-// 剩余用量按区域分成两块（国际版 / 国内版）：各自的徽章、统计与表格；区域列
+// 剩余用量按区域分块：各自的徽章、统计与表格；区域列
 // 因此不再需要——区块标签已经说明了区域。
 const REMAINING_REALMS = [
-  {realm: 'intl', budgets: 'remainingBudgetsIntl',
-   summary: 'remainingSummaryIntl', tbody: 'remainingTbodyIntl'},
   {realm: 'cn', budgets: 'remainingBudgetsCn',
    summary: 'remainingSummaryCn', tbody: 'remainingTbodyCn'},
 ];
@@ -12686,7 +12056,6 @@ const emptyRow = '<tr><td colspan="6" style="text-align:center;color:var(--dim)"
         + '</tr>';
     }).join('');
   });
-    applyTableSort('remainingUsageTableIntl');
     applyTableSort('remainingUsageTableCn');
 }
 
@@ -12842,15 +12211,14 @@ function renderCreditGrants(data){
       : (r.status === 'active' ? 'ok' : '');
     const expiry = r.no_expiry ? '不过期' : String(r.expire_iso || '').slice(5, 16) || '—';
     // 来源：上游给了发放原因就用它的原文（如「Buddy 加油站签到」「成长计划奖励」），
-    // 没有就按包名与面额推断（国际版的 Bonus Pack 30/50 就是每日活跃奖励）。本机
+    // 没有就用空。本机
     // 签到 / 每日活跃的记录按时间对得上时一并挂进悬停提示，指出这次发放对应哪次动作。
     const reason = String(r.grant_reason || '').trim();
-    const inferred = !reason && r.realm === 'intl' && /bonus/i.test(String(r.name || ''))
-      && (Number(r.size) === 30 || Number(r.size) === 50);
-    const source = reason || (inferred ? '每日活跃奖励' : '');
+    // 过去这里还有一条「Bonus Pack 30 = 每日活跃奖励」的推断，只对国际版成立；
+    // 该区域删除后上游不再出现那种包，规则一并去掉，来源只认上游给的原因。
+    const source = reason;
     const tips = [];
     if(reason) tips.push('上游发放原因：' + reason);
-    if(inferred) tips.push('按包名与面额推断（官方规则：每日活跃 30 / Pro 50 积分）');
     if(r.action && r.action.task){
       const task = r.action.task === 'checkin' ? '每日签到' : '每日活跃打卡';
       tips.push('本机动作：' + task + ' ' + String(r.action.ts || '').slice(5, 16).replace('T', ' ')
@@ -12860,7 +12228,7 @@ function renderCreditGrants(data){
       + '<td' + (r.create_iso ? ' data-sort="' + esc(r.create_iso) + '"' : '') + '>'
       + esc(String(r.create_iso || '').slice(5, 16) || '—') + '</td>'
       + '<td title="' + esc(r.uid || '') + '">' + esc(r.nickname || creditAccountLabel(r.uid)) + '</td>'
-      + '<td style="text-align:center">' + esc(r.realm === 'cn' ? '国内版' : '国际版') + '</td>'
+      + '<td style="text-align:center">国内版</td>'
       + '<td' + (r.grant_reason ? ' title="' + esc(r.grant_reason) + '"' : '') + '>' + esc(r.name || '') + '</td>'
       + '<td' + (tips.length ? ' title="' + esc(tips.join('；')) + '"' : '') + '>' + esc(source || '—') + '</td>'
       + '<td style="text-align:right">' + fmt(r.size || 0) + '</td>'
@@ -12988,9 +12356,7 @@ function renderAnalytics(data){
           }).join('');
         }
 
-        const realmBadge = a.realm === 'cn'
-          ? '<span class="badge warn" style="font-size:10px">国内版</span>'
-          : '<span class="badge s" style="font-size:10px">国际版</span>';
+        const realmBadge = '<span class="badge warn" style="font-size:10px">国内版</span>';
 
         let creditStr = '<span style="color:var(--dim)">—</span>';
         if(a.credits && a.credits.remain != null){
@@ -13055,7 +12421,6 @@ async function onKeyBeforeToggle(box){
 function keyRealmCell(k){
   if(k.source === 'bucket') return '<span style="color:var(--dim)">—</span>';
   if(k.realm === 'cn') return '<span class="badge warn" style="font-size:10px">国内版</span>';
-  if(k.realm === 'intl') return '<span class="badge s" style="font-size:10px">国际版</span>';
   // realm 为空的 Key 不绑出口，而是跟着模型走：它可能两个出口都用过，
   // 那时代理返回的积分是两个价格体系相加的结果，必须说出来。
   if(k.cross_realm) return '<span class="badge warn" style="font-size:10px">跟随 · 混合</span>';
@@ -13099,7 +12464,6 @@ function renderKeyTable(data){
     const cross = named.filter(k => k.cross_realm).length;
     const parts = [];
     if(!named.length) parts.push('设置里还没有任何 API Key，全部流量都落在下面的未归属行里。');
-    if(cross) parts.push('有 ' + cross + ' 把 Key 没有绑定出口，它的积分由国际版与国内版两套价格相加而来，只能当量级看。');
     // 收起那行时就不再解释那行，否则读者找不到话里指的东西。
     if(!keyBeforeHidden) parts.push('Key 维度只从本次升级之后开始记录：更早的请求没有这个字段，会一直留在「(切换前)」里且不会再增长。');
     note.innerHTML = parts.join(' ');
@@ -13700,7 +13064,7 @@ const dimDefs = {
       const a = state.analytics; if (!a) return [];
       return (a.accounts || []).map(acc => ({
         key: acc.uid,
-        who: `<div class="who"><b>${acc.nickname || acc.uid.slice(0,8)} <span class="realm-tag ${acc.realm === 'intl' ? 'realm-intl' : 'realm-cn'}">${acc.realm === 'intl' ? '国际版' : '国内版'}</span></b><span data-tip="UID：${acc.uid}">${(acc.uid||'').slice(0,13)}…</span></div>`,
+        who: `<div class="who"><b>${acc.nickname || acc.uid.slice(0,8)} <span class="realm-tag realm-cn">国内版</span></b><span data-tip="UID：${acc.uid}">${(acc.uid||'').slice(0,13)}…</span></div>`,
         req: acc.window.requests,
         tok: acc.window.total_tokens,
         tokSub: `思考 ${fmtCompact(acc.window.reasoning_tokens)} · 缓存 ${fmtCompact(acc.window.cached_tokens)}`,

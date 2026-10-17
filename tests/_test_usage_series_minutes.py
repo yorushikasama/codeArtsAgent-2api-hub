@@ -422,9 +422,10 @@ check("基线：跨午夜窗口有内容且桶宽是 60",
 check("基线：空窗口（日志里没有这段）是空序列",
       json.loads(BASE_NOW)["series"] == []
       and json.loads(BASE_NOW)["credits"] == [])
-check("基线：realm 过滤下 cn 的令牌数少于 all",
+# 单出口：按 cn 过滤与不过滤是同一批行（历史行里的 intl 归一成 cn）。
+check("基线：realm 过滤下 cn 的令牌数等于 all",
       sum(b["total_tokens"] for b in json.loads(BASE_CN)["series"])
-      < sum(b["total_tokens"] for b in json.loads(BASE_MAIN)["series"]))
+      == sum(b["total_tokens"] for b in json.loads(BASE_MAIN)["series"]))
 check("基线：边界窗口（max_at - 6h .. max_at）有内容",
       len(json.loads(BASE_EDGE)["series"]) > 1,
       len(json.loads(BASE_EDGE)["series"]))

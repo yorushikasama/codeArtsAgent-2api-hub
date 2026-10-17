@@ -255,7 +255,7 @@ class ModelCooldownTests(unittest.TestCase):
 
     def test_a_6004_reports_the_cap_moment_as_the_start(self):
         """6004 的起始时刻就是上游撞线时刻，与 cappedAt 一致（同一瞬间）。"""
-        account = accounts.Account({"uid": "synthetic-intl", "realm": "intl",
+        account = accounts.Account({"uid": "synthetic-cn", "realm": "cn",
                                     "accessToken": "token"})
         directory = tempfile.mkdtemp(prefix="cap-start-")
         old_dir = proxy.ACCOUNTS_DIR
@@ -263,7 +263,7 @@ class ModelCooldownTests(unittest.TestCase):
         try:
             detail = self.cap_body(time.time() + 3600)
             self.drive_one_429(account, detail=detail, stub_parser=False,
-                               model="deepseek-v4.1-flash", target_realm="intl")
+                               model="hy4-preview-f", target_realm="cn")
         finally:
             proxy.ACCOUNTS_DIR = old_dir
         entry = account.public()["modelCooldowns"][0]
@@ -271,13 +271,13 @@ class ModelCooldownTests(unittest.TestCase):
         self.assertIn("startedAt", entry)
         self.assertLessEqual(abs(entry["startedAt"] - entry["cappedAt"]), 1)
         # keep_caps 只保留 cap 冷却，起始时刻跟着一起留下。
-        account.clear_error(model="deepseek-v4.1-flash", keep_caps=True)
+        account.clear_error(model="hy4-preview-f", keep_caps=True)
         kept = account.public()["modelCooldowns"][0]
         self.assertEqual(kept["startedAt"], entry["startedAt"])
         # 不带 keep_caps 则两者一起清掉。
-        account.clear_error(model="deepseek-v4.1-flash")
+        account.clear_error(model="hy4-preview-f")
         self.assertEqual(account.public()["modelCooldowns"], [])
-        self.assertNotIn("deepseek-v4.1-flash", account.model_cooldowns_at)
+        self.assertNotIn("hy4-preview-f", account.model_cooldowns_at)
 
     def test_the_real_bare_429_parks_only_the_model(self):
         """S1 - 87% of the recorded 429s, no reset information at all.
@@ -536,32 +536,29 @@ class ModelCooldownTests(unittest.TestCase):
     # ------------------------------------------------------------------
 
     def test_the_free_cap_scope_is_the_confirmed_model_lists(self):
-        """范围是用户确认过的口径：intl 三个免费模型，cn 两个（deepseek 收费）。"""
-        self.assertEqual(sorted(accounts.FREE_CAP_MODELS["intl"]),
-                         ["deepseek-v4.1-flash", "hy3", "hy4-preview-f"])
+        """范围是用户确认过的口径：只剩国内版两个免费模型（deepseek 收费）。"""
+        self.assertEqual(sorted(accounts.FREE_CAP_MODELS), ["cn"])
         self.assertEqual(sorted(accounts.FREE_CAP_MODELS["cn"]), ["hy3", "hy4-preview-f"])
-        self.assertTrue(accounts.is_free_cap_model("intl", "deepseek-v4.1-flash"))
         self.assertTrue(accounts.is_free_cap_model("cn", "hy4-preview-f"))
         self.assertFalse(accounts.is_free_cap_model("cn", "deepseek-v4.1-flash"),
                          "国内版的 deepseek-v4.1-flash 是收费模型（x0.11）")
-        self.assertFalse(accounts.is_free_cap_model("intl", "hy4-preview"),
+        self.assertFalse(accounts.is_free_cap_model("cn", "hy4-preview"),
                          "hy4-preview 是付费变体（x0.29）")
-        self.assertFalse(accounts.is_free_cap_model("intl", "glm-5.3"))
+        self.assertFalse(accounts.is_free_cap_model("cn", "glm-5.3"))
+        # 已删区域与未知区域都失败关闭（账号本身在加载时已归一成 cn）。
+        self.assertFalse(accounts.is_free_cap_model("intl", "deepseek-v4.1-flash"))
         self.assertFalse(accounts.is_free_cap_model("", "hy3"), "未知区域失败关闭")
-        self.assertFalse(accounts.is_free_cap_model("intl", ""))
+        self.assertFalse(accounts.is_free_cap_model("cn", ""))
 
     def test_note_model_cap_only_records_models_in_the_free_scope(self):
         cn = self.account()
-        intl = accounts.Account({"uid": "synthetic-intl", "realm": "intl",
-                                 "accessToken": "token"})
         now = time.time()
         # 范围外：付费模型、以及国内版不算免费的 deepseek
         self.assertFalse(cn.note_model_cap("glm-5.3", now + 600))
         self.assertFalse(cn.note_model_cap("deepseek-v4.1-flash", now + 600))
         self.assertEqual(cn.model_caps, {})
-        # 范围内：两区都免费的两个 + intl 的 deepseek
+        # 范围内：国内版两个免费模型之一
         self.assertTrue(cn.note_model_cap("hy3", now + 600))
-        self.assertTrue(intl.note_model_cap("deepseek-v4.1-flash", now + 600))
         # 同一个窗口重复撞线不算新记录（避免每次都重写凭证档）
         self.assertFalse(cn.note_model_cap("hy3", now + 600))
         # 没有恢复时刻可记的 6004 也不写
@@ -596,19 +593,19 @@ class ModelCooldownTests(unittest.TestCase):
             detail = self.cap_body(time.time() + 3600)
             reset = proxy.parse_rate_limit_reset(detail)
             self.assertIsNotNone(reset, "夹具的 6004 必须带可解析的重置时刻")
-            account = accounts.Account({"uid": "synthetic-intl", "realm": "intl",
+            account = accounts.Account({"uid": "synthetic-intl", "realm": "cn",
                                         "accessToken": "token"})
             started = time.time()
             self.drive_one_429(account, detail=detail, stub_parser=False,
-                               model="deepseek-v4.1-flash", target_realm="intl")
+                               model="hy4-preview-f", target_realm="cn")
 
-            cap = account.model_caps["deepseek-v4.1-flash"]
+            cap = account.model_caps["hy4-preview-f"]
             self.assertLessEqual(abs(cap["reset"] - reset), 2)
             self.assertGreaterEqual(cap["at"], started - 1)
             self.assertLessEqual(cap["at"], time.time())
             # 面板显示的数据源：冷却条目带 cappedAt（撞线时刻）
             entry = next(item for item in account.public()["modelCooldowns"]
-                         if item["model"] == "deepseek-v4.1-flash")
+                         if item["model"] == "hy4-preview-f")
             self.assertLessEqual(abs(entry["cappedAt"] - cap["at"]), 2)
 
             # 持久化：凭证档里带着 modelCaps（RUNTIME_ONLY_FIELDS 不带它）
@@ -616,22 +613,22 @@ class ModelCooldownTests(unittest.TestCase):
             self.assertTrue(os.path.exists(saved_path))
             with open(saved_path, encoding="utf-8") as fh:
                 saved = json.load(fh)
-            self.assertIn("deepseek-v4.1-flash", saved.get("modelCaps") or {})
+            self.assertIn("hy4-preview-f", saved.get("modelCaps") or {})
 
             # 重启 = 新建池 + load()：恢复时间内仍在禁用，选择逻辑跳过该模型
             pool = accounts.AccountPool(directory)
             loaded = pool.load()
             self.assertEqual(len(loaded), 1)
             revived = loaded[0]
-            self.assertGreaterEqual(revived.model_cooldowns.get("deepseek-v4.1-flash", 0.0),
+            self.assertGreaterEqual(revived.model_cooldowns.get("hy4-preview-f", 0.0),
                                     reset - 2)
-            self.assertFalse(revived.ready(model="deepseek-v4.1-flash"))
+            self.assertFalse(revived.ready(model="hy4-preview-f"))
             self.assertTrue(revived.ready(model="glm-5.3"), "同账号其他模型不受影响")
-            self.assertIsNone(pool.pick(realm="intl", model="deepseek-v4.1-flash"),
+            self.assertIsNone(pool.pick(realm="cn", model="hy4-preview-f"),
                               "重启后选择逻辑仍跳过被禁用的模型")
-            self.assertEqual(pool.pick(realm="intl", model="glm-5.3").uid, "synthetic-intl")
+            self.assertEqual(pool.pick(realm="cn", model="glm-5.3").uid, "synthetic-intl")
             revived_row = next(item for item in revived.public()["modelCooldowns"]
-                               if item["model"] == "deepseek-v4.1-flash")
+                               if item["model"] == "hy4-preview-f")
             self.assertIn("cappedAt", revived_row, "重启加载后面板仍能显示撞线时间")
             # 起始时刻是运行时态，重启即清零；撞线时刻另有持久化的 cap 兜底，
             # 面板的「开始时间」列因此仍有值（这是刻意的分工，不是缺失）。
@@ -640,8 +637,8 @@ class ModelCooldownTests(unittest.TestCase):
 
             # 恢复时间过了以后自动解除
             with mock.patch.object(accounts.time, "time", return_value=reset + 1):
-                self.assertTrue(revived.ready(model="deepseek-v4.1-flash"))
-                self.assertEqual(pool.pick(realm="intl", model="deepseek-v4.1-flash").uid,
+                self.assertTrue(revived.ready(model="hy4-preview-f"))
+                self.assertEqual(pool.pick(realm="cn", model="hy4-preview-f").uid,
                                  "synthetic-intl")
         finally:
             proxy.ACCOUNTS_DIR = old_dir

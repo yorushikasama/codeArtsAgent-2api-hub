@@ -6,25 +6,23 @@
      - X-IDE-Type / X-IDE-Name: WorkBuddy
      - X-Product: SaaS
      - X-Agent-Intent: craft、X-Agent-Purpose: conversation、X-Agent-Type: main
-     - 国际版端点: www.workbuddy.ai
-       实测 5.8.4（2026-10-16 mitmproxy 抓包，账号 uid 已脱敏）:
-         X-IDE-Version: 5.8.4
-         User-Agent: WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0
      - 国内版端点: copilot.tencent.com（无对应抓包，维持 5.5.6 与原 UA）
 
   2. 官方 VSCode 插件 (vscode / vsc):
      - X-IDE-Type / X-IDE-Name: VSCode
      - X-Product: SaaS
      - UA: VSCode/<ver> WorkBuddy/<ver>
-     - 国际版端点: www.workbuddy.ai，国内版端点: www.workbuddy.cn
+     - 国内版端点: www.workbuddy.cn
      （无对应抓包，取值维持原样）
 
   3. 官方 CodeBuddy CLI (cli):
      - X-IDE-Type / X-IDE-Name: CLI
      - X-Product: SaaS
      - UA: CLI/<ver> CodeBuddy/<ver>
-     - 国际版端点: www.workbuddy.ai，国内版端点: copilot.tencent.com
+     - 国内版端点: copilot.tencent.com
      （版本号取 5.8.4 内置 CLI 的 2.161.0）
+
+国际版（intl / www.workbuddy.ai）已整体移除，三套身分都只剩国内版端点。
 
 三套身分都带官方客户端的会话头族（X-Conversation-ID / -Request-ID /
 -Message-ID / -Root-Request-ID）：缺了它会触发上游的渠道校验，回 400 /
@@ -36,10 +34,6 @@ import secrets
 import time
 import uuid
 
-# 5.8.4 实测（国际版桌面客户端抓包）: 对话请求的版本号与 UA。
-# UA 末段 CLI/2.161.0 是客户端内置 CLI 的版本，不是桌面端自己的版本。
-DESKTOP_VERSION_INTL = "5.8.4"
-DESKTOP_UA_INTL = "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0"
 # 国内版客户端没有对应抓包，维持原值，不凭猜测改。
 DESKTOP_VERSION_CN = "5.5.6"
 DESKTOP_UA_CN = "WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1"
@@ -67,13 +61,6 @@ def normalize_product(value):
 
 
 _ENDPOINTS = {
-    ("intl", PRODUCT_DESKTOP): ("https://www.workbuddy.ai", "www.workbuddy.ai"),
-    ("intl", PRODUCT_VSCODE): ("https://www.workbuddy.ai", "www.workbuddy.ai"),
-    # www.codebuddy.ai does not resolve on the networks this was measured on
-    # (getaddrinfo fails; the system resolver hands back the 0.0.0.1 sinkhole),
-    # so the international CLI identity rides the workbuddy.ai edge, which
-    # accepts CLI headers and answers normally.
-    ("intl", PRODUCT_CLI): ("https://www.workbuddy.ai", "www.workbuddy.ai"),
     ("cn", PRODUCT_DESKTOP): ("https://copilot.tencent.com", "copilot.tencent.com"),
     ("cn", PRODUCT_VSCODE): ("https://www.workbuddy.cn", "www.workbuddy.cn"),
     ("cn", PRODUCT_CLI): ("https://copilot.tencent.com", "copilot.tencent.com"),
@@ -81,9 +68,12 @@ _ENDPOINTS = {
 
 
 def endpoint_for(realm, product):
-    """回传 (chat base URL, X-Domain)。身分换了，端点也要跟着换。"""
-    key = ("cn" if realm == "cn" else "intl", normalize_product(product))
-    return _ENDPOINTS[key]
+    """回传 (chat base URL, X-Domain)。身分换了，端点也要跟着换。
+
+    国际版已移除，realm 参数保留（调用方仍按区域传值），一律落到国内版出口。
+    """
+    del realm
+    return _ENDPOINTS[("cn", normalize_product(product))]
 
 
 def domain_for_realm(realm):
@@ -145,7 +135,6 @@ def build_identity_headers(product, realm, uid, token,
     在会话维度上维护映射。
     """
     product = normalize_product(product)
-    is_cn = (realm == "cn")
 
     conv = str(conversation_id or "").strip() or new_conversation_id()
     msg_id = new_message_id()
@@ -154,8 +143,8 @@ def build_identity_headers(product, realm, uid, token,
     conv_req_id = new_message_id()
 
     if product == PRODUCT_DESKTOP:
-        client_ver = DESKTOP_VERSION_CN if is_cn else DESKTOP_VERSION_INTL
-        chat_ua = DESKTOP_UA_CN if is_cn else DESKTOP_UA_INTL
+        client_ver = DESKTOP_VERSION_CN
+        chat_ua = DESKTOP_UA_CN
         headers = {
             "X-Agent-Intent": "craft",
             "X-Agent-Purpose": "conversation",

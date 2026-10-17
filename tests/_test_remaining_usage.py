@@ -118,7 +118,7 @@ def cap_detail(reset):
     raise AssertionError("cap detail did not parse back to %r" % (reset,))
 
 
-def usage_row(at, account, tokens, model=MODEL, realm="intl"):
+def usage_row(at, account, tokens, model=MODEL, realm="cn"):
     return {
         "at": at, "iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(at)),
         "model": model, "stream": True, "outcome": "completed",
@@ -126,7 +126,7 @@ def usage_row(at, account, tokens, model=MODEL, realm="intl"):
     }
 
 
-def cap_row(at, account, detail, model=MODEL, realm="intl"):
+def cap_row(at, account, detail, model=MODEL, realm="cn"):
     return {
         "at": at, "iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(at)),
         "model": model, "error": True, "outcome": "failed", "status": 429,
@@ -212,7 +212,7 @@ def cache_env(min_bytes=None, min_seconds=None):
         os.environ["WB_USAGE_CACHE_MIN_SECONDS"] = str(min_seconds)
 
 
-def account(uid, nickname="", realm="intl"):
+def account(uid, nickname="", realm="cn"):
     return wb_accounts.Account({"uid": uid, "nickname": nickname,
                                 "accessToken": "t", "realm": realm})
 
@@ -252,7 +252,7 @@ class RemainingUsageTests(unittest.TestCase):
         self.assertEqual(len(data["budgets"]), 1)
         budget = data["budgets"][0]
         self.assertEqual(budget["model"], MODEL)
-        self.assertEqual(budget["realm"], "intl")
+        self.assertEqual(budget["realm"], "cn")
         self.assertEqual(budget["avg"], 3000)
         self.assertEqual(budget["n"], 1)
 
@@ -378,7 +378,7 @@ class RemainingUsageTests(unittest.TestCase):
         self.assertEqual(stored["schema"], 1)
         day = stored["days"]["2026-10-14"]
         # 两个样本（4000 与 820）同属一个账号：先按账号平均 = 2410。
-        self.assertEqual(day["budgets"]["intl\x1f" + MODEL],
+        self.assertEqual(day["budgets"]["cn\x1f" + MODEL],
                          {"avg": 2410, "min": 2410, "max": 2410, "n": 1})
         segments = day["segments"]
         # post：窗口 1 = [07:30, 20:00) = 820（到下一个撞线时刻为止），
@@ -401,7 +401,7 @@ class RemainingUsageTests(unittest.TestCase):
         # 读的是文件里的 999999，文件也不会被重算的值覆盖。
         with io.open(P.ESTIMATE_DAILY_FILE, encoding="utf-8") as fh:
             tampered = json.load(fh)
-        tampered["days"]["2026-10-14"]["budgets"]["intl\x1f" + MODEL]["avg"] = 999999
+        tampered["days"]["2026-10-14"]["budgets"]["cn\x1f" + MODEL]["avg"] = 999999
         with io.open(P.ESTIMATE_DAILY_FILE, "w", encoding="utf-8") as fh:
             fh.write(json.dumps(tampered, ensure_ascii=False))
         again = payload(accounts, now=now)
@@ -409,7 +409,7 @@ class RemainingUsageTests(unittest.TestCase):
         with io.open(P.ESTIMATE_DAILY_FILE, encoding="utf-8") as fh:
             kept = json.load(fh)
         self.assertEqual(kept["days"]["2026-10-14"]["budgets"]
-                         ["intl\x1f" + MODEL]["avg"], 999999)
+                         ["cn\x1f" + MODEL]["avg"], 999999)
 
         # 重启（state["day"] 为空）会让第一次构建再试归档昨天一次：重算出的
         # 4000 不得盖掉文件里已持久化的值（该天已在文件里就不覆盖）。
@@ -420,7 +420,7 @@ class RemainingUsageTests(unittest.TestCase):
         with io.open(P.ESTIMATE_DAILY_FILE, encoding="utf-8") as fh:
             kept = json.load(fh)
         self.assertEqual(kept["days"]["2026-10-14"]["budgets"]
-                         ["intl\x1f" + MODEL]["avg"], 999999)
+                         ["cn\x1f" + MODEL]["avg"], 999999)
 
     def test_repeated_429_rows_for_one_reset_collapse(self):
         reset, detail = reset_epoch("2026-10-10 09:00:00")
@@ -543,20 +543,25 @@ class RemainingUsageTests(unittest.TestCase):
         self.assertIsNone(row["remaining"])
         self.assertEqual(row["used"], 42)
 
-    def test_realm_budgets_stay_separate(self):
+    def test_budgets_of_every_account_land_in_the_only_realm(self):
+        """国际版删除后只剩一份预算表：两个账号的撞线样本都归到 cn。
+
+        旧版这里钉的是「intl 与 cn 各自一份预算」；现在两条样本合并到同一个
+        (realm, model) 里，均值是把两边的窗口样本一起平均。
+        """
         r1, d1 = reset_epoch("2026-10-09 08:00:00")
         r2, d2 = reset_epoch("2026-10-09 20:00:00")
         write_log([
             usage_row(r1 - 2 * HOUR, "acct-A", 1000),
             cap_row(r1 - HOUR, "acct-A", d1),
-            usage_row(r2 - 2 * HOUR, "acct-C", 4000, realm="cn"),
-            cap_row(r2 - HOUR, "acct-C", d2, realm="cn"),
+            usage_row(r2 - 2 * HOUR, "acct-C", 4000),
+            cap_row(r2 - HOUR, "acct-C", d2),
         ])
-        data = payload([account("acct-A"), account("acct-C", realm="cn")],
+        data = payload([account("acct-A"), account("acct-C")],
                        now=r2 + HOUR)
-        by_realm = {b["realm"]: b for b in data["budgets"]}
-        self.assertEqual(by_realm["intl"]["avg"], 1000)
-        self.assertEqual(by_realm["cn"]["avg"], 4000)
+        realms = {b["realm"] for b in data["budgets"]}
+        self.assertEqual(realms, {"cn"})
+        self.assertEqual(len(data["budgets"]), 1, data["budgets"])
 
     def test_fold_resumes_incrementally(self):
         reset, detail = reset_epoch("2026-10-09 08:00:00")
@@ -1169,7 +1174,7 @@ class RemainingUsageTests(unittest.TestCase):
                        now=reset - 10 * 60)
         models = {m["model"]: m for m in data["models"]}
         total = models[MODEL]
-        self.assertEqual(total["realm"], "intl")
+        self.assertEqual(total["realm"], "cn")
         self.assertEqual(total["pairs"], 2)
         self.assertEqual(total["cooling"], 1)
         self.assertEqual(total["available"], 1)
@@ -1230,7 +1235,7 @@ class RemainingUsageTests(unittest.TestCase):
         保留（用户要求分段「仅保留到第二天」，多留一天防跨天边界）。
         """
         now = local_epoch(2026, 10, 15, 12, 0, 0)        # 今天
-        record = {"budgets": {"intl\x1f" + MODEL: {"avg": 1, "min": 1,
+        record = {"budgets": {"cn\x1f" + MODEL: {"avg": 1, "min": 1,
                                                    "max": 1, "n": 1}},
                   "segments": {"acct-A\x1f" + MODEL: {"pre": 1, "post": 0}}}
         days = {day: json.loads(json.dumps(record))
@@ -1249,7 +1254,7 @@ class RemainingUsageTests(unittest.TestCase):
         self.assertNotIn("segments", stored["days"]["2026-10-13"])
         self.assertIn("segments", stored["days"]["2026-10-14"])
         self.assertEqual(stored["days"]["2026-10-13"]["budgets"],
-                         {"intl\x1f" + MODEL: {"avg": 1, "min": 1,
+                         {"cn\x1f" + MODEL: {"avg": 1, "min": 1,
                                                "max": 1, "n": 1}})
 
     def test_a_corrupt_daily_file_is_ignored(self):
@@ -1261,9 +1266,9 @@ class RemainingUsageTests(unittest.TestCase):
         self.assertEqual(data["budgets"], [])
 
         # 结构对但值不合法的那天跳过（avg 是字符串 / n 不是正整数）。
-        days = {"2026-10-14": {"budgets": {"intl\x1f" + MODEL: {
+        days = {"2026-10-14": {"budgets": {"cn\x1f" + MODEL: {
                     "avg": "x", "min": 1, "max": 1, "n": 1}}},
-                "2026-10-13": {"budgets": {"intl\x1f" + MODEL: {
+                "2026-10-13": {"budgets": {"cn\x1f" + MODEL: {
                     "avg": 5, "min": 5, "max": 5, "n": 0}}}}
         with io.open(P.ESTIMATE_DAILY_FILE, "w", encoding="utf-8") as fh:
             fh.write(json.dumps({"schema": 1, "days": days}, ensure_ascii=False))
@@ -1297,7 +1302,7 @@ class RemainingUsageTests(unittest.TestCase):
         with io.open(P.ESTIMATE_DAILY_FILE, encoding="utf-8") as fh:
             stored = json.load(fh)
         day = stored["days"]["2026-10-14"]
-        self.assertEqual(day["budgets"]["intl\x1f" + MODEL],
+        self.assertEqual(day["budgets"]["cn\x1f" + MODEL],
                          {"avg": 1200, "min": 1200, "max": 1200, "n": 1})
         self.assertEqual(day["segments"]["acct-A\x1f" + MODEL],
                          {"pre": 1200, "post": 0})

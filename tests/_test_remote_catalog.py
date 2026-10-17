@@ -43,21 +43,22 @@ def payload(ids, meta=None):
     }
 
 
-INTL_IDS = [
+# 上游 /v3/config 的一份「活目录」样本：故意混进别名（default-model 等）、
+# 变体（hy3-x）、出口变体（-sg）与带价模型，用来钉住策展规则。国际版删除后
+# 只剩国内版一套目录，样本因此全部取自国内版真实存在的 id。
+LIVE_IDS = [
     "default-model", "fast-model", "balanced-model", "primary-model",
-    "deep-model", "hy4-preview-f", "hy3", "deepseek-v4.1-flash",
-    "deepseek-v4.1-flash-sg", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra",
-    "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "grok-4.7", "gemini-3.5-flash",
-    "glm-5.3-flash", "glm-5.3", "glm-5.2", "kimi-k3", "kimi-k2.6",
-    "kimi-k2.8-preview",
+    "deep-model", "hy4-preview-f", "hy3", "hy3-x", "deepseek-v4.1-flash",
+    "deepseek-v4.1-flash-sg", "glm-5.3-flash", "glm-5.3", "glm-5.2",
+    "glm-5.1", "kimi-k3-1", "kimi-k2.6", "kimi-k2.8-preview",
 ]
-INTL_META = {
+LIVE_META = {
     "deepseek-v4.1-flash": {"credits": "x0.00"},
     "deepseek-v4.1-flash-sg": {"credits": "x0.03"},
     "hy4-preview-f": {"credits": "x0.00"},
     "hy4-preview": {"credits": "x0.29"},
-    "grok-4.7": {"credits": "x1.90"},
     "hy3": {"credits": "x0.00"},
+    "hy3-x": {"credits": "x0.05"},
     "glm-5.3": {"credits": "x0.79"},
 }
 
@@ -77,7 +78,7 @@ CN_META = {
 
 class RemoteCatalogTests(unittest.TestCase):
     def setUp(self):
-        P._models_cache["intl"] = {"at": 0.0, "data": None}
+        P._models_cache["cn"] = {"at": 0.0, "data": None}
         P._models_cache["cn"] = {"at": 0.0, "data": None}
         self._orig = (P.fetch_remote_product_config,
                                 P.read_product_config_models,
@@ -99,11 +100,11 @@ class RemoteCatalogTests(unittest.TestCase):
         again. Both halves, plus the model_entry() hop the panel reads.
         """
         # 1. The endpoint declares a new price for a curated model: it wins.
-        meta = dict(INTL_META)
+        meta = dict(LIVE_META)
         meta["hy4-preview-f"] = {"credits": "x0.29"}
         P.fetch_remote_product_config = (
-            lambda realm: (INTL_IDS, meta) if realm == "intl" else None)
-        entries = dict(P.fetch_models("intl"))
+            lambda realm: (LIVE_IDS, meta) if realm == "cn" else None)
+        entries = dict(P.fetch_models("cn"))
         self.assertEqual(entries["hy4-preview-f"]["credits"], "x0.29")
         self.assertEqual(
             P.model_entry("hy4-preview-f", entries["hy4-preview-f"])["credits"],
@@ -111,13 +112,13 @@ class RemoteCatalogTests(unittest.TestCase):
 
         # 2. The endpoint stops listing it: the bundled value survives, and that
         #    is exactly what the panel then shows.
-        ids = [m for m in INTL_IDS if m != "hy4-preview-f"]
-        meta = dict(INTL_META)
+        ids = [m for m in LIVE_IDS if m != "hy4-preview-f"]
+        meta = dict(LIVE_META)
         meta.pop("hy4-preview-f", None)
         P.fetch_remote_product_config = (
-            lambda realm: (ids, meta) if realm == "intl" else None)
-        P._models_cache["intl"] = {"at": 0.0, "data": None}
-        entries = dict(P.fetch_models("intl"))
+            lambda realm: (ids, meta) if realm == "cn" else None)
+        P._models_cache["cn"] = {"at": 0.0, "data": None}
+        entries = dict(P.fetch_models("cn"))
         self.assertIn("hy4-preview-f", entries)
         self.assertEqual(entries["hy4-preview-f"]["credits"], "x0.00")
         self.assertEqual(
@@ -125,9 +126,9 @@ class RemoteCatalogTests(unittest.TestCase):
             "x0.00")
 
     def test_parse_keeps_order_and_metadata(self):
-        ids, meta = P.parse_remote_catalog(payload(INTL_IDS, INTL_META))
-        self.assertEqual(ids, INTL_IDS)
-        self.assertEqual(meta["grok-4.7"]["credits"], "x1.90")
+        ids, meta = P.parse_remote_catalog(payload(LIVE_IDS, LIVE_META))
+        self.assertEqual(ids, LIVE_IDS)
+        self.assertEqual(meta["glm-5.3"]["credits"], "x0.79")
 
     def test_parse_rejects_empty_and_odd_shapes(self):
         self.assertIsNone(P.parse_remote_catalog({"data": {"agents": []}}))
@@ -140,36 +141,37 @@ class RemoteCatalogTests(unittest.TestCase):
         self.assertEqual(ids, ["a", "b"])
 
     def test_curate_applies_the_rules(self):
-        curated = P.curate_remote_catalog("intl", INTL_IDS, INTL_META)
-        self.assertEqual(curated, [m for m in INTL_IDS if m not in (
-            "default-model", "fast-model", "balanced-model", "primary-model",
-            "deep-model", "deepseek-v4.1-flash-sg")])
-        self.assertIn("grok-4.7", curated)
+        curated = P.curate_remote_catalog("cn", LIVE_IDS, LIVE_META)
+        # 别名、出口变体、以及「有免费同款就只留免费那个」的付费变体都被摘掉。
+        for gone in ("default-model", "fast-model", "balanced-model",
+                     "primary-model", "deep-model", "deepseek-v4.1-flash-sg"):
+            self.assertNotIn(gone, curated)
         self.assertIn("hy4-preview-f", curated)
+        self.assertIn("glm-5.3", curated)
 
     def test_curate_prefers_the_free_sibling(self):
         ids = ["hy4-preview", "hy4-preview-f", "hy3", "hy3-x"]
         meta = {"hy4-preview": {"credits": "x0.29"},
              "hy4-preview-f": {"credits": "x0.00"},
              "hy3": {"credits": "x0.00"}, "hy3-x": {"credits": "x0.05"}}
-        self.assertEqual(P.curate_remote_catalog("intl", ids, meta),
+        self.assertEqual(P.curate_remote_catalog("cn", ids, meta),
                     ["hy4-preview-f", "hy3"])
 
     def test_curate_keeps_a_paid_model_with_no_free_sibling(self):
         ids = ["grok-4.7", "glm-5.3"]
         meta = {"grok-4.7": {"credits": "x1.90"},
              "glm-5.3": {"credits": "x0.79"}}
-        self.assertEqual(P.curate_remote_catalog("intl", ids, meta), ids)
+        self.assertEqual(P.curate_remote_catalog("cn", ids, meta), ids)
 
     def test_fetch_models_uses_the_remote_and_orders_by_the_table(self):
         P.fetch_remote_product_config = (
-            lambda realm: (INTL_IDS, INTL_META) if realm == "intl" else None)
-        ids = [m for m, _ in P.fetch_models("intl")]
-        self.assertEqual(ids, [
-            "hy4-preview-f", "hy3", "deepseek-v4.1-flash", "gpt-6-astra",
-            "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
-            "gpt-5.4", "grok-4.7", "gemini-3.5-flash", "glm-5.3-flash",
-            "glm-5.3", "glm-5.2", "kimi-k3", "kimi-k2.6", "kimi-k2.8-preview"])
+            lambda realm: (LIVE_IDS, LIVE_META) if realm == "cn" else None)
+        ids = [m for m, _ in P.fetch_models("cn")]
+        # 出站顺序跟着 CN_UI_ORDER 走（不是上游给的顺序），且只留策展后的名字。
+        self.assertEqual(ids, [m for m in P.CN_UI_ORDER if m in set(ids)])
+        self.assertEqual(ids[:3], ["hy4-preview-f", "hy3", "deepseek-v4.1-flash"])
+        self.assertNotIn("default-model", ids)
+        self.assertNotIn("hy3-x", ids)
 
     def test_cn_keeps_the_pinned_free_variant(self):
         # 实时 meta 为准：上游已下线 hy4-preview-f 且 hy4-preview 为收费 (0.29x) 时，如实对外宣告 hy4-preview
@@ -191,11 +193,11 @@ class RemoteCatalogTests(unittest.TestCase):
 
         P.fetch_remote_product_config = boom
         P.read_product_config_models = lambda realm=None: []
-        P.fetch_endpoint_models = lambda: ["kimi-k3", "internal-only-model"]
-        ids = [m for m, _ in P.fetch_models("intl")]
-        self.assertEqual(calls, ["intl"])
-        self.assertIn("kimi-k3", ids)
-        self.assertIn("grok-4.7", ids)   # the bundled snapshot still fills names
+        P.fetch_endpoint_models = lambda: ["kimi-k3-1", "internal-only-model"]
+        ids = [m for m, _ in P.fetch_models("cn")]
+        self.assertEqual(calls, ["cn"])
+        self.assertIn("kimi-k3-1", ids)
+        self.assertIn("glm-5.3", ids)   # the bundled snapshot still fills names
         self.assertNotIn("internal-only-model", ids)  # endpoint keeps the table filter
 
     def test_live_reasoning_efforts_win_over_the_bundled_table(self):
@@ -205,15 +207,15 @@ class RemoteCatalogTests(unittest.TestCase):
         silently overwrote whatever the live catalogue declared (the pin dates
         from before the gateway called /v3/config at all).
         """
-        meta = dict(INTL_META)
+        meta = dict(LIVE_META)
         meta["deepseek-v4.1-flash"] = {
             "credits": "x0.00",
             "reasoning": {"supportedEfforts": ["low", "medium", "high"],
                           "defaultEffort": "medium"},
         }
         P.fetch_remote_product_config = (
-            lambda realm: (INTL_IDS, meta) if realm == "intl" else None)
-        entries = dict(P.fetch_models("intl"))
+            lambda realm: (LIVE_IDS, meta) if realm == "cn" else None)
+        entries = dict(P.fetch_models("cn"))
         item = P.model_entry("deepseek-v4.1-flash",
                              entries["deepseek-v4.1-flash"])
         self.assertEqual(item["reasoning_efforts"], ["low", "medium", "high"])
@@ -226,9 +228,9 @@ class RemoteCatalogTests(unittest.TestCase):
         P.log = lambda message, **kw: logged.append(message)
         try:
             P.fetch_remote_product_config = (
-                lambda realm: (INTL_IDS, dict(INTL_META)) if realm == "intl" else None)
-            P._catalog_fallback_log.pop("intl", None)
-            entries = dict(P.fetch_models("intl"))
+                lambda realm: (LIVE_IDS, dict(LIVE_META)) if realm == "cn" else None)
+            P._catalog_fallback_log.pop("cn", None)
+            entries = dict(P.fetch_models("cn"))
         finally:
             P.log = original_log
         item = P.model_entry("deepseek-v4.1-flash",
@@ -246,7 +248,7 @@ class RemoteCatalogTests(unittest.TestCase):
         the model as pinned to high - and every request was recorded at high
         even when the client sent max, the level it was really forwarded with.
         """
-        meta = dict(INTL_META)
+        meta = dict(LIVE_META)
         meta["deepseek-v4.1-flash"] = {
             "credits": "x0.00",
             "reasoning": {"effort": "high", "summary": "auto"},
@@ -256,9 +258,9 @@ class RemoteCatalogTests(unittest.TestCase):
         P.log = lambda message, **kw: logged.append(message)
         try:
             P.fetch_remote_product_config = (
-                lambda realm: (INTL_IDS, meta) if realm == "intl" else None)
-            P._catalog_fallback_log.pop("intl", None)
-            entries = dict(P.fetch_models("intl"))
+                lambda realm: (LIVE_IDS, meta) if realm == "cn" else None)
+            P._catalog_fallback_log.pop("cn", None)
+            entries = dict(P.fetch_models("cn"))
         finally:
             P.log = original_log
         item = P.model_entry("deepseek-v4.1-flash",
@@ -274,7 +276,7 @@ class RemoteCatalogTests(unittest.TestCase):
             "max")
         # A model the live catalogue really does pin is untouched: no snapshot
         # supportedEfforts to restore, so its bare effort still pins it.
-        pinned = P.model_entry("gemini-3.5-flash", entries["gemini-3.5-flash"])
+        pinned = P.model_entry("glm-5.1", entries["glm-5.1"])
         self.assertEqual(pinned["reasoning_fixed_effort"], "medium")
         self.assertNotIn("reasoning_efforts", pinned)
         # And the shape is announced, not applied silently.

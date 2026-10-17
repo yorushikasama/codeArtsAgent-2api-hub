@@ -20,25 +20,25 @@ const dom = require('./_dom_stub.js');
 dom.installDom();
 const element = id => dom.byId(id);
 
-/* 三把 Key：两把跟随面板切换、一把固定国际版出口，其中一把带模型白名单。
+/* 三把 Key：一把跟随面板切换、一把固定国内版出口并带模型白名单、一把禁用。
    价估算总开关故意设成关，好顺带检查它有没有被写回复选框与 body 类。 */
 const SETTINGS = {
   panel_password_is_default: false,
   api_keys: [
     {id: 'k1', name: 'Cursor', realm: '', models: [], enabled: true,
      masked: 'wb-aaaa****1111', created_at: '2026-09-01'},
-    {id: 'k2', name: 'DSH', realm: 'intl', models: ['deepseek*'], enabled: true,
+    {id: 'k2', name: 'DSH', realm: 'cn', models: ['deepseek*'], enabled: true,
      masked: 'wb-bbbb****2222', created_at: '2026-09-02'},
-    {id: 'k3', name: '本地测试', realm: 'cn', models: [], enabled: false,
+    {id: 'k3', name: '本地测试', realm: '', models: [], enabled: false,
      masked: 'wb-cccc****3333', created_at: '2026-09-03'},
   ],
   deleted_api_keys: [],
   limits: {
-    // 国际版单独设过值，所以「分别设置」应处于展开状态。
-    reserve_credits: {global: 10, intl: 3, cn: null},
-    daily_token_limit: {global: 1000, intl: null, cn: null},
-    daily_credit_limit: {global: 0, intl: null, cn: null},
-    model_daily_token_limit: {global: 0, intl: null, cn: null},
+    // 国内版单独设过值，所以「分别设置」应处于展开状态。
+    reserve_credits: {global: 10, cn: 3},
+    daily_token_limit: {global: 1000, cn: null},
+    daily_credit_limit: {global: 0, cn: null},
+    model_daily_token_limit: {global: 0, cn: null},
   },
   pricing_enabled: false,
   pricing_refresh_minutes: 5,
@@ -119,20 +119,18 @@ global.__toasts = toasts;
   // Cursor：跟随面板切换的普通 Key，掩码在它自己那张卡上，且没有固定出口徽章。
   assert.ok(onCard('Cursor', '跟随面板切换'), 'Cursor 卡应显示「跟随面板切换」');
   assert.ok(onCard('Cursor', 'wb-aaaa****1111'), 'Cursor 卡上应显示掩码 Key');
-  assert.ok(!cardOf('Cursor').includes('固定国际版出口')
-         && !cardOf('Cursor').includes('固定国内版出口'), 'Cursor 卡不该有固定出口徽章');
-  // DSH：同一张卡上既是固定国际版出口，又带模型白名单。
-  assert.ok(onCard('DSH', '固定国际版出口'), 'DSH 卡上应有「固定国际版出口」');
+  assert.ok(!cardOf('Cursor').includes('固定国内版出口'), 'Cursor 卡不该有固定出口徽章');
+  // DSH：同一张卡上既是固定国内版出口，又带模型白名单。
+  assert.ok(onCard('DSH', '固定国内版出口'), 'DSH 卡上应有「固定国内版出口」');
   assert.ok(onCard('DSH', '限 deepseek*'), 'DSH 卡上应有「限 deepseek*」');
-  assert.ok(!cardOf('DSH').includes('固定国内版出口'), 'DSH 卡不该有国内版徽章');
-  // 本地测试：同一张卡上既是固定国内版出口，又处于禁用状态。
-  assert.ok(onCard('本地测试', '固定国内版出口'), '本地测试 卡上应有「固定国内版出口」');
+  // 本地测试：跟随面板切换 + 处于禁用状态。
+  assert.ok(onCard('本地测试', '跟随面板切换'), '本地测试 卡上应显示「跟随面板切换」');
   assert.ok(onCard('本地测试', '已禁用'), '本地测试 卡上应显示已禁用');
   assert.ok(cardIsDisabled('本地测试'), '本地测试 卡应带 disabled 状态');
-  assert.ok(!cardOf('本地测试').includes('固定国际版出口'), '本地测试 卡不该有国际版徽章');
+  assert.ok(!cardOf('本地测试').includes('固定国内版出口'), '本地测试 卡不该有固定出口徽章');
   // 每枚徽章只出现在一张卡上：复制到每张卡也满足「在某张卡上」。
-  assert.equal(cardsWith('固定国际版出口'), 1, '固定国际版出口 只该出现在 DSH 卡上');
-  assert.equal(cardsWith('固定国内版出口'), 1, '固定国内版出口 只该出现在 本地测试 卡上');
+  assert.equal(cardsWith('跟随面板切换'), 2, '跟随徽章只该出现在 Cursor / 本地测试 卡上');
+  assert.equal(cardsWith('固定国内版出口'), 1, '固定国内版出口 只该出现在 DSH 卡上');
   assert.equal(cardsWith('限 deepseek*'), 1, '模型白名单徽章只该出现在 DSH 卡上');
 
   assert.equal(element('setKeyState').textContent, '(2 个生效)',
@@ -151,15 +149,12 @@ global.__toasts = toasts;
   assert.equal(element('setAccountsDir').textContent, '/data/accounts');
   assert.equal(element('setPricingState').textContent, '(每 5 分钟)');
   assert.equal(element('setAutoSwitch').checked, true);
-  assert.equal(element('setDailyChatWeb').checked, false);
-  // 网页通道重试：字段缺失时按默认（开、3 次）显示，次数框写回 3，状态行把
-  // 实际等待序列算出来（300 起、逐轮翻倍）。
-  assert.equal(element('setDailyChatWebRetry').checked, true, '重试开关没按默认写回');
-  assert.equal(element('setDailyChatWebAttempts').value, '3', '最多尝试次数没写回');
-  assert.equal(element('setDailyChatWebAttempts').disabled, false, '重试开着时次数框应可改');
-  assert.equal(element('setDailyChatWebTimeout').value, '300', '首轮等待秒数没写回');
-  assert.equal(element('setDailyChatWebRetryState').textContent,
-    '最多尝试 3 次 · 300 / 600 / 1200 秒', '重试状态行没写回');
+  // 国际版每日活跃（含它的网页通道与重试设置）已随该区域删除：
+  // 这批控件不该再出现在设置页里。
+  for(const gone of ['setDailyChatWeb', 'setDailyChatWebRetry',
+                     'setDailyChatWebAttempts', 'setDailyChatWebTimeout']){
+    assert.equal(element(gone), null, gone + ' 应已从设置页删除');
+  }
   assert.equal(element('setLocalWebTools').checked, true);
   assert.equal(element('setRemainingPriority').checked, true,
     '剩余用量优先调度的复选框没写回');

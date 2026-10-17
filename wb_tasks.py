@@ -634,7 +634,7 @@ def _progress_one(account, t, logs, gap):
 def run_growth_tasks(account, gap=1.0):
     """完整执行批量成长任务点亮与领奖。"""
     if account.realm != "cn":
-        return {"ok": False, "msg": "国际版不适用国内成长任务中心", "logs": []}
+        return {"ok": False, "msg": "该区域不适用国内成长任务中心", "logs": []}
     if getattr(account, "is_enterprise", lambda: False)():
         return {"ok": True, "msg": "企业版账号无成长体系，跳过", "logs": []}
 
@@ -713,7 +713,7 @@ def run_night_growth(account):
     """夜猫子任务 (black_cat): 每日 23:00-08:00 上报 1 次 GLM-5.2 夜间对话事件,
     每天计 1 次、累计 3 天后可领奖。白天调用会诚实跳过。"""
     if account.realm != "cn":
-        return {"ok": False, "msg": "国际版不适用国内成长任务中心", "logs": [], "earned_credit": 0}
+        return {"ok": False, "msg": "该区域不适用国内成长任务中心", "logs": [], "earned_credit": 0}
     if getattr(account, "is_enterprise", lambda: False)():
         return {"ok": True, "msg": "企业版账号无成长体系，跳过", "logs": [], "earned_credit": 0}
     logs = []

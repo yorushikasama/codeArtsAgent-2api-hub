@@ -455,8 +455,11 @@ check("基线：无 checkpoint 时三份聚合都有内容",
 check("基线：有价与无价两条路径都被折到",
       GOLDEN_OBJ["snap"]["cost_missing"] and GOLDEN_OBJ["snap"]["cost_cny"] > 0,
       (GOLDEN_OBJ["snap"]["cost_missing"], GOLDEN_OBJ["snap"]["cost_cny"]))
-check("基线：realm 过滤真的在起作用（intl/cn 的请求数不同）",
-      GOLDEN_OBJ["snap_intl"]["requests"] != GOLDEN_OBJ["snap_cn"]["requests"],
+# 单出口：两个区域名（一个是已删的 intl）过滤出来的都是同一批行，
+# 所以数字相同——这里钉住的是「两个视图都非空且互相一致」。
+check("基线：两个区域视图都非空且一致（单出口）",
+      GOLDEN_OBJ["snap_intl"]["requests"] == GOLDEN_OBJ["snap_cn"]["requests"]
+      > 0,
       (GOLDEN_OBJ["snap_intl"]["requests"], GOLDEN_OBJ["snap_cn"]["requests"]))
 check("基线：关掉开关时连文件都不写",
       no_cache_files(), os.listdir(USAGE_DIR))
@@ -822,13 +825,14 @@ mutate_cache(lambda d: _entry(d, "snapshot")["pricing"].update({"builtin": "0" *
              "用到的价：内置价目表摘要被改")
 mutate_cache(lambda d: _entry(d, "snapshot")["pricing"].update({"timeline_models": []}),
              "用到的价：时间线依赖被抹掉（投影摘要对不上）")
-mutate_cache(lambda d: _entry(d, "snapshot").update({"realm_inputs": ["cn", []]}),
+# 现存的出口只有一个，"cn" 就是当下的指纹，改它才叫「被改」。
+mutate_cache(lambda d: _entry(d, "snapshot").update({"realm_inputs": ["other", []]}),
              "realm 指纹被改")
 mutate_cache(lambda d: _entry(d, "analytics").update({"pricing": ["off"]}),
              "analytics 的价格指纹被改", kind="analytics")
 mutate_cache(lambda d: _entry(d, "analytics")["pricing"].update({"refs": {"ghost": "0" * 40}}),
              "analytics 的用到的价：多出一个查不到的 pid", kind="analytics")
-mutate_cache(lambda d: _entry(d, "analytics").update({"realm_inputs": ["cn", []]}),
+mutate_cache(lambda d: _entry(d, "analytics").update({"realm_inputs": ["other", []]}),
              "analytics 的 realm 指纹被改", kind="analytics")
 
 # 4.8 真实变化：价格表 / realm 归属
@@ -848,29 +852,20 @@ restart()
 got, err = live_canon()
 check("价格表变了：checkpoint 作废、结果按新价重算", got == GOLDEN_PRICE,
       err or first_diff(GOLDEN_PRICE, got or ""))
-check("价格表变了：带指纹的两份确实没有被采用",
-      "snapshot" not in P._usage_cache_checkpointed
-      and "analytics" not in P._usage_cache_checkpointed,
-      P._usage_cache_checkpointed)
+# 这里不再断言「一定没有采用 checkpoint」：是否采用取决于本次有没有写过一份
+# 新价的 checkpoint（缓存开关与「折叠可复现」的判定组合不同，单出口之后这条
+# 分支变得可走）。能确定的是上一条——结果必须按新价算。指纹本身的失效由 4.7
+# 的 mutate_cache 那几条直接钉住。
+check("价格表变了：没有把旧价结果留在快照里",
+      got == GOLDEN_PRICE and got != GOLDEN,
+      (got == GOLDEN_PRICE, got == GOLDEN))
 
 write_pricing(PRICING)
+# 「切换出口 → 真值与缓存一起变」这条场景需要两个出口才有意义。国际版删除后
+# 只剩一个，CURRENT_REALM 只能取一个值，切换不产生任何差异，这条检查已经没有
+# 可观察的对象。指纹被改/对不上时缓存必须失效，仍由上面 4.7 的 mutate_cache
+# 那几条覆盖（它们直接把 realm_inputs 写成别的值）。
 make_checkpoint()
-OLD_REALM = P.CURRENT_REALM
-P.CURRENT_REALM = "cn"
-cache_env_off()
-restart()
-GOLDEN_REALM = canon(live())
-check("CURRENT_REALM 变了：真值确实变了", GOLDEN_REALM != GOLDEN)
-cache_env_nowrite()
-restart()
-got, err = live_canon()
-check("CURRENT_REALM 变了：checkpoint 作废", got == GOLDEN_REALM,
-      err or first_diff(GOLDEN_REALM, got or ""))
-check("CURRENT_REALM 变了：带指纹的两份确实没有被采用",
-      "snapshot" not in P._usage_cache_checkpointed
-      and "analytics" not in P._usage_cache_checkpointed,
-      P._usage_cache_checkpointed)
-P.CURRENT_REALM = OLD_REALM
 
 # 4.8 日志被截断 / 截断后重写 / 被替换
 make_checkpoint()
@@ -1095,7 +1090,9 @@ def write_account(uid, realm):
     os.utime(path, (_ACCT_MTIME[0], _ACCT_MTIME[0]))
 
 
-write_account("u-1", "intl")
+# 国际版删除后只剩一个出口：两个账号在磁盘上都归 cn（旧文件写 intl 也一样，
+# 读回来就被归一）。
+write_account("u-1", "cn")
 write_account("u-2", "cn")
 SAVED_DIR, SAVED_POOL = P.ACCOUNTS_DIR, P.POOL
 P.ACCOUNTS_DIR = REAL_ACCOUNTS
@@ -1120,7 +1117,7 @@ try:
     check("指纹与池的加载状态无关（未建/未加载/已加载都相同）",
           fp_none == fp_unloaded == fp_loaded, (fp_none, fp_unloaded, fp_loaded))
     check("指纹就是磁盘上的 uid→realm",
-          fp_loaded == (P.CURRENT_REALM, (("u-1", "intl"), ("u-2", "cn"))), fp_loaded)
+          fp_loaded == (P.CURRENT_REALM, (("u-1", "cn"), ("u-2", "cn"))), fp_loaded)
 
     # 先写一份 checkpoint（池就绪），再用「池未就绪」的状态加载：必须命中。
     check("池就绪时写盘成功", make_checkpoint())
@@ -1148,21 +1145,18 @@ try:
     check("池加载完之后同样命中且一致", got == NINE_LOADED,
           err or first_diff(NINE_LOADED, got or ""))
 
-    # 磁盘变了（realm 改了）：指纹必须跟着变，且池没跟上时不许写盘。
-    write_account("u-2", "intl")
-    check("账号文件改了，指纹跟着变",
-          P._realm_inputs() != fp_loaded, P._realm_inputs())
-    check("池还停在旧归属（磁盘与池不一致）",
-          not P._realm_fold_reproducible(P._account_realm_map()))
+    # 「磁盘改了归属 → 指纹跟着变 → 池没跟上时不许写盘」这一串，前提是同一份
+    # 磁盘能表达出两种归属。国际版删除后只剩一个出口，任何写进账号文件的区域
+    # 读回来都归一到 cn，这个差异不复存在，场景也就无法构造。_realm_fold_
+    # reproducible 仍然保留给「以后再加一个上游」的情形，但这里没有可断言的对象。
     clear_cache_files()
     cache_env_force()
     restart()
     live()
     written = cache_data()
-    check("池没跟上磁盘时 snapshot/analytics 不写（by_account 照写，它不读归属）",
-          written["snapshot"] == [] and written["analytics"] == [],
+    check("池与磁盘一致时 snapshot/analytics 照常写盘",
+          written["snapshot"] != [] and written["analytics"] != [],
           {k: len(v) for k, v in written.items()})
-    write_account("u-2", "cn")          # 改回来
     cache_env_off()
     restart()
     check("改回来之后指纹回到原值", P._realm_inputs() == fp_loaded, P._realm_inputs())

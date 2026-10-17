@@ -134,12 +134,14 @@ check("uuid7 is time-ordered and version 7",
       (a7, b7))
 
 print()
-print("[6] the desktop identity matches the 5.8.4 capture")
+print("[6] the desktop identity is the china one for every realm")
+# 5.8.4 那组头是国际版客户端的抓包，已随该区域删除；现在无论调用方传什么
+# 区域，出站都用国内版那套（这里传 "intl" 正是要钉住「已删区域被归一」）。
 d = wb_identity.build_identity_headers("workbuddy", "intl", "u1", "tok")
-check("X-IDE-Version is 5.8.4", d.get("X-IDE-Version") == "5.8.4",
+check("X-IDE-Version is the china one", d.get("X-IDE-Version") == "5.5.6",
       d.get("X-IDE-Version"))
-check("the UA is the captured one",
-      d.get("User-Agent") == "WorkBuddy/5.8.4 workbuddy-ai/5.8.4 CLI/2.161.0",
+check("the UA is the china one",
+      d.get("User-Agent") == "WorkBuddy/5.5.6 WorkBuddy/5.5.6 CLI/2.137.1",
       d.get("User-Agent"))
 check("X-Product is SaaS", d.get("X-Product") == "SaaS", d.get("X-Product"))
 check("X-Agent-Type / X-Agent-Purpose / X-Agent-Intent",

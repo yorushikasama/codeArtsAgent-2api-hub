@@ -261,12 +261,16 @@ class TestAllRouteTests(unittest.TestCase):
         self.assertTrue(body["results"][0]["network"], "行上要标明是网络问题")
 
     def test_realm_falls_back_to_current(self):
-        network = {"realm": "intl", "url": "https://up", "host": "up", "ip": "", "ok": True,
+        rows = [{"uid": self.account.uid, "nickname": "某账号", "realm": "cn", "model": "m",
+                 "ok": True, "elapsed_ms": 9, "status": None, "reply": "hi",
+                 "error": "", "network": False}]
+        network = {"realm": "cn", "url": "https://up", "host": "up", "ip": "", "ok": True,
                    "dns_ms": 1, "tcp_ms": 1, "error": ""}
-        # account 是 cn；请求里写一个非法区域 → 回落到 CURRENT_REALM（intl），
-        # 于是这次没有可测账号，但网络行仍然返回。
-        body = self._call({"realm": "bogus"}, [], network)["body"]
-        self.assertEqual(body["summary"]["tested"], 0)
+        # 请求里写一个非法/已删的区域（老面板还会发 intl）→ 回落到 CURRENT_REALM。
+        # 国际版删除之后只剩一个出口，落回去就能测到那个 cn 账号；从前这里预期
+        # 「测不到账号」，那是双区域时代的行为。
+        body = self._call({"realm": "bogus"}, rows, network)["body"]
+        self.assertEqual(body["summary"]["tested"], 1)
         self.assertEqual(body["summary"]["realm"], P.CURRENT_REALM)
 
 

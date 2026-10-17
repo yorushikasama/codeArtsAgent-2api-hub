@@ -508,11 +508,14 @@ check("不限 realm 的折叠里 cn 行照常进桶",
       hours1["23"]["summary"]["requests"] == 1
       and hours1["23"]["accts"]["u2"]["window"]["requests"] == 1,
       hours1["23"]["accts"].keys())
-# realm=cn 是另一份状态：只有 cn 的行。
+# realm=cn 仍然是另一份状态（按 realm 分槽的机制不变）。单出口下它装的就是
+# 全部行——历史行里的 intl 归一成 cn，所以两份状态的内容相同、对象不同。
 P._compute_usage_analytics_uncached(realm="cn", since=NOON1, until=None)
-cn_days = P._analytics_state["cn"]["days"]
-check("realm=cn 的折叠独立成一份状态，只装 cn 的行",
-      sorted(cn_days[DAY1_KEY]["hours"], key=int) == ["23"]
+cn_state = P._analytics_state["cn"]
+cn_days = cn_state["days"]
+check("realm=cn 的折叠独立成一份状态（对象不同、内容相同）",
+      cn_state is not P._analytics_state[None]
+      and sorted(cn_days[DAY1_KEY]["hours"], key=int) == ["11", "12", "23"]
       and sorted(days[DAY1_KEY]["hours"], key=int) == ["11", "12", "23"],
       (sorted(cn_days[DAY1_KEY]["hours"], key=int),
        sorted(days[DAY1_KEY]["hours"], key=int)))

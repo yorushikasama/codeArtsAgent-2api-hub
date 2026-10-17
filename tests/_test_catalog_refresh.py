@@ -112,12 +112,15 @@ class CatalogRefreshTests(unittest.TestCase):
         # 第二次没有发起任何取数。
         self.assertEqual(self.calls, ["cn"])
 
-    def test_cooldown_is_per_realm(self):
-        self.stub({"cn": CN_LIVE, "intl": INTL_LIVE})
+    def test_cooldown_covers_the_only_realm(self):
+        # 国际版删除后只剩一个出口：冷却就是这一个，没有「另一个区域绕过
+        # 冷却」这回事了。
+        self.stub({"cn": CN_LIVE})
         self.assertTrue(P.refresh_catalog("cn")["ok"])
-        out = P.refresh_catalog("intl")
-        self.assertTrue(out["ok"], out)   # cn 的冷却不拦 intl
-        self.assertEqual(self.calls, ["cn", "intl"])
+        again = P.refresh_catalog("cn")
+        self.assertFalse(again["ok"])
+        self.assertTrue(again.get("cooldown"))
+        self.assertEqual(self.calls, ["cn"])
 
     def test_failed_refresh_keeps_the_previous_list(self):
         self.stub({"cn": None})
@@ -257,20 +260,27 @@ class CatalogProvenanceTests(unittest.TestCase):
         P.fetch_remote_product_config = lambda realm: None
         P.read_cached_remote_catalog = lambda realm: None
         P.read_product_config_models = lambda realm=None: []
-        P.fetch_endpoint_models = lambda: ["gpt-5.5"]
-        entries = dict(P.fetch_models("intl"))
-        self.assertIn("gpt-5.5", entries)
-        self.assertEqual(P.catalog_meta("intl")["source"], "endpoint")
+        # 窄端点保留旧的「只认排序表里有的名字」白名单行为，所以这里用一个
+        # 确实在 CN_UI_ORDER 里的 id——测的是来源标签，不是白名单本身。
+        P.fetch_endpoint_models = lambda: ["hy4-preview-f"]
+        entries = dict(P.fetch_models("cn"))
+        self.assertIn("hy4-preview-f", entries)
+        self.assertEqual(P.catalog_meta("cn")["source"], "endpoint")
 
-    def test_provenance_is_per_realm(self):
-        P.fetch_remote_product_config = (
-            lambda realm: CN_LIVE if realm == "cn" else None)
+    def test_provenance_follows_where_the_list_came_from(self):
+        # 只有一个出口之后，「按区域分开记来源」退化成「记这一份的来源」：
+        # 上游给得到就是 remote，给不到就回落到内置快照。
+        P.fetch_remote_product_config = lambda realm: CN_LIVE
         P.read_cached_remote_catalog = lambda realm: None
         P.read_product_config_models = lambda realm=None: []
         P.fetch_models("cn")
-        P.fetch_models("intl")     # intl：全无 → bundled
         self.assertEqual(P.catalog_meta("cn")["source"], "remote")
-        self.assertEqual(P.catalog_meta("intl")["source"], "bundled")
+        # 清掉缓存与来源，模拟上游这次一无所获。
+        P._models_cache["cn"] = {"at": 0.0, "data": None}
+        P._catalog_meta.clear()
+        P.fetch_remote_product_config = lambda realm: None
+        P.fetch_models("cn")
+        self.assertEqual(P.catalog_meta("cn")["source"], "bundled")
 
 
 class CatalogDailyTests(unittest.TestCase):
@@ -304,8 +314,8 @@ class CatalogDailyTests(unittest.TestCase):
          P.read_product_config_models, P.product_config_path,
          P.POOL, P.refresh_catalog) = self._orig
 
-    def test_both_realms_are_due_before_any_successful_fetch(self):
-        self.assertEqual(P.catalog_daily_due(), ["intl", "cn"])
+    def test_the_realm_is_due_before_any_successful_fetch(self):
+        self.assertEqual(P.catalog_daily_due(), ["cn"])
 
     def test_a_successful_api_fetch_clears_its_realm_for_a_day(self):
         P.fetch_remote_product_config = (
@@ -315,7 +325,6 @@ class CatalogDailyTests(unittest.TestCase):
         P.fetch_models("cn")
         now = time.time()
         self.assertNotIn("cn", P.catalog_daily_due(now))
-        self.assertIn("intl", P.catalog_daily_due(now))   # 没成功过的仍然到期
         self.assertIn("cn", P.catalog_daily_due(now + P.CATALOG_DAILY_INTERVAL))
 
     def test_cache_and_bundled_fallbacks_do_not_clear_the_due_flag(self):
@@ -338,15 +347,15 @@ class CatalogDailyTests(unittest.TestCase):
         self.assertTrue(P.refresh_catalog("cn")["ok"])
         self.assertNotIn("cn", P.catalog_daily_due())
 
-    def test_daily_pass_only_touches_due_realms(self):
+    def test_daily_pass_skips_a_realm_already_done_today(self):
         calls = []
         P.refresh_catalog = (
             lambda realm: (calls.append(realm)
                            or {"ok": True, "realm": realm, "msg": "x"}))
-        P.note_remote_catalog("cn")     # cn 今天已经成功过
+        P.note_remote_catalog("cn")     # 今天已经成功过
         done = P.catalog_daily_pass()
-        self.assertEqual(calls, ["intl"])
-        self.assertEqual([r for r, _ in done], ["intl"])
+        self.assertEqual(calls, [])
+        self.assertEqual(done, [])
 
     def test_daily_pass_skips_a_realm_without_usable_accounts(self):
         calls = []
@@ -363,7 +372,7 @@ class CatalogDailyTests(unittest.TestCase):
     def test_note_records_only_known_realms(self):
         P.note_remote_catalog("all")
         P.note_remote_catalog("")
-        self.assertEqual(P.catalog_daily_due(), ["intl", "cn"])
+        self.assertEqual(P.catalog_daily_due(), ["cn"])
         P.note_remote_catalog("cn")
         self.assertNotIn("cn", P.catalog_daily_due())
 

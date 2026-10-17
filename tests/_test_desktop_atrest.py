@@ -253,10 +253,10 @@ class AdoptKeyTests(unittest.TestCase):
 
 
 class ConfigDirProbeTests(unittest.TestCase):
-    """config_dir 在 ~/.workbuddy-ai 与 ~/.workbuddy 之间按 keyblob 存在性探测。
+    """config_dir 只认国内版布局 ~/.workbuddy。
 
-    国际版客户端把 keyblob 放 ~/.workbuddy-ai（与 wb_proxy 读产品模型目录的
-    口径一致），老布局 ~/.workbuddy 继续兜底；环境变量永远最高优先。
+    国际版删除后，~/.workbuddy-ai 那份候选一起摘掉了：再按它探测，会把一台
+    只剩旧国际版客户端的机器上的密钥当成本版本可用。环境变量永远最高优先。
     """
 
     def setUp(self):
@@ -278,21 +278,23 @@ class ConfigDirProbeTests(unittest.TestCase):
         with open(os.path.join(path, A.KEYBLOB_NAME), "w", encoding="utf-8") as fh:
             fh.write(json.dumps(make_keyblob(b64_32())[2]))
 
-    def test_probe_finds_ai_layout(self):
+    def test_probe_ignores_the_removed_layout(self):
+        """只有 ~/.workbuddy-ai 有 keyblob 时：不再认它，回落到当前唯一的候选。"""
         self._put_keyblob(".workbuddy-ai")
         with self._with_env(WORKBUDDY_CONFIG_DIR="", CODEBUDDY_CONFIG_DIR=""):
-            self.assertEqual(A.config_dir(), os.path.realpath(os.path.join(self.home, ".workbuddy-ai")))
+            self.assertEqual(A.config_dir(),
+                             os.path.realpath(os.path.join(self.home, ".workbuddy")))
 
     def test_probe_falls_back_to_legacy_layout(self):
         self._put_keyblob(".workbuddy")
         with self._with_env(WORKBUDDY_CONFIG_DIR="", CODEBUDDY_CONFIG_DIR=""):
             self.assertEqual(A.config_dir(), os.path.realpath(os.path.join(self.home, ".workbuddy")))
 
-    def test_probe_order_ai_first(self):
+    def test_probe_prefers_the_current_layout(self):
         self._put_keyblob(".workbuddy-ai")
         self._put_keyblob(".workbuddy")
         with self._with_env(WORKBUDDY_CONFIG_DIR="", CODEBUDDY_CONFIG_DIR=""):
-            self.assertEqual(A.config_dir(), os.path.realpath(os.path.join(self.home, ".workbuddy-ai")))
+            self.assertEqual(A.config_dir(), os.path.realpath(os.path.join(self.home, ".workbuddy")))
 
     def test_neither_dir_returns_first_candidate(self):
         """两个目录都不存在时回落到第一个候选，让 load_keyblob 报常规错误。"""
@@ -301,7 +303,7 @@ class ConfigDirProbeTests(unittest.TestCase):
                              os.path.realpath(os.path.join(self.home, A.CONFIG_DIR_CANDIDATES[0])))
 
     def test_env_var_beats_probe(self):
-        self._put_keyblob(".workbuddy-ai")
+        self._put_keyblob(".workbuddy")
         portable = os.path.join(self.home, "portable")
         with mock.patch.dict(os.environ, {"WORKBUDDY_CONFIG_DIR": portable}):
             self.assertEqual(A.config_dir(), os.path.realpath(portable))

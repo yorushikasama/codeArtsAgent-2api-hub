@@ -89,9 +89,21 @@ class HashCompatibilityTests(PricingFixtureMixin):
         before = {row["model"]: row["id"]
                   for row in read_jsonl(fixture("policies_before.jsonl"))}
         self.assertTrue(before, "夹具里的改动前策略表不该是空的")
-        self.assertEqual(set(before.values()), set(assignment.values()),
-                         "重新生成的策略 id 集合变了")
-        self.assertEqual(before, assignment, "有模型的策略 id 变了")
+        # 策略 id 是内容哈希：同一个模型、同一份价，重算出来的 id 必须一模一样。
+        # 集合本身会缩水——夹具是双区域时代生成的，其中只存在于国际版目录的
+        # 模型随该区域删除，不再进入取价输入。所以只比交集，并确认消失的都是
+        # 那些已不在内置目录里的名字。
+        shared = set(before) & set(assignment)
+        self.assertTrue(shared, "新旧策略表必须有交集")
+        for model in sorted(shared):
+            self.assertEqual(before[model], assignment[model],
+                             "策略 %s 的 id 变了" % model)
+        dropped = set(before) - set(assignment)
+        if dropped:
+            catalog_ids = set(wb_pricing.hub_model_ids())
+            self.assertTrue(dropped <= (set(before) - catalog_ids),
+                            "有仍在内置目录里的模型丢了策略：%s"
+                            % sorted(dropped & catalog_ids))
 
     def test_live_table_ids_recompute_the_same(self):
         """现场 52 条历史策略，逐条按新代码重算内容哈希，必须一模一样。"""

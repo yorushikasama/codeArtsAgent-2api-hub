@@ -78,11 +78,11 @@ class KeySaveMergeTests(unittest.TestCase):
     def test_replace_mode_retires_an_omitted_key(self):
         """No delete list: the old contract still retires by omission."""
         S.set_api_keys(self.dir, [
-            {"id": "k1", "name": "a", "key": "key-aaaa1111", "realm": "intl"},
+            {"id": "k1", "name": "a", "key": "key-aaaa1111", "realm": "cn"},
             {"id": "k2", "name": "b", "key": "key-bbbb2222", "realm": "cn"},
         ])
         saved = S.set_api_keys(self.dir, [
-            {"id": "k1", "name": "a", "key": "key-aaaa1111", "realm": "intl"},
+            {"id": "k1", "name": "a", "key": "key-aaaa1111", "realm": "cn"},
         ])
         self.assertEqual([e["id"] for e in saved], ["k1"])
         self.assertEqual(self._all()["k2"]["deleted_at"] != "", True)
@@ -91,11 +91,11 @@ class KeySaveMergeTests(unittest.TestCase):
     def test_upsert_mode_keeps_an_omitted_key(self):
         """A delete list turns the save into an upsert: omission is not deletion."""
         S.set_api_keys(self.dir, [
-            {"id": "k1", "name": "a", "key": "key-aaaa1111", "realm": "intl"},
+            {"id": "k1", "name": "a", "key": "key-aaaa1111", "realm": "cn"},
             {"id": "k2", "name": "b", "key": "key-bbbb2222", "realm": "cn"},
         ])
         saved = S.set_api_keys(self.dir, [
-            {"id": "k1", "name": "a", "key": "key-aaaa1111", "realm": "intl"},
+            {"id": "k1", "name": "a", "key": "key-aaaa1111", "realm": "cn"},
         ], delete_ids=[])
         self.assertEqual(sorted(e["id"] for e in saved), ["k1", "k2"])
         self.assertEqual(self._all()["k2"]["deleted_at"], "")
@@ -137,8 +137,8 @@ class KeySaveMergeTests(unittest.TestCase):
 
     def test_handler_preserves_realm_enabled_and_name_when_omitted(self):
         S.set_api_keys(self.dir, [
-            {"id": "k1", "name": "国际", "key": "key-intl-1111",
-             "realm": "intl", "models": ["deepseek/*"], "enabled": True},
+            {"id": "k1", "name": "甲", "key": "key-cn-1111",
+             "realm": "cn", "models": ["deepseek/*"], "enabled": True},
             {"id": "k2", "name": "国内停用", "key": "key-cn-2222",
              "realm": "cn", "models": [], "enabled": False},
         ])
@@ -150,8 +150,8 @@ class KeySaveMergeTests(unittest.TestCase):
             {"id": "", "name": "新Key", "key": "key-new-3333", "enabled": True},
         ]})
         live = self._live()
-        self.assertEqual(live["k1"]["name"], "国际")
-        self.assertEqual(live["k1"]["realm"], "intl")
+        self.assertEqual(live["k1"]["name"], "甲")
+        self.assertEqual(live["k1"]["realm"], "cn")
         self.assertEqual(live["k1"]["models"], ["deepseek/*"])
         self.assertEqual(live["k2"]["realm"], "cn")
         # enabled was sent explicitly as true here, so it is honoured.
@@ -174,13 +174,13 @@ class KeySaveMergeTests(unittest.TestCase):
         """The reported flow: add a key, save, add another, save."""
         # First save: the panel's only row is the brand-new key.
         self._save({"api_keys": [
-            {"id": "", "name": "第一把", "realm": "intl", "models": [],
+            {"id": "", "name": "第一把", "realm": "cn", "models": [],
              "enabled": True, "key": "key-first-1111"},
         ], "deleted_api_key_ids": []})
         # Second save races the reload: the first key is still id-less locally,
         # so it is submitted again alongside the second.
         self._save({"api_keys": [
-            {"id": "", "name": "第一把", "realm": "intl", "models": [],
+            {"id": "", "name": "第一把", "realm": "cn", "models": [],
              "enabled": True, "key": "key-first-1111"},
             {"id": "", "name": "第二把", "realm": "cn", "models": [],
              "enabled": True, "key": "key-second-2222"},
@@ -189,7 +189,7 @@ class KeySaveMergeTests(unittest.TestCase):
         self.assertEqual(len(live), 2, live)
         self.assertEqual(sorted(e["name"] for e in live.values()),
                          ["第一把", "第二把"])
-        self.assertEqual(sorted(e["realm"] for e in live.values()), ["cn", "intl"])
+        self.assertEqual(sorted(e["realm"] for e in live.values()), ["cn", "cn"])
         retired = [e for e in S.api_keys(self.dir, include_deleted=True)
                    if e["deleted_at"]]
         self.assertEqual(retired, [])

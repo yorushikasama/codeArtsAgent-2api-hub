@@ -57,9 +57,12 @@ class CanReportActivityTests(unittest.TestCase):
         self.assertFalse(res.get("ok"))
         self.assertIn("enterprise", res.get("error", ""))
 
-    def test_intl_account_never_reports(self):
+    def test_a_removed_realm_account_reads_as_cn(self):
+        # 国际版删除后，账号文件里写死 intl 的读回来就是 cn：它属于唯一出口，
+        # 于是照常可以上报（不再有「国际版永不打卡」这条分支）。
         acc = make_account(realm="intl")
-        self.assertFalse(acc.can_report_activity())
+        self.assertEqual(acc.realm, "cn")
+        self.assertTrue(acc.can_report_activity())
 
     def test_cn_account_without_record_can_report(self):
         acc = make_account(realm="cn")
@@ -75,8 +78,14 @@ class CanReportActivityTests(unittest.TestCase):
 
 
 class ReportActivityTests(unittest.TestCase):
-    def test_rejects_intl_realm(self):
-        acc = make_account(realm="intl")
+    def test_the_region_guard_is_unreachable_now(self):
+        """上报的区域闸门仍写着「只给 cn」，但账号读回来一定是 cn。
+
+        这条钉住的是「闸门没被顺手删掉」：真要有非 cn 的账号进来（将来换上游
+        划界时），它必须仍然拒绝，而不是悄悄发出去。
+        """
+        acc = make_account(realm="cn")
+        acc.realm = "intl"          # 绕过构造期的归一，模拟未来多出口的情形
         res = acc.report_activity()
         self.assertFalse(res.get("ok"))
         self.assertIn("only for CN", res.get("error", ""))
@@ -127,12 +136,11 @@ class ReportActivityTests(unittest.TestCase):
 
 class SchedulerActivityReportTests(unittest.TestCase):
     def test_scheduler_runs_report_for_cn_accounts(self):
+        # 单出口：池里只会有 cn 账号（写死 intl 的读回来也是 cn）。
         cn_acc = make_account(uid="cn-due", realm="cn")
-        intl_acc = make_account(uid="intl-due", realm="intl")
-        intl_acc.last_daily_chat = time.strftime("%Y-%m-%d %H:%M:%S")
         cn_acc.last_checkin = time.strftime("%Y-%m-%d %H:%M:%S")
 
-        pool = type("Pool", (), {"accounts": [cn_acc, intl_acc]})()
+        pool = type("Pool", (), {"accounts": [cn_acc]})()
         scheduler = wb_scheduler.Scheduler(pool)
         scheduler.cat_hours = []
 
@@ -160,8 +168,13 @@ class SchedulerActivityReportTests(unittest.TestCase):
 
 
 class StreakBonusTests(unittest.TestCase):
-    def test_skips_intl_account(self):
-        acc = make_account(uid="intl-bonus", realm="intl")
+    def test_skips_a_non_cn_account(self):
+        """区域闸门仍写着「仅限国内版」：绕过构造期归一才构造得出来。
+
+        单出口下正常账号一定是 cn，这条守住的是「闸门别被顺手删掉」。
+        """
+        acc = make_account(uid="intl-bonus", realm="cn")
+        acc.realm = "intl"
         res = wb_tasks.run_streak_bonus(acc)
         self.assertFalse(res.get("ok"))
         self.assertIn("仅限国内版", res.get("msg"))

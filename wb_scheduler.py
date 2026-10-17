@@ -139,7 +139,6 @@ class Scheduler:
         checkin_count = 0
         report_count = 0
         travel_count = 0
-        daily_chat_count = 0
 
         for acc in list(self.pool.accounts):
             uid8 = acc.uid[:8] if acc.uid else "?"
@@ -197,28 +196,14 @@ class Scheduler:
                         self.log(f"🌙 {line}")
                     time.sleep(1.0)
 
-            # 3. 如果是国际版账号，检查每日活跃对话 (送 30/50 积分福利)
-            if acc.realm == "intl":
-                if acc.can_daily_chat():
-                    self.log(f"检测到国际版账号 [{uid8}] 今日尚未活跃，执行每日活跃打卡对话...")
-                    res = acc.daily_chat(trigger="scheduler")
-                    if res.get("ok"):
-                        daily_chat_count += 1
-                        # 成功时也把网页通道那一轮的结果带上（completed：N 段输出），
-                        # 光看「成功」分不清是真跑完了还是只有桌面腿过了（issue #236）。
-                        self.log(f"✓ 账号 [{uid8}] 每日活跃对话成功: {res.get('msg')}")
-                    else:
-                        self.log(f"! 账号 [{uid8}] 每日活跃对话失败: {res.get('error') or res.get('msg')}")
-                    time.sleep(1.5)
 
-        self.log(f"巡检完成：Token保活 {refreshed_count} 个，国内签到 {checkin_count} 个，活跃上报 {report_count} 个，猫猫日常 {travel_count} 个，国际活跃 {daily_chat_count} 个")
+        self.log(f"巡检完成：Token保活 {refreshed_count} 个，国内签到 {checkin_count} 个，活跃上报 {report_count} 个，猫猫日常 {travel_count} 个")
 
     def status(self):
         return {
             "enabled": self.enabled,
             "mode": "整点排程 (09:00/21:00 签到旅行 · 每日活跃上报 · 22:00 保活 · 01:00 夜猫)",
             "mode_cn": "整点排程 (09:00/21:00 签到旅行 · 每日活跃上报 · 22:00 保活 · 01:00 夜猫)",
-            "mode_intl": "账号 Token 自动保活与凭证常驻 (每日 22:00 集中巡检)",
             "last_run_time": self.last_run_time or "尚未运行",
             "next_run_time": self.next_run_time or "待调度",
             "logs": self.logs[-20:],

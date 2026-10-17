@@ -302,10 +302,10 @@ def ensure_launcher_key(accounts_dir):
 
 
 # --------------------------------------------------------------- API keys
-# Each key can be bound to one upstream realm, so several clients can hit
-# different exits at the same time instead of sharing the global switch.
+# Each key can be bound to one upstream realm. 国际版已移除，只剩国内版一个出口，
+# 但绑定字段与校验机制保留，方便后续换上游。
 
-REALMS = ("", "intl", "cn")
+REALMS = ("", "cn")
 
 
 def _clean_model_patterns(value):
@@ -602,14 +602,14 @@ def set_auth_disabled(accounts_dir, disabled):
 
 
 # ------------------------------------------------------------------ limits
-# The four guards share one shape: a global default that covers both realms,
-# plus an optional per-realm override. An override left empty inherits the
-# global value, so an install that never touches it behaves exactly as before,
-# and one that does only ever has to reason about a single number per guard.
+# The four guards share one shape: a global default, plus an optional
+# per-realm override. An override left empty inherits the global value, so an
+# install that never touches it behaves exactly as before, and one that does
+# only ever has to reason about a single number per guard.
 LIMIT_KEYS = ("reserve_credits", "daily_token_limit",
               "daily_credit_limit", "model_daily_token_limit",
               "expiring_window_days")
-LIMIT_REALMS = ("intl", "cn")
+LIMIT_REALMS = ("cn",)
 LIMIT_SCOPES = ("global",) + LIMIT_REALMS
 LIMITS_KEY = "limits"
 
@@ -629,7 +629,7 @@ def _default_global(key):
 
 def _empty_limit_entry(key=None):
     """One guard: a global default plus a slot per realm (None = inherit)."""
-    return {"global": _default_global(key), "intl": None, "cn": None}
+    return {"global": _default_global(key), "cn": None}
 
 
 def _coerce_global(value):
@@ -688,7 +688,6 @@ def _normalize_limits(raw):
                         else _coerce_global(global_raw))
         limits[key] = {
             "global": global_value,
-            "intl": _coerce_override(entry.get("intl")),
             "cn": _coerce_override(entry.get("cn")),
         }
     return limits
@@ -723,14 +722,28 @@ def limits_snapshot(accounts_dir):
     return limits_data(accounts_dir)
 
 
+def limit_scope_name(realm):
+    """把调用方给的区域收窄到真正存在的作用域。
+
+    已删区域（老调用方还会传 intl）与认不出来的值都归一到现存的出口，而不是
+    静默落回全局默认——那会让同一个账号在两条代码路径上读到不同的限额。
+    空值返回 None，表示「只要全局默认」。
+    """
+    text = str(realm or "").strip().lower()
+    if not text:
+        return None
+    return text if text in LIMIT_REALMS else LIMIT_REALMS[0]
+
+
 def limit_value(accounts_dir, key, realm=None):
     """One guard's effective value for a realm.
 
-    realm None (or "") returns the global default; an intl/cn override wins
-    when it is set. An unknown key reads as 0 (off), so a typo cannot wedge
-    the request path.
+    realm None (or "") returns the global default; a cn override wins when it
+    is set. An unknown key reads as 0 (off), so a typo cannot wedge the
+    request path.
     """
     entry = limits_data(accounts_dir).get(key) or _empty_limit_entry()
+    realm = limit_scope_name(realm)
     if realm in LIMIT_REALMS:
         override = entry.get(realm)
         if override is not None:
@@ -762,9 +775,9 @@ def limit_values_many(accounts_dir, keys):
 def limit_values(accounts_dir, key):
     """One guard resolved for every realm plus the global it inherits.
 
-    {"global": g, "intl": ..., "cn": ...}. The intl/cn entries already carry
-    the global value when no override is set, so the pool can hand each
-    account its own realm without a second settings lookup.
+    {"global": g, "cn": ...}. The cn entry already carries the global value
+    when no override is set, so the pool can hand each account its own realm
+    without a second settings lookup.
     """
     return limit_values_many(accounts_dir, (key,))[key]
 
@@ -772,8 +785,8 @@ def limit_values(accounts_dir, key):
 def set_limit(accounts_dir, key, scope, value):
     """Persist one guard at one scope. Returns the stored entry.
 
-    scope is "global", "intl" or "cn"; a None/blank value clears an intl/cn
-    override back to "inherit", while the global slot always stores a number.
+    scope is "global" or "cn"; a None/blank value clears a cn override back to
+    "inherit", while the global slot always stores a number.
     """
     if key not in LIMIT_KEYS:
         raise ValueError("unknown limit: %s" % key)
@@ -1268,21 +1281,6 @@ def set_enable_anthropic_messages(accounts_dir, enabled):
     return enabled
 
 
-def free_model_credit_fallback(accounts_dir):
-    """Whether exhausted free models (deepseek-v4.1-flash) can fall back to credit siblings."""
-    return load(accounts_dir).get("free_model_credit_fallback") is True
-
-
-def set_free_model_credit_fallback(accounts_dir, enabled):
-    """Persist the free model credit fallback toggle. Returns the stored boolean."""
-    enabled = bool(enabled)
-    with _lock:
-        data = load(accounts_dir)
-        data["free_model_credit_fallback"] = enabled
-        save(accounts_dir, data)
-    return enabled
-
-
 def auto_switch_product(accounts_dir):
     """Whether an upstream 429 may rotate an account's outbound identity.
 
@@ -1486,156 +1484,6 @@ def set_log_db_max_bytes(accounts_dir, value):
         data[LOG_DB_MAX_BYTES_KEY] = stored
         save(accounts_dir, data)
     return stored
-
-
-def daily_chat_web(accounts_dir):
-    """Whether the intl daily check-in also opens a web-channel conversation.
-
-    On unless the operator turns it off: the desktop-identity chat completion
-    this automation used to send does not register the daily activity, while a
-    web conversation does (issues #75, #59). An install that never touched the
-    setting keeps the web step, because that is the behaviour that earns the
-    credits; the toggle exists so a deployment can opt back into the old
-    single-request check-in.
-    """
-    value = load(accounts_dir).get("daily_chat_web")
-    return True if value is None else value is True
-
-
-def set_daily_chat_web(accounts_dir, enabled):
-    """Persist the web-channel toggle. Returns the stored boolean."""
-    enabled = bool(enabled)
-    with _lock:
-        data = load(accounts_dir)
-        data["daily_chat_web"] = enabled
-        save(accounts_dir, data)
-    return enabled
-
-
-def daily_chat_model(accounts_dir):
-    """Which model the intl daily activity runs on; "" keeps the built-in one.
-
-    The activity is two throwaway conversations ("Hi") whose only job is to
-    register the day, so it has no reason to spend credits. The built-in
-    default is already a free catalogue model, and this lets a deployment move
-    the activity onto a different free model - useful when the default one is
-    the same model the real traffic hammers, so the daily run does not eat its
-    window quota. Empty means "unset": the caller falls back to the built-in id.
-    """
-    value = load(accounts_dir).get("daily_chat_model")
-    return str(value or "").strip()
-
-
-def set_daily_chat_model(accounts_dir, model):
-    """Persist the daily-activity model id. Returns the stored string."""
-    model = str(model or "").strip()
-    with _lock:
-        data = load(accounts_dir)
-        data["daily_chat_model"] = model
-        save(accounts_dir, data)
-    return model
-
-
-#: 网页通道一轮等多久（秒）的默认值。与 wb_accounts.WEB_TURN_TIMEOUT 同值：
-#: 没配过的部署保持既有行为，改过的部署按自己配的来。
-DAILY_CHAT_WEB_TIMEOUT_DEFAULT = 120
-#: 上限只是防手滑。每轮等待时间翻倍，配成几百秒会让单账号最坏情况跑到小时级。
-DAILY_CHAT_WEB_TIMEOUT_MAX = 3600
-#: 网页通道总共试几次（含第一轮）的默认值，与 wb_accounts.WEB_TURN_ATTEMPTS 同值。
-DAILY_CHAT_WEB_ATTEMPTS_DEFAULT = 3
-#: 上限同样只是防手滑：最坏等待是 base×(2^次数−1) 秒，5 次已经接近一小时。
-DAILY_CHAT_WEB_ATTEMPTS_MAX = 5
-
-
-def daily_chat_web_retry(accounts_dir):
-    """Whether a failed web-channel turn is tried again.
-
-    On unless the operator turns it off. The usual failure is a session that is
-    still ``working`` when the first wait runs out - slow, not broken - and the
-    daily activity is the only thing that earns the 30/50 credits, so giving up
-    on the first timeout silently loses the day. Off restores the old
-    single-attempt behaviour.
-    """
-    value = load(accounts_dir).get("daily_chat_web_retry")
-    return True if value is None else value is True
-
-
-def set_daily_chat_web_retry(accounts_dir, enabled):
-    """Persist the web-channel retry toggle. Returns the stored boolean."""
-    enabled = bool(enabled)
-    with _lock:
-        data = load(accounts_dir)
-        data["daily_chat_web_retry"] = enabled
-        save(accounts_dir, data)
-    return enabled
-
-
-def daily_chat_web_attempts(accounts_dir, default=None):
-    """How many times the web channel is tried in total, the first one included.
-
-    ``default`` is what an unset install gets, so a caller with its own
-    built-in default keeps it. Out-of-range or non-integer values fall back to
-    it too, so a hand-edited settings.json cannot park the sweep on one
-    account.
-    """
-    if default is None:
-        default = DAILY_CHAT_WEB_ATTEMPTS_DEFAULT
-    value = load(accounts_dir).get("daily_chat_web_attempts")
-    if (isinstance(value, bool) or not isinstance(value, int)
-            or value < 1 or value > DAILY_CHAT_WEB_ATTEMPTS_MAX):
-        return default
-    return value
-
-
-def set_daily_chat_web_attempts(accounts_dir, attempts):
-    """Persist the total number of tries. Returns the stored whole number."""
-    if isinstance(attempts, bool) or not isinstance(attempts, int):
-        raise ValueError("daily_chat_web_attempts must be a whole number")
-    if attempts < 1:
-        raise ValueError("daily_chat_web_attempts cannot be less than 1")
-    if attempts > DAILY_CHAT_WEB_ATTEMPTS_MAX:
-        raise ValueError("daily_chat_web_attempts cannot be more than %d"
-                         % DAILY_CHAT_WEB_ATTEMPTS_MAX)
-    with _lock:
-        data = load(accounts_dir)
-        data["daily_chat_web_attempts"] = attempts
-        save(accounts_dir, data)
-    return attempts
-
-
-def daily_chat_web_timeout(accounts_dir, default=None):
-    """Seconds to wait for the first web-channel turn; later tries double it.
-
-    ``default`` is what an unset install gets, so a caller that has its own
-    built-in default (the env-overridable ``WB_WEB_TURN_TIMEOUT``) keeps it
-    instead of being silently reset to 120 by this setting's existence.
-    Anything that is not a whole number in range also falls back to it, so a
-    hand-edited settings.json cannot make the scheduler hang on a huge value
-    or trip over a string.
-    """
-    if default is None:
-        default = DAILY_CHAT_WEB_TIMEOUT_DEFAULT
-    value = load(accounts_dir).get("daily_chat_web_timeout")
-    if (isinstance(value, bool) or not isinstance(value, int)
-            or value < 1 or value > DAILY_CHAT_WEB_TIMEOUT_MAX):
-        return default
-    return value
-
-
-def set_daily_chat_web_timeout(accounts_dir, seconds):
-    """Persist the per-attempt wait. Returns the stored whole number of seconds."""
-    if isinstance(seconds, bool) or not isinstance(seconds, int):
-        raise ValueError("daily_chat_web_timeout must be a whole number of seconds")
-    if seconds < 1:
-        raise ValueError("daily_chat_web_timeout cannot be less than 1")
-    if seconds > DAILY_CHAT_WEB_TIMEOUT_MAX:
-        raise ValueError("daily_chat_web_timeout cannot be more than %d"
-                         % DAILY_CHAT_WEB_TIMEOUT_MAX)
-    with _lock:
-        data = load(accounts_dir)
-        data["daily_chat_web_timeout"] = seconds
-        save(accounts_dir, data)
-    return seconds
 
 
 def local_web_tools(accounts_dir):

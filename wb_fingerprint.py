@@ -1,8 +1,8 @@
 """wb_fingerprint.py —— 统一设备指纹稳定派生模块 (derive_id)
 
-无论是国内版 (copilot.tencent.com / codebuddy.cn) 还是国际版 (www.workbuddy.ai)，
-均通过本模块基于账号 UID 和加盐哈希单向派生出固定的伪物理设备特征 (machineId, sessionId, reqId)，
-确保每个账号永远来自一台固定的物理设备，且多账号之间天然隔离防风控关联。
+国内版 (copilot.tencent.com / codebuddy.cn) 通过本模块基于账号 UID 和加盐哈希单向
+派生出固定的伪物理设备特征 (machineId, sessionId, reqId)，确保每个账号永远来自一台
+固定的物理设备，且多账号之间天然隔离防风控关联。
 
 形态按 5.8.4 抓包对齐（2026-10-16）：官方客户端的 machineId 取自 OS 硬件 UUID、
 sessionId 取自「每进程一个 randomUUID」，两者都是带连字符的 UUID；请求 id 是

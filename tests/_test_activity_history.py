@@ -289,90 +289,12 @@ class RecordingTests(IsolatedCase):
         self.assertIn("活动未开始", rows[-1]["message"])
         self.assertEqual(self.latest()["ok"], False)
 
-    def test_intl_daily_chat_success_and_failure_write_one_row_each(self):
-        account = self.account("intl", "intl-1")
-        with mock.patch.object(wb_accounts, "urlopen",
-                               lambda req, **kw: _response({})), \
-                mock.patch.object(wb_accounts.Account, "fetch_credits",
-                                  lambda self: {"ok": True}):
-            res = account.daily_chat(web=False, trigger="scheduler")
-        self.assertTrue(res.get("ok"), res)
-        rows = self.rows()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["task"], "daily_chat")
-        self.assertEqual(rows[0]["trigger"], "scheduler")
-        self.assertEqual(rows[0]["realm"], "intl")
-        self.assertTrue(rows[0]["ok"])
-
-        def boom(req, **kw):
-            raise RuntimeError("upstream down")
-        with mock.patch.object(wb_accounts, "urlopen", boom):
-            res = account.daily_chat(web=False, trigger="manual")
-        self.assertFalse(res.get("ok"))
-        rows = self.rows()
-        self.assertEqual(len(rows), 2)
-        self.assertFalse(rows[-1]["ok"])
-        self.assertIn("upstream down", rows[-1]["message"])
-
-    def test_the_web_substep_folds_into_the_same_row(self):
-        account = self.account("intl", "intl-2")
-        with mock.patch.object(wb_accounts, "urlopen", _web_urlopen()), \
-                mock.patch.object(wb_accounts.Account, "fetch_credits",
-                                  lambda self: {"ok": True}), \
-                mock.patch.object(wb_accounts.wb_webagent, "run_turn",
-                                  _finished_turn):
-            res = account.daily_chat(web=True, trigger="scheduler")
-        self.assertTrue(res.get("ok"), res)
-        self.assertTrue(res.get("web", {}).get("ok"), res)
-        rows = self.rows()
-        self.assertEqual(len(rows), 1, "网页通道那一步不该多记一行")
-        self.assertIn("网页通道", rows[0]["message"])
-
-    def test_a_failed_web_substep_is_reported_in_the_same_row(self):
-        account = self.account("intl", "intl-web-fail")
-        with mock.patch.object(wb_accounts, "urlopen", _web_urlopen()), \
-                mock.patch.object(wb_accounts.Account, "fetch_credits",
-                                  lambda self: {"ok": True}), \
-                mock.patch.object(wb_accounts.wb_webagent, "run_turn",
-                                  lambda *a, **kw: {"ok": False, "status": "working",
-                                                    "chunks": 0, "elapsed_ms": 5,
-                                                    "error": "会话在 120s 内没有跑完"}):
-            res = account.daily_chat(web=True, trigger="scheduler")
-        self.assertFalse(res.get("ok"), res)     # 网页腿才算数，它失败整次就是失败
-        self.assertFalse(res["web"]["ok"])
-        rows = self.rows()
-        self.assertEqual(len(rows), 1)
-        self.assertFalse(rows[0]["ok"])
-        self.assertIn("网页通道失败", rows[0]["message"])
-
-    def test_a_direct_web_trigger_records_its_own_row(self):
-        account = self.account("intl", "intl-3")
-        with mock.patch.object(wb_accounts, "urlopen", _web_urlopen()), \
-                mock.patch.object(wb_accounts.wb_webagent, "run_turn",
-                                  _finished_turn):
-            res = account.daily_chat_web(trigger="manual")
-        self.assertTrue(res.get("ok"), res)
-        rows = self.rows()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["trigger"], "manual")
-        self.assertEqual(rows[0]["task"], "daily_chat")
-
-    def test_guard_rejections_are_not_attempts(self):
-        cn = self.account("cn", "cn-2")
-        intl = self.account("intl", "intl-4")
-        self.assertFalse(cn.daily_chat().get("ok"))
-        self.assertFalse(cn.daily_chat_web().get("ok"))
-        self.assertFalse(intl.checkin().get("ok"))
-        self.assertEqual(self.rows(), [], "区域不符是调用方的问题，不是一次签到尝试")
-
-
 class SchedulerRecordingTests(IsolatedCase):
     def test_the_scheduler_records_only_the_attempts_it_makes(self):
         due = self.account("cn", "cn-due")
         done = self.account("cn", "cn-done")
         done.last_checkin = time.strftime("%Y-%m-%d %H:%M:%S")
-        intl = self.account("intl", "intl-due")
-        pool = type("Pool", (), {"accounts": [due, done, intl]})()
+        pool = type("Pool", (), {"accounts": [due, done]})()
 
         calls = []
 
@@ -396,9 +318,9 @@ class SchedulerRecordingTests(IsolatedCase):
             scheduler._run_cycle("测试第二轮")
 
         rows = self.rows()
-        self.assertEqual(first_round, 2, "两个到期账号各记一行")
-        self.assertEqual(len(rows), 2, "已完成的账号第二轮不该刷出假成功")
-        self.assertEqual(sorted(r["task"] for r in rows), ["checkin", "daily_chat"])
+        self.assertEqual(first_round, 1, "只有到期的那一个账号记一行")
+        self.assertEqual(len(rows), 1, "已完成的账号第二轮不该刷出假成功")
+        self.assertEqual(sorted(r["task"] for r in rows), ["checkin"])
         self.assertTrue(all(r["trigger"] == "scheduler" for r in rows))
         self.assertEqual(len(calls), 1, "只有真正到期的那个账号签了一次")
 
@@ -409,7 +331,7 @@ class CallSiteAuditTests(unittest.TestCase):
     ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
     def test_every_call_site_names_its_trigger(self):
-        bare = re.compile(r"\.(checkin|daily_chat|daily_chat_web)\(\s*\)")
+        bare = re.compile(r"\.(checkin)\(\s*\)")
         offenders = []
         for name in ("wb_proxy.py", "wb_accounts.py", "wb_scheduler.py",
                      "wb_tasks.py"):
@@ -428,17 +350,12 @@ class CallSiteAuditTests(unittest.TestCase):
                       inspect.getsource(
                           wb_accounts.AccountPool.import_desktop_credential))
 
-    def test_the_three_attempt_methods_are_the_recording_points(self):
-        for name, task in (("checkin", "TASK_CHECKIN"),
-                           ("daily_chat", "TASK_DAILY_CHAT"),
-                           ("daily_chat_web", "TASK_DAILY_CHAT")):
+    def test_the_attempt_methods_are_the_recording_points(self):
+        # 国际版每日活跃随该区域一并删除，签到是唯一还会写历史的任务。
+        for name, task in (("checkin", "TASK_CHECKIN"),):
             source = inspect.getsource(getattr(wb_accounts.Account, name))
             self.assertIn("wb_activity.record_attempt", source, name)
             self.assertIn(task, source, name)
-
-    def test_the_nested_web_call_is_marked_as_already_recorded(self):
-        source = inspect.getsource(wb_accounts.Account._daily_chat_upstream)
-        self.assertIn("daily_chat_web(trigger=None)", source)
 
 
 class ReadApiTests(IsolatedCase):
@@ -471,7 +388,7 @@ class ReadApiTests(IsolatedCase):
              (now - datetime.timedelta(hours=23)).isoformat(timespec="seconds")),
             ("ok-2min", "u-cn", "cn", "checkin", "scheduler", True, at(1)),
             ("failed-1min", "u-cn", "cn", "checkin", "manual", False, at(2)),
-            ("newest", "u-intl", "intl", "daily_chat", "scheduler", True, at(3)),
+            ("newest", "u-intl", "cn", "checkin", "scheduler", True, at(3)),
         ]
 
     def test_newest_first_and_the_default_window(self):
@@ -563,10 +480,10 @@ class ReadApiTests(IsolatedCase):
     def test_filters(self):
         self.seed(self.window_rows())
         self.assertEqual(self.messages(uid="u-intl"), ["newest"])
-        self.assertEqual(self.query(task="checkin")["total"], 4)
+        self.assertEqual(self.query(task="checkin")["total"], 5)
         self.assertEqual(self.messages(result="failed"), ["failed-1min"])
         self.assertEqual(self.query(result="fail")["total"], 1, "别名要认")
-        self.assertEqual(self.query(task="daily_chat", result="ok")["total"], 1)
+        self.assertEqual(self.query(task="checkin", result="ok")["total"], 4)
 
     def test_limit_is_bounded_and_tolerates_junk(self):
         self.seed(self.window_rows())

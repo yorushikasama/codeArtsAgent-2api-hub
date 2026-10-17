@@ -1,8 +1,9 @@
 """wb_activity.py —— 账号每日活动的结构化历史（issue #34，父 issue #30）
 
-国内版签到与国际版每日活跃，过去只留在调度器的滚动日志里：重启即散，而且和
-Token 保活、猫猫旅行、成长任务混在同一条流里，回答不了「这个账号昨天到底签成
-了没有」。这里落一份独立的结构化历史，一行一次**真实尝试**，不是每轮巡检。
+国内版签到，过去只留在调度器的滚动日志里：重启即散，而且和 Token 保活、成长
+任务混在同一条流里，回答不了「这个账号昨天到底签成了没有」。这里落一份独立的
+结构化历史，一行一次**真实尝试**，不是每轮巡检。（国际版每日活跃已随该区域
+一并移除。）
 
 写进去的是运维元数据，不是凭证：时间 / uid / 昵称 / 区域 / 任务 / 触发来源 /
 结果 / 一句截断并脱敏过的说明。token、cookie、API key、授权头、原始请求体既不
@@ -22,8 +23,7 @@ import time
 HISTORY_NAME = "activity_history.jsonl"
 
 TASK_CHECKIN = "checkin"
-TASK_DAILY_CHAT = "daily_chat"
-TASKS = (TASK_CHECKIN, TASK_DAILY_CHAT)
+TASKS = (TASK_CHECKIN,)
 
 # 触发来源只用于面板上的来源标注；认不出来的值归一成 unknown —— 记历史绝不能
 # 让签到本身失败，也不该因为一个标签写错就丢掉一次真实尝试。
@@ -33,7 +33,7 @@ RESULTS = ("ok", "failed")
 RESULT_ALIASES = {"ok": "ok", "success": "ok", "succeeded": "ok",
                   "failed": "failed", "fail": "failed", "failure": "failed"}
 
-REALMS = ("cn", "intl")
+REALMS = ("cn",)
 
 # 允许出现在 API 响应里的字段，一个不多。JSONL 是磁盘上的文件而不是我们的内存，
 # 一行里完全可能多出别的键（别的写入方、手工补的行、被塞进来的凭证），读取侧
@@ -209,8 +209,8 @@ def record(uid, nickname, realm, task, trigger, ok, message, usage_dir=None):
 def record_attempt(account, task, trigger, result):
     """把一次账号尝试的结果记成一行；trigger 为 None 表示这一步不单独记。
 
-    trigger=None 是给嵌套调用用的：daily_chat() 内部还会跑一次网页通道，那一步
-    属于同一次尝试，由外层记一次就够，不该在历史里多出一行。
+    trigger=None 表示这一步属于外层同一次尝试，由外层记一次就够，不该在历史里
+    多出一行（嵌套调用的场景）。
     """
     if trigger is None:
         return None

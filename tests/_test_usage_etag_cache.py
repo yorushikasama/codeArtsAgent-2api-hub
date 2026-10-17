@@ -349,12 +349,14 @@ try:
               headers.get("Cache-Control"))
 
     print("[11] 不同查询参数是不同的表示：tag 必须跟着键走")
-    tag_intl = synced_tag("/usage?realm=intl")
+    # 国际版删除后 realm=intl 会被归一到 cn（同一个表示，同一个 tag），所以
+    # 这里换成一个真正不同的作用域：realm=all。
+    tag_all = synced_tag("/usage?realm=all")
     tag_cn = synced_tag("/usage?realm=cn")
-    check("realm=intl 与 realm=cn 的 tag 不同", tag_intl != tag_cn,
-          "%s vs %s" % (tag_intl, tag_cn))
-    status, _h, _b = poll("/usage?realm=cn", {"If-None-Match": tag_intl})
-    check("拿 intl 的 tag 请求 realm=cn -> 200", status == 200, status)
+    check("realm=all 与 realm=cn 的 tag 不同", tag_all != tag_cn,
+          "%s vs %s" % (tag_all, tag_cn))
+    status, _h, _b = poll("/usage?realm=cn", {"If-None-Match": tag_all})
+    check("拿 all 的 tag 请求 realm=cn -> 200", status == 200, status)
     status, _h, _b = poll("/usage?realm=cn", {"If-None-Match": tag_cn})
     check("拿 cn 自己的 tag 请求 realm=cn -> 304", status == 304, status)
     # 带引号的 realm 不能把 ETag 头拼成畸形值（缓存键里有调用方给的字符串）

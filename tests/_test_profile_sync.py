@@ -34,13 +34,12 @@ class FakeResponse(object):
 
 
 class FetchProfileTests(unittest.TestCase):
-    def test_web_origin_switches_by_realm(self):
-        self.assertEqual(wb_accounts.web_origin_for("cn"),
-                         "https://www.workbuddy.cn")
-        self.assertEqual(wb_accounts.web_origin_for("intl"),
-                         "https://www.workbuddy.ai")
-        self.assertEqual(wb_accounts.web_origin_for("global"),
-                         "https://www.workbuddy.ai")
+    def test_web_origin_is_the_china_site_for_every_realm(self):
+        # 国际版删除后只剩国内版出口；已删/未知区域（老代码还会传 intl、
+        # global）一律回落到国内站，而不是拿到一个不存在的站点。
+        for realm in ("cn", "intl", "global", "", None, "bogus"):
+            self.assertEqual(wb_accounts.web_origin_for(realm),
+                             "https://www.workbuddy.cn", realm)
 
     def test_fetch_parses_only_uid_and_nickname(self):
         captured = {}

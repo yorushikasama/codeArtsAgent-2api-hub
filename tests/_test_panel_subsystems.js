@@ -63,7 +63,7 @@ for (const name of ['function loadUpdateStatus', 'function applyUpdateStatus',
 has('优先调度开关', 'id="setRemainingPriority"');
 has('优先调度保存', 'function saveRemainingPriority');
 has('优先调度设置键', 'remaining_priority_enabled');
-has('剩余用量分区域表体', 'id="remainingTbodyIntl"');
+has('剩余用量表体', 'id="remainingTbodyCn"');
 has('模型筛选', 'function toggleRemainingModelFilter');
 
 /* ---- 5. #268 的区块必须在设置页里 ---- */

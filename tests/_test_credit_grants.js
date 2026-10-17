@@ -57,7 +57,7 @@ const tbody = document.getElementById('creditGrantsTbody');
 const summaryEl = document.getElementById('creditGrantsSummary');
 
 const row = (over) => Object.assign({
-  uid: 'uid-1', nickname: 'meyadi', realm: 'intl', name: 'Bonus Pack',
+  uid: 'uid-1', nickname: 'meyadi', realm: 'cn', name: 'Bonus Pack',
   product: 'Tencent Cloud CodeBuddy', grant_reason: '',
   size: 30, remain: 12.54, used: 17.46, unit: 'credit',
   create_at: 1791607292, create_iso: '2026-10-10 00:42:45',
@@ -100,10 +100,11 @@ check('上游给了发放原因就原样显示在来源列', out.includes('Buddy
 check('本机动作关联进来源列的悬停提示',
       out.includes('本机动作：每日签到 10-10 00:07 成功'), out);
 check('上游发放原因也在悬停提示里', out.includes('上游发放原因：Buddy 加油站签到'), out);
-check('国际版 Bonus Pack 30 按规则推断为每日活跃奖励',
-      out.includes('每日活跃奖励') && out.includes('按包名与面额推断'), out);
+// 「Bonus Pack 30 = 每日活跃奖励」那条推断只对国际版成立，已随该区域删除：
+// 上游没给原因时来源列就留空（「—」）。
+check('没有上游原因时来源显示 —，不再臆测', !out.includes('按包名与面额推断'), out);
 check('既没有原因也推断不出时来源显示 —', /<td[^>]*>—<\/td>/.test(out), out);
-check('区域列按中英文界面词画出', out.includes('国内版') && out.includes('国际版'), out);
+check('区域列画出中文界面词', out.includes('国内版'), out);
 check('摘要给出笔数、合计、剩余与快照时刻',
       summaryEl.textContent.includes('共 4 笔') && summaryEl.textContent.includes('合计 190')
       && summaryEl.textContent.includes('剩余 120.54')

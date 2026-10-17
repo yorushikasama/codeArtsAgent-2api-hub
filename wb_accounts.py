@@ -16,39 +16,20 @@ import wb_atrest
 import wb_identity
 import wb_settings
 import wb_upstream_pool
-import wb_webagent
 
 # ---------------------------------------------------------------------------
-# 网页版通道（issue #75 / #59 / #90）
+# 网页控制台通道
 #
-# 网页版 app 的「对话」不是 chat/completions，而是 console/as 下的 agent 会话。
-# 这条链路只用 Authorization: Bearer <accessToken> 与 X-User-Id 两个凭据头，
-# 没有桌面端的 X-IDE-* 指纹，所以网关手里同一份账号凭据可以直接用。
+# 账号档案（昵称 + uid 归属校验）走网页控制台的 console/account 接口，只带
+# Authorization: Bearer <accessToken> 与 X-User-Id 两个凭据头，没有桌面端的
+# X-IDE-* 指纹，所以网关手里同一份账号凭据可以直接用。
 #
-# 关键的一步（issue #90 实测）：建会话只是**排队**。agent 要等客户端接上这条
-# 会话的沙箱（GET .../{id}/session 返回的 link + token）并请求这一轮才会跑，
-# 否则会话永远停在 CREATING、没有任何输出，也就不算一次有效对话。网页端的顺序
-# 是 建会话 → 取 session → ACP over HTTP+SSE 的 initialize / session/load /
-# session/prompt（实现见 wb_webagent）。
-#
-# 每日活跃奖励认的是「跑完的 agent 会话」：桌面身分发 chat/completions 不计数
-# （issue #75、#59 实测），只建会话不接沙箱同样不计数（#90 实测）。因此国际版
-# 打卡在桌面端对话之外，再走一次这条网页通道，并且把它跑到 completed。
+# 国际版（www.workbuddy.ai）已整体移除，这里只保留国内版出口。
 # ---------------------------------------------------------------------------
-WEB_ORIGIN = "https://www.workbuddy.ai"
-WEB_ORIGIN_CN = "https://www.workbuddy.cn"
-WEB_CONVERSATIONS_URL = WEB_ORIGIN + "/console/as/conversations/"
+WEB_ORIGIN = "https://www.workbuddy.cn"
 PROFILE_PATH = "/console/account"
 WEB_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                   "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36 Edg/140.0.0.0")
-DAILY_CHAT_MODEL = "deepseek-v4.1-flash"
-DAILY_CHAT_WEB_PROMPT = "Hi"
-#: 网页通道一轮最多等多久（秒）。实测一次「Hi」十几秒就跑完，留足余量。
-#: 没配 settings 的账号（如单测里手工构造的）用它兜底。
-WEB_TURN_TIMEOUT = int(os.environ.get("WB_WEB_TURN_TIMEOUT") or "120")
-#: 网页通道一共试几次（含第一轮）。第 N 轮的等待是首轮的 2^(N-1) 倍，所以
-#: 3 次 = 最多等 base×(1+2+4) 秒。设置页可改（见 wb_settings.daily_chat_web_attempts）。
-WEB_TURN_ATTEMPTS = 3
 
 
 def _retryable(exc):
@@ -65,8 +46,8 @@ def _retryable(exc):
 
 
 def web_origin_for(realm):
-    """Web-console origin per realm (CN vs international)."""
-    return WEB_ORIGIN_CN if str(realm or "").lower() == "cn" else WEB_ORIGIN
+    """Web-console origin. 国际版已移除，恒为国内版出口。"""
+    return WEB_ORIGIN
 
 
 def fetch_account_profile(account, timeout=15):
@@ -84,8 +65,8 @@ def fetch_account_profile(account, timeout=15):
             "Authorization": "Bearer " + str(account.access_token or ""),
             "Accept": "application/json, text/plain, */*",
             "x-client-platform": "web",
-            "Origin": WEB_ORIGIN_CN,
-            "Referer": WEB_ORIGIN_CN + "/profile/account-settings",
+            "Origin": WEB_ORIGIN,
+            "Referer": WEB_ORIGIN + "/profile/account-settings",
             "User-Agent": WEB_USER_AGENT,
         },
     )
@@ -174,19 +155,9 @@ def http_json(url, data=None, method=None, headers=None, timeout=30,
             time.sleep(backoff * attempt)
     raise last
 
+#: 上游出口。国际版（intl / www.workbuddy.ai）已整体移除，只剩国内版一套；
+#: 字典形状保留，realm 字段与按 realm 取的机制不动，方便后续换上游。
 REALM_CONFIGS = {
-    "intl": {
-        "name": "国际版 (Global)",
-        "chat_upstream": "https://www.workbuddy.ai",
-        "billing_upstream": "https://www.workbuddy.ai",
-        "origin": "https://www.workbuddy.ai",
-        "domain": "www.workbuddy.ai",
-        "chat_ua": "WorkBuddy/5.5.2 WorkBuddy AI/5.5.2 CLI/5.5.2",
-        "billing_ua": "WorkBuddy/5.5.2",
-        "info_filename": "workbuddy-desktop-ai.info",
-        "cache_dir_name": ".workbuddy-ai",
-        "has_checkin": False,
-    },
     "cn": {
         "name": "国内版 (China)",
         "chat_upstream": "https://copilot.tencent.com",
@@ -215,11 +186,37 @@ ENTERPRISE_USAGE_PATH = "/billing/meter/get-enterprise-user-usage"
 
 LOGIN_PENDING = 11217
 LOGIN_TTL_SECONDS = 600
-USER_AGENT = REALM_CONFIGS['intl']['chat_ua']
+USER_AGENT = REALM_CONFIGS['cn']['chat_ua']
 DEFAULT_UA_VERSION = '5.5.2'
 
+#: 本版本唯一存在的区域。历史上写进账号文件的 intl 等已删区域，读取时统统
+#: 归一到这里——否则老账号会因为「池里找不到 realm=='intl' 的候选」直接消失，
+#: 表现是网关报 502 而账号列表里明明还在。
+DEFAULT_REALM = "cn"
+KNOWN_REALMS = tuple(REALM_CONFIGS)
+
+
+def normalize_realm(realm):
+    """把任何来源的 region 归一成当前存在的区域。"""
+    value = str(realm or "").strip().lower()
+    return value if value in REALM_CONFIGS else DEFAULT_REALM
+
+
 def get_realm_config(realm):
-    return REALM_CONFIGS.get(realm) or REALM_CONFIGS["intl"]
+    return REALM_CONFIGS[normalize_realm(realm)]
+
+
+def match_realm(realm):
+    """把「请求要哪个出口」归一成池里真正存在的区域名。
+
+    None / 空 / "all" 原样返回（调用方当「不过滤」处理）；已经删掉的区域
+    （老客户端可能还在发 X-Realm: intl）归一到现存的区域，不认识的垃圾值
+    同理——让请求落到唯一那个出口，而不是回一个「该区域没有账号」的 502。
+    """
+    text = str(realm or "").strip().lower()
+    if text in ("", "all"):
+        return text or None
+    return normalize_realm(text)
 
 def _jwt_claims(token):
     try:
@@ -250,20 +247,17 @@ def normalize_epoch(value):
         number /= 1000.0
     return int(number)
 
-#: token / 域名里能认出区域的字样。国内版历史上换过出口：copilot.tencent.com →
+#: token / 域名里能认出国内版出口的字样。国内版历史上换过出口：copilot.tencent.com →
 #: codebuddy.cn → workbuddy.cn（新版国内客户端的 JWT issuer 就是
-#: https://www.workbuddy.cn/…），三个都得认；只认前两个会把 workbuddy.cn 的
-#: 国内账号判成国际版——手动导入 JSON 时"明明是国内的却进了国际版"就是这么来的。
+#: https://www.workbuddy.cn/…），三个都得认，少认一个就会把账号判成未识别区域。
 CN_REALM_MARKERS = ("copilot.tencent.com", "codebuddy.cn", "workbuddy.cn")
-INTL_REALM_MARKERS = ("workbuddy.ai", "codebuddy.ai")
-REALM_MARKERS = {"cn": CN_REALM_MARKERS, "intl": INTL_REALM_MARKERS}
+REALM_MARKERS = {"cn": CN_REALM_MARKERS}
 
 #: 「限额联动」只覆盖免费模型（用户口径，2026-10-10）：只有这些模型的 6004
 #: 撞线才做「记录 → 跨重启禁用」；付费模型不参与——它们的消耗按积分计费，
-#: 不在这套 24h 窗口配额里。键与 Account.realm 的取值一致（intl / cn），
+#: 不在这套 24h 窗口配额里。键与 Account.realm 的取值一致（当前只有 cn），
 #: 国内版的 deepseek-v4.1-flash 是收费模型（x0.11），不在名单内。
 FREE_CAP_MODELS = {
-    "intl": frozenset({"hy4-preview-f", "hy3", "deepseek-v4.1-flash"}),
     "cn": frozenset({"hy4-preview-f", "hy3"}),
 }
 
@@ -307,7 +301,7 @@ def deduction_end_text(acc):
 
 
 def realm_evidence(token, domain=None):
-    """从 token / 域名里看区域，看不出返回 None（不要瞎猜成 intl）。
+    """从 token / 域名里看区域，看不出返回 None（不要瞎猜成国内版）。
 
     先看 token 自己的 issuer，再看域名：域名是客户端随手记下来的字段，可能过期
     或干脆是另一边的（同一台机器切区登录过就会这样），token 才是要拿去请求的
@@ -316,42 +310,34 @@ def realm_evidence(token, domain=None):
     iss = jwt_issuer(token).lower()
     if any(marker in iss for marker in CN_REALM_MARKERS):
         return "cn"
-    if any(marker in iss for marker in INTL_REALM_MARKERS):
-        return "intl"
     dom = str(domain or "").lower()
     if any(marker in dom for marker in CN_REALM_MARKERS):
         return "cn"
-    if any(marker in dom for marker in INTL_REALM_MARKERS):
-        return "intl"
     return None
 
 def detect_realm_from_token(token, domain=None):
-    return realm_evidence(token, domain) or "intl"
+    return realm_evidence(token, domain) or "cn"
 
 def domain_for_realm(realm, domain):
-    """把域名对齐到区域：域名写着另一个区域时换成该区域的规范域名。
+    """域名归位：看着像本区域的域名原样保留，否则回落到该区域的规范域名。
 
-    出站请求的 X-Domain 头跟着它走，区域既然以 token 为准，就不能让一个过期
-    域名再把请求带回另一边的出口。域名本身看不出区域时原样保留。
+    出站请求的 X-Domain 头跟着它走，不能让一个认不出来的过期域名把请求带走。
     """
     dom = str(domain or "").strip()
-    other = "intl" if realm == "cn" else "cn"
-    if dom and not any(marker in dom.lower() for marker in REALM_MARKERS[other]):
+    if dom and any(marker in dom.lower() for marker in CN_REALM_MARKERS):
         return dom
     return get_realm_config(realm)["domain"]
 
 def desktop_effective_realm(hint, token, domain=None):
     """桌面凭据归哪个区域：token / 域名说了算，文件名只作兜底。
 
-    文件名（workbuddy-desktop.info → 国内、workbuddy-desktop-ai.info → 国际）
-    只是客户端两套安装的默认约定：同一个文件里完全可能登录另一个区域的账号
-    （切区登录就是这么用的）。按 token 判定才不会把国内账号塞进国际版列表——
-    那种账号导入后每个请求都会打到错区域的出口上。
+    国际版已移除，认不出来就一律归国内版——宁可多认一次国内账号，也不让
+    任何凭据落到已不存在的出口上。
     """
     evidence = realm_evidence(token, domain)
     if evidence:
         return evidence
-    return hint if hint in ("intl", "cn") else "intl"
+    return hint if hint == "cn" else "cn"
 
 _DEVICE_TOKEN_CACHE = {"key": None, "token": "", "at": 0.0}
 _DEVICE_TOKEN_LOCK = threading.Lock()
@@ -494,7 +480,8 @@ class Account(object):
         else:
             self.nickname = ""
         self.domain = str(data.get("domain") or "")
-        self.realm = str(data.get("realm") or detect_realm_from_token(token, self.domain))
+        self.realm = normalize_realm(
+            data.get("realm") or detect_realm_from_token(token, self.domain))
         if not self.domain:
             self.domain = get_realm_config(self.realm)["domain"]
         self.platform = str(data.get("platform") or "CLI")
@@ -577,7 +564,6 @@ class Account(object):
         self.last_fail_at = 0.0
         self.credits = data.get("credits") or None
         self.last_checkin = data.get("lastCheckin") or None
-        self.last_daily_chat = data.get("lastDailyChat") or None
         # 国内版每天一次的「对话活跃上报」（点亮官方 growth 连登/热力墙）上次
         # 成功的时刻；与 lastCheckin 同款：只按「今天成功过没有」做闸门。
         self.last_activity_report = data.get("lastActivityReport") or None
@@ -687,7 +673,6 @@ class Account(object):
             "cooldownUntil": self.cooldown_until,
             "credits": self.credits,
             "lastCheckin": self.last_checkin,
-            "lastDailyChat": self.last_daily_chat,
             "lastActivityReport": self.last_activity_report,
             # 持久化：6004 的恢复时间是上游给的事实，重启后仍然成立（见 __init__）。
             "modelCaps": {mid: dict(entry) for mid, entry in self.model_caps.items()},
@@ -777,10 +762,8 @@ class Account(object):
                                  if isinstance(self.model_daily_tokens, dict)
                                  else None),
             "lastCheckin": self.last_checkin,
-            "lastDailyChat": self.last_daily_chat,
             "lastActivityReport": self.last_activity_report,
             "canCheckin": self.realm == "cn" and not self.is_enterprise(),
-            "canDailyChat": self.realm == "intl",
             "canReportActivity": self.realm == "cn" and not self.is_enterprise(),
             "machineId": derive_id(self.uid, "machine"),
             "sessionId": session_id(self.uid),
@@ -1172,7 +1155,7 @@ class Account(object):
                 "X-User-Id": self.uid,
                 "X-Domain": self.domain or cfg["domain"],
                 "X-CodeBuddy-Request": "1",
-                "Accept-Language": "en-US" if self.realm == "intl" else "zh-CN",
+                "Accept-Language": "zh-CN",
                 "X-Request-ID": generate_request_id(self.uid),
                 "X-Machine-ID": derive_id(self.uid, "machine"),
                 "X-Session-ID": session_id(self.uid),
@@ -1204,7 +1187,7 @@ class Account(object):
             "Origin": cfg["origin"],
             "Referer": cfg["origin"] + "/",
             "X-CodeBuddy-Request": "1",
-            "Accept-Language": "en-US" if self.realm == "intl" else "zh-CN",
+            "Accept-Language": "zh-CN",
         }
         headers.update(identity)
         device_token = self._device_token()
@@ -1277,11 +1260,11 @@ class Account(object):
             "Origin": cfg["origin"],
             "Referer": cfg["origin"] + "/",
             "X-Refresh-Token": self.refresh_token,
-            "X-Auth-Refresh-Source": "workbuddy" if self.realm == "cn" else "plugin",
+            "X-Auth-Refresh-Source": "workbuddy",
             "X-User-Id": self.uid,
             "X-Domain": self.domain or cfg["domain"],
             "X-CodeBuddy-Request": "1",
-            "Accept-Language": "en-US" if self.realm == "intl" else "zh-CN",
+            "Accept-Language": "zh-CN",
         }
         if self.enterprise_id:
             headers["X-Enterprise-Id"] = self.enterprise_id
@@ -1317,14 +1300,6 @@ class Account(object):
         today_str = time.strftime("%Y-%m-%d")
         return not str(self.last_checkin).startswith(today_str)
 
-    def can_daily_chat(self):
-        if self.realm != "intl":
-            return False
-        if not self.last_daily_chat:
-            return True
-        today_str = time.strftime("%Y-%m-%d")
-        return not str(self.last_daily_chat).startswith(today_str)
-
     def can_report_activity(self):
         """国内版每天一次的对话活跃上报（点亮 growth 连登）是否还没做过。"""
         if self.realm != "cn":
@@ -1335,270 +1310,6 @@ class Account(object):
             return True
         today_str = time.strftime("%Y-%m-%d")
         return not str(self.last_activity_report).startswith(today_str)
-
-    def web_headers(self):
-        """网页版 app 的出站头：只有 bearer 与 X-User-Id，没有桌面端指纹。"""
-        return {
-            "Authorization": "Bearer " + self.access_token,
-            "X-User-Id": self.uid,
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/plain, */*",
-            "Origin": WEB_ORIGIN,
-            "Referer": WEB_ORIGIN + "/app",
-            "User-Agent": WEB_USER_AGENT,
-        }
-
-    def daily_chat_model(self):
-        """Which model this account's daily activity runs on.
-
-        The panel's setting wins when set; otherwise the built-in free id. Both
-        legs (the desktop-identity completion and the web conversation) read
-        this, so one setting moves the whole activity.
-        """
-        candidates = []
-        if self.path:
-            picked = wb_settings.daily_chat_model(os.path.dirname(self.path))
-            if picked:
-                candidates.append(picked)
-        candidates.append(DAILY_CHAT_MODEL)
-        # Add fallback free models for the account's realm if preferred model is cooling down
-        if self.realm == "intl":
-            candidates.extend(["hy3", "hy4-preview-f", "hy4-preview", "glm-5.3-flash"])
-        else:
-            candidates.extend(["hy3", "hy4-preview-f", "hy4-preview"])
-
-        now = time.time()
-        with self._throttle_lock:
-            for cand in candidates:
-                # Check model-level cooldown or cap directly
-                cooldown_until = self.model_cooldowns.get(cand, 0.0)
-                if cooldown_until <= now and self.cap_until(cand, now) <= 0.0:
-                    return cand
-        return candidates[0]
-
-    def daily_chat_web(self, prompt=None, trigger="unknown"):
-        """网页通道的每日活跃会话（issue #75 / #59 / #90）。
-
-        只建会话是不够的：agent 要等客户端接上沙箱并请求这一轮才会跑，否则会话
-        永远停在 CREATING、没有任何输出，也就不算一次有效对话（#90 实测）。这里
-        按网页端的顺序走完：建会话 → 取沙箱 link+token → ACP 的 initialize /
-        session/load / session/prompt（见 wb_webagent）→ 轮询到 completed。
-
-        返回 {"ok": True, "conversation": id, "status": "completed", "chunks": n,
-        "elapsed_ms": n}，失败时 {"ok": False, "error": ...}（尽量带上会话 id）。
-
-        trigger 只用于活动历史的来源标注；trigger=None 表示这一步算在外层尝试
-        里、不单独记一行 —— daily_chat() 内部就是这么调的。
-        """
-        if self.realm != "intl":
-            return {"ok": False, "error": "web daily chat is only for international accounts"}
-        res = self._daily_chat_web_upstream(prompt)
-        wb_activity.record_attempt(self, wb_activity.TASK_DAILY_CHAT, trigger, res)
-        return res
-
-    def _daily_chat_web_upstream(self, prompt=None):
-        """网页通道的实际流程；返回形状见 daily_chat_web。
-
-        失败会再试（见 daily_chat_web_policy）：一共最多 attempts 次（含第一轮），
-        第 N 轮的等待是首轮的 2^(N-1) 倍 —— 默认 3 次、首轮 120 秒，也就是
-        120 / 240 / 480。最典型的失败是「会话还没跑完」（状态=working），它往往
-        只是慢，多等一轮就好，所以这里把等待时间当成重试的代价，不再额外 sleep。
-        业务拒绝（建会话返回非 0 code）不再试：同一个被拒的请求再发一次也一样被拒。
-
-        返回里带 attempts（实际跑了几轮），其余字段与 _daily_chat_web_once 一致。
-        """
-        base, total = self.daily_chat_web_policy()
-        attempt = 0
-        while True:
-            res = self._daily_chat_web_once(prompt, wait_seconds=base * (2 ** attempt))
-            res["attempts"] = attempt + 1
-            if res.get("ok") or attempt + 1 >= total or not res.get("retryable"):
-                return res
-            attempt += 1
-
-    def daily_chat_web_policy(self):
-        """(首轮等待秒数, 总尝试次数)。设置页改过就按设置页的来。
-
-        重试开关默认开（见 wb_settings.daily_chat_web_retry），关掉就是只试一次。
-        等待时间没设过时用 WEB_TURN_TIMEOUT —— 它吃 WB_WEB_TURN_TIMEOUT 环境变量，
-        别让这个新设置项把它悄悄顶掉。没配 settings 的账号（单测里手工构造的）
-        同样按内置默认走。
-        """
-        if not self.path:
-            return WEB_TURN_TIMEOUT, WEB_TURN_ATTEMPTS
-        directory = os.path.dirname(self.path)
-        total = 1
-        if wb_settings.daily_chat_web_retry(directory):
-            total = wb_settings.daily_chat_web_attempts(directory,
-                                                        default=WEB_TURN_ATTEMPTS)
-        return (wb_settings.daily_chat_web_timeout(directory, default=WEB_TURN_TIMEOUT),
-                total)
-
-    def _daily_chat_web_once(self, prompt=None, wait_seconds=None):
-        """网页通道的一轮尝试；返回形状见 daily_chat_web。
-
-        结果里的 retryable 说明这一轮的失败值不值得再试一次（重试策略见
-        _daily_chat_web_upstream）。
-        """
-        if wait_seconds is None:
-            wait_seconds = WEB_TURN_TIMEOUT
-        model = self.daily_chat_model()
-        body = {
-            "prompt": prompt or DAILY_CHAT_WEB_PROMPT,
-            "model": model,
-            # 网页端建会话时固定带上这两项（抓包所得），保持请求形态一致。
-            "conversationOrigin": "workbuddy-app",
-            "plugins": [{"name": "weixinpay", "marketplace": "codebuddy-builtin"}],
-        }
-        req = urllib.request.Request(
-            WEB_CONVERSATIONS_URL,
-            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-            headers=self.web_headers(), method="POST")
-        try:
-            with urlopen(req, timeout=30, proxy=self.proxy) as resp:
-                payload = json.loads(resp.read().decode("utf-8", "replace") or "{}")
-        except urllib.error.HTTPError as exc:
-            try:
-                detail = exc.read().decode("utf-8", "replace")
-            except Exception:
-                detail = str(exc)
-            return {"ok": False, "error": "HTTP %d: %s" % (exc.code, detail[:120]),
-                    "retryable": exc.code >= 500 or exc.code in (408, 429)}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc), "retryable": True}
-        if not isinstance(payload, dict):
-            return {"ok": False, "error": "unexpected response", "retryable": True}
-        conversation = (payload.get("data") or {}).get("id")
-        if payload.get("code") not in (0, None) or not conversation:
-            return {"ok": False, "error": "code=%s msg=%s"
-                    % (payload.get("code"), payload.get("msg")),
-                    "retryable": False}
-
-        # 建完只是排队：接上沙箱、请求这一轮，它才会真的跑起来（issue #90）。
-        try:
-            session = (self._web_conversation_get(conversation, "/session") or {}).get("data") or {}
-        except Exception as exc:
-            return {"ok": False, "conversation": conversation,
-                    "error": "session 查询失败: %s" % exc, "retryable": True}
-        link = session.get("link") or session.get("endpoint") or ""
-        token = session.get("token") or ""
-        session_id = session.get("sessionId") or session.get("session_id") or conversation
-        cwd = session.get("cwd") or "/workspace"
-        if not link or not token:
-            return {"ok": False, "conversation": conversation,
-                    "error": "沙箱未就绪（没有 link/token）", "retryable": True}
-
-        result = wb_webagent.run_turn(
-            link, token, session_id, cwd, prompt or DAILY_CHAT_WEB_PROMPT,
-            WEB_USER_AGENT,
-            poll_status=lambda: self._web_conversation_status(conversation),
-            wait_seconds=wait_seconds, proxy=self.proxy,
-            model=model)
-        result["conversation"] = conversation
-        if result.get("ok"):
-            result["msg"] = "网页通道会话跑完：%d 段输出，%d ms" % (
-                result.get("chunks") or 0, result.get("elapsed_ms") or 0)
-        else:
-            result["retryable"] = True
-        return result
-
-    def _web_conversation_get(self, conversation, suffix=""):
-        """读一条网页端会话（suffix 为空拿会话本身，"/session" 拿沙箱信息）。"""
-        url = WEB_CONVERSATIONS_URL + urllib.parse.quote(str(conversation)) + suffix
-        req = urllib.request.Request(url, headers=self.web_headers(), method="GET")
-        with urlopen(req, timeout=30, proxy=self.proxy) as resp:
-            return json.loads(resp.read().decode("utf-8", "replace") or "{}")
-
-    def _web_conversation_status(self, conversation):
-        """这条会话现在什么状态（completed 就是这一轮真的跑完了）。"""
-        try:
-            payload = self._web_conversation_get(conversation)
-        except Exception:
-            return ""
-        data = payload.get("data") if isinstance(payload, dict) else None
-        return str((data or {}).get("status") or "")
-
-    def daily_chat(self, web=None, trigger="unknown"):
-        """国际版每日活跃对话（官方每日活跃 30/50 积分）。
-
-        两步：桌面端身分的轻量对话（一直以来的做法），以及网页通道的会话
-        （issue #75/#59/#90：算数的是「跑完的 agent 会话」）。web=None 时按
-        settings.json 里的 daily_chat_web 决定，True/False 可显式指定。
-
-        trigger 只用于活动历史的来源标注；整次尝试记一行，网页通道那一步的结果
-        并进同一行的说明里，不再多记一行。ok 以真正计入积分的网页腿为准：网页腿
-        开着且失败时整次算失败（桌面腿跑过也不算数）。
-        """
-        if self.realm != "intl":
-            return {"ok": False, "error": "daily chat is only for international accounts"}
-        res = self._daily_chat_upstream(web)
-        wb_activity.record_attempt(self, wb_activity.TASK_DAILY_CHAT, trigger, res)
-        return res
-
-    def _daily_chat_upstream(self, web=None):
-        """每日活跃对话的实际流程；返回形状见 daily_chat。"""
-        import wb_proxy
-        url = self.chat_base_url() + wb_proxy.CHAT_PATH
-        headers = self.headers("chat")
-        body = {
-            "model": self.daily_chat_model(),
-            "messages": [{"role": "user", "content": "Hi"}],
-            "stream": True,
-            "max_tokens": 10,
-            "reasoning_effort": "none",
-        }
-        req_body = wb_proxy.build_upstream_body(body)
-        data = json.dumps(req_body, ensure_ascii=False).encode("utf-8")
-        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
-        try:
-            with urlopen(req, timeout=20, proxy=self.proxy) as resp:
-                _ = resp.read()
-            try:
-                self.fetch_credits()
-            except Exception:
-                pass
-            result = {"ok": True, "msg": "每日活跃对话成功完成"}
-            web_ok = True
-            if web is None:
-                web = bool(self.path) and wb_settings.daily_chat_web(os.path.dirname(self.path))
-            if web:
-                res = self.daily_chat_web(trigger=None)
-                result["web"] = res
-                web_ok = bool(res.get("ok"))
-                if web_ok:
-                    # 重试过就把轮数带上：光看「成功」分不清是首轮就跑完，还是
-                    # 前几轮超时、多等了一轮才跑完（后者是慢，不是没跑）。
-                    tries = res.get("attempts") or 1
-                    retried = "（重试 %d 次后）" % (tries - 1) if tries > 1 else ""
-                    result["msg"] = ("每日活跃对话成功完成（网页通道%s %s：%d 段输出，%d ms）"
-                                     % (retried, res.get("status") or "completed",
-                                        res.get("chunks") or 0, res.get("elapsed_ms") or 0))
-                else:
-                    # 桌面腿成功不等于当天打卡完成：计入官方「每日活跃」的只有网页腿
-                    # （#75/#59/#90）。面板与活动历史按 ok 画成功/失败，网页腿失败却
-                    # 报成功的话，「今天这 30/50 积分没到账」在界面上一直看不见。
-                    tries = res.get("attempts") or 1
-                    suffix = "（已重试 %d 次）" % (tries - 1) if tries > 1 else ""
-                    result["ok"] = False
-                    result["error"] = "网页通道失败：%s%s" % (res.get("error"), suffix)
-                    result["msg"] = "每日活跃对话未完成（网页通道失败：%s%s）" % (
-                        res.get("error"), suffix)
-            # 只有真正计入官方「每日活跃」的网页通道成功了才算今天做过：网页腿失败时
-            # 若照写 lastDailyChat，当天后续巡检会直接跳过该账号，那天的 30/50 积分静默
-            # 丢掉且不再重试。web=False（没开网页通道）时维持原语义：桌面腿成功即算完成。
-            if web_ok:
-                self.last_daily_chat = time.strftime("%Y-%m-%d %H:%M:%S")
-                if self.path and os.path.exists(os.path.dirname(self.path)):
-                    self.save(os.path.dirname(self.path))
-            return result
-        except urllib.error.HTTPError as exc:
-            try:
-                err = exc.read().decode("utf-8", "replace")
-            except Exception:
-                err = str(exc)
-            return {"ok": False, "error": f"HTTP {exc.code}: {err[:100]}"}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
 
     def checkin(self, trigger="unknown"):
         """国内版每日签到。
@@ -1654,7 +1365,7 @@ class Account(object):
         上游口径：必须带 userId，否则服务端 200 但静默丢弃；每号每天一次即可，
         不做多时点高频上报（风控口径）。成功后记 lastActivityReport 并落盘，再读
         一次 /activity/growth/streak 把连登天数带回去——读失败不影响上报本身的
-        结论。只有国内版有这套成长体系，国际版直接拒绝。
+        结论。这套成长体系只有国内版有，未识别的区域一律拒绝。
         """
         if self.realm != "cn":
             return {"ok": False, "error": "activity report is only for CN realm accounts"}
@@ -2374,7 +2085,7 @@ def _realm_limit(values, realm):
     """One guard's value for an account's realm.
 
     `values` is the map wb_settings.limit_values() hands over -
-    {"global": g, "intl": ..., "cn": ...}. A blank or unrecognised realm falls
+    {"global": g, "cn": ...}. A blank or unrecognised realm falls
     back to the global default, so an account whose realm could not be detected
     is still guarded by the global number.
     """
@@ -2594,6 +2305,7 @@ class AccountPool(object):
         return restored
 
     def list_public(self, realm=None):
+        realm = match_realm(realm)
         with self._lock:
             accs = self.accounts if (not realm or realm == "all") else [a for a in self.accounts if a.realm == realm]
             return [a.public() for a in accs]
@@ -2614,8 +2326,6 @@ class AccountPool(object):
                     account.credits = existing.credits
                 if not account.last_checkin and existing.last_checkin:
                     account.last_checkin = existing.last_checkin
-                if not account.last_daily_chat and existing.last_daily_chat:
-                    account.last_daily_chat = existing.last_daily_chat
                 if not account.proxy_slot and existing.proxy_slot:
                     account.proxy_slot = existing.proxy_slot
                 if not account.proxy_legacy and existing.proxy_legacy:
@@ -2781,7 +2491,7 @@ class AccountPool(object):
         Same shape as apply_proxy_slots(): settings.json is the source of
         truth and the per-account value is derived here, so the request path
         needs no extra settings lookup. `values` is the guard resolved per
-        realm ({"global": g, "intl": ..., "cn": ...}); each account picks its
+        realm ({"global": g, "cn": ...}); each account picks its
         own realm, so a per-realm override lands only on that realm's accounts
         while the global default keeps covering both.
         """
@@ -2960,6 +2670,7 @@ class AccountPool(object):
         return account.public()
 
     def set_all_enabled(self, enabled, realm=None):
+        realm = match_realm(realm)
         with self._lock:
             for account in self.accounts:
                 if realm and account.realm != realm: continue
@@ -2970,6 +2681,7 @@ class AccountPool(object):
         self.apply_proxy_slots()
 
     def count_ready(self, realm=None, model=None):
+        realm = match_realm(realm)
         with self._lock:
             snapshot = [a for a in self.accounts if not realm or a.realm == realm]
         return sum(1 for a in snapshot if a.enabled and a.access_token and a.ready(model=model))
@@ -2993,6 +2705,7 @@ class AccountPool(object):
           every oversized body onto a single account.
         """
         exclude = exclude or set()
+        realm = match_realm(realm)
         if session_key and page is None:
             for uid in self.affinity.recent(session_key):
                 if uid in exclude:
@@ -3015,6 +2728,7 @@ class AccountPool(object):
 
     def pick(self, realm=None, exclude=None, model=None, page=None):
         exclude = exclude or set()
+        realm = match_realm(realm)
         with self._lock:
             snapshot = [a for a in self.accounts if not realm or a.realm == realm]
         if page is not None:
@@ -3267,13 +2981,14 @@ class AccountPool(object):
         return None
 
     def representative(self, realm=None):
+        realm = match_realm(realm)
         with self._lock:
             candidates = [a for a in self.accounts if not realm or a.realm == realm]
             for account in candidates:
                 if account.access_token: return account
             return candidates[0] if candidates else None
 
-    def start_login(self, realm="intl", platform="CLI"):
+    def start_login(self, realm="cn", platform="CLI"):
         cfg = get_realm_config(realm)
         url = "%s%s?platform=%s" % (cfg["chat_upstream"], AUTH_STATE_PATH, urllib.parse.quote(str(platform)))
         headers = {
@@ -3304,7 +3019,7 @@ class AccountPool(object):
         if time.time() - info["created"] > LOGIN_TTL_SECONDS:
             with self._lock: self.logins.pop(state, None)
             return {"status": "expired", "message": "login window expired - start again"}
-        realm = info.get("realm") or "intl"
+        realm = info.get("realm") or "cn"
         cfg = get_realm_config(realm)
         url = "%s%s?state=%s" % (cfg["chat_upstream"], AUTH_TOKEN_PATH, urllib.parse.quote(state))
         headers = {
@@ -3475,8 +3190,7 @@ def desktop_credential_candidates():
     out = []
     for base in desktop_auth_dirs():
         if not os.path.isdir(base): continue
-        for name, realm in (("workbuddy-desktop-ai.info", "intl"),
-                            ("workbuddy-desktop.info", "cn")):
+        for name, realm in (("workbuddy-desktop.info", "cn"),):
             path = os.path.join(base, name)
             if os.path.isfile(path) and (path, realm) not in out:
                 out.append((path, realm))
@@ -3545,8 +3259,7 @@ def scan_desktop_credentials():
             if key is not None and wb_atrest.is_envelope(nickname):
                 nickname = wb_atrest.decrypt_field(key, nickname)
             exp = normalize_epoch(auth.get("expiresAt")) or jwt_exp(token) or 0
-            # 区域以 token 为准（文件名只兜底），跟导入时用的是同一套判断，
-            # 免得列表里标着国内版、导入却跑进国际版
+            # 区域以 token 为准（文件名只兜底），跟导入时用的是同一套判断
             item_realm = desktop_effective_realm(realm, token, auth.get("domain"))
             item_cfg = get_realm_config(item_realm)
             item.update({
@@ -3587,7 +3300,7 @@ EXPORT_VERSION = 1
 # exported for inspection but never trusted on import: a stale cooldown or a
 # disabled flag from another machine would silently cripple the target pool.
 VOLATILE_FIELDS = ("cooldownUntil", "lastError", "credits", "lastCheckin",
-                   "lastDailyChat", "lastActivityReport", "modelCaps")
+                   "lastActivityReport", "modelCaps")
 
 # The subset of VOLATILE_FIELDS that must not round-trip through the local
 # credential file at all: they are not trusted on load and not written by save(),
@@ -3718,11 +3431,11 @@ def normalise_import_row(row, realm=None):
     forced = str(realm or "").strip().lower()
     evidence = realm_evidence(token, pick("domain"))
     row_realm = str(pick("realm") or "").strip().lower()
-    if forced in ("intl", "cn"):
+    if forced == "cn":
         detected = forced
     elif evidence:
         detected = evidence
-    elif row_realm in ("intl", "cn"):
+    elif row_realm == "cn":
         detected = row_realm
     else:
         detected = detect_realm_from_token(token, pick("domain"))

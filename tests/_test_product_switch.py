@@ -92,11 +92,15 @@ class ProductSwitchTests(unittest.TestCase):
                          [uid[:8] for uid in UIDS])
         self.assertEqual(set(self.products().values()), {"cli"})
 
-    def test_realm_narrows_the_batch(self):
-        status, payload = FakeRequest({"product": "vscode", "realm": "intl"}).call()
-        self.assertEqual(status, 200)
-        self.assertEqual(sorted(payload["changed"]), ["intl-aaa", "intl-bbb"])
-        self.assertEqual(self.products()["cn-ccc-3"], "workbuddy")
+    def test_the_only_realm_covers_every_account(self):
+        # 单出口：不管传 cn 还是已删的 intl，批量切换都覆盖全部账号。
+        # 两次用不同目标身分，否则第二次「切到同一个」自然没有变化可报。
+        for realm, target in (("cn", "cli"), ("intl", "workbuddy")):
+            status, payload = FakeRequest({"product": target, "realm": realm}).call()
+            self.assertEqual(status, 200, realm)
+            self.assertEqual(sorted(payload["changed"]),
+                             ["cn-ccc-3", "intl-aaa", "intl-bbb"], realm)
+            self.assertEqual(set(self.products().values()), {target}, realm)
 
     def test_realm_all_means_everyone(self):
         status, payload = FakeRequest({"product": "vscode", "realm": "all"}).call()

@@ -38,7 +38,7 @@ def row(at, account, model, tokens, credit=0.0, outcome="completed"):
     return {
         "at": at, "iso": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(at)),
         "model": model, "stream": True, "outcome": outcome,
-        "total_tokens": tokens, "credit": credit, "account": account, "realm": "intl",
+        "total_tokens": tokens, "credit": credit, "account": account, "realm": "cn",
     }
 
 
@@ -121,7 +121,7 @@ class DailyUsageFoldTests(unittest.TestCase):
 class CreditGuardAccountTests(unittest.TestCase):
     def test_guard_blocks_paid_models_and_keeps_free_ones(self):
         account = wb_accounts.Account({"uid": "uid-a", "accessToken": "t",
-                                      "realm": "intl"})
+                                      "realm": "cn"})
         account.daily_credit_limit = 50
         account.free_models = frozenset({"deepseek-v4.1-flash"})
         # Not counted yet: nothing blocks.
@@ -174,38 +174,38 @@ class CreditGuardPoolTests(unittest.TestCase):
     def test_pool_caps_credit_per_account_and_publishes_state(self):
         with tempfile.TemporaryDirectory(prefix="credit-pool-") as directory:
             spent = wb_accounts.Account({"uid": "uid-spent", "accessToken": "t",
-                                         "realm": "intl"})
+                                         "realm": "cn"})
             fresh = wb_accounts.Account({"uid": "uid-fresh", "accessToken": "t",
-                                         "realm": "intl"})
+                                         "realm": "cn"})
             pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
             pool.accounts = [spent, fresh]
             pool.apply_daily_credit_limit(
                 50, {"uid-spent": 60.0, "uid-fresh": 10.0},
-                {"intl": {"deepseek-v4.1-flash"}})
+                {"cn": {"deepseek-v4.1-flash"}})
             # A paid model rotates away from the capped account...
             for _ in range(3):
-                self.assertEqual(pool.pick(realm="intl", model="gpt-6-astra").uid,
+                self.assertEqual(pool.pick(realm="cn", model="gpt-6-astra").uid,
                                  "uid-fresh")
-            self.assertEqual(pool.count_ready(realm="intl", model="gpt-6-astra"), 1)
+            self.assertEqual(pool.count_ready(realm="cn", model="gpt-6-astra"), 1)
             # ...while the free one still reaches both.
-            self.assertEqual(pool.count_ready(realm="intl",
+            self.assertEqual(pool.count_ready(realm="cn",
                                               model="deepseek-v4.1-flash"), 2)
-            row = [a for a in pool.list_public(realm="intl")
+            row = [a for a in pool.list_public(realm="cn")
                    if a["uid"] == "uid-spent"][0]
             self.assertTrue(row["creditLimitReached"])
             self.assertEqual(row["dailyCreditsToday"], 60.0)
             self.assertEqual(row["dailyCreditLimit"], 50)
             # None keeps the last known counts when only the setting changes.
             pool.apply_daily_credit_limit(0)
-            self.assertFalse(pool.pick(realm="intl", model="gpt-6-astra") is None)
+            self.assertFalse(pool.pick(realm="cn", model="gpt-6-astra") is None)
             self.assertEqual(spent.daily_credits_today, 60.0)
 
     def test_pool_caps_one_model_per_account(self):
         with tempfile.TemporaryDirectory(prefix="credit-model-") as directory:
             a = wb_accounts.Account({"uid": "uid-a", "accessToken": "t",
-                                     "realm": "intl"})
+                                     "realm": "cn"})
             b = wb_accounts.Account({"uid": "uid-b", "accessToken": "t",
-                                     "realm": "intl"})
+                                     "realm": "cn"})
             pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
             pool.accounts = [a, b]
             pool.apply_model_daily_token_limit(1000, {"uid-a": {"hy4-preview": 1500}})
@@ -213,10 +213,10 @@ class CreditGuardPoolTests(unittest.TestCase):
             # Another account's budget is its own.
             self.assertFalse(b.model_token_limit_blocked("hy4-preview"))
             self.assertTrue(b.ready("hy4-preview"))
-            self.assertEqual(pool.count_ready(realm="intl", model="hy4-preview"), 1)
+            self.assertEqual(pool.count_ready(realm="cn", model="hy4-preview"), 1)
             # The capped account keeps its other models.
             self.assertTrue(a.ready("glm-5.3"))
-            row = [a for a in pool.list_public(realm="intl")
+            row = [a for a in pool.list_public(realm="cn")
                    if a["uid"] == "uid-a"][0]
             self.assertEqual(row["modelDailyTokenLimit"], 1000)
             self.assertEqual(row["modelDailyTokens"], {"hy4-preview": 1500})
@@ -251,7 +251,7 @@ class CreditGuardPoolTests(unittest.TestCase):
 
     def test_pool_wide_credit_cap_answers_429_with_its_own_message(self):
         account = wb_accounts.Account({"uid": "uid-cap", "accessToken": "t",
-                                      "realm": "intl"})
+                                      "realm": "cn"})
         account.daily_credit_limit = 50
         account.daily_credits_today = 50.0
 
@@ -262,7 +262,7 @@ class CreditGuardPoolTests(unittest.TestCase):
                 P.open_upstream(
                     {"model": "gpt-6-astra",
                      "messages": [{"role": "user", "content": "hi"}]},
-                    target_realm="intl")
+                    target_realm="cn")
         finally:
             P.POOL = old_pool
         self.assertIn("credit limit", str(caught.exception.message))
@@ -271,7 +271,7 @@ class CreditGuardPoolTests(unittest.TestCase):
 
     def test_pool_wide_model_cap_answers_429_with_its_own_message(self):
         account = wb_accounts.Account({"uid": "uid-model", "accessToken": "t",
-                                      "realm": "intl"})
+                                      "realm": "cn"})
         account.model_daily_token_limit = 1000
         account.model_daily_tokens = {"gpt-6-astra": 1000}
 
@@ -282,7 +282,7 @@ class CreditGuardPoolTests(unittest.TestCase):
                 P.open_upstream(
                     {"model": "gpt-6-astra",
                      "messages": [{"role": "user", "content": "hi"}]},
-                    target_realm="intl")
+                    target_realm="cn")
         finally:
             P.POOL = old_pool
         self.assertIn("token limit for gpt-6-astra", str(caught.exception.message))
@@ -290,17 +290,16 @@ class CreditGuardPoolTests(unittest.TestCase):
 
 
 class FreeModelViewTests(unittest.TestCase):
-    def test_free_table_is_built_per_realm_from_the_catalogue(self):
+    def test_free_table_comes_from_the_catalogue(self):
         view = P.free_models_by_realm()
-        # The bundled snapshot marks this one free on the international exit;
-        # the domestic catalogue carries it as paid, so it must not appear
-        # there - the same id, two answers.
-        self.assertIn("deepseek-v4.1-flash", view["intl"])
-        self.assertNotIn("deepseek-v4.1-flash", view["cn"])
-        self.assertIn("hy4-preview-f", view["intl"])
+        # 国际版删除后只剩国内版这一张表，内容取自内置目录里 credits 标着
+        # x0.00 的模型。
+        self.assertEqual(sorted(view), ["cn"])
         self.assertIn("hy4-preview-f", view["cn"])
-        # A paid id is in neither table.
-        self.assertNotIn("gpt-6-astra", view["intl"])
+        # 国内目录把这它当收费模型（x0.11），不该进免费表。
+        self.assertNotIn("deepseek-v4.1-flash", view["cn"])
+        # 只在国际版目录里出现过的 id 自然也不在。
+        self.assertNotIn("gpt-6-astra", view["cn"])
         self.assertTrue(P.credits_is_free("x0.00"))
         self.assertTrue(P.credits_is_free(" x0.00 "))
         self.assertFalse(P.credits_is_free("x0.34 credits"))

@@ -241,8 +241,8 @@ with open(history, "a", encoding="utf-8") as fh:
         # 记录被解析到 8 小时之外，关联窗口直接对不上。
         "ts": _dt.datetime.fromtimestamp(created - 60).astimezone()
                  .isoformat(timespec="seconds"),
-        "uid": "uid-alpha", "nickname": "meyadi", "realm": "intl",
-        "task": "daily_chat", "trigger": "scheduler", "ok": True,
+        "uid": "uid-alpha", "nickname": "meyadi", "realm": "cn",
+        "task": "checkin", "trigger": "scheduler", "ok": True,
         "message": "ok", "accessToken": "SECRET"}) + "\n")
 
 actions = P._grant_actions()
@@ -254,13 +254,13 @@ check("索引里的时间是 epoch",
       abs(actions["uid-alpha"][0]["at"] - (created - 60)) < 1, actions["uid-alpha"])
 
 try:
-    P.POOL = FakePool([FakeAccount("uid-alpha", "meyadi", "intl", [
+    P.POOL = FakePool([FakeAccount("uid-alpha", "meyadi", "cn", [
         pkg("Bonus Pack", 30, 30, "2026-10-10 00:42:45", "2026-11-10 00:42:44")])])
     linked = P.credit_grants(now=NOW)
 finally:
     P.POOL = _saved_pool
 check("发放行带上了关联到的那次本机动作",
-      linked["rows"][0]["action"]["task"] == "daily_chat"
+      linked["rows"][0]["action"]["task"] == "checkin"
       and linked["rows"][0]["action"]["delta_seconds"] == 60,
       linked["rows"][0].get("action"))
 

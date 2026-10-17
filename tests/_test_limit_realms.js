@@ -22,7 +22,7 @@ dom.installDom({
   fetch: (url, options) => {
     const body = options && options.body ? JSON.parse(options.body) : null;
     if(url === '/settings/save' && body) sent = body;
-    const payload = {current: 'intl', accounts: [], slots: [], data: [],
+    const payload = {current: 'cn', accounts: [], slots: [], data: [],
                      results: [], byAccount: []};
     return Promise.resolve({status: 200, ok: true,
       json: () => Promise.resolve(payload),
@@ -52,8 +52,7 @@ const api = new Function(script + `
     }
   }
   assert.equal(api.LIMIT_FIELDS.length, 5, '五条护栏');
-  assert.deepStrictEqual(api.LIMIT_SCOPES.map(s => s.scope),
-                         ['global', 'intl', 'cn']);
+  assert.deepStrictEqual(api.LIMIT_SCOPES.map(s => s.scope), ['global', 'cn']);
 
   // 1b. 手机上这张表要跟着看板的「表 → 卡片」走：表要带 data-cards，每个作用域格
   //     要有自己的 data-label 当行名，否则它会撑出 720px 的下限、把整个页面拉出
@@ -128,23 +127,22 @@ const api = new Function(script + `
 
   // 2. 载入时：全局填进全局列，覆盖值填进对应版本列，留空的写回继承提示。
   api.applyLimits({limits: {
-    reserve_credits: {global: 10, intl: 3, cn: null},
-    daily_token_limit: {global: 1000, intl: null, cn: null},
-    daily_credit_limit: {global: 0, intl: null, cn: null},
-    model_daily_token_limit: {global: 0, intl: null, cn: null},
+    reserve_credits: {global: 10, cn: 3},
+    daily_token_limit: {global: 1000, cn: null},
+    daily_credit_limit: {global: 0, cn: null},
+    model_daily_token_limit: {global: 0, cn: null},
   }});
   assert.equal(api.limitEl('Global', 'Reserve').value, '10');
-  assert.equal(api.limitEl('Intl', 'Reserve').value, '3');
-  assert.equal(api.limitEl('Cn', 'Reserve').value, '');
-  assert.equal(api.limitEl('Cn', 'Reserve').placeholder, '继承 10');
-  assert.equal(api.limitEl('Intl', 'DailyToken').placeholder, '继承 1,000');
+  assert.equal(api.limitEl('Cn', 'Reserve').value, '3');
+  assert.equal(api.limitEl('Cn', 'DailyToken').value, '');
+  assert.equal(api.limitEl('Cn', 'DailyToken').placeholder, '继承 1,000');
   assert.equal(dom.byId('setLimitsPerRealm').checked, true, '有覆盖时勾上分版本');
-  assert.equal(dom.byId('setReserveState').textContent, '(全局 10 · 国际版 3)');
+  assert.equal(dom.byId('setReserveState').textContent, '(全局 10 · 国内版 3)');
   assert.equal(dom.byId('setDailyTokenState').textContent, '(全局 1,000)');
 
   // 3. 没有覆盖时：分版本收起，两个版本列都留空。
   api.applyLimits({limits: {
-    reserve_credits: {global: 0, intl: null, cn: null},
+    reserve_credits: {global: 0, cn: null},
   }});
   assert.equal(dom.byId('setLimitsPerRealm').checked, false);
   assert.equal(dom.byId('setLimitsState').textContent, '(全局生效)');
@@ -153,14 +151,12 @@ const api = new Function(script + `
   // 4. 收起分版本时保存：即使版本列里还留着旧数字，也按“继承”发出去。
   dom.byId('setLimitsPerRealm').checked = false;
   api.limitEl('Global', 'Reserve').value = '20';
-  api.limitEl('Intl', 'Reserve').value = '5';
   api.limitEl('Cn', 'Reserve').value = '1';
   sent = null;
   await api.saveLimits(null);
   assert.ok(sent && sent.limits, '保存必须发 limits');
-  assert.deepStrictEqual(sent.limits.reserve_credits,
-                         {global: 20, intl: null, cn: null},
-                         '收起分版本 = 两个覆盖一起清回继承');
+  assert.deepStrictEqual(sent.limits.reserve_credits, {global: 20, cn: null},
+                         '收起分版本 = 覆盖清回继承');
   assert.deepStrictEqual(Object.keys(sent.limits).sort(), [
     'daily_credit_limit', 'daily_token_limit',
     'expiring_window_days', 'model_daily_token_limit', 'reserve_credits',
@@ -169,12 +165,10 @@ const api = new Function(script + `
   // 5. 勾上分版本时保存：填了值的版本发数字，留空的仍发 null。
   dom.byId('setLimitsPerRealm').checked = true;
   api.limitEl('Global', 'Reserve').value = '20';
-  api.limitEl('Intl', 'Reserve').value = '5';
-  api.limitEl('Cn', 'Reserve').value = '';
+  api.limitEl('Cn', 'Reserve').value = '5';
   sent = null;
   await api.saveLimits(null);
-  assert.deepStrictEqual(sent.limits.reserve_credits,
-                         {global: 20, intl: 5, cn: null});
+  assert.deepStrictEqual(sent.limits.reserve_credits, {global: 20, cn: 5});
 
   // 6. 非法输入直接拦下，不发请求。
   sent = null;
@@ -191,9 +185,9 @@ const api = new Function(script + `
   assert.equal(sent, null, '非法的分版本值不应发请求');
 
   // 7. 临期优先开关：勾选状态跟着全局窗口值走；点一下在 7 与 0 之间切换并保存。
-  api.applyLimits({limits: {expiring_window_days: {global: 7, intl: null, cn: null}}});
+  api.applyLimits({limits: {expiring_window_days: {global: 7, cn: null}}});
   assert.equal(dom.byId('setExpiringWindowToggle').checked, true, '窗口 > 0 时开关应为开');
-  api.applyLimits({limits: {expiring_window_days: {global: 0, intl: null, cn: null}}});
+  api.applyLimits({limits: {expiring_window_days: {global: 0, cn: null}}});
   assert.equal(dom.byId('setExpiringWindowToggle').checked, false, '窗口 0 时开关应为关');
 
   sent = null;
@@ -208,7 +202,7 @@ const api = new Function(script + `
   assert.deepStrictEqual(sent.limits, {expiring_window_days: {global: 0}},
                          '关闭应写 0，不动窗口天数本身');
 
-  // 8. 收起分版本只隐藏两列，不动全局列。
+  // 8. 收起分版本只隐藏国内版那一列，不动全局列。
   api.toggleLimitRealms(false);
   api.toggleLimitRealms(true);
 

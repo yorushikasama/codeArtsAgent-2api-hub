@@ -75,11 +75,11 @@ check('模型级冷却照旧出标签',
 
 /* ---- 3. 「当前禁用总览」也要列出来 ------------------------------------ */
 
-api.setView('intl');
+api.setView('cn');
 api.setAccounts([
-  {uid: 'intl-brk-0001', nickname: '熔断号', realm: 'intl', enabled: true, breakerFor: 1800},
-  {uid: 'intl-deg-0002', nickname: '降权号', realm: 'intl', enabled: true, degradeFor: 600},
-  {uid: 'intl-ok-0003', nickname: '正常号', realm: 'intl', enabled: true},
+  {uid: 'cn-brk-0001', nickname: '熔断号', realm: 'cn', enabled: true, breakerFor: 1800},
+  {uid: 'cn-deg-0002', nickname: '降权号', realm: 'cn', enabled: true, degradeFor: 600},
+  {uid: 'cn-ok-0003', nickname: '正常号', realm: 'cn', enabled: true},
 ]);
 const rows = api.disabledRows();
 const kinds = rows.map(r => r.kind);
@@ -89,7 +89,8 @@ const brk = rows.find(r => r.kind === '熔断');
 check('熔断行要写清与账号本身无关', /账号与凭证本身没问题/.test(brk.reason), brk.reason);
 check('熔断行给出恢复时间', !!brk.until, brk.until);
 check('正常账号不出现', !rows.some(r => r.who.includes('正常号')), JSON.stringify(rows));
+// 国际版删除后只剩一个出口，总览里的每个账号都标国内版。
 check('熔断与降权都只描述当前视图的账号',
-  rows.every(r => r.realm === '国际版'), JSON.stringify(rows.map(r => r.realm)));
+  rows.every(r => r.realm === '国内版'), JSON.stringify(rows.map(r => r.realm)));
 
 console.log('account penalty badge assertions passed');

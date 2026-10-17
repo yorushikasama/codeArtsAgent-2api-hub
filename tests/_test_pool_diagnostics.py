@@ -137,21 +137,24 @@ class PoolDetailTests(unittest.TestCase):
     def tearDown(self):
         P.POOL = self.original
 
-    def test_lists_only_that_realm(self):
+    def test_lists_every_account_of_the_only_realm(self):
+        # 单出口：写死 intl 的账号读回来也是 cn，所以两个账号都出现在这份
+        # 明细里（明细只按区域筛选，不再有「另一个区域」）。
         P.POOL = self.pool
         self.pool.accounts = [account(uid="cn000001-0000-0000-0000-000000000000",
                                       realm="cn", enabled=False),
                               account(uid="intl0001-0000-0000-0000-000000000000", enabled=False)]
         detail = P.pool_unavailable_detail("cn", model="m")
         self.assertIn("cn000001", detail)
-        self.assertNotIn("intl0001", detail)
+        self.assertIn("intl0001", detail)
 
-    def test_empty_realm_says_so(self):
-        """国际版一个账号都没有时要说清楚——这是「没有 intl 账号」那类报错的根。"""
+    def test_empty_pool_says_so(self):
+        """一个账号都没有时要说清楚——这是「没有可用账号」那类报错的根。"""
         P.POOL = self.pool
-        self.pool.accounts = [account(uid="cn000001-0000-0000-0000-000000000000",
-                                      realm="cn", enabled=False)]
-        self.assertEqual(P.pool_unavailable_detail("intl", model="m"), "；该区域没有任何账号")
+        self.pool.accounts = []
+        for realm in ("cn", "intl"):
+            self.assertEqual(P.pool_unavailable_detail(realm, model="m"),
+                             "；该区域没有任何账号", realm)
 
     def test_all_ready_gives_no_detail(self):
         P.POOL = self.pool

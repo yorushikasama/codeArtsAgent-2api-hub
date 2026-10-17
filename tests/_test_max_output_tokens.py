@@ -64,7 +64,9 @@ class MaxOutputTokensTests(unittest.TestCase):
         self.assertEqual(
             P.model_default_max_output_tokens("deepseek-v4.1-flash"), 128000
         )
-        self.assertEqual(P.model_default_max_output_tokens("gpt-6-astra"), 128000)
+        # gpt-6-astra 只在国际版目录里，随该区域一并删除；国内版目录里
+        # 的 glm-5.3 仍带同样的默认值，用它继续守住这条查找。
+        self.assertEqual(P.model_default_max_output_tokens("glm-5.3"), 48000)
         self.assertIsNone(P.model_default_max_output_tokens("non-existent-model"))
 
 

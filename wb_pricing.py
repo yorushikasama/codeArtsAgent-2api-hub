@@ -988,11 +988,9 @@ def usd_cny():
 OPENROUTER_URL = "https://openrouter.ai/api/v1/models"
 USD_CNY = 7.10
 
-# The realms whose live catalogue feeds the price input beyond the bundled
-# snapshot. fetch_remote_product_config() fetches per realm (it knows only
-# intl/cn), so both are asked: a model the picker offers on either tab must
-# be priced without a release.
-LIVE_CATALOG_REALMS = ("intl", "cn")
+# The realm whose live catalogue feeds the price input beyond the bundled
+# snapshot. 国际版已移除，只剩国内版这一个出口；列表形态保留，方便后续换上游。
+LIVE_CATALOG_REALMS = ("cn",)
 
 # Names that differ from OpenRouter's, so the automatic matcher cannot find
 # them. Kept deliberately short: a model that matches by name must not be
@@ -1135,7 +1133,7 @@ def fetch_openrouter():
 
 
 def hub_model_ids():
-    """内置目录里的模型 id（国际版在前，保序去重）——取价的静态基线。
+    """内置目录里的模型 id（保序去重）——取价的静态基线。
 
     目录里新增模型后，这里就会多一个候选；非 chat 的档位别名（
     default-model 等）在 OpenRouter 里匹配不到，自然落进未定价清单。
@@ -1144,8 +1142,7 @@ def hub_model_ids():
     """
     import wb_catalog
     ids, seen = [], set()
-    for source in (getattr(wb_catalog, "STATIC_INTL_MODELS", []),
-                   getattr(wb_catalog, "STATIC_CN_MODELS", [])):
+    for source in (getattr(wb_catalog, "STATIC_CN_MODELS", []),):
         for item in source or []:
             mid = str(item.get("id") or "").strip()
             if mid and mid not in seen:
@@ -2359,9 +2356,8 @@ class PriceRefresher(threading.Thread):
         plus the variant/free-sibling rules in curate_remote_catalog), never a
         second copy of the rules and never a second copy of the module: that
         twin would have no account pool, and the live half would read empty.
-        Both realms are asked: the remote catalogue is fetched per realm
-        (fetch_remote_product_config only knows intl/cn), and a model the
-        picker shows on either tab belongs in the price input. Any failure
+        The remote catalogue is fetched per realm, and a model the picker
+        can offer belongs in the price input. Any failure
         falls back to an empty list: the static catalogue must still be priced,
         so live trouble can only ever leave a gap, never shrink the coverage.
         """

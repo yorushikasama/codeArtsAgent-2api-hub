@@ -81,10 +81,15 @@ class TimeseriesTests(unittest.TestCase):
         now = time.time()
         self.write([
             row(now - 30, total_tokens=100, realm="cn"),
-            row(now - 20, total_tokens=200, realm="intl"),
+            row(now - 20, total_tokens=200, realm="intl"),   # 已删区域的历史行
         ])
+        # 国际版删除后只剩一个出口：历史行里的 intl 归一成 cn，所以按 cn 过滤
+        # 与「全部」是同一批行；按已删区域名过滤也落到 cn（不是返回 0 条）。
         cn = wb_proxy.usage_timeseries(realm="cn", range="custom", since=now - 60, until=now)
-        self.assertEqual(sum(b["total_tokens"] for b in cn["series"]), 100)
+        self.assertEqual(sum(b["total_tokens"] for b in cn["series"]), 300)
+        removed = wb_proxy.usage_timeseries(realm="intl", range="custom",
+                                            since=now - 60, until=now)
+        self.assertEqual(sum(b["total_tokens"] for b in removed["series"]), 300)
         all_realms = wb_proxy.usage_timeseries(realm="all", range="custom", since=now - 60,
                                                until=now)
         self.assertEqual(sum(b["total_tokens"] for b in all_realms["series"]), 300)

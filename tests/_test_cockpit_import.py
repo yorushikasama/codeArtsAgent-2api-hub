@@ -51,7 +51,8 @@ class CockpitRowTests(unittest.TestCase):
         self.assertEqual(kwargs["uid"], "uid-cockpit")
         self.assertEqual(kwargs["accessToken"], fake_jwt())
         self.assertEqual(kwargs["refreshToken"], "refresh-token")
-        self.assertEqual(kwargs["realm"], "intl")
+        # 国际版删除后，导入行进池一律归国内版。
+        self.assertEqual(kwargs["realm"], "cn")
         self.assertEqual(kwargs["source"], "cockpit")
         # expires_at is milliseconds; the account stores seconds.
         self.assertLess(abs(kwargs["expiresAt"] - (time.time() + 3600)), 120)

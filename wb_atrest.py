@@ -318,18 +318,17 @@ def seal(key, plaintext, framing, key_id=None, nonce=None):
 
 
 # ------------------------------------------------------------------ keyblob
-#: 桌面客户端的配置目录候选（keyblob 所在）。与 wb_proxy.read_product_config_models
-#: 的口径一致：国际版装在 ~/.workbuddy-ai，国内版装在 ~/.workbuddy；不同版本
-#: 的安装器两者都可能写，所以按存在性探测而不是写死一个。
-CONFIG_DIR_CANDIDATES = (".workbuddy-ai", ".workbuddy")
+#: 桌面客户端的配置目录候选（keyblob 所在）。国际版装在 ~/.workbuddy-ai，该区域
+#: 已随改造整体移除，只剩国内版 ~/.workbuddy。
+CONFIG_DIR_CANDIDATES = (".workbuddy",)
 
 
 def config_dir():
     """客户端配置目录（keyblob 所在）。可用环境变量指向便携版的位置。
 
-    未设环境变量时按 CONFIG_DIR_CANDIDATES 顺序取第一个存在 keyblob 的目录
-    （兼容 `~/.workbuddy-ai` 的新版安装布局）；都不存在时回落到第一个候选，
-    让 load_keyblob() 报出常规的「keyblob 不存在」而不是这里的探测细节。
+    未设环境变量时按 CONFIG_DIR_CANDIDATES 顺序取第一个存在 keyblob 的目录；
+    都不存在时回落到第一个候选，让 load_keyblob() 报出常规的「keyblob 不存在」
+    而不是这里的探测细节。
     """
     env = (os.environ.get("WORKBUDDY_CONFIG_DIR")
            or os.environ.get("CODEBUDDY_CONFIG_DIR"))

@@ -664,8 +664,14 @@ try:
               srv14.accepted - accepted0)
         check("开关关闭时不碰池", sdelta(before) == {k: 0 for k in before},
               sdelta(before))
-        check("走的是原来的 urllib 路径（Connection: close）",
-              all(q["headers"].get("connection") == "close" for q in srv14.requests))
+        # urllib 在部分 Python 版本（实测 3.13.12）不再显式发 Connection: close：
+        # HTTP/1.1 里缺席就等于 close，真正的判据是「两次请求开了两条连接」。
+        def _not_keepalive(headers):
+            return str(headers.get("connection") or "").strip().lower() in ("", "close")
+
+        check("走的是原来的 urllib 路径（不是 keep-alive）",
+              all(_not_keepalive(q["headers"]) for q in srv14.requests),
+              [q["headers"].get("connection") for q in srv14.requests])
         # 同一条请求，两种路径各发一次：除 Connection 外，线上头完全一致
         def post_once():
             body = b'{"model":"x","messages":[]}'
@@ -690,9 +696,9 @@ try:
     urllib_side = {k: v for k, v in h_urllib.items() if k != "connection"}
     check("线上头与改动前一致（只差 Connection 的值）", pool_side == urllib_side,
           (h_pool, h_urllib))
-    check("池路径 keep-alive / 原路径 close",
+    check("池路径 keep-alive / 原路径不复用",
           h_pool.get("connection") == "keep-alive"
-          and h_urllib.get("connection") == "close")
+          and _not_keepalive(h_urllib))
     check("POST 的 Content-Length 一致",
           h_pool.get("content-length") == h_urllib.get("content-length")
           == "27", (h_pool.get("content-length"), h_urllib.get("content-length")))

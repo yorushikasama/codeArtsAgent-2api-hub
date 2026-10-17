@@ -611,12 +611,14 @@ check("池与磁盘一致：realm 页与老路一致", got == want, first_diff(w
 check("池与磁盘一致：realm 页走了索引", used["index"] > 0, used)
 check("池与磁盘一致：索引落盘了", os.path.exists(INDEX))
 
-# 池与磁盘不一致（账号换了 realm 但池没重载）：realm 数字不许用索引
-write_account_file("u9", "intl")
+# 「池与磁盘归属不一致 → realm 页不许用索引」这条场景需要同一份磁盘能表达
+# 两种归属。国际版删除后任何写进账号文件的区域读回来都是 cn，差异不复存在，
+# 判据（_realm_fold_reproducible）仍在，但这里没有可构造的对象。
+# 磁盘内容变化（哪怕只是重写）仍然要让页结果与老路一致：
+write_account_file("u9", "cn")
 got, used = call_page(realm="cn", use_index=True, fresh=True)
 want = page(use_index=False, realm="cn")
-check("池没跟上磁盘：realm 页与老路一致", got == want, first_diff(want, got))
-check("池没跟上磁盘：realm 页没走索引", used["index"] == 0, used)
+check("账号文件改了：realm 页与老路一致", got == want, first_diff(want, got))
 
 # 磁盘归属改了、池也重载了：索引整份重折（老行的归属跟着变），结果仍一致
 P.POOL = wb_accounts.AccountPool(ACCOUNTS_DIR)

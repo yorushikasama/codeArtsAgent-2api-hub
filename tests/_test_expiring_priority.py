@@ -272,14 +272,15 @@ class PickPrefersExpiringTests(unittest.TestCase):
         pool = self._pool([soon, later])
         self.assertEqual(pool.pick(realm="cn", exclude={"excl-soon"}).uid, "excl-later")
 
-    def test_realms_are_ranked_separately(self):
-        # 国际版临期账号只在国际版里优先，不影响国内版。
-        intl_soon = make_account("intl-soon", realm="intl", credits=credits(1))
-        intl_later = make_account("intl-later", realm="intl", credits=credits(40))
-        cn_later = make_account("cn-later", realm="cn", credits=credits(40))
-        pool = self._pool([intl_soon, intl_later, cn_later])
-        self.assertEqual({pool.pick(realm="intl").uid for _ in range(4)}, {"intl-soon"})
-        self.assertEqual({pool.pick(realm="cn").uid for _ in range(4)}, {"cn-later"})
+    def test_the_sooner_account_is_ranked_first(self):
+        # 单出口：临期账号先接单，不管它当初是从哪个区域写进来的。
+        soon = make_account("soon", realm="intl", credits=credits(1))
+        later_a = make_account("later-a", realm="intl", credits=credits(40))
+        later_b = make_account("later-b", realm="cn", credits=credits(40))
+        pool = self._pool([soon, later_a, later_b])
+        for realm in ("cn", "intl"):
+            self.assertEqual({pool.pick(realm=realm).uid for _ in range(4)},
+                             {"soon"}, realm)
 
 
 class LoadSpreadTests(unittest.TestCase):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""WorkBuddy (workbuddy.ai) -> OpenAI-compatible reverse proxy.
+"""WorkBuddy (China realm: copilot.tencent.com) -> OpenAI-compatible reverse proxy.
 Reuses the credentials the WorkBuddy desktop app already stored on this machine
 (%%LOCALAPPDATA%%\\CodeBuddyExtension\\Data\\Public\\auth\\*.info), so no separate
 login is needed. Exposes:
@@ -171,53 +171,30 @@ def port_owner_hint(port):
     if IS_WINDOWS:
         return "netstat -ano | findstr :%d" % port
     return "lsof -nP -iTCP:%d -sTCP:LISTEN" % port
-CURRENT_REALM = os.environ.get("WB_PROXY_DEFAULT_REALM", "intl")
+#: 当前生效的上游出口。国际版（intl）已整体移除，默认值就是唯一合法值。
+CURRENT_REALM = os.environ.get("WB_PROXY_DEFAULT_REALM", "cn")
 def detect_model_realm(model_id):
-    if not model_id:
-        return CURRENT_REALM
-    m = str(model_id).lower()
-    intl_only = {
-        "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-        "gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gemini-3.5-flash",
-        "grok-4.7"
-    }
-    if m in intl_only or any(m.startswith(p) for p in ("gpt-", "gemini-")):
-        return "intl"
-    cn_only = {
-        "deepseek-v4-pro", "minimax-m3", "minimax-m2.7", "minimax-m2.5",
-        "glm-5.1", "glm-5.0-turbo", "glm-4.6v",
-        "kimi-k3-1", "kimi-k2.7", "kimi-k2-thinking",
-        "hy3-x", "hy4-preview-dev", "hy4-preview-x"
-    }
-    if m in cn_only or any(m.startswith(p) for p in ("minimax-", "deepseek-v4-pro")):
-        return "cn"
-    return CURRENT_REALM
-# glm-5.3-flash was listed as cn-only, but the international exit serves it:
-# an official intl account posting to www.workbuddy.ai gets HTTP 200, and the
-# intl desktop client ships it in its own model list. Only deepseek-v4-pro
-# still answers "service info not found" there.
-# Models that exist on one side only. Everything else (deepseek-v4.1-flash,
-# hy3, glm-5.3 ...) is served by both exits, so it must not be treated as a
-# conflict.
-INTL_EXCLUSIVE_PREFIXES = ("gpt-", "gemini-")
+    """模型归属哪个出口。国际版已移除，恒为当前出口（cn）。
+
+    参数保留：调用方仍按「模型 → 出口」的语义传值，将来换上游时这里要重新划界。
+    CURRENT_REALM 从环境变量/磁盘读进来，值本身也可能是历史遗留的已删区域，
+    所以出口名一律过一遍归一——否则 row_realm 会把整批行贴上一个不存在的区域。
+    """
+    return wb_accounts.normalize_realm(CURRENT_REALM)
+# Models the domestic exit serves exclusively. 国际版已移除，另一半清单
+# （gpt- / gemini- / grok- …）随该区域一并删除；结构保留，方便后续换上游时
+# 重新划界。
 CN_EXCLUSIVE_PREFIXES = ("minimax-", "deepseek-v4-pro")
-INTL_EXCLUSIVE = {
-    "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
-    "gpt-5.5", "gpt-5.4", "gpt-5.3-codex", "gemini-3.5-flash",
-    "grok-4.7",
-}
 CN_EXCLUSIVE = {
     "deepseek-v4-pro", "glm-5.1", "glm-5v-turbo",
     "kimi-k3-1", "kimi-k2.7", "minimax-m3",
     "hy3-x", "hy4-preview-dev", "hy4-preview-x",
 }
 def exclusive_realm(model_id):
-    """"intl"/"cn" when only that exit serves the model, else ""."""
+    """"cn" when only the domestic exit serves the model, else ""."""
     if not model_id:
         return ""
     m = str(model_id).lower()
-    if m in INTL_EXCLUSIVE or m.startswith(INTL_EXCLUSIVE_PREFIXES):
-        return "intl"
     if m in CN_EXCLUSIVE or m.startswith(CN_EXCLUSIVE_PREFIXES):
         return "cn"
     return ""
@@ -257,7 +234,7 @@ def install_console_close_handler():
         return handler
     except Exception:
         return None
-UPSTREAM = "https://www.workbuddy.ai"
+UPSTREAM = "https://copilot.tencent.com"
 CHAT_PATH = "/v2/chat/completions"
 MODELS_PATH = "/v2/enterprises/personal/models"
 DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
@@ -306,7 +283,8 @@ def _apply_background_model_alias(payload):
 # (21 models, incl. deepseek-v4.1-flash / gpt-6-astra) - the CLI-facing
 # /v2/enterprises/personal/models endpoint returns a narrower list, so prefer
 # the cache and fall back to the endpoint.
-PRODUCT_CONFIG_CACHE = os.path.join(os.path.expanduser("~"), ".workbuddy-ai", "cache", "acc-product-config-v3.json")
+#: 桌面端缓存目录。国际版装在 ~/.workbuddy-ai，该区域已移除，只剩国内版 ~/.workbuddy。
+PRODUCT_CONFIG_CACHE = os.path.join(os.path.expanduser("~"), ".workbuddy", "cache", "acc-product-config-v3.json")
 NOISE_KEYS = ("extra_fields", "refusal", "reasoning_content")
 class BodyTooLarge(Exception):
     """Raised when a request body exceeds the configured cap."""
@@ -458,7 +436,7 @@ def login_rate_limit_key(peer_ip, headers):
     if via_chain:
         return via_chain
     return peer_ip
-_models_cache = {"intl": {"at": 0.0, "data": None}, "cn": {"at": 0.0, "data": None}}
+_models_cache = {"cn": {"at": 0.0, "data": None}}
 #: 目录来源追踪（面板展示用）：每个 realm 最近一次构建/刷新清单的出处。
 #: source 取值见 catalog_meta()；fetched_at 是网关拿到这批数据的时刻；
 #: file_mtime 是桌面缓存文件自己的写入时刻（仅配置文件来源，可能远早于
@@ -576,19 +554,26 @@ def row_realm(row):
     attributed by their account, then by the model's home realm - the same
     order row_matches_realm used, so a filter and a per-realm breakdown can
     never disagree about the same row.
+
+    历史行里写着已删区域的（intl），一律归一到现存出口：那些流量确实是这些
+    账号花掉的，按原值返回会让它们在「国内版」视图里整批消失，用量与花费对
+    不上账——比贴错区域名更糟。
     """
     r = row.get("realm")
     if r:
-        return r
+        return wb_accounts.normalize_realm(r)
     acct_uid = row.get("account")
     if acct_uid and POOL:
         acc = POOL.get(acct_uid)
         if acc:
-            return acc.realm
+            # 账号池里的 realm 正常已在构造时归一，但这里再归一一次：调用方
+            # 可能塞进别的对象（测试替身、被手工改过的实例），而一个没归一的
+            # "intl" 会让这些行在唯一那个出口的视图里整批消失。
+            return wb_accounts.normalize_realm(acc.realm)
     model = row.get("model")
     if model:
         return detect_model_realm(model)
-    return "intl"
+    return "cn"
 
 
 def row_matches_realm(row, realm):
@@ -596,7 +581,9 @@ def row_matches_realm(row, realm):
     # that forwards the literal cannot silently match nothing: the previous
     # behaviour compared every row's realm against the string "all".
     if not realm or realm == "all": return True
-    return row_realm(row) == realm
+    # 请求侧的已删区域也归一到现存出口：只归一 row_realm 而不归一比较值，
+    # 结果是「filter 说 cn、行也说 cn，却永远不相等」。
+    return row_realm(row) == wb_accounts.match_realm(realm)
 def realm_scope(realm, fallback=None):
     """Map a caller-supplied realm onto a log filter.
 
@@ -607,10 +594,15 @@ def realm_scope(realm, fallback=None):
     the endpoints whose clients expect the global switch, None (everything)
     for the analytics payload, which has always reported both realms
     combined.
+
+    已删区域（老客户端还会带 realm=intl）归一到现存出口，而不是原样当成过滤
+    条件——那会让一个合法的历史视图显示 0 条，看起来像数据丢了。
     """
     if realm == "all":
         return None
-    return realm or fallback
+    if not realm:
+        return fallback
+    return wb_accounts.match_realm(realm)
 
 
 def _local_midnight(ts=None, days_back=0):
@@ -996,6 +988,10 @@ def perf_stats_etag(sample=5000, realm=None, range=None, since=None, until=None)
 
 def _perf_stats_uncached(sample=5000, realm=None, since=None, until=None):
     """Latency percentiles + derived rates, computed from the JSONL log."""
+    # 与 count_usage_rows / usage_snapshot 走同一套归一：已删区域（老调用方
+    # 还会传 intl）落到现存出口，而不是拿一个不存在的名字去比 row_realm，
+    # 那样只会数出 0 条，看起来像「这段窗口没有数据」。
+    realm = realm_scope(realm)
     ttfts, gens, walls, rates, hits, tok_rates = [], [], [], [], [], []
     total = ok = err = aborted = 0
     # 按模型聚合性能指标
@@ -1959,13 +1955,12 @@ def apply_daily_guards(refresh=False):
 # Remaining usage estimate
 #
 # 上游给「账号 × 模型」的免费额度是一个 24 小时窗口：窗口被用满时 429（code
-# 6004）会带上重置墙钟（intl「usage will reset at …」/ cn「将在 … 重置」），
+# 6004）会带上重置墙钟（cn「将在 … 重置」），
 # 到点计数归零、额度回满。实测（2026-10-10 的 34k 行日志）：重置时刻过后几秒
 # 就又开始整额消耗（f793acc1 在 00:50:16 重置，00:50:26 起正常出流），所以
 # 「窗口起点 = 重置时刻」；把 429 那一刻往前 24h 的用量加总，跨账号得到高度
-# 一致的数字（deepseek-v4.1-flash 7 个样本 179.7M~201.0M，hy4-preview-f 两个
-# intl 样本 20.5M/22.1M），也就是该模型窗口预算的估计值——这个数字上游不给，
-# 只能在账号真的撞线时反推。
+# 一致的数字（deepseek-v4.1-flash 7 个样本 179.7M~201.0M），也就是该模型窗口
+# 预算的估计值——这个数字上游不给，只能在账号真的撞线时反推。
 #
 # 数据有两个来源，合并去重（键 = 账号 + 模型 + 重置时刻）：
 #   - usage/limit-events.jsonl：撞线发生的那一刻由请求路径记下（note_limit_
@@ -2382,7 +2377,7 @@ def note_limit_event(account, model, reset_at):
                                     _cap_window_start(anchors, reset_at))
         event = {
             "at": at, "account": uid, "model": model,
-            "realm": getattr(account, "realm", "") or "",
+            "realm": wb_accounts.normalize_realm(getattr(account, "realm", "") or ""),
             "reset": float(reset_at), "sample": sample,
         }
         try:
@@ -2421,7 +2416,9 @@ def _fold_remaining(row, state):
         anchors = _cap_anchors(state["events"], uid, model)
         _merge_event(state, {
             "at": at, "reset": reset, "account": uid, "model": model,
-            "realm": row.get("realm") or "",
+            # 归一：历史行里写着已删区域的（intl）要和账号侧的 cn 对齐，否则
+            # 预算按 (intl, model) 建、按 (cn, model) 查，永远查不到。
+            "realm": wb_accounts.normalize_realm(row.get("realm") or ""),
             "sample": _window_sample(state["usage"], uid, model, reset, at,
                                      _cap_window_start(anchors, reset)),
         }, "log")
@@ -3114,8 +3111,7 @@ def free_models_by_realm():
     if data is not None and (now - _free_models_cache.get("at", 0.0)) < _FREE_MODELS_TTL:
         return data
     out = {}
-    for realm, source in (("intl", getattr(wb_catalog, "STATIC_INTL_MODELS", [])),
-                          ("cn", getattr(wb_catalog, "STATIC_CN_MODELS", []))):
+    for realm, source in (("cn", getattr(wb_catalog, "STATIC_CN_MODELS", [])),):
         free = set()
         for item in source or []:
             if not isinstance(item, dict):
@@ -4189,7 +4185,7 @@ def _usage_alltime_snapshot(r, pricing_on=None):
     (None = every realm).
 
     One state per realm: the filter decides which rows the fold ever sees, so
-    `intl` and `cn` are two folds and neither may inherit the other's rows.
+    two realms would be two folds and neither may inherit the other's rows.
     The state holds the raw fold only - `started`, `since`, `accounts_map` and
     the rest are re-derived on every call, exactly as the full scan re-derived
     them.
@@ -4879,29 +4875,25 @@ _REALM_KEY_LEN = len(_REALM_KEY)
 
 
 def _count_usage_line(state, line):
-    """折一行：总数 + 这一行声明的 realm 桶。
+    """折一行：总数 + 这一行所属的 realm 桶。
 
     总数数的是**所有非空行**（包括解析不了的行），与旧实现一致。带 realm
-    字段的行按字段值归桶：取值只认旧 needle 覆盖的两种间距（`"realm": "x"`
-    与 `"realm":"x"`），间距再花哨的写法旧实现本来就匹配不到任何 realm，
-    这里也不为它建桶；值读到下一个引号为止——查询用的 realm 不会带引号，
-    字符串里的转义引号也拼不出 `"realm"` 这个键文本（同 _line_outside_window
-    的说明），所以不会误判。同一行重复声明 `"realm"`（手改过的行）按每一处
-    声明的值各计一次，与旧 needle 子串命中的行为一致；只有完全没有该字段的
-    老行（都是错误行）才解析 JSON 走 row_realm() 的账号/模型回退——旧实现
-    每次查询都要为它们付一次 json.loads，这里只在折叠时付一次。
+    字段的行按字段值归桶（只认旧 needle 覆盖的两种间距 `"realm": "x"` 与
+    `"realm":"x"`，值读到下一个引号为止——字符串里的转义引号拼不出
+    `"realm"` 这个键文本，所以不会误判）。
+
+    桶键一律过 normalize_realm，与 row_realm 同口径：历史行里写着已删区域的
+    （intl）并进现存出口的桶。不归一的话，「按 realm 过滤」数出来的会比总数
+    少一大截，而按行解析的其它路径给出的是总数，两边永远对不上。
+
+    一行只归一个桶（第一处能读出来的声明）：一行就是一次请求，它只可能属于
+    一个出口。字段存在但读不出值（`"realm": null`、间距花哨、被手改坏）的
+    行，以及完全没有该字段的老错误行，都解析 JSON 走 row_realm() 的
+    账号/模型回退——只在折叠时付一次，不像旧实现每次查询都付。
     """
     state["n"] += 1
     counts = state["n_realm"]
     pos = line.find(_REALM_KEY)
-    if pos < 0:
-        # 没有 realm 字段（老错误行）：解析回退。解析不了就只算进总数。
-        try:
-            realm = row_realm(json.loads(line))
-        except Exception:
-            return
-        counts[realm] = counts.get(realm, 0) + 1
-        return
     while pos >= 0:
         end = pos + _REALM_KEY_LEN
         if line.startswith(': "', end):
@@ -4913,9 +4905,16 @@ def _count_usage_line(state, line):
         if start >= 0:
             quote = line.find('"', start)
             if quote >= 0:
-                value = line[start:quote]
+                value = wb_accounts.normalize_realm(line[start:quote])
                 counts[value] = counts.get(value, 0) + 1
+                return
         pos = line.find(_REALM_KEY, end)
+    # 读不出声明：解析回退。解析不了就只算进总数。
+    try:
+        realm = row_realm(json.loads(line))
+    except Exception:
+        return
+    counts[realm] = counts.get(realm, 0) + 1
 
 
 def _count_usage_scan(state):
@@ -5014,8 +5013,9 @@ _RECENT_INDEX_SCHEMA = 1
 # 索引粒度：每 64KB 记一条行边界。4 万行的日志（约 23MB）只有 350 条上下，
 # 页读取的起点最多偏一段，读取量是「一段 + 页本身」。
 _RECENT_INDEX_SEGMENT = 65536
-# realm 表容量。真实日志只有 intl/cn（外加没带字段的老行归属），超过这个数
-# 说明 realm 字段被人乱写了，索引直接不用（老路照常给出正确结果）。
+# realm 表容量。真实日志只有 cn（外加没带字段的老行归属，以及已删除区域的
+# 历史遗留行），超过这个数说明 realm 字段被人乱写了，索引直接不用（老路照常
+# 给出正确结果）。
 _RECENT_INDEX_REALM_CAP = 6
 # realm 值长度上限：手改过的行可以带出很长的值，那只会把索引撑大。
 _RECENT_INDEX_REALM_MAX = 128
@@ -5763,7 +5763,7 @@ def load_persisted_realm():
             with open(path, "r", encoding="utf-8") as fh:
                 d = json.load(fh)
                 r = d.get("realm")
-                if r in ("intl", "cn"):
+                if r == "cn":
                     CURRENT_REALM = r
                     return CURRENT_REALM
         except Exception as e:
@@ -5771,7 +5771,7 @@ def load_persisted_realm():
     return CURRENT_REALM
 def save_persisted_realm(realm):
     global CURRENT_REALM
-    if realm in ("intl", "cn"):
+    if realm == "cn":
         CURRENT_REALM = realm
         try:
             os.makedirs(ACCOUNTS_DIR, exist_ok=True)
@@ -5863,7 +5863,7 @@ def _grant_actions():
     for raw in rows or []:
         row = wb_activity.project(raw)
         task = row["task"]
-        if task not in (wb_activity.TASK_CHECKIN, wb_activity.TASK_DAILY_CHAT):
+        if task != wb_activity.TASK_CHECKIN:
             continue
         at = wb_activity._parse_ts(row["ts"])
         if at is None:
@@ -9690,7 +9690,7 @@ def _usage_cache_write_kind(kind, entries):
     盘上「本进程还没碰过」的 realm 条目原样保留：一类里按 realm 分条目，
     写盘只重写活跃 realm 的那些；不保留的话，重启后先折的 realm 触发一次写盘
     就会把别的 realm 的旧条目整份清掉，那些 realm 下次请求只能重折（真机
-    实测：重启后先请求 realm=all 再请求 realm=intl，intl 重折 15s）。保留的
+    实测：重启后先请求 realm=all 再请求 realm=cn，cn 重折 15s）。保留的
     条目仍要过加载端的逐条校验，位置/指纹对不上照样被拒——宁可多扫一次。
     """
     if kind in ("snapshot", "analytics", "series"):
@@ -9841,22 +9841,7 @@ def runtime_settings_view():
         "pricing_variant_inherit": wb_settings.pricing_variant_inherit(ACCOUNTS_DIR),
         "pricing_enabled": wb_settings.pricing_enabled(ACCOUNTS_DIR),
         "auto_switch_product": wb_settings.auto_switch_product(ACCOUNTS_DIR),
-        "free_model_credit_fallback": wb_settings.free_model_credit_fallback(ACCOUNTS_DIR),
         "enable_anthropic_messages": wb_settings.enable_anthropic_messages(ACCOUNTS_DIR),
-        "daily_chat_web": wb_settings.daily_chat_web(ACCOUNTS_DIR),
-        "daily_chat_web_retry": wb_settings.daily_chat_web_retry(ACCOUNTS_DIR),
-        "daily_chat_web_attempts":
-            wb_settings.daily_chat_web_attempts(ACCOUNTS_DIR,
-                                                default=wb_accounts.WEB_TURN_ATTEMPTS),
-        "daily_chat_web_attempts_default": wb_accounts.WEB_TURN_ATTEMPTS,
-        "daily_chat_web_attempts_max": wb_settings.DAILY_CHAT_WEB_ATTEMPTS_MAX,
-        "daily_chat_web_timeout":
-            wb_settings.daily_chat_web_timeout(ACCOUNTS_DIR,
-                                               default=wb_accounts.WEB_TURN_TIMEOUT),
-        "daily_chat_web_timeout_default": wb_accounts.WEB_TURN_TIMEOUT,
-        "daily_chat_web_timeout_max": wb_settings.DAILY_CHAT_WEB_TIMEOUT_MAX,
-        "daily_chat_model": wb_settings.daily_chat_model(ACCOUNTS_DIR),
-        "daily_chat_model_default": wb_accounts.DAILY_CHAT_MODEL,
         "local_web_tools": wb_settings.local_web_tools(ACCOUNTS_DIR),
         "remaining_priority_enabled":
             wb_settings.remaining_priority_enabled(ACCOUNTS_DIR),
@@ -10201,25 +10186,6 @@ CN_UI_ORDER = [
     "kimi-k2.6",
     "deepseek-v4-pro",
 ]
-INTL_UI_ORDER = [
-    "hy4-preview-f",
-    "hy3",
-    "deepseek-v4.1-flash",
-    "gpt-6-astra",
-    "gpt-5.6-sol",
-    "gpt-5.6-terra",
-    "gpt-5.6-luna",
-    "gpt-5.5",
-    "gpt-5.4",
-    "grok-4.7",
-    "gemini-3.5-flash",
-    "glm-5.3-flash",
-    "glm-5.3",
-    "glm-5.2",
-    "kimi-k3",
-    "kimi-k2.6",
-    "kimi-k2.8-preview",
-]
 def merge_reasoning(base, live):
     """Field-level merge of one model's reasoning block.
 
@@ -10242,13 +10208,7 @@ def merge_reasoning(base, live):
 def merge_catalog(primary, realm=None, extras=False):
     r = realm or CURRENT_REALM
     merged = {}
-    # "all" is the union of both realms. The analytics dashboard lists every
-    # model the gateway has served, so it must not drop the ones that only
-    # one side's catalog knows about.
-    if r == "all":
-        source_static = list(wb_catalog.STATIC_INTL_MODELS) + list(wb_catalog.STATIC_CN_MODELS)
-    else:
-        source_static = getattr(wb_catalog, "STATIC_CN_MODELS" if r == "cn" else "STATIC_INTL_MODELS", wb_catalog.STATIC_MODELS)
+    source_static = getattr(wb_catalog, "STATIC_CN_MODELS", wb_catalog.STATIC_MODELS)
     primary_ids = set(m for m, _ in (primary or []))
     for item in source_static:
         mid = item.get("id")
@@ -10268,9 +10228,7 @@ def merge_catalog(primary, realm=None, extras=False):
             merged[mid] = base
         elif mid not in merged:
             merged[mid] = {}
-    order = CN_UI_ORDER if r == "cn" else INTL_UI_ORDER
-    if r == "all":
-        order = list(INTL_UI_ORDER) + [m for m in CN_UI_ORDER if m not in INTL_UI_ORDER]
+    order = CN_UI_ORDER
     if primary_ids:
         order = [("hy4-preview" if (m == "hy4-preview-f" and "hy4-preview" in primary_ids and "hy4-preview-f" not in primary_ids) else m) for m in order]
     out = []
@@ -10356,7 +10314,7 @@ def fetch_models(realm=None):
             if c["data"] and time.time() - c["at"] < 300:
                 return c["data"]
         live, extras, source = curated_live_sources(r)
-        if not live and r in ("intl", "all"):
+        if not live:
             # The narrow endpoint is not the desktop catalogue, so it keeps the
             # old whitelist behaviour: only names the order table knows.
             live = [(m, {}) for m in fetch_endpoint_models()]
@@ -10373,7 +10331,7 @@ def fetch_models(realm=None):
             # 跳过（见 catalog_daily_pass）。
             note_remote_catalog(r)
         file_mtime = None
-        if source in ("cache", "legacy") and r in ("intl", "cn"):
+        if source in ("cache", "legacy"):
             try:
                 file_mtime = os.path.getmtime(product_config_path(r))
             except OSError:
@@ -10499,20 +10457,8 @@ def model_entry(mid, meta):
         item["tags"] = tags
     return item
 def read_product_config_models(realm=None):
-    """Read the desktop app's cached catalog: [(id, meta), ...].
-
-    "all" reads both apps when they are installed, so the combined view gets
-    each side's metadata instead of only the domestic one.
-    """
-    r = realm or CURRENT_REALM
-    if r == "all":
-        out = _read_product_config_dir(".workbuddy-ai")
-        seen = set(mid for mid, _ in out)
-        for mid, meta in _read_product_config_dir(".workbuddy"):
-            if mid not in seen:
-                out.append((mid, meta))
-        return out
-    return _read_product_config_dir(".workbuddy-ai" if r == "intl" else ".workbuddy")
+    """Read the desktop app's cached catalog: [(id, meta), ...]."""
+    return _read_product_config_dir(".workbuddy")
 
 
 def _read_product_config_dir(cache_dir):
@@ -10654,15 +10600,14 @@ def parse_remote_catalog(payload):
 
 
 def snapshot_credits():
-    """id -> credits from the bundled catalogue (both realms, intl first).
+    """id -> credits from the bundled catalogue.
 
     Used to answer "is there a free sibling?" for a variant the remote lists
     but whose sibling it no longer does: the free hy4-preview-f, for example,
-    is what the cn picker keeps while the remote only names the paid one.
+    is what the picker keeps while the remote only names the paid one.
     """
     out = {}
-    for source in (getattr(wb_catalog, "STATIC_INTL_MODELS", []),
-                           getattr(wb_catalog, "STATIC_CN_MODELS", [])):
+    for source in (getattr(wb_catalog, "STATIC_CN_MODELS", []),):
         for item in source or []:
             mid = str(item.get("id") or "").strip()
             if mid:
@@ -10686,7 +10631,7 @@ def curate_remote_catalog(realm, ids, meta=None):
     for mid, item in (meta or {}).items():
         if isinstance(item, dict):
             credits[mid] = str(item.get("credits") or "").strip().lower()
-    order = CN_UI_ORDER if realm == "cn" else INTL_UI_ORDER
+    order = CN_UI_ORDER
     known = set(ids) | set(credits) | set(order)
 
     def free(mid):
@@ -10716,7 +10661,7 @@ def fetch_remote_product_config(realm):
     every caller has a fallback (the desktop cache file, the narrow model
     endpoint, the bundled snapshot).
     """
-    if realm not in ("intl", "cn") or POOL is None:
+    if realm != "cn" or POOL is None:
         return None
     account = POOL.representative(realm=realm)
     if account is None or not account.access_token:
@@ -10772,9 +10717,9 @@ def refresh_catalog(realm):
       {"ok": bool, "realm": str|None, "source": "remote"|None,
        "count": int, "cooldown": bool?, "retry_after": float?, "msg": str}
     """
-    if realm not in ("intl", "cn"):
+    if realm != "cn":
         return {"ok": False, "realm": None, "source": None, "count": 0,
-                "msg": "realm 必须是 intl 或 cn"}
+                "msg": "realm 必须是 cn"}
     now = time.time()
     with _lock:
         wait = CATALOG_REFRESH_COOLDOWN - (now - _catalog_refresh_at.get(realm, 0.0))
@@ -10821,7 +10766,7 @@ _catalog_last_remote = {}
 
 def note_remote_catalog(realm, when=None):
     """记下该 realm 最近一次成功从上游 API 拿到目录的时刻。"""
-    if realm not in ("intl", "cn"):
+    if realm != "cn":
         return
     with _lock:
         _catalog_last_remote[realm] = when if when is not None else time.time()
@@ -10831,7 +10776,7 @@ def catalog_daily_due(now=None):
     """到期的 realm 列表：距上次成功 API 获取 ≥ 24h（从未成功过也算到期）。"""
     now = now if now is not None else time.time()
     with _lock:
-        return [r for r in ("intl", "cn")
+        return [r for r in ("cn",)
                 if now - _catalog_last_remote.get(r, 0.0) >= CATALOG_DAILY_INTERVAL]
 
 
@@ -10869,9 +10814,9 @@ def start_catalog_daily():
 
 
 def product_config_path(realm):
-    """The desktop cache file for a realm (the intl app writes its own)."""
+    """The desktop cache file for a realm."""
     home = os.path.expanduser("~")
-    cache_dir = ".workbuddy-ai" if realm == "intl" else ".workbuddy"
+    cache_dir = ".workbuddy"
     return os.path.join(home, cache_dir, "cache", "acc-product-config-v3.json")
 
 
@@ -10899,17 +10844,6 @@ def persist_remote_catalog(realm, payload):
 
 def read_cached_remote_catalog(realm):
     """(ids, meta) from the desktop cache file, parsed like the remote."""
-    if realm == "all":
-        first = read_cached_remote_catalog("intl")
-        second = read_cached_remote_catalog("cn")
-        if not first:
-            return second
-        if not second:
-            return first
-        ids = list(first[0]) + [m for m in second[0] if m not in set(first[0])]
-        meta = dict(second[1])
-        meta.update(first[1])
-        return ids, meta
     try:
         with open(product_config_path(realm), encoding="utf-8") as fh:
             payload = json.load(fh)
@@ -10954,10 +10888,10 @@ def curated_live_sources(realm):
 
 
 def fetch_endpoint_models():
-    account = POOL.pick(realm="intl") if POOL else None
+    account = POOL.pick(realm="cn") if POOL else None
     if account is None:
         log("model discovery skipped: no usable account")
-        cached = _models_cache.get("intl", {}).get("data")
+        cached = _models_cache.get("cn", {}).get("data")
         return [m for m, _ in (cached or [])]
     req = urllib.request.Request(UPSTREAM + MODELS_PATH, method="GET", headers=account.headers())
     try:
@@ -10965,7 +10899,7 @@ def fetch_endpoint_models():
             payload = json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
         log(f"model discovery failed: {exc}")
-        cached = _models_cache.get("intl", {}).get("data")
+        cached = _models_cache.get("cn", {}).get("data")
         return [m for m, _ in (cached or [])]
     ids, seen = [], set()
     for agent in (payload.get("data") or {}).get("agents") or []:
@@ -12336,8 +12270,7 @@ def model_catalog_meta(model):
         realm = detect_model_realm(model) or CURRENT_REALM
         entries = (_models_cache.get(realm) or {}).get("data")
         if not entries:
-            name = "STATIC_CN_MODELS" if realm == "cn" else "STATIC_INTL_MODELS"
-            table = getattr(wb_catalog, name, None) or wb_catalog.STATIC_MODELS
+            table = getattr(wb_catalog, "STATIC_CN_MODELS", None) or wb_catalog.STATIC_MODELS
             entries = [(m.get("id"), m) for m in table if isinstance(m, dict)]
         m_lower = str(model).strip().lower()
         for mid, meta in entries:
@@ -12395,7 +12328,7 @@ def prompt_cache_key_enabled():
     Off by default. The upstream turns out to cache repeated prefixes on its
     own: with an identical ~8k-token prefix sent twice, the second call already
     reports prompt_cache_hit_tokens=9600 and the same credit with or without
-    this field, on both exits (www.workbuddy.ai and copilot.tencent.com) and on
+    this field, on the domestic exit (copilot.tencent.com) and on
     both a free and a billed model. Injecting it changed neither the hit rate
     nor the charge, so it is left as an opt-in for experimenting rather than
     added to every request.
@@ -12608,6 +12541,7 @@ def retry_after_seconds(model, realm):
     """Shortest wait until any account of this realm can serve `model` again."""
     if not POOL:
         return 60
+    realm = wb_accounts.match_realm(realm)
     waits = [a.throttle_wait(model=model) for a in POOL.accounts
              if a.realm == realm and a.enabled and a.access_token]
     active = [w for w in waits if w > 0]
@@ -12641,7 +12575,7 @@ def is_transient(exc):
 
     Upstream occasionally drops a TLS handshake mid-stream
     (SSL: UNEXPECTED_EOF_WHILE_READING / Remote end closed connection).
-    Treating that as a dead account took the only intl account offline for 60s
+    Treating that as a dead account took the only live account offline for 60s
     and turned one hiccup into a 502 storm.
     """
     t = ("%s %s" % (type(exc).__name__, exc)).lower()
@@ -12715,7 +12649,7 @@ def exc_detail(exc, limit=180):
 # neither is present - from repetition, and then only on one model.
 SOFT_LIMIT_MARKERS = ("usage exceeds frequency limit", "too many requests",
                       "请求过于频繁")
-SOFT_LIMIT_CODES = (14003,)     # intl, observed on a real 429
+SOFT_LIMIT_CODES = (14003,)     # observed on a real 429
 
 # Wording that scopes a 429 to the credential itself. These are matched as whole
 # words or explicit phrases, never as bare substrings: a 429 body carries
@@ -12768,7 +12702,7 @@ def rate_limit_is_soft_shape(detail):
     """True when a 429 body names a rate limit, whatever its scope.
 
     Both shapes the incident environment produced are covered: the bare "usage
-    exceeds frequency limit" body (229 of the 263 recorded 429s) and the intl
+    exceeds frequency limit" body (229 of the 263 recorded 429s) and the
     code 14003 body ("too many requests"). Recognising them is what lets the
     caller answer with a window on one model rather than on the credential.
     """
@@ -12850,8 +12784,8 @@ def parse_rate_limit_reset(detail):
     """Pull the reset time out of an upstream 429 body, if it names one.
 
     Upstream answers code 6004 with a reset wall clock, but the wording is
-    per-realm: the intl form is "... your usage will reset at
-    2026-09-19 18:29:03 UTC+8 ...", the cn form is "... 将在
+    not fixed: the English form is "... your usage will reset at
+    2026-09-19 18:29:03 UTC+8 ...", the Chinese form is "... 将在
     2026-10-09 14:44:59 UTC+8 重置 ...". Matching only the English form left
     every cn 429 without a reset time, so it read as an account-level soft
     limit and cooled the whole credential instead of parking just the
@@ -12932,20 +12866,8 @@ def _apply_stream_idle_timeout(response, seconds):
         return False
 
 
-_FREE_MODEL_CREDIT_FALLBACKS = {
-    ("intl", "deepseek-v4.1-flash"): "deepseek-v4.1-flash-sg",
-}
-
-
-def _free_model_credit_fallback_enabled():
-    if wb_settings.free_model_credit_fallback(ACCOUNTS_DIR):
-        return True
-    return os.environ.get("WB_ENABLE_FREE_MODEL_CREDIT_FALLBACK", "0").strip().lower() in (
-        "1", "true", "yes", "on")
-
-
 def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=None,
-                  allow_credit_fallback=True, allow_product_switch=True):
+                  allow_product_switch=True):
     # Refresh the daily guards before picking. The scan underneath is
     # incremental and TTL-cached, so this is a stat() plus a cached dict on
     # the hot path, and an account parked by any of the guards is skipped
@@ -12960,7 +12882,8 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
     if POOL is not None:
         POOL.apply_remaining_weights(
             remaining_schedule_weights() if remaining_priority_enabled() else None)
-    realm = target_realm or detect_model_realm(payload.get("model")) or CURRENT_REALM
+    realm = wb_accounts.match_realm(
+        target_realm or detect_model_realm(payload.get("model")) or CURRENT_REALM)
     model = str(payload.get("model") or "")
     # 复用调用方已建好的 body：/v1/chat/completions 在进这里之前已经 build 过
     # 一次（那次的产物只用于一行日志和 prompt_fingerprint），此前这里会为同一
@@ -13280,26 +13203,6 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
             account.note_error(str(exc)[:120], cooldown=60, single_account=(total <= 1))
             last_error = exc
             continue
-    # Only spend credits after every enabled, credential-bearing account in
-    # this realm has a persisted upstream 6004 cap for this free model. The
-    # switch is opt-in because the retry can incur real charges.
-    paid_model = _FREE_MODEL_CREDIT_FALLBACKS.get((realm, model))
-    eligible = ([a for a in POOL.accounts
-                 if a.realm == realm and a.enabled and a.access_token] if POOL else [])
-    if (allow_credit_fallback and paid_model and _free_model_credit_fallback_enabled()
-            and eligible and all(a.cap_until(model) > time.time() for a in eligible)):
-        paid_payload = dict(payload)
-        paid_payload["model"] = paid_model
-        log("free model '%s' exhausted on all %d %s account(s); retrying paid model '%s'"
-            % (model, len(eligible), realm, paid_model))
-        response, account, effort = open_upstream(
-            paid_payload, session_key=session_key, target_realm=realm,
-            allow_credit_fallback=False, allow_product_switch=False)
-        try:
-            response._wb_billed_model = paid_model
-        except Exception:
-            pass
-        return response, account, effort
     if last_error is not None:
         # Carry the account that produced the failure out to the caller, so
         # the error row can name it even though the local variable that would
@@ -13365,6 +13268,7 @@ def pool_unavailable_detail(realm, model=None):
     """
     if POOL is None:
         return ""
+    realm = wb_accounts.match_realm(realm)
     accounts = [a for a in POOL.accounts if a.realm == realm]
     if not accounts:
         return "；该区域没有任何账号"
@@ -16408,23 +16312,6 @@ class Handler(BaseHTTPRequestHandler):
         rows written before the key field existed.
         """
         return (self.key_entry or {}).get("id") or None
-    def _cross_realm_error(self, model, realm):
-        """Explain a model/exit mismatch instead of letting upstream reject it.
-        Sending gpt-6-astra to the domestic exit (or deepseek-v4-pro to the
-        international one) earns an opaque 403 from upstream, so catch it here
-        and say which key is bound where.
-        """
-        if not realm or not model:
-            return ""
-        owner = exclusive_realm(model)
-        if not owner or owner == realm:
-            return ""
-        name = (self.key_entry or {}).get("name") or "当前 Key"
-        served = "国内版" if owner == "cn" else "国际版"
-        used = "国内版" if realm == "cn" else "国际版"
-        return ("模型 %s 只在%s提供，但「%s」绑定的是%s出口。"
-                "请改用对应出口的 Key，或把该 Key 的出口改为「跟随面板切换」。"
-                % (model, served, name, used))
     def _banned_model_error(self, model):
         """被封锁的模型直接报错，不碰上游、不扣任何点数。"""
         if not is_model_banned(model):
@@ -16449,17 +16336,22 @@ class Handler(BaseHTTPRequestHandler):
         API key, then the X-Realm header / ?realm= query, and finally the
         global switch. Returning None lets open_upstream() fall back to
         model-based detection.
+
+        返回值一律过 match_realm：已删区域（老客户端还会发 X-Realm: intl）
+        归一到现存的出口，否则池里永远匹配不到，请求只会撞出一个
+        「该区域没有账号」的 502。
         """
         if explicit:
-            return explicit
+            return wb_accounts.match_realm(explicit)
         bound = self._key_realm()
         if bound:
-            return bound
+            return wb_accounts.match_realm(bound)
         header = self.headers.get("X-Realm")
         if header:
-            return header
+            return wb_accounts.match_realm(header)
         try:
-            return parse_qs(urlparse(self.path).query).get("realm", [None])[0]
+            return wb_accounts.match_realm(
+                parse_qs(urlparse(self.path).query).get("realm", [None])[0])
         except Exception:
             return None
     def _authorized(self):
@@ -16627,8 +16519,8 @@ class Handler(BaseHTTPRequestHandler):
         rep = current_account()
         info = {
             "ok": True,
-            # Report the realm actually in use; this used to be the
-            # literal "intl" and drifted from the panel switch.
+            # Report the realm actually in use (a hard-coded literal here
+            # used to drift from the panel switch).
             "realm": CURRENT_REALM,
             "accounts": len(POOL.accounts) if POOL else 0,
             "accounts_ready": POOL.count_ready() if POOL else 0,
@@ -16647,7 +16539,7 @@ class Handler(BaseHTTPRequestHandler):
     # differ in whether they append "/v1" themselves.
 
     def _get_realm(self):
-        return self._json(200, {"current": CURRENT_REALM, "options": ["intl", "cn"]})
+        return self._json(200, {"current": CURRENT_REALM, "options": ["cn"]})
 
     def _get_v1_models(self):
         if not self._authorized():
@@ -16797,7 +16689,7 @@ class Handler(BaseHTTPRequestHandler):
         # ?uid= narrows it to specific accounts (repeatable, comma-joined),
         # which is how the per-row "export" button works.
         realm = (query.get("realm") or [None])[0] or None
-        if realm not in ("intl", "cn"):
+        if realm != "cn":
             realm = None
         include_secrets = (query.get("secrets") or ["1"])[0] not in ("0", "false", "no")
         uids = []
@@ -17242,8 +17134,8 @@ class Handler(BaseHTTPRequestHandler):
                     realm = str(item.get("realm") or "").strip().lower()
                 else:
                     realm = str(stored.get("realm") or "").strip().lower()
-                if realm not in ("", "intl", "cn"):
-                    return self._error(400, "realm must be intl, cn or empty",
+                if realm not in ("", "cn"):
+                    return self._error(400, "realm must be cn or empty",
                                        "invalid_request_error")
                 # An older cached panel does not know this field at all, so a
                 # row that omits it keeps whatever is stored instead of
@@ -17457,12 +17349,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(400, "enable_anthropic_messages must be true or false", "invalid_request_error")
             wb_settings.set_enable_anthropic_messages(ACCOUNTS_DIR, raw)
             reply["enable_anthropic_messages"] = raw
-        if "free_model_credit_fallback" in payload:
-            raw = payload.get("free_model_credit_fallback")
-            if not isinstance(raw, bool):
-                return self._error(400, "free_model_credit_fallback must be true or false", "invalid_request_error")
-            wb_settings.set_free_model_credit_fallback(ACCOUNTS_DIR, raw)
-            reply["free_model_credit_fallback"] = raw
         if "auto_switch_product" in payload:
             # Strictly a JSON boolean: a string like "false" would be truthy and
             # silently switch the feature on, which is the one thing an operator
@@ -17473,53 +17359,6 @@ class Handler(BaseHTTPRequestHandler):
                                    "invalid_request_error")
             wb_settings.set_auto_switch_product(ACCOUNTS_DIR, raw)
             reply["auto_switch_product"] = raw
-        if "daily_chat_web" in payload:
-            raw = payload.get("daily_chat_web")
-            if not isinstance(raw, bool):
-                return self._error(400, "daily_chat_web must be true or false",
-                                   "invalid_request_error")
-            wb_settings.set_daily_chat_web(ACCOUNTS_DIR, raw)
-            reply["daily_chat_web"] = raw
-        if "daily_chat_web_retry" in payload:
-            # Strictly a JSON boolean, like the other switches: "false" as a
-            # string would be truthy and silently keep retrying.
-            raw = payload.get("daily_chat_web_retry")
-            if not isinstance(raw, bool):
-                return self._error(400, "daily_chat_web_retry must be true or false",
-                                   "invalid_request_error")
-            wb_settings.set_daily_chat_web_retry(ACCOUNTS_DIR, raw)
-            reply["daily_chat_web_retry"] = raw
-        if "daily_chat_web_attempts" in payload:
-            # Whole number of tries, first one included. The wait doubles each
-            # time, so a stray extra digit is hours on one account - wb_settings
-            # owns both checks and the message.
-            raw = payload.get("daily_chat_web_attempts")
-            try:
-                wb_settings.set_daily_chat_web_attempts(ACCOUNTS_DIR, raw)
-            except ValueError as exc:
-                return self._error(400, str(exc), "invalid_request_error")
-            reply["daily_chat_web_attempts"] = raw
-        if "daily_chat_web_timeout" in payload:
-            # Whole seconds only, and bounded: the retry doubles this, so a
-            # stray extra digit would park the scheduler on one account for
-            # hours. wb_settings owns both checks and the message.
-            raw = payload.get("daily_chat_web_timeout")
-            try:
-                wb_settings.set_daily_chat_web_timeout(ACCOUNTS_DIR, raw)
-            except ValueError as exc:
-                return self._error(400, str(exc), "invalid_request_error")
-            reply["daily_chat_web_timeout"] = raw
-        if "daily_chat_model" in payload:
-            raw = payload.get("daily_chat_model") or ""
-            # Empty clears the override back to the built-in id. Anything else
-            # has to look like a model id; a stray value here would be sent
-            # upstream on every daily run.
-            if not isinstance(raw, str) or len(raw) > 64 or \
-                    (raw and not re.match(r"^[A-Za-z0-9._:-]+$", raw)):
-                return self._error(400, "daily_chat_model must be a model id or empty",
-                                   "invalid_request_error")
-            wb_settings.set_daily_chat_model(ACCOUNTS_DIR, raw)
-            reply["daily_chat_model"] = raw
         if "local_web_tools" in payload:
             raw = payload.get("local_web_tools")
             if not isinstance(raw, bool):
@@ -17777,7 +17616,7 @@ class Handler(BaseHTTPRequestHandler):
         return "http://%s:%d/v1" % (host, int(port or 0))
 
     def _agents_models(self):
-        """Flat model list for the picker; bundled intl+cn catalog, deduped.
+        """Flat model list for the picker; the bundled catalog, deduped.
 
         Live sources stay out of this path on purpose: the panel must answer
         even when the upstream is down, so a failure here is simply a shorter
@@ -17795,8 +17634,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 sources = (
                     (item.get("id"), item)
-                    for item in (list(getattr(wb_catalog, "STATIC_INTL_MODELS", []))
-                                 + list(getattr(wb_catalog, "STATIC_CN_MODELS", [])))
+                    for item in list(getattr(wb_catalog, "STATIC_CN_MODELS", []))
                     if isinstance(item, dict)
                 )
             for mid, meta in sources:
@@ -18105,10 +17943,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_realm(payload)
         if path == "/accounts/checkin":
             return self._route_accounts_checkin(payload)
-        if path == "/accounts/daily-chat":
-            return self._route_accounts_daily_chat(payload)
-        if path == "/accounts/daily-chat-web":
-            return self._route_accounts_daily_chat_web(payload)
         if path == "/accounts/login/start":
             return self._route_accounts_login_start(payload)
         if path == "/accounts/login/cancel":
@@ -18148,7 +17982,8 @@ class Handler(BaseHTTPRequestHandler):
         if uid:
             targets = [POOL.get(uid)]
         elif realm and realm != "all":
-            targets = [a for a in POOL.accounts if a.realm == realm]
+            targets = [a for a in POOL.accounts
+                       if a.realm == wb_accounts.match_realm(realm)]
         else:
             targets = list(POOL.accounts)
 
@@ -18186,7 +18021,8 @@ class Handler(BaseHTTPRequestHandler):
         if uid:
             targets = [POOL.get(uid)]
         elif realm and realm != "all":
-            targets = [a for a in POOL.accounts if a.realm == realm]
+            targets = [a for a in POOL.accounts
+                       if a.realm == wb_accounts.match_realm(realm)]
         else:
             targets = list(POOL.accounts)
         results = []
@@ -18376,7 +18212,7 @@ class Handler(BaseHTTPRequestHandler):
     def _route_catalog_refresh(self, payload):
         """面板「刷新模型清单」：强制向上游拉一次指定版本的目录。
 
-        版本（realm）由面板显式传当前视图的 intl/cn：每个版本只用自己的
+        版本（realm）由面板显式传当前视图的 cn：每个版本只用自己的
         代表账号与该版本的端点，绝不跨区。拉取同步执行（通常 1~3 秒；
         上游丢包时两次 10s 尝试封顶），同一版本有 30s 冷却；无论成败都
         以 200 + ok 标志回答，msg 给面板直接展示（与 /pricing/refresh
@@ -18438,7 +18274,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "panel session, not an API key",
                                "invalid_request_error")
         new_realm = payload.get("realm")
-        if new_realm in ("intl", "cn"):
+        if new_realm == "cn":
             save_persisted_realm(new_realm)
         return self._json(200, {"ok": True, "current": CURRENT_REALM, "persisted": True})
 
@@ -18454,58 +18290,6 @@ class Handler(BaseHTTPRequestHandler):
             nick = account.nickname or account.uid[:8]
             add_log_entry(f"[任务福利] 账号 [{nick}] 每日签到: {res.get('msg') if res.get('ok') else res.get('error')}",
                           level="INFO" if res.get("ok") else "WARN", tag="tasks")
-            results.append({"uid": account.uid, "nickname": account.nickname, **res})
-        return self._json(200, {"results": results, "accounts": account_views()})
-
-    def _route_accounts_daily_chat(self, payload):
-        uid = payload.get("uid")
-        uids = payload.get("uids")
-        if uid:
-            targets = [POOL.get(uid)]
-        elif isinstance(uids, list):
-            # 「未活跃打卡一键打卡」：面板把今天还没打过卡的国际版账号列成名单送进来，
-            # 这里只按名单精确执行——已经打过的那批不再打第二遍（重复打卡不给积分，
-            # 只白烧账号额度），名单外的账号也不碰。
-            #
-            # 空名单就是「一个都不打」：名单是调用方的明确意图，不能悄悄回落成
-            # 「全部账号」——那正好和这个按钮要的效果相反。要打全部就别传 uids。
-            wanted = {str(item) for item in uids if item}
-            targets = [a for a in POOL.accounts
-                       if a.realm == "intl" and a.enabled and str(a.uid) in wanted]
-        else:
-            targets = [a for a in POOL.accounts if a.realm == "intl" and a.enabled]
-        results = []
-        for account in targets:
-            if account is None:
-                continue
-            res = account.daily_chat(trigger="manual")
-            # 与网页通道打卡那条一样把结果写进运行日志：msg 里带着网页通道是
-            # completed 还是失败原因，面板上光看 toast 的「成功」看不出来。
-            nick = account.nickname or account.uid[:8]
-            log(f"[任务福利] 账号 [{nick}] 每日活跃打卡: {res.get('msg') if res.get('ok') else res.get('error')}",
-                level="INFO" if res.get("ok") else "WARN", tag="tasks")
-            results.append({"uid": account.uid, "nickname": account.nickname, **res})
-        return self._json(200, {"results": results, "accounts": account_views()})
-
-    def _route_accounts_daily_chat_web(self, payload):
-        """网页通道打卡：只建网页端会话，不发桌面端那条轻量对话。
-
-        手动触发用。刻意不写 lastDailyChat——那是「今天已经打过卡」的闸门，
-        手动补一次不该让定时巡检跳过当天的正常流程。
-        """
-        uid = payload.get("uid")
-        if uid:
-            targets = [POOL.get(uid)]
-        else:
-            targets = [a for a in POOL.accounts if a.realm == "intl" and a.enabled]
-        results = []
-        for account in targets:
-            if account is None:
-                continue
-            res = account.daily_chat_web(trigger="manual")
-            nick = account.nickname or account.uid[:8]
-            log(f"[任务福利] 账号 [{nick}] 网页通道打卡: {res.get('conversation') if res.get('ok') else res.get('error')}",
-                level="INFO" if res.get("ok") else "WARN", tag="tasks")
             results.append({"uid": account.uid, "nickname": account.nickname, **res})
         return self._json(200, {"results": results, "accounts": account_views()})
 
@@ -18612,7 +18396,8 @@ class Handler(BaseHTTPRequestHandler):
         if uid:
             targets = [POOL.get(uid)]
         elif realm and realm != "all":
-            targets = [a for a in POOL.accounts if a.realm == realm]
+            targets = [a for a in POOL.accounts
+                       if a.realm == wb_accounts.match_realm(realm)]
         else:
             targets = list(POOL.accounts)
         updated = []
@@ -18669,7 +18454,7 @@ class Handler(BaseHTTPRequestHandler):
         「账号全挂了」的话，用户只能看着一屏红点猜。
         """
         realm = str(payload.get("realm") or "").strip().lower()
-        if realm not in ("intl", "cn"):
+        if realm != "cn":
             realm = CURRENT_REALM
         model = payload.get("model") or TEST_MODEL_DEFAULT
         targets = [a for a in (POOL.accounts if POOL else [])
@@ -18765,7 +18550,7 @@ class Handler(BaseHTTPRequestHandler):
         # Options:
         #   dryRun    (bool) - validate and report, write nothing
         #   overwrite (bool) - replace accounts whose uid already exists
-        #   realm     ("intl"|"cn") - force a realm instead of detecting it
+        #   realm     ("cn") - force a realm instead of detecting it
         #
         # `data` carries the document. It is preferred over the bare body so
         # the body can also hold the options above.
@@ -18780,8 +18565,8 @@ class Handler(BaseHTTPRequestHandler):
         dry_run = bool(payload.get("dryRun"))
         overwrite = bool(payload.get("overwrite"))
         forced_realm = (payload.get("realm") or "").strip().lower() or None
-        if forced_realm and forced_realm not in ("intl", "cn"):
-            return self._error(400, "realm must be intl or cn", "invalid_request_error")
+        if forced_realm and forced_realm != "cn":
+            return self._error(400, "realm must be cn", "invalid_request_error")
         if dry_run:
             # Validate every row without touching the pool so the caller can
             # see exactly what an import would do before committing to it.
@@ -18848,9 +18633,6 @@ class Handler(BaseHTTPRequestHandler):
         )
         try:
             req_realm = self._request_realm() or CURRENT_REALM
-            blocked = self._cross_realm_error(chat_req.get("model"), req_realm)
-            if blocked:
-                return self._error(400, blocked, "invalid_request_error")
             banned = self._banned_model_error(chat_req.get("model"))
             if banned:
                 return self._error(400, banned, "invalid_request_error")
@@ -19069,9 +18851,6 @@ class Handler(BaseHTTPRequestHandler):
                chat_req.get("reasoning_effort"), len(chat_req.get("tools") or [])))
         try:
             req_realm = self._request_realm() or CURRENT_REALM
-            blocked = self._cross_realm_error(chat_req.get("model"), req_realm)
-            if blocked:
-                return self._anthropic_error(400, blocked, "invalid_request_error")
             banned = self._banned_model_error(chat_req.get("model"))
             if banned:
                 return self._anthropic_error(400, banned, "invalid_request_error")
@@ -19396,9 +19175,6 @@ class Handler(BaseHTTPRequestHandler):
         t_start = time.time()
         try:
             req_realm = self._request_realm() or CURRENT_REALM
-            blocked = self._cross_realm_error(payload.get("model"), req_realm)
-            if blocked:
-                return self._error(400, blocked, "invalid_request_error")
             banned = self._banned_model_error(payload.get("model"))
             if banned:
                 return self._error(400, banned, "invalid_request_error")
@@ -19641,7 +19417,7 @@ def main():
     _serve_forever(args)
 
 def _parse_cli_args():
-    ap = argparse.ArgumentParser(description="WorkBuddy (workbuddy.ai) -> OpenAI-compatible proxy")
+    ap = argparse.ArgumentParser(description="WorkBuddy (copilot.tencent.com) -> OpenAI-compatible proxy")
     ap.add_argument("--info", help="path to the WorkBuddy *.info credential file")
     ap.add_argument("--host", default=os.environ.get("HOST") or "127.0.0.1")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT") or "8788"))
@@ -19858,9 +19634,7 @@ def _log_startup_summary(args, api_key_generated):
         log("catalog    : app cache not found - will use the model API instead")
     log(f"account    : {rep.uid if rep else chr(45)} @ {rep.domain if rep else chr(45)}")
     log(f"issuer     : {wb_accounts.jwt_issuer(rep.access_token) if rep else chr(45)}")
-    log("realm      : %s (%s)" % (
-        CURRENT_REALM,
-        "www.workbuddy.ai" if CURRENT_REALM == "intl" else "copilot.tencent.com"))
+    log("realm      : %s (%s)" % (CURRENT_REALM, "copilot.tencent.com"))
     log("user-agent : %s" % wb_accounts.USER_AGENT)
     if args.host == "0.0.0.0":
         ips = local_ip_addresses() or ["<this-pc-ip>"]

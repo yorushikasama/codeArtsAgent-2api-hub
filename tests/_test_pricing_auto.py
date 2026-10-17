@@ -191,33 +191,32 @@ class UnionInputTests(PricingTestCase):
                         "hy4-preview-sg", "glm-5.3-flash"):
             self.assertNotIn(dropped, ids, dropped)
 
-    def test_live_ids_ask_both_realms_and_dedupe(self):
+    def test_live_ids_ask_the_only_realm_and_dedupe(self):
         asked = []
         original = P.curated_live_sources
 
         def fake(realm):
             asked.append(realm)
-            if realm == "cn":
-                return [("glm-5.3-flashx", {}), ("kimi-k2.6", {})], True, "remote"
-            return [("glm-5.3-flashx", {}), ("glm-5.3-flash", {})], True, "remote"
+            # 同一次目录里重复出现（以及目录里已有）的名字只进一次。
+            return [("glm-5.3-flashx", {}), ("kimi-k2.6", {}),
+                    ("glm-5.3-flashx", {})], True, "remote"
 
         P.curated_live_sources = fake
         try:
             ids = self._refresher().live_ids()
         finally:
             P.curated_live_sources = original
-        # Both realms are asked - the remote catalogue is fetched per realm,
-        # and either tab's additions belong in the price input.
-        self.assertEqual(asked, ["intl", "cn"])
+        # 只问现存的那个出口，重复的名字只保留一次，目录里已有的名字不再进。
+        self.assertEqual(asked, ["cn"])
         self.assertEqual(ids, ["glm-5.3-flashx"])
 
-    def test_one_failing_realm_does_not_hide_the_other(self):
+    def test_a_failing_realm_logs_and_yields_no_live_ids(self):
+        """单一出口：取不到就是取不到——不抛异常、只留一行日志，静态目录照旧
+        参与取价（调用方按「空 live」处理，不会因此缩水覆盖）。"""
         original = P.curated_live_sources
 
         def fake(realm):
-            if realm == "cn":
-                raise RuntimeError("cn catalogue down")
-            return [("glm-5.3-flashx", {})], True, "remote"
+            raise RuntimeError("cn catalogue down")
 
         P.curated_live_sources = fake
         try:
@@ -225,7 +224,7 @@ class UnionInputTests(PricingTestCase):
             ids = refresher.live_ids()
         finally:
             P.curated_live_sources = original
-        self.assertEqual(ids, ["glm-5.3-flashx"])
+        self.assertEqual(ids, [])
         self.assertTrue(any("cn" in line for line in refresher.logs), refresher.logs)
 
     def test_an_extra_id_never_pollutes_the_alias_rows(self):
@@ -308,8 +307,8 @@ class SingleGatewayInstanceTests(PricingTestCase):
         fake = self._fake_gateway()
         with unittest.mock.patch.dict(sys.modules, {"__main__": fake}):
             ids = self._refresher().live_ids()
-        # Both realms were asked on the running module...
-        self.assertEqual(fake.realms, ["intl", "cn"])
+        # 只问现存的那个出口（国际版删除后只剩 cn）……
+        self.assertEqual(fake.realms, ["cn"])
         # ...and the name the bundled catalogue has never seen is the one
         # that enters the price input.
         self.assertEqual(ids, ["gpt-6-sol"])
@@ -572,7 +571,10 @@ class GapReportTests(PricingTestCase):
     """What the panel shows for models that still have no price."""
 
     def test_the_report_categorises_every_kind(self):
-        items, summary = wb_pricing.gap_items(OR, None, None, variants=True)
+        # 别名不再来自内置目录（国内版目录里没有这些虚拟名），所以显式喂进去，
+        # 继续钉住「别名单独归类、不计入缺口总数」这条口径。
+        items, summary = wb_pricing.gap_items(OR, None, list(ALIASES),
+                                              variants=True)
         by_model = {item["model"]: item for item in items}
         for alias in ALIASES:
             self.assertEqual(by_model[alias]["reason"], "alias", alias)
@@ -645,7 +647,7 @@ class GapReportTests(PricingTestCase):
     def test_the_report_covers_a_live_only_name_that_could_not_be_priced(self):
         original = P.curated_live_sources
         P.curated_live_sources = lambda realm: (
-            ([("glm-5.3-flash-20260101", {})] if realm == "intl"
+            ([("glm-5.3-flash-20260101", {})] if realm == "cn"
              else [("glm-5.3-flashx", {})]), True, "remote")
         try:
             refresher = self._refresher()
@@ -660,7 +662,7 @@ class GapReportTests(PricingTestCase):
         row = by_model["glm-5.3-flash-20260101"]
         self.assertEqual(row["reason"], "or_missing")
         self.assertEqual(row["candidates"][0], "z-ai/glm-5.3-flash")
-        self.assertEqual(summary["total"], len(items) - len(ALIASES))
+        self.assertEqual(summary["total"], len(items))
         # A live-only name that did resolve was priced by that very cycle, so
         # it is not a gap at all.
         self.assertNotIn("glm-5.3-flashx", by_model)

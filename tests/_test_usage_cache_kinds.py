@@ -474,23 +474,24 @@ make_checkpoint()
 print()
 print("[4.1] 同一类里不活跃的 realm 条目也不被清掉（真机实测的破坏路径）")
 # 真机实测：重启后先折的 realm 触发一次写盘，盘上「还没被请求过」的另一个
-# realm 条目被整份覆盖清掉——那个 realm 下次请求只能重折（intl 重折 15s）。
+# realm 条目被整份覆盖清掉——那个 realm 下次请求只能重折。国际版删除后只剩
+# cn，所以这里只剩 all + cn 两份，但「不许整份覆盖」这条口径不变。
 make_checkpoint()
 def _snap_realms():
     return sorted("all" if e.get("realm") is None else e["realm"]
                   for e in kind_entries("snapshot"))
-check("snapshot 文件里有三个 realm 条目（all + intl + cn）",
-      _snap_realms() == ["all", "cn", "intl"], _snap_realms())
+check("snapshot 文件里有 all + cn 两份条目",
+      _snap_realms() == ["all", "cn"], _snap_realms())
 append_log([row(FROZEN - 100, "m-b", "u2", 700, 70)])
 restart()
 cache_env_force()
 P.usage_snapshot(realm="all", ttl=0)          # 只请求 realm=all，不碰 intl/cn
-check("只写 all 时 intl/cn 的旧条目仍在（没有被清掉）",
-      _snap_realms() == ["all", "cn", "intl"], _snap_realms())
+check("只写 all 时 cn 的旧条目仍在（没有被清掉）",
+      _snap_realms() == ["all", "cn"], _snap_realms())
 cache_env_nowrite()
 restart()
-P.usage_snapshot(realm=None, ttl=0)           # intl 之后仍能采纳（不重折）
-check("intl 之后仍被采纳（snapshot 进了 checkpointed）",
+P.usage_snapshot(realm=None, ttl=0)           # cn 之后仍能采纳（不重折）
+check("cn 之后仍被采纳（snapshot 进了 checkpointed）",
       P._usage_cache_checkpointed.get("snapshot", 0) > 0,
       P._usage_cache_checkpointed)
 cache_env_off()

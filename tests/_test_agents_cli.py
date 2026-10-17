@@ -108,6 +108,14 @@ def run_cli(args, env=None):
     child["PATH"] = ""
     child["PYTHONPATH"] = ROOT
     child["PYTHONIOENCODING"] = "utf-8"
+    # 每个用例打的是 127.0.0.1。开发机/CI 环境里可能设了 HTTP_PROXY，那样连
+    # 「故意打不通的本地端口」会被代理回一个 502，于是 [7] 判不出「网关不可达」
+    # 这条路（实测本机代理就是这么让这条用例挂掉的）。环回地址一律不走代理。
+    child["NO_PROXY"] = "127.0.0.1,localhost"
+    child["no_proxy"] = "127.0.0.1,localhost"
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+                 "ALL_PROXY", "all_proxy"):
+        child.pop(name, None)
     if env:
         child.update(env)
     try:

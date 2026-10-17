@@ -181,9 +181,11 @@ check("an id the roster cannot name is folded into one row",
       by_key[P.KEY_BUCKET_UNKNOWN]["window"]["requests"] == 1)
 check("the launcher key gets a row when it is configured",
       by_key["launcher"]["window"]["requests"] == 1 and by_key["launcher"]["name"] == "启动参数")
-check("a key used on both exits is flagged",
-      by_key["k-follow"]["cross_realm"] is True
-      and sorted(by_key["k-follow"]["realms"]) == ["cn", "intl"])
+# 国际版删除后只剩一个出口，cross_realm 恒为 False；历史行里写着 intl 的
+# 也归一到这一侧，于是两行落在同一个 realm 上。
+check("no key can span exits any more",
+      by_key["k-follow"]["cross_realm"] is False
+      and sorted(by_key["k-follow"]["realms"]) == ["cn"])
 check("a key that only ever used one exit is not",
       by_key["k1"]["cross_realm"] is False)
 check("the model list is capped", len(by_key["k-wide"]["models"]) == P.KEY_MODEL_TOP_N)
@@ -216,10 +218,11 @@ idle = P._compute_usage_analytics_uncached()
 check("an unused launcher key gets no row at all",
       "launcher" not in [k["key"] for k in idle["keys"]])
 
-# The realm view must not invent a row for a key bound to the other exit.
+# 旧配置里绑定到已删出口（intl）的 Key，读回来按「跟随」处理，因此在唯一这个
+# 出口的视图里照常出现——迁移的意图就是不让它悄悄消失。
 only_cn = P._compute_usage_analytics_uncached(realm="cn")
-check("a key bound to the other exit is not listed in this view",
-      "k-idle" not in [k["key"] for k in only_cn["keys"]])
+check("a key bound to a removed exit is downgraded to follow and still listed",
+      "k-idle" in [k["key"] for k in only_cn["keys"]])
 check("a key with no binding is still listed, it can serve this exit",
       "k-follow" in [k["key"] for k in only_cn["keys"]])
 
