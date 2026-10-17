@@ -651,6 +651,118 @@ finally:
 
 
 # ---------------------------------------------------------------------------
+# 模型清单：限时福利 + 内置两组
+# ---------------------------------------------------------------------------
+
+print()
+print("== 模型清单（两组）==")
+check("内置目录在 PromptCenter 那台主机上",
+      C.BUILTIN_MODELS_PATH == "/v1/model/builtin", C.BUILTIN_MODELS_PATH)
+check("两个分组都定义了",
+      C.MODEL_GROUPS == (C.GROUP_BENEFIT, C.GROUP_BUILTIN), C.MODEL_GROUPS)
+
+# 曾经把内置这一组判成「IDE 聊天目录」排除掉，那是错的：7 个里 6 个真能推理。
+# CHAT_MODELS 必须同时覆盖两组，否则网关宣告的模型里有大半打不通。
+check("可路由清单覆盖两组",
+      "deepseek-v4.1-flash" in C.CHAT_MODELS and "GLM-5.2" in C.CHAT_MODELS,
+      C.CHAT_MODELS)
+check("glm-5.3 标为推理不可达",
+      "glm-5.3" in C.BUILTIN_UNROUTABLE and "glm-5.2-sft-harmony" not in C.BUILTIN_UNROUTABLE,
+      C.BUILTIN_UNROUTABLE)
+
+# credit 是按 token 数分段的价格表，面板只要一个代表值
+check("分段计费取第一档",
+      C._credit_tier({"credit": [{"ratio_display": "0.7x", "input_price": "3.2",
+                                  "output_price": "14.5"},
+                                 {"ratio_display": "0.7x", "input_price": "4.8"}]})
+      == ("0.7x", "3.2", "14.5"))
+check("未定价的模型返回三个 None",
+      C._credit_tier({"credit": []}) == (None, None, None))
+check("credit 缺失也不炸", C._credit_tier({}) == (None, None, None))
+check("credit 不是列表时不当成有价", C._credit_tier({"credit": {}}) == (None, None, None))
+
+BUILTIN_SAMPLE = [
+    {"model_id": "glm-5.2-sft-harmony", "model_name": "GLM-5.2-ArkTS-SPARK",
+     "model_category": "文本生成", "model_desc": "鸿蒙代码增训", "provider": "zhipu",
+     "supports_images": False,
+     "credit": [{"ratio_display": "0.7x", "input_price": "8",
+                 "output_price": "28"}]},
+    {"model_id": "Qwen3-VL-235B", "model_name": "Qwen3-VL-235B",
+     "model_category": "图片理解", "supports_images": True, "credit": []},
+    {"model_id": "glm-5.3", "model_name": "GLM-5.3",
+     "supports_images": False,
+     "credit": [{"ratio_display": "0.79x"}]},
+    {"model_id": "", "model_name": "没有 id 的条目"},
+]
+norm = C.normalize_builtin(BUILTIN_SAMPLE)
+check("丢掉没有 id 的条目", len(norm) == 3, [m["id"] for m in norm])
+# 界面上显示的是 model_name，发请求要发 model_id，两者常常不一样
+check("展示名取 model_name 而非 model_id",
+      norm[0]["name"] == "GLM-5.2-ArkTS-SPARK", norm[0])
+check("请求名仍是 model_id", norm[0]["id"] == "glm-5.2-sft-harmony", norm[0])
+check("标记为内置分组", norm[0]["group"] == C.GROUP_BUILTIN, norm[0])
+check("倍率原样带出", norm[0]["creditRatio"] == "0.7x", norm[0])
+check("输入输出价带出", norm[0]["inputPrice"] == "8" and norm[0]["outputPrice"] == "28",
+      norm[0])
+check("多模态标记取服务端而非猜",
+      norm[1]["supportsImages"] is True and norm[0]["supportsImages"] is False,
+      [norm[1]["supportsImages"], norm[0]["supportsImages"]])
+check("未定价时倍率是 None 而不是 0",
+      norm[1]["creditRatio"] is None, norm[1])
+check("推理打不通的模型仍列出但标记",
+      norm[2]["routable"] is False and norm[0]["routable"] is True, norm[2])
+check("分类与描述带出",
+      norm[0]["category"] == "文本生成" and norm[0]["provider"] == "zhipu", norm[0])
+check("服务端没给上下文窗口时不编造",
+      norm[0]["maxInputTokens"] == 0 and norm[0]["maxOutputTokens"] == 0, norm[0])
+
+# 两组合并：任一组失败都不能让整份清单挂掉
+BENEFIT_RAW = [{"model_id": "deepseek-v4.1-flash", "context_window": 1000000,
+                "max_tokens": 384000, "sort": 40}]
+
+
+def with_groups(benefit_exc=None, builtin_exc=None):
+    saved = (C.gateway_config, C.builtin_models)
+    C.gateway_config = (lambda *a, **k: (_ for _ in ()).throw(benefit_exc)) \
+        if benefit_exc else (lambda *a, **k: {"models": list(BENEFIT_RAW)})
+    C.builtin_models = (lambda *a, **k: (_ for _ in ()).throw(builtin_exc)) \
+        if builtin_exc else (lambda *a, **k: list(BUILTIN_SAMPLE))
+    try:
+        return C.model_catalog("AK", "SK", "TOK")
+    finally:
+        C.gateway_config, C.builtin_models = saved
+
+
+cat = with_groups()
+check("两组都取到", len(cat["models"]) == 4, len(cat["models"]))
+check("取数无错时 errors 为空", cat["errors"] == {}, cat["errors"])
+check("限时福利排在内置之前（与 UI 一致）",
+      cat["models"][0]["group"] == C.GROUP_BENEFIT
+      and cat["models"][-1]["group"] == C.GROUP_BUILTIN,
+      [m["group"] for m in cat["models"]])
+check("限时福利那侧带 group 标记",
+      cat["models"][0]["group"] == C.GROUP_BENEFIT, cat["models"][0])
+check("限时福利那侧带上下文窗口",
+      cat["models"][0]["contextWindow"] == 1000000, cat["models"][0])
+
+only_builtin = with_groups(benefit_exc=RuntimeError("网关挂了"))
+check("限时福利挂了仍返回内置", len(only_builtin["models"]) == 3, only_builtin["errors"])
+check("并说明缺了哪组",
+      "网关挂了" in only_builtin["errors"].get(C.GROUP_BENEFIT, ""),
+      only_builtin["errors"])
+
+only_benefit = with_groups(builtin_exc=RuntimeError("PromptCenter 挂了"))
+check("内置挂了仍返回限时福利", len(only_benefit["models"]) == 1, only_benefit["errors"])
+check("并说明内置缺失",
+      "PromptCenter 挂了" in only_benefit["errors"].get(C.GROUP_BUILTIN, ""),
+      only_benefit["errors"])
+
+both = with_groups(RuntimeError("a"), RuntimeError("b"))
+check("两组都挂仍返回空清单而不是抛异常",
+      both["models"] == [] and len(both["errors"]) == 2, both)
+
+
+# ---------------------------------------------------------------------------
 
 print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))

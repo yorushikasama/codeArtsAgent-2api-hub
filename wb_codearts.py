@@ -769,15 +769,161 @@ def normalize_models(models):
 #   POST {CHAT_BASE}chat/completions  model=deepseek-v4.1-flash → 429 TPM 超限
 #   同一个请求换另外三个模型名 → 404 InferHub.002002009「model is not registered」
 # 429 而不是 401，说明签名与令牌都被接受、请求确实打到了模型服务；被卡住的是
-# 账号自己的 TPM 配额，不是协议。注意**权益网关那份 4 模型清单不能当推理清单用**，
-# 其中只有 deepseek-v4.1-flash 真正可路由。
+# 账号自己的 TPM 配额，不是协议。
+#
+# 更正过一次结论：早期只探了权益网关那 4 个名字，判成「只有 deepseek-v4.1-flash
+# 可路由」。**这个结论只对那一组成立**。后来补探 PromptCenter 的内置分组，7 个里
+# 6 个真能跑（GLM-5.2 回了真实文本、多模态 Qwen3-VL-235B 能真的读图），只有
+# `glm-5.3` 稳定 400 且响应体为空 —— 它与限时福利的 `glm-5.3-flash` 是两个东西。
 
 CHAT_HOST = "https://snap-access.cn-north-4.myhuaweicloud.com"
 CHAT_BASE = CHAT_HOST + "/api/v2/"
 CHAT_PATH = CHAT_BASE + "chat/completions"
 
-# 实测可路由的推理模型（其余三个名字服务端不认）
-CHAT_MODELS = ("deepseek-v4.1-flash",)
+# 实测可路由的推理模型名。这份是**验证过**的：逐个打推理入口，6 个内置 + 4 个
+# 限时福利里只有 glm-5.3 是死的（400 空响应体）。早期只探过限时福利那组的 4 个，
+# 当时把另外 3 个判成「服务端不认」—— 那个结论只对那一组成立，内置那组整体可路由。
+CHAT_MODELS = ("deepseek-v4.1-flash",
+               "GLM-5.2", "Qwen3-VL-235B", "kimi-k2.6-vl",
+               "openpangu-2.0-flash", "openpangu-2.0-pro",
+               "glm-5.2-sft-harmony")
+
+
+# ---------------------------------------------------------------------------
+# 模型清单：限时福利 + 内置
+# ---------------------------------------------------------------------------
+#
+# 客户端 UI 里模型分两组显示，网关必须同时覆盖 —— 之前只取「限时福利」那一组，
+# 面板上会缺掉整个「内置」。两组来自两个接口、形状完全不同：
+#
+#   限时福利  权益网关 /api/v1/gateway/config      —— 给 id / 名字 / 上下文 / 最大输出
+#   内置      PromptCenter /v1/model/builtin      —— 给 id / 名字 / 分类 / 多模态标记 /
+#                                                   计费档（含 UI 上那个 0.7x 倍率）
+#
+# 曾经把内置这一组判成「IDE 聊天目录、不是网关推理目录」直接排除，那是错的：
+# 实测 7 个内置模型在推理入口**全部真的能跑通**（GLM-5.2 返回真实回复、多模态
+# Qwen3-VL-235B 能真的读图）。唯一例外是 `glm-5.3`：它在推理入口稳定 400 且响应体
+# 为空 —— 内置的 glm-5.3 与限时福利的 glm-5.3-flash 是两个不同的东西，别混。
+#
+# 一条容易踩的口径：`model_id` 与 `model_name` 不一致。界面显示的是 **model_name**
+# （如 glm-5.2-sft-harmony 显示成「GLM-5.2-ArkTS-SPARK」），而请求要发的是
+# **model_id**。归一时两者都要留。
+
+BUILTIN_MODELS_PATH = "/v1/model/builtin"
+
+#: PromptCenter 所在的主机，与推理入口同一台（agentChatDomain 在 prod 下就是它）
+SNAP_HOST = CHAT_HOST
+
+#: 推理入口实测不可路由的内置模型（原因见上）。保留在清单里但标成不可用，
+#: 这样面板能看到「服务端报了它、但打不通」，而不是让它静默消失。
+BUILTIN_UNROUTABLE = {"glm-5.3"}
+
+#: UI 的两分组，与客户端侧一致。
+GROUP_BENEFIT = "benefit"
+GROUP_BUILTIN = "builtin"
+MODEL_GROUPS = (GROUP_BENEFIT, GROUP_BUILTIN)
+
+
+def builtin_models(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
+    """内置模型目录（只读）。返回服务端 builtinModels 原样。
+
+    X-Security-Token 必须**在签名前**就放进请求头：令牌参与签名，
+    「先签一次、补上令牌、再重签」会把第一次产出的 Authorization / Host /
+    X-Sdk-Date 也一起签进去，服务端回 APIG.0301。
+    """
+    url = SNAP_HOST + BUILTIN_MODELS_PATH
+    headers = {
+        "Agent-Type": "PromptCenter",
+        "X-Language": "zh-cn",
+        "Content-Type": "application/json",
+        "User-Agent": GATEWAY_USER_AGENT,
+        "x-snap-traceid": secrets.token_hex(16),
+    }
+    if security_token:
+        headers["X-Security-Token"] = security_token
+    headers = aksk_sign(access_key, secret_key, "GET", url, {}, headers)
+    payload = _http("GET", url, headers=headers, timeout=timeout)
+    return payload.get("builtinModels") or []
+
+
+def _credit_tier(raw):
+    """挑出该模型适用的计费档，返回 (倍率文案, 输入价, 输出价)。
+
+    ``credit`` 是**按 token 数分段**的列表（如 openpangu-2.0-pro 有 0–32000 与
+    32001–两档）。面板只要一个代表值，取第一档 —— 服务端按实际用量选档，网关
+    这里不做逐段计价。列表为空（免费 / 未定价）返回 (None, None, None)。
+    """
+    tiers = raw.get("credit") or []
+    if not isinstance(tiers, list) or not tiers:
+        return None, None, None
+    tier = tiers[0] or {}
+    return (tier.get("ratio_display") or None,
+            tier.get("input_price") or None,
+            tier.get("output_price") or None)
+
+
+def normalize_builtin(raw_list):
+    """内置模型 → 网关内部统一的模型对象形状。
+
+    与 ``normalize_models`` 的区别是这里有真实的能力标签与计费信息：
+    ``supportsImages`` 取服务端的 ``supports_images``（实测多模态那三个确实能读图），
+    计费倍率原样带出，供面板显示 0.7x 之类。
+    """
+    out = []
+    for raw in raw_list or []:
+        mid = str(raw.get("model_id") or "").strip()
+        if not mid:
+            continue
+        ratio, in_price, out_price = _credit_tier(raw)
+        out.append({
+            "id": mid,
+            # 界面展示用 model_name：它和 model_id 常常不一样
+            "name": str(raw.get("model_name") or mid),
+            "group": GROUP_BUILTIN,
+            "category": raw.get("model_category") or "",
+            "description": raw.get("model_desc") or "",
+            "provider": raw.get("provider") or "",
+            "supportsImages": bool(raw.get("supports_images")),
+            # 推理入口实测打不通的模型仍列出但标记出来，排查时能一眼看到
+            "routable": mid not in BUILTIN_UNROUTABLE,
+            "creditRatio": ratio,
+            "inputPrice": in_price,
+            "outputPrice": out_price,
+            # 服务端没给上下文窗口，两组模型里只有限时福利那份有
+            "maxInputTokens": 0,
+            "maxOutputTokens": 0,
+            "supportsReasoning": True,
+            "supportsToolCall": True,
+        })
+    return out
+
+
+def model_catalog(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
+    """两组模型合到一份清单里，限时福利在前、内置按服务端顺序。
+
+    任何一组取数失败都不让整份清单失败 —— 面板显示能拿到的那组，并在
+    ``errors`` 里说明缺了哪组。模型目录是展示性功能，为它整体挂掉不划算。
+    """
+    groups = {GROUP_BENEFIT: [], GROUP_BUILTIN: []}
+    errors = {}
+
+    try:
+        cfg = gateway_config(access_key, secret_key, security_token, timeout=timeout)
+        benefit = normalize_models(cfg.get("models") or [])
+        for item in benefit:
+            item["group"] = GROUP_BENEFIT
+        groups[GROUP_BENEFIT] = benefit
+    except Exception as exc:
+        errors[GROUP_BENEFIT] = str(exc)
+
+    try:
+        groups[GROUP_BUILTIN] = normalize_builtin(
+            builtin_models(access_key, secret_key, security_token, timeout=timeout))
+    except Exception as exc:
+        errors[GROUP_BUILTIN] = str(exc)
+
+    return {"models": groups[GROUP_BENEFIT] + groups[GROUP_BUILTIN],
+            "groups": groups, "errors": errors}
 
 
 def chat_headers(access_key, secret_key, security_token, payload_hash,
