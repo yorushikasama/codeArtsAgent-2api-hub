@@ -76,91 +76,6 @@ import wb_probes
 import wb_updates
 IS_WINDOWS = os.name == "nt"
 
-# ---- 一键配置客户端（wb_agents）的可用性判定（issue #246）----
-# 这个功能写的是「网关进程所在机器」的客户端配置，所以只有在浏览器和网关
-# 同一台机器上打开看板时才成立。服务端 / Docker / OpenWrt 部署下看板都是
-# 远程打开的，改了也到不了用户自己的电脑，还会白白付出探测与常驻的开销。
-# 因此 wb_agents 改成懒加载：只有下面这道闸门放行、路由真的命中才 import。
-_AGENTS_MODULE = None
-_SERVER_DEPLOYMENT = None
-
-
-def agents_module():
-    """按需 import wb_agents；用不到它的部署连模块都不载入。"""
-    global _AGENTS_MODULE
-    if _AGENTS_MODULE is None:
-        import wb_agents
-        _AGENTS_MODULE = wb_agents
-    return _AGENTS_MODULE
-
-
-def server_deployment_form():
-    """进程是否明显跑在服务端形态（容器 / OpenWrt）。
-
-    只认环境标记；「看板是不是本机打开的」由 agents_client_allowed 按请求
-    来源地址判断。结果缓存——进程活着期间答案不会变。
-    """
-    global _SERVER_DEPLOYMENT
-    if _SERVER_DEPLOYMENT is None:
-        blocked = False
-        try:
-            if os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv"):
-                blocked = True
-            elif os.path.exists("/proc/1/cgroup"):
-                with open("/proc/1/cgroup", encoding="utf-8", errors="replace") as fh:
-                    cgroup = fh.read().lower()
-                blocked = any(m in cgroup for m in ("docker", "containerd", "kubepods"))
-        except Exception:
-            blocked = False
-        if not blocked:
-            try:
-                if os.path.exists("/etc/openwrt_release"):
-                    blocked = True
-                elif os.path.exists("/etc/os-release"):
-                    with open("/etc/os-release", encoding="utf-8", errors="replace") as fh:
-                        blocked = "id=openwrt" in fh.read().lower()
-            except Exception:
-                blocked = False
-        _SERVER_DEPLOYMENT = blocked
-    return _SERVER_DEPLOYMENT
-
-
-def agents_client_allowed(client_address):
-    """这个来源地址能不能用一键配置：只认回环。
-
-    非回环说明看板是远程打开的（手机、另一台电脑、容器端口映射），此时
-    apply 改的是容器 / 服务器里的配置目录，需求不成立，直接按不可用处理。
-    """
-    if server_deployment_form():
-        return False
-    try:
-        addr = str(client_address[0])
-    except Exception:
-        return False
-    return addr in ("127.0.0.1", "::1", "::ffff:127.0.0.1")
-
-
-def enrich_agent_models(models, specs):
-    """把只有 id 的模型条目补上网关自己的目录规格。
-
-    看板送过来的是一串模型 id，而 DSH / Crush 这类客户端要把规格写进自己的
-    配置（上下文窗口、输出上限、思考档位）才会生成对应控件——只写 id 时它们
-    只能吃自己的内置默认值，档位选择器根本不会出现。`specs` 是
-    {"模型 id": 规格}；条目里显式带来的字段优先（空值不算显式）。
-    """
-    if not specs:
-        return models
-    out = []
-    for item in models or []:
-        spec = specs.get(str((item or {}).get("id")))
-        if not spec:
-            out.append(item)
-            continue
-        merged = dict(spec)
-        merged.update({k: v for k, v in item.items() if v not in (None, "")})
-        out.append(merged)
-    return out
-
 
 def launcher_hint(port):
     """Platform-appropriate launcher command for starting on another port."""
@@ -10017,7 +9932,6 @@ _LOG_TAG_HINTS = (
     ("settings", ("settings", "设置")),
     ("update", ("更新", "release")),
     ("usage", ("usage", "用量")),
-    ("agents", ("agents", "智能体")),
 )
 
 # 可选的 SQLite 落库（默认关闭）。None = 还没初始化（模块 import 期），启动时按
@@ -16410,8 +16324,6 @@ class Handler(BaseHTTPRequestHandler):
         # the same management state plus resolved project-local file paths.
         if path.startswith("/pricing"):
             return True
-        if path.startswith("/agents"):
-            return True
         return False
     def do_OPTIONS(self):
         self.send_response(204)
@@ -16425,13 +16337,6 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
-        # The standalone configurator, for clients on machines that do not run
-        # the gateway. Served before the panel gate and deliberately without a
-        # session: the machines that need it are exactly the ones that cannot
-        # pass the loopback check, and the body is public source code (the
-        # same wb_agents.py shipped in the repository, no secrets inside).
-        if path == "/agents/cli":
-            return self._get_agents_cli()
         # 华为云登录回跳。必须早于面板鉴权：这是浏览器被服务端 307 过来的
         # 裸跳转，既带不上面板 cookie 也没法让用户补密码，拦下来就等于把
         # 登录链路掐断。端点本身不泄露信息（成功只渲染一句话，失败只回原因）。
@@ -16503,12 +16408,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_logs_export()
         if path == "/settings/reveal":
             return self._get_settings_reveal(query)
-        if path == "/agents":
-            return self._get_agents()
-        if path == "/agents/available":
-            # 看板启动时用这个廉价判定决定要不要显示入口：不 import
-            # wb_agents、不做任何探测（issue #246）。
-            return self._json(200, {"enabled": self._agents_client_allowed()})
         return self._error(404, "not found", "invalid_request_error")
     def _get_dashboard(self):
         return self._dashboard()
@@ -17742,272 +17641,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"candidates": discover_proxy_slots()})
         return self._error(404, "not found", "invalid_request_error")
 
-    # ---- one-click agent integration (wb_agents) ----
-
-    def _agents_client_allowed(self):
-        """本请求的来源地址能不能用一键配置（判定见模块级 agents_client_allowed）。"""
-        return agents_client_allowed(getattr(self, "client_address", None))
-
-    def _agents_base_url_hint(self):
-        """Best guess at the URL a local client should point at.
-
-        Derived from the bound socket; a 0.0.0.0 bind is unreachable for a
-        client, so it is reported as 127.0.0.1 instead.
-        """
-        host, port = "", 0
-        try:
-            host, port = self.server.server_address[:2]
-        except Exception:
-            pass
-        host = str(host or "").strip() or "127.0.0.1"
-        if host in ("0.0.0.0", "::", ""):
-            host = "127.0.0.1"
-        return "http://%s:%d/v1" % (host, int(port or 0))
-
-    def _agents_models(self):
-        """Flat model list for the picker; the bundled catalog, deduped.
-
-        Live sources stay out of this path on purpose: the panel must answer
-        even when the upstream is down, so a failure here is simply a shorter
-        list, never an error.
-        """
-        models = []
-        seen = set()
-        try:
-            try:
-                entries = fetch_models()
-            except Exception:
-                entries = []
-            if entries:
-                sources = ((mid, meta) for mid, meta in entries)
-            else:
-                sources = (
-                    (item.get("id"), item)
-                    for item in list(getattr(wb_catalog, "STATIC_CN_MODELS", []))
-                    if isinstance(item, dict)
-                )
-            for mid, meta in sources:
-                mid = str(mid or "").strip()
-                if not mid or mid in seen:
-                    continue
-                seen.add(mid)
-                meta = meta if isinstance(meta, dict) else {}
-                entry = {"id": mid}
-                # 与 /v1/models 走同一条查找链（上游值 > 内建知识表 > 本地缓存 >
-                # 默认）：否则一键配置写进客户端的窗口会和网关自己宣告的对不上
-                # （目录里的 contextWindow.defaultLength 只是桌面端的默认档，
-                # deepseek-v4.1-flash 是 300k，而网关宣告的是 1M）。
-                try:
-                    ctx, out, _src = wb_modelsdev.lookup(
-                        mid, meta.get("maxInputTokens"),
-                        meta.get("maxOutputTokens"), directory=ACCOUNTS_DIR)
-                except Exception:
-                    ctx = meta.get("maxInputTokens")
-                    out = meta.get("maxOutputTokens")
-                if not ctx:
-                    window = meta.get("contextWindow")
-                    if isinstance(window, dict):
-                        lengths = window.get("supportedLengths") or []
-                        ctx = window.get("defaultLength") or (
-                            lengths[-1] if lengths else None)
-                if ctx:
-                    try:
-                        entry["context_window"] = int(ctx)
-                    except (TypeError, ValueError):
-                        pass
-                if out:
-                    try:
-                        entry["max_output"] = int(out)
-                    except (TypeError, ValueError):
-                        pass
-                name = meta.get("name")
-                if name:
-                    entry["name"] = name
-                # Vision support flag (DSH and clients use this)
-                vision = bool(meta.get("supportsImages")) and not meta.get("disabledMultimodal")
-                if mid == "glm-5.3-flash":
-                    vision = False
-                if vision:
-                    entry["supports_vision"] = True
-                # 可选的思考档位交给客户端（DSH 用它生成会话里的档位选择器）。
-                # 只宣告目录明确列出档位的模型：固定档位的模型（只有
-                # reasoning.effort、没有 supportedEfforts）不列，选了也不会改变
-                # 上游实际跑的档位。
-                efforts = (meta.get("reasoning") or {}).get("supportedEfforts")
-                if isinstance(efforts, (list, tuple)):
-                    levels = [str(e).strip() for e in efforts
-                              if str(e or "").strip()]
-                    if levels:
-                        entry["reasoning_efforts"] = levels
-                models.append(entry)
-        except Exception:
-            pass
-        return models
-
-    def _get_agents_cli(self):
-        """Serve wb_agents.py so a remote machine can fetch the configurator.
-
-        No panel session and no loopback check on purpose: the callers are
-        other machines, which is the whole point of the CLI (it writes the
-        config files on the machine it runs on). The file carries no secrets
-        - it is byte-identical to the copy in the repository.
-        """
-        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            "wb_agents.py")
-        try:
-            with open(path, "rb") as fh:
-                body = fh.read()
-        except OSError as exc:
-            return self._error(500, "wb_agents.py unavailable: %s" % exc)
-        self.send_response(200)
-        self.send_header("Content-Type", "text/plain; charset=utf-8")
-        self.send_header("Content-Disposition",
-                         'inline; filename="wb_agents.py"')
-        self.send_header("Content-Length", str(len(body)))
-        if cors_origin_allowed(self.path):
-            self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        self.wfile.write(body)
-        return
-
-    def _get_agents(self):
-        if not self._agents_client_allowed():
-            # 远程看板（服务端 / Docker / OpenWrt）：一键配置改的是网关所在
-            # 机器的配置目录，到不了用户自己的电脑，直接按不可用返回。
-            return self._json(200, {
-                "enabled": False,
-                "reason": "agent config is only available from the machine running the gateway",
-            })
-        wb_agents = agents_module()
-        keys = []
-        try:
-            for entry in configured_keys():
-                if entry.get("enabled"):
-                    keys.append({
-                        "id": entry.get("id"),
-                        "name": entry.get("name") or "",
-                        "enabled": True,
-                    })
-        except Exception:
-            keys = []
-        return self._json(200, {
-            "enabled": True,
-            "clients": list(wb_agents.overview(ACCOUNTS_DIR).values()),
-            "models": self._agents_models(),
-            "keys": keys,
-            "global_key_set": bool(API_KEY),
-            "auth_required": auth_required(),
-            "gateway": {"base_url": self._agents_base_url_hint()},
-        })
-
-    def _agents_resolve_key(self, payload, warnings):
-        """Pick the gateway key to hand to the client, per the payload.
-
-        Returns the key string, or None when the request should fail. The
-        failure message is appended to `warnings` only for the soft-fallback
-        case; hard failures raise via the caller's 400 mapping.
-        """
-        wb_agents = agents_module()
-        key_id = str(payload.get("key_id") or "").strip()
-        if key_id == "__global":
-            return API_KEY or None
-        keys = configured_keys()
-        if key_id:
-            for entry in keys:
-                if entry.get("id") == key_id:
-                    return entry.get("key") or None
-            raise wb_agents.AgentConfigError(
-                "no configured key with id %r" % key_id)
-        # Default: the global key when set, else the first enabled panel key.
-        if API_KEY:
-            return API_KEY
-        for entry in keys:
-            if entry.get("enabled"):
-                return entry.get("key") or None
-        return None
-
-    def _handle_agents_apply(self, payload):
-        wb_agents = agents_module()
-        client_id = str(payload.get("client") or payload.get("client_id") or "").strip()
-        if not client_id:
-            return self._error(400, "client is required", "invalid_request_error")
-        base_url = str(payload.get("base_url") or "").strip()
-        if not re.match(r"^https?://", base_url):
-            return self._error(
-                400, "base_url must start with http:// or https://",
-                "invalid_request_error")
-        model = str(payload.get("model") or "").strip() or None
-        models = payload.get("models")
-        if not models:
-            # Fall back to the gateway's discovered catalog so clients that embed
-            # model definitions (OpenCode, DSH, Crush, ZCode) receive the full
-            # model list even when the front-end omitted the field.
-            models = self._agents_models()
-        if not isinstance(models, list):
-            return self._error(400, "models must be a list",
-                               "invalid_request_error")
-        # A runaway picker must not turn into a megabyte config file.
-        models = models[:80]
-        cleaned_models = []
-        for item in models:
-            if isinstance(item, dict) and item.get("id"):
-                cleaned_models.append(item)
-            elif isinstance(item, str) and item.strip():
-                cleaned_models.append({"id": item.strip()})
-        # 看板只送模型 id，而 DSH / Crush 这类客户端要求把规格写进自己的配置
-        # （上下文窗口、输出上限、思考档位）。这里按 id 把网关自己的目录规格
-        # 补上（见 enrich_agent_models），显式带来的字段优先——否则一键配置
-        # 写出来的模型列表只有 id，客户端就只能吃自己的内置默认值。
-        try:
-            specs = {}
-            for spec in self._agents_models():
-                if isinstance(spec, dict) and spec.get("id"):
-                    specs[str(spec["id"])] = spec
-        except Exception:
-            specs = {}
-        cleaned_models = enrich_agent_models(cleaned_models, specs)
-        warnings = []
-        try:
-            api_key = self._agents_resolve_key(payload, warnings)
-        except wb_agents.AgentConfigError as exc:
-            return self._error(400, str(exc), "invalid_request_error")
-        if not api_key:
-            if auth_required():
-                return self._error(
-                    400, "no gateway key available - 请先配置 API Key",
-                    "invalid_request_error")
-            api_key = "wb-local"
-            warnings.append("gateway has no key configured; wrote placeholder "
-                            "'wb-local' (auth is off, so any value works)")
-        try:
-            result = wb_agents.integrate(
-                ACCOUNTS_DIR, client_id, base_url, api_key,
-                model=model, models=cleaned_models)
-        except wb_agents.AgentConfigError as exc:
-            return self._error(400, str(exc), "invalid_request_error")
-        except Exception as exc:
-            return self._error(500, "agents apply failed: %s" % exc)
-        result["warnings"] = warnings
-        log("agents apply: client=%s base_url=%s model=%s files=%d"
-            % (client_id, base_url, model or "-", len(result.get("files") or [])),
-            tag="agents")
-        return self._json(200, result)
-
-    def _handle_agents_restore(self, payload):
-        wb_agents = agents_module()
-        client_id = str(payload.get("client") or payload.get("client_id") or "").strip()
-        if not client_id:
-            return self._error(400, "client is required", "invalid_request_error")
-        try:
-            result = wb_agents.restore(ACCOUNTS_DIR, client_id)
-        except wb_agents.AgentConfigError as exc:
-            return self._error(400, str(exc), "invalid_request_error")
-        except Exception as exc:
-            return self._error(500, "agents restore failed: %s" % exc)
-        log("agents restore: client=%s files=%d"
-            % (client_id, len(result.get("restored") or [])), tag="agents")
-        return self._json(200, result)
-
     def _handle_panel(self, path):
         """Panel login, logout and the settings screen (password + API key)."""
         payload = self._payload_or_error()
@@ -19192,23 +18825,6 @@ class Handler(BaseHTTPRequestHandler):
             if payload is None:
                 return
             return self._handle_proxy_slots(path, payload)
-        if path in ("/agents/apply", "/agents/restore"):
-            if not self._panel_ok():
-                return self._error(
-                    401, "panel password required", "invalid_request_error"
-                )
-            if not self._agents_client_allowed():
-                return self._error(
-                    403,
-                    "agent config is only available from the machine running the gateway",
-                    "invalid_request_error",
-                )
-            payload = self._payload_or_error()
-            if payload is None:
-                return
-            if path == "/agents/apply":
-                return self._handle_agents_apply(payload)
-            return self._handle_agents_restore(payload)
         if path in ("/panel/login", "/panel/logout", "/panel/password"):
             return self._handle_panel(path)
         if self._is_panel_route(path) and not self._panel_ok():

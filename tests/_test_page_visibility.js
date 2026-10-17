@@ -69,7 +69,6 @@ const PAGES = [
   ['btnNavGateway', '网关与账号'],
   ['btnNavTasks', '任务与福利'],
   ['btnNavAnalytics', '数据看板'],
-  ['btnNavAgents', '智能体配置'],
   ['btnNavSettings', 'Settings', '设置'],
   ['btnNavLogs', '运行日志'],
 ];
@@ -162,7 +161,7 @@ const saves = () => calls.filter(c => c.url === '/settings/save');
 
   // 清单的标签来自页签按钮；带 __wbSrc 的读原文（中文），不能把译文抄进来。
   const labels = Array.from(list().children).map(item => item.children[1].textContent);
-  assert.deepStrictEqual(labels, ['网关与账号', '任务与福利', '数据看板', '智能体配置', '设置', '运行日志'],
+  assert.deepStrictEqual(labels, ['网关与账号', '任务与福利', '数据看板', '设置', '运行日志'],
     '清单标签必须与页签文案一一对应，且带 __wbSrc 的取原文: ' + JSON.stringify(labels));
 
   // 2b. 「设置」固定保留：它是这个开关自己的入口。
@@ -182,7 +181,7 @@ const saves = () => calls.filter(c => c.url === '/settings/save');
     navButton('gateway').hidden === false && pageFor('analytics').hidden === false);
   check('被收起的勾选框不勾', boxFor('tasks').checked === false && boxFor('logs').checked === false);
   check('没被收起的仍然勾着', boxFor('gateway').checked === true && boxFor('settings').checked === true);
-  check('状态文案标出比例', element('setPagesState').textContent === '(显示 4/6)',
+  check('状态文案标出比例', element('setPagesState').textContent === '(显示 3/5)',
     element('setPagesState').textContent);
 
   // 2d. 存坏了：一律按「全部显示」算，且不能被真值字符串或页表外的 key 骗到。

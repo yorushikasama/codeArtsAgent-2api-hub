@@ -255,8 +255,8 @@ def run_checks(filter_name):
         page.screenshot(path=os.path.join(SHOTS, "phone-gateway.png"), full_page=True)
 
         if "nav" in filter_name or filter_name == "":
-            # Tab 数由页面自己决定：智能体配置在服务端 / 远程看板形态下会被整个
-            # 撤掉（issue #246），所以这里一个数量都不写死。要钉的是几何性质：
+            # Tab 数由页面自己决定：设置里的「顶部页签显示」能把任意一页收起来，
+            # 所以这里一个数量都不写死。要钉的是几何性质：
             # 标签不被截断、行内容不顶出导航条（摆不下就横向滚动，做法与
             # .page-nav 一致）、按钮填满整行不留空档。4 个 Tab 放得下时「等宽」
             # 是这三条的自然结果（issue #150 的属性仍在覆盖范围内）。

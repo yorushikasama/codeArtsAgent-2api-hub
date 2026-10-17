@@ -437,9 +437,8 @@ a:hover{text-decoration:underline}
 .main-page{display:none}
 .main-page.active{display:block}
 /* 设置页「顶部页签显示」收起的页面：靠 hidden 属性，而不是内联 display ——
-   「智能体配置」的入口在不可用时也是自己改 display 收起来的，两套机制各管各的
-   才不会互相把对方放出来。作者样式本就压过 [hidden] 的 UA 样式，所以这里显式
-   声明一次，免得以后给这两个选择器加 display 时又悄悄失效。 */
+   作者样式本就压过 [hidden] 的 UA 样式，所以这里显式声明一次，免得以后给这个
+   选择器加 display 时又悄悄失效。 */
 .main-nav-btn[hidden],.main-page[hidden]{display:none!important}
 /* 页面级两栏：左侧区块导航由 initPageNav() 依据页面内的 section 现场生成，
    这里的样式只描述外观，既不预设任何页面，也不预设任何区块。给页面加
@@ -533,7 +532,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 /* 细分出来的模块标签各有配色；catalog/auth 早先就被推断出来，只是一直没有
    自己的颜色，和 system 的灰底混在一起。 */
 .log-tag.tag-catalog{background:rgba(143,186,173,.18);color:#8fbaad}
-.log-tag.tag-agents{background:rgba(166,160,204,.18);color:#a6a0cc}
 .log-tag.tag-pricing{background:rgba(217,160,107,.18);color:#d9a06b}
 .log-tag.tag-egress{background:rgba(134,188,200,.18);color:#86bcc8}
 .log-tag.tag-upstream{background:rgba(210,156,180,.18);color:#d29cb4}
@@ -1074,7 +1072,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   };
 
   // 3. Tab 初始化（与下方主脚本的 MAIN_TABS 保持一致）
-  var TABS = ['gateway','accounts','tasks','analytics','agents','settings','logs'];
+  var TABS = ['gateway','accounts','tasks','analytics','settings','logs'];
   var pick = null;
   try {
     var q = new URLSearchParams(location.search).get('tab');
@@ -1927,8 +1925,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '计，默认 5 分钟；填 0 表示不自动刷新（仍可用「立即取价」手动取一次）。': '; the default is 5 minutes. 0 turns automatic fetching off (you can still fetch once with Fetch prices now).',
     '设备码:': 'Device code:',
     '设置': 'Settings',
-    '智能体配置': 'Agent Setup',
-    '一键配置': 'One-click Setup',
     '近 1 天': 'Last 1 day',
     '近 30 天': 'Last 30 days',
     '近 7 天': 'Last 7 days',
@@ -1946,23 +1942,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '网关地址': 'Gateway URL',
     '默认模型': 'Default Model',
     '默认采样参数': 'Default sampling',
-    '检测本机已安装的 AI 编程客户端，一键把它们的配置指向本网关；原始文件会先备份，随时可一键还原。': 'Detect AI coding clients installed on this machine and point them at this gateway with one click; original files are backed up first and can be restored anytime.',
-    '写入各客户端配置时使用的网关地址、鉴权 Key 与默认模型。': 'The gateway URL, auth key and default model written into each client config.',
-    '重新检测本机客户端': 'Re-detect local clients',
-    '检测到以下客户端安装在本机；点击「一键配置」即可让它改走本网关，原配置自动备份，可随时还原。': 'The following clients were detected on this machine; click One-click Setup to route it through this gateway. The original config is backed up automatically and can be restored anytime.',
-    '任何支持 OpenAI 兼容或 Anthropic Messages 协议的客户端都可以手动接入本网关，把下面的地址填进客户端的 Base URL / API 地址即可；Key 到「设置」页复制。': 'Any client speaking OpenAI-compatible or Anthropic Messages protocol can join this gateway manually: paste the addresses below into the client Base URL / API URL field; copy the key from the Settings page.',
-    '鉴权 Key 请前往「设置 → API Key 与出口绑定」页复制，填入客户端的 API Key / Token 字段。': 'Copy the auth key from Settings → API Key & Exit Binding and fill it into the client API Key / Token field.',
-    '客户端检测完成': 'Client detection finished',
-    '智能体列表加载失败:': 'Failed to load agent list:',
-    '检测到外部修改：还原将覆盖外部改动': 'External changes detected: restoring will overwrite them',
-    '配置文件在应用之后被外部修改过': 'The config file was modified externally after it was applied',
-    '未找到客户端:': 'Client not found:',
-    '请先填写网关地址': 'Fill in the gateway URL first',
-    '原配置已备份': 'original config backed up',
-    '配置失败:': 'Setup failed:',
-    '还原失败:': 'Restore failed:',
-    '暂未获取到客户端列表，点右上角「刷新」重新检测。': 'No client list yet; click Refresh in the top right to detect again.',
-    '未检测到该客户端': 'This client was not detected',
     '设置出口': 'Set exit',
     '设置已刷新': 'Settings refreshed',
     '设置文件': 'Settings file',
@@ -3232,9 +3211,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
         数据看板
       </button>
-      <button class="main-nav-btn" id="btnNavAgents" onclick="switchMainTab('agents')">
-        智能体配置
-      </button>
       <button class="main-nav-btn" id="btnNavSettings" onclick="switchMainTab('settings')">
         设置
       </button>
@@ -3906,7 +3882,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <div>
           <h2 style="margin:0">账号独立成一个页签 <em id="setAccountsSeparateState"></em></h2>
           <div style="font-size:12px;color:var(--dim);margin-top:4px">
-            关闭（默认）时，账号列表、「当前禁用」与「签到与活跃记录」留在「网关与账号」页，位置与拆分前一致；开启后它们搬到独立的「账号」页，顶部页签变成 网关 → 账号 → 数据看板 → 智能体配置 → 设置 → 运行日志，网关页只剩网关自己的东西——账号多起来之后翻起来更短。两侧的区块与行为完全一样，只是分在哪一页；关闭后 ?tab=accounts 的书签会退回「网关与账号」页。
+            关闭（默认）时，账号列表、「当前禁用」与「签到与活跃记录」留在「网关与账号」页，位置与拆分前一致；开启后它们搬到独立的「账号」页，顶部页签变成 网关 → 账号 → 数据看板 → 设置 → 运行日志，网关页只剩网关自己的东西——账号多起来之后翻起来更短。两侧的区块与行为完全一样，只是分在哪一页；关闭后 ?tab=accounts 的书签会退回「网关与账号」页。
           </div>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
@@ -4350,74 +4326,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       </div>
     </section>
 
-  </div>
-
-  <div id="pageAgents" class="main-page">
-    <div style="margin-bottom:16px">
-      <h2 style="margin:0;font-size:17px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em">智能体配置</h2>
-      <div style="font-size:12px;color:var(--dim);margin-top:4px">检测本机已安装的 AI 编程客户端，一键把它们的配置指向本网关；原始文件会先备份，随时可一键还原。</div>
-    </div>
-
-    <!-- 左侧导航由 initPageNav() 扫描本页的 section 自动生成，增删区块无需同步改动。 -->
-    <section>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-        <div>
-          <h2 style="margin:0">连接信息 <em id="agentConnState"></em></h2>
-          <div style="font-size:12px;color:var(--dim);margin-top:4px">写入各客户端配置时使用的网关地址、鉴权 Key 与默认模型。</div>
-        </div>
-        <button class="sec mini" onclick="loadAgents(true)" title="重新检测本机客户端">刷新</button>
-      </div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-        <div style="flex:1.4;min-width:220px">
-          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">网关地址</div>
-          <input id="agentBaseUrl" type="text" placeholder="http://127.0.0.1:8000/v1"
-                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
-        </div>
-        <div style="flex:1;min-width:200px">
-          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">API Key</div>
-          <select id="agentKeySelect"
-                  style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit"></select>
-        </div>
-        <div style="flex:1;min-width:200px">
-          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">默认模型</div>
-          <select id="agentModelSelect"
-                  style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit"></select>
-        </div>
-      </div>
-      <div style="font-size:12px;color:var(--dim);margin-top:10px">「全局 API Key」表示不在客户端配置里写入具体 Key，客户端沿用网关当前生效的全局 Key。</div>
-    </section>
-
-    <section>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-        <div>
-          <h2 style="margin:0">本机客户端 <em id="agentDetectState"></em></h2>
-          <div style="font-size:12px;color:var(--dim);margin-top:4px">检测到以下客户端安装在本机；点击「一键配置」即可让它改走本网关，原配置自动备份，可随时还原。</div>
-        </div>
-      </div>
-      <div id="agentCardGrid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px"></div>
-    </section>
-
-    <section>
-      <div>
-        <h2 style="margin:0">其他客户端</h2>
-        <div style="font-size:12px;color:var(--dim);margin-top:4px">任何支持 OpenAI 兼容或 Anthropic Messages 协议的客户端都可以手动接入本网关，把下面的地址填进客户端的 Base URL / API 地址即可；Key 到「设置」页复制。</div>
-      </div>
-      <table style="margin-top:12px">
-        <tbody>
-          <tr>
-            <td style="width:220px">OpenAI 兼容 Base URL</td>
-            <td><span class="mono" id="agentOpenAIUrl">-</span>
-                <button class="sec mini" style="margin-left:8px" onclick="copyAgentUrl('agentOpenAIUrl', this)">复制</button></td>
-          </tr>
-          <tr>
-            <td>Anthropic Messages Base URL</td>
-            <td><span class="mono" id="agentAnthropicUrl">-</span>
-                <button class="sec mini" style="margin-left:8px" onclick="copyAgentUrl('agentAnthropicUrl', this)">复制</button></td>
-          </tr>
-        </tbody>
-      </table>
-      <div style="font-size:12px;color:var(--dim);margin-top:10px">鉴权 Key 请前往「设置 → API Key 与出口绑定」页复制，填入客户端的 API Key / Token 字段。</div>
-    </section>
   </div>
 
   <div id="pageLogs" class="main-page">
@@ -5951,7 +5859,7 @@ function applyAllTableSorts(){
    innerHTML 生成的，id 在包着它们的容器上。
 
    页面容器（.main-page）不算：那是「这一页」的 id，不是「这张表」的 id，拿它当
-   表 id 会把设置页的护栏表单、智能体页的表格一起误认成数据表。都没有就不接。 */
+   表 id 会把设置页的护栏表单、账号页的表格一起误认成数据表。都没有就不接。 */
 function sortTableId(table){
   let el = table;
   while(el && el !== document.body){
@@ -8540,7 +8448,7 @@ function generatePageList(current, total){
 
 // Tab ids in nav order. One list so the restore path and the nav cannot
 // drift apart.
-const MAIN_TABS = ['gateway', 'accounts', 'tasks', 'analytics', 'agents', 'settings', 'logs'];
+const MAIN_TABS = ['gateway', 'accounts', 'tasks', 'analytics', 'settings', 'logs'];
 const MAIN_TAB_STORE = 'wb-proxy-main-tab';
 let currentMainTab = 'gateway';
 let analyticsRange = 'today';
@@ -8672,7 +8580,7 @@ async function startDashboard(){
   // 并行跑，其余照旧等待；异常自己收，别变成未处理的拒绝。
   loadGrowthTasks().catch(() => {});
   await Promise.all([loadAccounts(), loadModels(),
-                     loadSchedulerStatus(), refresh(), loadAgentsAvailability()]);
+                     loadSchedulerStatus(), refresh()]);
   updateRecentLimitButtons();
   // The head script already resolved this before first paint; re-apply it
   // here so the data loaders for the active page actually run.
@@ -9150,8 +9058,6 @@ function applyHiddenPages(hidden){
   _hiddenPages = normaliseHiddenPages(hidden);
   navPageRows().forEach(function(row){
     const off = pageHidden(row.key);
-    // 用 hidden 属性而不是内联 display：「智能体配置」不可用时也是自己改 display
-    // 收起来的，两套机制各管各的，谁都不会把对方放出来。
     row.btn.hidden = off;
     if(row.page) row.page.hidden = off;
   });
@@ -10934,25 +10840,7 @@ async function autoAssignSlots(){
   toast('已为 ' + unbound.length + ' 个未绑定账号分配代理出口', 'ok');
 }
 
-/* 智能体配置只在「浏览器和网关进程同一台机器」时成立（issue #246）：服务端 /
-   Docker / OpenWrt 部署下看板是远程打开的，一键配置改的是容器或路由器里的
-   配置目录，到不了用户自己的电脑。服务端据此回 enabled:false，这里把入口整个
-   撤掉；判定失败（网络抖动等）保持可见——本机用户不该因此丢掉这个入口。 */
-let AGENTS_AVAILABLE = true;
-async function loadAgentsAvailability(){
-  try {
-    const r = await getJSON('/agents/available');
-    if(r && r.enabled === false){
-      AGENTS_AVAILABLE = false;
-      const btn = document.getElementById('btnNavAgents');
-      if(btn) btn.style.display = 'none';
-    }
-  } catch(e){}
-}
-
 function switchMainTab(tab){
-  // 入口被撤掉后（?tab=agents 的书签、上次停留的页签）退回网关页
-  if(tab === 'agents' && !AGENTS_AVAILABLE) tab = 'gateway';
   // 被「顶部页签显示」收起来的页面同理：书签与上次停留的页签都不能把内容调出来，
   // 否则页面容器带着 hidden 被点亮，屏幕上一片空白。
   if(pageHidden(tab)) tab = firstVisiblePage();
@@ -10976,22 +10864,19 @@ function switchMainTab(tab){
   const btnAnalytics = document.getElementById('btnNavAnalytics');
   const btnLogs = document.getElementById('btnNavLogs');
   const btnSettings = document.getElementById('btnNavSettings');
-  const btnAgents = document.getElementById('btnNavAgents');
   const pageGateway = document.getElementById('pageGateway');
   const pageTasks = document.getElementById('pageTasks');
   const pageAccounts = document.getElementById('pageAccounts');
   const pageAnalytics = document.getElementById('pageAnalytics');
   const pageLogs = document.getElementById('pageLogs');
   const pageSettings = document.getElementById('pageSettings');
-  const pageAgents = document.getElementById('pageAgents');
   const tabs = [
     ['gateway', btnGateway, pageGateway],
     ['accounts', btnAccounts, pageAccounts],
     ['tasks', btnTasks, pageTasks],
     ['analytics', btnAnalytics, pageAnalytics],
     ['logs', btnLogs, pageLogs],
-    ['settings', btnSettings, pageSettings],
-    ['agents', btnAgents, pageAgents]
+    ['settings', btnSettings, pageSettings]
   ];
   tabs.forEach(([name, btn, page]) => {
     if(!btn || !page) return;
@@ -11005,7 +10890,6 @@ function switchMainTab(tab){
   if(tab === 'accounts' || (!_accountsSeparateTab && tab === 'gateway')){ loadActivityBoard(); }
   if(tab === 'analytics'){ loadAnalytics(); loadAnalyticsMatrix(); }
   if(tab === 'settings'){ loadSettings(); loadProxySlots(); }
-  if(tab === 'agents'){ loadAgents(); }
   if(tab === 'logs'){
     startLogPolling();
     fetchNewLogs(true);
@@ -11014,267 +10898,6 @@ function switchMainTab(tab){
   }
   restorePageNavHash();
 }
-
-/* ---- 智能体一键配置模块 ----
-   后端接口（wb_agents.py / wb_proxy.py）：
-     GET  /agents          → {clients:[...], keys:[...], models:[...], gateway:{base_url}}
-     POST /agents/apply    {client, client_id, base_url, key_id, model, models} → {client, label, applied_at, base_url, model, files, warnings}
-     POST /agents/restore  {client, client_id}                                 → {client, label, restored, deleted}
-   每个 client: {id, label, desc, protocol('anthropic'|'openai'), config_paths:[...],
-                 installed, configured, applied:{at, base_url, model, files, external_change}}
-   这里只用 getJSON/postJSON/toast/esc，接口字段缺省时尽量降级展示而不是报错。 */
-let AGENTS_DATA = null;
-let AGENT_MODELS = [];
-let AGENT_KEYS = [];
-let AGENTS_LOADING = false;
-
-function agentClients(){
-  const d = AGENTS_DATA || {};
-  return d.clients || d.agents || [];
-}
-
-async function loadAgents(showToast){
-  if(AGENTS_LOADING) return;
-  AGENTS_LOADING = true;
-  const state = document.getElementById('agentDetectState');
-  if(state){ state.textContent = '(检测中...)'; state.style.color = 'var(--dim)'; }
-  try {
-    const data = await getJSON('/agents');
-    AGENTS_DATA = data || {};
-    AGENT_MODELS = AGENTS_DATA.models || [];
-    AGENT_KEYS = AGENTS_DATA.keys || AGENTS_DATA.api_keys || [];
-    renderAgentConnForm();
-    renderAgentCards();
-    renderAgentManualUrls();
-    const n = agentClients().filter(c => c.installed || (c.status && c.status !== 'missing')).length;
-    if(state){
-      // 计数必须按卡片自己的判定来数（agentStatusBadge 认 installed / detected），
-      // 否则会出现「5 张卡片、标题 4 个」的错位（issue #250）：卡片列表是全部
-      // 支持的客户端，检测到的只是其中一部分，两个数字都写出来。
-      const clients = agentClients();
-      const found = clients.filter(c => c.installed || c.detected).length;
-      state.textContent = clients.length > found
-        ? '(已检测到 ' + found + ' / 共 ' + clients.length + ' 个)'
-        : '(已检测到 ' + found + ' 个)';
-      state.style.color = found ? 'var(--accent2)' : 'var(--dim)';
-    }
-    if(showToast) toast('客户端检测完成', 'ok');
-  } catch(e) {
-    if(state){ state.textContent = '(加载失败)'; state.style.color = 'var(--bad)'; }
-    if(!isAuthError(e)) toast('智能体列表加载失败: ' + e.message, 'bad');
-  } finally {
-    AGENTS_LOADING = false;
-  }
-}
-
-function renderAgentConnForm(){
-  // 网关地址：只在用户还没改过时填默认值，避免刷新把用户编辑冲掉。
-  const baseInput = document.getElementById('agentBaseUrl');
-  if(baseInput && !baseInput.dataset.touched){
-    const def = (AGENTS_DATA && AGENTS_DATA.gateway && AGENTS_DATA.gateway.base_url)
-      || (location.origin + '/v1');
-    baseInput.value = def;
-  }
-  const keySel = document.getElementById('agentKeySelect');
-  if(keySel){
-    const prev = keySel.value;
-    let html = '<option value="">全局 API Key</option>';
-    AGENT_KEYS.forEach(k => {
-      const id = k.id != null ? String(k.id) : '';
-      const name = k.name || id || 'Key';
-      html += '<option value="' + esc(id) + '"' + (k.enabled === false ? ' disabled' : '')
-        + '>' + esc(name) + (k.realm ? ' (' + esc(k.realm) + ')' : '') + '</option>';
-    });
-    keySel.innerHTML = html;
-    if(prev && keySel.querySelector('option[value="' + prev.replace(/"/g, '\\"') + '"]')) keySel.value = prev;
-  }
-  const modelSel = document.getElementById('agentModelSelect');
-  if(modelSel){
-    const prev = modelSel.value;
-    let html = '<option value="">(不指定模型)</option>';
-    AGENT_MODELS.forEach(m => {
-      const id = typeof m === 'string' ? m : (m.id || m.model || '');
-      if(!id) return;
-      const cw = (typeof m === 'object' && m) ? (m.context_window || m.contextWindow || 0) : 0;
-      const label = id + (cw ? ' (' + fmt(cw) + ' ctx)' : '');
-      html += '<option value="' + esc(id) + '">' + esc(label) + '</option>';
-    });
-    modelSel.innerHTML = html;
-    if(prev && modelSel.querySelector('option[value="' + prev.replace(/"/g, '\\"') + '"]')) modelSel.value = prev;
-  }
-}
-
-function renderAgentManualUrls(){
-  const origin = location.origin;
-  const openAIEl = document.getElementById('agentOpenAIUrl');
-  const anthEl = document.getElementById('agentAnthropicUrl');
-  if(openAIEl) openAIEl.textContent = origin + '/v1';
-  if(anthEl) anthEl.textContent = origin; // Anthropic 客户端的 Base URL 不带 /v1 前缀
-}
-
-async function copyAgentUrl(elId, btn){
-  const el = document.getElementById(elId);
-  const text = el ? el.textContent : '';
-  if(!text){ toast('没有可复制的内容', 'warn'); return; }
-  try {
-    await writeClipboard(text);
-    if(btn){
-      const old = btn.textContent;
-      btn.textContent = '已复制';
-      setTimeout(() => { btn.textContent = old; }, 1600);
-    }
-    toast('已复制到剪贴板', 'ok');
-  } catch(e) {
-    toast('复制失败: ' + e.message, 'bad');
-  }
-}
-
-function agentProtocolLabel(p){
-  return p === 'anthropic' ? 'Anthropic Messages' : 'OpenAI 兼容';
-}
-
-function agentStatusBadge(c){
-  if(c.applied) return '<span class="badge ok">已配置</span>';
-  if(c.installed || c.detected) return '<span class="badge s">已检测到</span>';
-  return '<span class="badge off">未检测到</span>';
-}
-
-function renderAgentCards(){
-  const grid = document.getElementById('agentCardGrid');
-  if(!grid) return;
-  const clients = agentClients();
-  if(!clients.length){
-    grid.innerHTML = '<div style="font-size:13px;color:var(--dim);padding:18px;border:1px dashed var(--line);border-radius:10px">'
-      + '暂未获取到客户端列表，点右上角「刷新」重新检测。' + '</div>';
-    return;
-  }
-  const cards = clients.map(c => {
-    const id = c.id || '';
-    const idAttr = esc(id);
-    const name = esc(c.label || c.name || id);
-    const desc = c.desc ? '<div style="font-size:12px;color:var(--dim);margin-top:4px">' + esc(c.desc) + '</div>' : '';
-    const paths = (c.config_paths || (c.config_path ? [c.config_path] : []));
-    const pathsHtml = paths.length
-      ? '<div class="mono" style="font-size:11px;color:var(--dim);margin-top:8px;word-break:break-all">'
-        + paths.map(p => esc(p)).join('<br>') + '</div>'
-      : '';
-    const applied = c.applied || null;
-    let appliedHtml = '';
-    let warnHtml = '';
-    if(applied){
-      let at = '-';
-      if(applied.at){
-        if(typeof applied.at === 'number'){
-          const d = new Date(applied.at > 1e11 ? applied.at : applied.at * 1000);
-          at = isNaN(d.getTime()) ? String(applied.at) : (d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0') + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0') + ':' + String(d.getSeconds()).padStart(2,'0'));
-        } else {
-          at = esc(String(applied.at).replace('T', ' ').slice(0, 19));
-        }
-      }
-      appliedHtml = '<div style="font-size:11px;color:var(--dim);margin-top:8px;line-height:1.7">'
-        + '<div>应用时间: <span class="mono">' + at + '</span></div>'
-        + '<div>base_url: <span class="mono">' + esc(applied.base_url || '-') + '</span></div>'
-        + '<div>模型: <span class="mono">' + esc(applied.model || '(未指定)') + '</span></div>'
-        + '</div>';
-      if(applied.external_change){
-        warnHtml = '<div class="badge warn" style="margin-top:8px" title="配置文件在应用之后被外部修改过">'
-          + '检测到外部修改：还原将覆盖外部改动</div>';
-      }
-    }
-    const applyLabel = applied ? '重新应用' : '一键配置';
-    const notDetected = !(c.installed || c.detected);
-    const btns = '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px">'
-      + '<button class="mini" onclick="applyAgent(&quot;' + idAttr + '&quot;, this)"' + (notDetected ? ' disabled title="未检测到该客户端"' : '') + '>' + applyLabel + '</button>'
-      + (applied ? '<button class="danger mini" onclick="restoreAgent(&quot;' + idAttr + '&quot;, this)">还原原始配置</button>' : '')
-      + '</div>';
-    return '<div style="background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:6px">'
-      + '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">'
-      + '<div style="font-weight:600;color:var(--fg);font-size:14px">' + name + '</div>'
-      + agentStatusBadge(c) + '</div>'
-      + '<div style="font-size:11px;color:var(--accent)">' + agentProtocolLabel(c.protocol) + '</div>'
-      + desc
-      + pathsHtml
-      + appliedHtml
-      + warnHtml
-      + btns
-      + '</div>';
-  });
-  grid.innerHTML = cards.join('');
-}
-
-function agentFindClient(id){
-  return agentClients().find(c => String(c.id) === String(id)) || null;
-}
-
-async function applyAgent(id, btn){
-  const client = agentFindClient(id);
-  if(!client){ toast('未找到客户端: ' + id, 'bad'); return; }
-  const baseInput = document.getElementById('agentBaseUrl');
-  const keySel = document.getElementById('agentKeySelect');
-  const modelSel = document.getElementById('agentModelSelect');
-  const baseUrl = baseInput ? baseInput.value.trim() : '';
-  if(!baseUrl){ toast('请先填写网关地址', 'warn'); return; }
-  if(client.applied && client.applied.external_change){
-    if(!confirm('「' + (client.label || id) + '」的配置文件在应用后被外部修改过，重新应用将覆盖这些改动。确定继续吗？')) return;
-  }
-  if(btn){ btn.disabled = true; }
-  try {
-    const r = await postJSON('/agents/apply', {
-      client: id,
-      client_id: id,
-      base_url: baseUrl,
-      key_id: keySel ? keySel.value : '',
-      model: modelSel ? modelSel.value : '',
-      models: (AGENT_MODELS || []).map(m => (typeof m === 'object' ? (m.id || '') : m)).filter(Boolean)
-    });
-    if(r && (r.ok === false || r.error)){
-      toast('配置失败: ' + (r.message || (r.error && r.error.message) || '未知错误'), 'bad');
-    } else {
-      toast('已配置「' + (client.label || id) + '」，原配置已备份', 'ok');
-    }
-  } catch(e) {
-    if(!isAuthError(e)) toast('配置失败: ' + e.message, 'bad');
-  } finally {
-    if(btn){ btn.disabled = false; }
-    await loadAgents();
-  }
-}
-
-async function restoreAgent(id, btn){
-  const client = agentFindClient(id);
-  const label = (client && (client.label || client.name)) || id;
-  if(!confirm('确定还原「' + label + '」的原始配置吗？将恢复成一键配置之前的备份文件。')) return;
-  if(btn){ btn.disabled = true; }
-  try {
-    const r = await postJSON('/agents/restore', {client: id, client_id: id});
-    if(r && (r.ok === false || r.error)){
-      toast('还原失败: ' + (r.message || (r.error && r.error.message) || '未知错误'), 'bad');
-    } else {
-      toast('已还原「' + label + '」的原始配置', 'ok');
-    }
-  } catch(e) {
-    if(!isAuthError(e)) toast('还原失败: ' + e.message, 'bad');
-  } finally {
-    if(btn){ btn.disabled = false; }
-    await loadAgents();
-  }
-}
-
-// 网关地址输入框：用户改过后打标，刷新检测不再覆盖。
-(function(){
-  const bind = () => {
-    const baseInput = document.getElementById('agentBaseUrl');
-    if(baseInput) baseInput.addEventListener('input', () => { baseInput.dataset.touched = '1'; });
-  };
-  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', bind);
-  else bind();
-})();
-
-window.loadAgents = loadAgents;
-window.renderAgentCards = renderAgentCards;
-window.applyAgent = applyAgent;
-window.restoreAgent = restoreAgent;
-window.copyAgentUrl = copyAgentUrl;
 
 /* ---- 系统运行日志模块 ---- */
 let logEntries = [];
@@ -11429,12 +11052,12 @@ function setLogFilterLevel(lvl){
 
 /* 模块筛选按钮的固定顺序与中文名。顺序按「排查时最常先看哪个模块」排，未列出
    的 tag 排到最后并按字母序补上——后端新增 tag 时这里不改也能用。 */
-const LOG_TAG_ORDER = ['chat', 'tasks', 'scheduler', 'accounts', 'agents', 'pricing',
+const LOG_TAG_ORDER = ['chat', 'tasks', 'scheduler', 'accounts', 'pricing',
                        'egress', 'upstream', 'webtools', 'catalog', 'auth', 'settings',
                        'update', 'usage', 'system'];
 const LOG_TAG_LABELS = {
   chat: '对话', tasks: '任务福利', scheduler: '调度器', accounts: '账号',
-  agents: '智能体', pricing: '定价', egress: '出口', upstream: '上游',
+  pricing: '定价', egress: '出口', upstream: '上游',
   webtools: '网络工具', catalog: '模型', auth: '鉴权', settings: '设置',
   update: '更新', usage: '用量', system: '系统'
 };
