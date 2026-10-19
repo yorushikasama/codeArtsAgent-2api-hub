@@ -249,7 +249,9 @@ pageMarkers.forEach((m, i) => {
   regions[m[1].toLowerCase()] = (html.slice(start, end).match(/<section/g) || []).length;
 });
 assert.ok(regions.gateway >= 2, 'gateway 应有多个区块，实际 ' + regions.gateway);
-assert.ok(regions.accounts >= 3, 'accounts 应有多个区块，实际 ' + regions.accounts);
+// 账号页已裁成码道专用（WorkBuddy 账号池、当前禁用、签到记录全删），
+// 现在只剩「码道账号」一个区块，侧栏仍能生成。
+assert.ok(regions.accounts >= 1, 'accounts 至少要有一个区块，实际 ' + regions.accounts);
 assert.ok(regions.analytics >= 3, 'analytics 应有多个区块，实际 ' + regions.analytics);
 assert.ok(regions.settings >= 9, 'settings 应有多个区块，实际 ' + regions.settings);
 assert.strictEqual(regions.logs, 0, 'logs 目前是单一视图，没有 section');
