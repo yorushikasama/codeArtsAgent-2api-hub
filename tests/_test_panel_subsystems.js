@@ -40,16 +40,12 @@ assert.ok(sortCalls >= 5,
 assert.ok(/addEventListener\('click',\s*e\s*=>\s*\{[\s\S]{0,200}sortHeaderAt\(e\)/.test(script),
   '表头点击没有接到 sortHeaderAt：排序点不动');
 
-/* ---- 2. 签到记录：弹窗 + 筛选（#261）----
-   账号工具栏已随 WorkBuddy 账号子系统一起删除，入口那条断言不再适用；
-   弹窗与筛选函数仍在（暂时成为孤儿，等确认后一并清理）。 */
-has('签到记录弹窗', 'id="activityHistoryModal"');
-has('签到记录表体', 'id="activityHistoryRows"');
-for (const name of ['function openActivityHistory', 'function closeActivityHistory',
-                    'function setActivityFilter', 'function activityFilterQuery',
-                    'function activityHistoryRow', 'function loadActivityToday', 'ACT_FILTER']) {
-  has('签到记录', name);
-}
+/* ---- 2. 签到记录：已随旧账号子系统整体删除 ----
+   弹窗（activityHistoryModal）、表体与筛选函数都已不存在，
+   这几条钉子随之移除，不再断言。 */
+// 这些函数（openActivityHistory / closeActivityHistory / setActivityFilter /
+// activityFilterQuery / activityHistoryRow / loadActivityToday / ACT_FILTER）
+// 都已随旧账号子系统删除，不再断言。
 
 /* ---- 3. 设置页的更新检查卡片（#262）---- */
 has('更新检查卡片', 'id="setUpdateCurrent"');

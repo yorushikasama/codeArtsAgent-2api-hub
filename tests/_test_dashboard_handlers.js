@@ -62,10 +62,14 @@ assert.ok(referenced.size >= 30,
 assert.deepStrictEqual(missing, [],
   `inline handlers with no function behind them: ${missing.join(', ')}`);
 
-// The reported case, pinned directly so a rename cannot quietly reintroduce it.
-assert.ok(/onclick="openLoginModal\(\)"/.test(html),
-  'the empty-state login button must call openLoginModal()');
+// 旧账号子系统（账号池 / OAuth 登录弹窗 / 空态「添加账号」按钮）已整体删除，
+// 这两条钉子随之失效：openLoginModal 与 startLogin 都不该再被任何地方引用。
+assert.ok(!/\bopenLoginModal\b/.test(html),
+  'nothing may reference the removed openLoginModal()');
 assert.ok(!/onclick="startLogin\(\)"/.test(html),
   'nothing may call the removed startLogin()');
+// 现在的唯一账号入口是码道，钉住它，避免回归成又指向旧体系。
+assert.ok(/onclick="openCodeartsLogin\(\)"/.test(html),
+  'the account entry must call openCodeartsLogin()');
 
 console.log(`dashboard handler assertions passed (${referenced.size} handlers checked)`);

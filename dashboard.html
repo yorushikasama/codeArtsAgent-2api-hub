@@ -277,7 +277,7 @@ button.mini{padding:3px 9px;font-size:11px}
 .step.active .n{border-color:var(--accent);background:rgba(37,99,235,.1);color:var(--accent);font-weight:700}
 .step.done .n{border-color:var(--accent2);background:rgba(22,163,74,.1);color:var(--accent2);font-weight:700}
 .step .t{font-size:13px}
-/* 码道 CodeArts（华为云）账号行：与 WorkBuddy 账号池分开呈现 */
+/* 码道 CodeArts（华为云）账号行：独立存放、独立呈现 */
 .ca-row{display:flex;align-items:center;justify-content:space-between;gap:12px;
   padding:10px 12px;border:1px solid var(--line);border-radius:10px;margin:8px 0;
   background:var(--panel2)}
@@ -3386,7 +3386,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   </div><!-- /pageGateway -->
   
   <div id="pageAccounts" class="main-page">
-  <!-- 账号页：只管理码道（华为云）账号。WorkBuddy 那套账号池、出站身份、
+  <!-- 账号页：只管理码道（华为云）账号。旧的账号池、出站身份、
        内存扫描导入等已整体移除，不再出现在这个面板里。 -->
   <section>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
@@ -4216,7 +4216,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         走华为云 PKCE + DPoP 授权。拿到的是 <b>STS 临时 AK/SK</b>（有效期数小时）
         加一张 <b>30 天可续期</b>的 refresh_token；续期要用登录时那把 DPoP 私钥，
         所以私钥会随会话一起存在网关里。会话落在 <code>accounts/codearts/</code>，
-        与上面的 WorkBuddy 账号池互不相干，也不参与请求调度。
+        与其它账号体系互不相干，也不参与请求调度。
       </p>
       <h3 style="font-size:13px;margin:18px 0 6px">已连接的码道账号</h3>
       <div id="codeartsList"><p class="hint">正在读取…</p></div>
@@ -4235,108 +4235,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   </div>
 </div>
 
-<div class="modal-mask" id="testAllModal">
-  <div class="modal" role="dialog" aria-modal="true" style="width:min(820px,100%)">
-    <div class="modal-hd">
-      <h2>一键测试结果</h2>
-      <button class="modal-x" onclick="closeTestAll()" aria-label="关闭">×</button>
-    </div>
-    <div class="modal-bd">
-      <p class="hint" style="margin-top:0">
-        每个已启用账号各发一条最小请求（真实调用上游，会消耗极少量额度）。
-        测试通过会顺手清掉该账号的熔断 / 降权 / 软限流计数，所以不会出现「测完还是冷却」。
-      </p>
-      <div id="testAllBody"><p class="hint">正在测试…</p></div>
-    </div>
-    <div class="modal-ft">
-      <button class="sec" onclick="testAccounts(null)">重新测试</button>
-      <button class="sec" onclick="closeTestAll()">关闭</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-mask" id="desktopScanModal">
-  <div class="modal" role="dialog" aria-modal="true" style="width:min(720px,100%)">
-    <div class="modal-hd">
-      <h2>本机桌面客户端账号</h2>
-      <button class="modal-x" onclick="closeDesktopScan()" aria-label="关闭">×</button>
-    </div>
-    <div class="modal-bd">
-      <p class="hint" style="margin-top:0">
-        下面是本机桌面客户端里已登录的账号（只读检测，点击「导入」才会加入网关）。
-      </p>
-      <div id="desktopScanBody"><p class="hint">正在检测…</p></div>
-    </div>
-    <div class="modal-ft">
-      <button class="sec" onclick="refreshDesktopScan(this)">重新扫描</button>
-      <button class="sec" onclick="closeDesktopScan()">关闭</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-mask" id="importModal">
-  <div class="modal" role="dialog" aria-modal="true" style="width:min(720px,100%)">
-    <div class="modal-hd">
-      <h2>导入账号</h2>
-      <button class="modal-x" onclick="closeImport()" aria-label="关闭">×</button>
-    </div>
-    <div class="modal-bd">
-      <p class="hint" style="margin-top:0">
-        选择一个账号 JSON 文件。支持本网关导出的文件、账号数组、单个账号对象，
-        以及桌面客户端的 <code>{"account":…,"auth":…}</code> 格式。
-      </p>
-      <div id="importBody"><p class="hint">尚未选择文件。</p></div>
-    </div>
-    <div class="modal-ft">
-      <label class="sec" style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">
-        <input type="checkbox" id="importOverwrite" style="margin:0">
-        覆盖同 UID 账号
-      </label>
-      <span style="flex:1"></span>
-      <button class="sec" onclick="closeImport()">取消</button>
-      <button id="btnImportCommit" class="primary" onclick="commitImport(this)" disabled>确认导入</button>
-    </div>
-  </div>
-</div>
-
-<div class="modal-mask" id="activityHistoryModal" onclick="if(event.target===this) closeActivityHistory()">
-  <div class="modal" role="dialog" aria-modal="true" style="width:min(920px,96vw);max-height:92vh;display:flex;flex-direction:column">
-    <div class="modal-hd">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <h2>签到与每日活跃记录</h2>
-        <em id="activityHistoryMeta" style="color:var(--dim);font-size:12px;font-style:normal"></em>
-      </div>
-      <button class="modal-x" onclick="closeActivityHistory()" aria-label="关闭">×</button>
-    </div>
-    <div class="modal-bd" style="overflow-y:auto;flex:1">
-      <!-- 筛选在服务端做完（GET /activity/history），面板只负责拼查询串。 -->
-      <div class="toolbar" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
-        <select id="actRange" onchange="setActivityFilter('range', this.value)" title="时间范围">
-          <option value="today">今日</option>
-          <option value="7d" selected>近 7 天</option>
-          <option value="30d">近 30 天</option>
-        </select>
-        <select id="actUid" onchange="setActivityFilter('uid', this.value)" title="账号"></select>
-        <select id="actTask" onchange="setActivityFilter('task', this.value)" title="任务">
-          <option value="">全部任务</option>
-          <option value="checkin">国内签到</option>
-          <option value="daily_chat">国际活跃</option>
-        </select>
-        <select id="actResult" onchange="setActivityFilter('result', this.value)" title="结果">
-          <option value="">全部结果</option>
-          <option value="ok">成功</option>
-          <option value="failed">失败</option>
-        </select>
-        <button class="sec" onclick="loadActivityHistory()">刷新</button>
-      </div>
-      <div class="table-wrap">
-        <table class="data-cards"><thead><tr>
-          <th>时间</th><th>账号</th><th>任务</th><th>结果</th><th>说明</th>
-        </tr></thead><tbody id="activityHistoryRows"></tbody></table>
-      </div>
-    </div>
-  </div>
-</div>
 <div class="modal-mask" id="creditsDetailModal" onclick="if(event.target===this) closeCreditsDetail()">
   <div class="modal" role="dialog" aria-modal="true" style="width:min(960px,96vw);max-height:92vh;display:flex;flex-direction:column">
     <div class="modal-hd">
@@ -4454,17 +4352,14 @@ function closeLogin(){
   if(loginState){ postJSON("/accounts/login/cancel", {state: loginState}).catch(()=>{}); loginState = null; }
 }
 
-function openLoginModal(){
-  openLogin();
-  triggerLoginForSelectedRealm();
-}
+
 
 
 
 
 
 /* ---------------- 码道 CodeArts（华为云）账号 ----------------
-   与上面 WorkBuddy 的 state + authUrl 轮询不同：码道是 PKCE + DPoP + 本地回跳。
+   与轮询式登录不同：码道是 PKCE + DPoP + 本地回跳。
    浏览器被华为云 307 回 http://127.0.0.1:{网关端口}/oauth/callback?code=…，
    网关当场换 token 落盘，前端只是轮询结果。所以这里没有「复制凭证」这一步。 */
 let caLoginState = null, caLoginTimer = null;
@@ -5632,13 +5527,7 @@ document.addEventListener('keydown', e => {
   toggleTableSort(hit.id, hit.col);
 });
 
-function setCostCurrency(cur){
-  costCurrency = (cur === 'USD') ? 'USD' : 'CNY';
-  try { localStorage.setItem('wb-cost-currency', costCurrency); } catch(e) {}
-  renderCostToggle();
-  // 已经渲染出来的表格/卡片就地换算重画，不必等下一轮轮询。
-  if(typeof refreshAllCostViews === 'function') refreshAllCostViews();
-}
+
 // 悬停里说清这个数是怎么来的：哪条定价策略算的、三档单价多少、落在哪个条件
 // 档、这条价是怎么匹配到 OpenRouter 条目的、是不是补算。
 //
@@ -5800,13 +5689,7 @@ document.addEventListener('mouseout', e => {
   if(e.relatedTarget && cell.contains(e.relatedTarget)) return;
   hideCostTip();
 });
-function renderCostToggle(){
-  document.querySelectorAll('.cost-toggle').forEach(el => {
-    el.querySelectorAll('button').forEach(b => {
-      b.classList.toggle('active', b.dataset.cur === costCurrency);
-    });
-  });
-}
+
 // CNY/USD 二选一的切换按钮组；用于费用卡片与表格标题区。
 
 // 输入 / 输出 / 思考 三个数字，各自一色，斜杠分隔。思考为 0 也写出来，
@@ -6014,7 +5897,7 @@ function modelLimitPills(a){
 // 推导：**没有记录不等于失败**，所以缺记录时给的是中性文案而不是红色。账号自带的
 // lastActivityReport 只在「今天确实完成过、但这一版还没留下历史行」时补一个中性的
 // 「今日已完成」，不据此伪造事件、时间或说明。
-// WorkBuddy 那套每日签到（lastCheckin）已随码道领取上线而移除，此处不再回落。
+// 旧的每日签到（lastCheckin）已随码道领取上线而移除，此处不再回落。
 // 关联键始终是 uid：切区域、刷新账号都只是重画同一份按 uid 建的表，另一个账号的
 // 事件不会画到这一行上。
 let ACTIVITY_TODAY = {byUid: {}, error: '', loaded: false};
@@ -6032,7 +5915,7 @@ function todayStamp(){
 
 // 一个账号今天的活动状态。
 // 国际版每日活跃已随该区域移除，这里只剩国内版一项：成长计划连登打卡
-//（lastActivityReport）。WorkBuddy 每日签到（lastCheckin）也已移除，签到改由码道
+//（lastActivityReport）。旧的每日签到（lastCheckin）也已移除，签到改由码道
 // 账号区的「领取每日 Token」承担 —— 那边读的是服务端余额而不是这里的历史流水，
 // 所以两者不共用状态字段。
 function activityStatusOf(a){
@@ -6163,11 +6046,7 @@ function loadActivityHistory(){
   });
 }
 
-function setActivityFilter(name, value){
-  if(!Object.prototype.hasOwnProperty.call(ACT_FILTER, name)) return undefined;
-  ACT_FILTER[name] = String(value == null ? '' : value);
-  return loadActivityHistory();
-}
+
 
 // uid 为空表示「全部账号」；从账号行的状态徽章点进来时带上该账号，等于预筛选。
 function openActivityHistory(uid){
@@ -6178,111 +6057,12 @@ function openActivityHistory(uid){
   return loadActivityHistory();
 }
 
-function closeActivityHistory(){
-  const mask = document.getElementById('activityHistoryModal');
-  if(mask) mask.style.display = 'none';
-}
+
 
 // 账号的手动调度权重提示：与 wb_accounts._pick_weighted_first 的行为一一对应。
 const WEIGHT_TIP = '权重 >1 的账号优先接单，多个高权重账号按权重比分流量；它们都接不了单时其他账号照常顶上。已开始的会话保持粘性不换号，权重对新会话生效。1 = 不干预，临期积分优先等自动规则照旧。';
 
-function accountRow(a){
-  const realmBadge = '<span class="realm-badge-cn">国内版</span>';
-  // Inline handlers embed these in an HTML attribute, so they must survive
-  // both the attribute and the quoted JS string. uid comes from an upstream
-  // JWT; treat it as untrusted and keep it to a safe charset.
-  const uidAttr = esc(String(a.uid || '').replace(/[^\w.@-]/g, ''));
-  const nameAttr = esc(String(a.nickname || '').replace(/["'\\<>]/g, ''));
-  const usage = USAGE_BY_ACCOUNT[a.uid] || {};
-  const state = !a.enabled ? '<span class="badge off">已停用</span>'
-              : a.reserveBlocked ? '<span class="badge warn">保留积分</span>'
-              : a.dailyLimitBlocked ? '<span class="badge warn" title="今日已用 ' + fmt(a.dailyTokensToday || 0) + ' / ' + fmt(a.dailyTokenLimit || 0) + ' token，暂停接单（本地 0 点恢复）">日限额</span>'
-              : a.creditLimitReached ? '<span class="badge warn" title="今日已消费 ' + Number(a.dailyCreditsToday || 0).toFixed(2) + ' / ' + (a.dailyCreditLimit || 0) + ' 积分，仅免费模型可用（本地 0 点恢复）">积分限额</span>'
-              // 熔断/降权也是"不接单"，但跟上游配额无关：上游连续失败把账号
-              // 关进本地保护窗口。少了这两支，账号会被画成绿色「可用」，而池子
-              // 其实是空的——生产上就是这么误导排查的。
-              : a.breakerFor ? '<span class="badge bad" title="上游连续失败触发熔断，本窗口内不接单；账号与凭证本身没问题，' + fmtLeft(a.breakerFor) + '后自动恢复">熔断 ' + fmtLeft(a.breakerFor) + '</span>'
-              : a.degradeFor ? '<span class="badge warn" title="连续未知失败进入降权窗口，' + fmtLeft(a.degradeFor) + '后恢复">降权 ' + fmtLeft(a.degradeFor) + '</span>'
-              : a.inCooldown ? '<span class="badge warn"' + (Number(a.softStreak || 0) > 1 ? ' title="连续软限流 ' + Number(a.softStreak) + ' 次，冷却时间按 2 倍递增"' : '') + '>冷却 ' + (a.cooldownFor||0) + 's</span>'
-              : a.expiresIn === 'expired' ? '<span class="badge bad">已过期</span>'
-              : '<span class="badge ok">可用</span>';
-  const pills = coolPills(a);
-  const limitPills = modelLimitPills(a);
-  // The visible label keeps the exact truncation it had before; the tooltip carries
-  // the whole upstream body (lastErrorDetail) so a 429 reason is readable on hover
-  // without widening the card.
-  const errFull = a.lastErrorDetail || a.lastError || '';
-  const err = a.lastError && !(pills && a.lastError === 'HTTP 429 (model throttled)')
-    ? '<div class="hint" style="color:var(--warn);margin:2px 0 0;cursor:help" data-tip="' + esc(errFull) + '">' + esc(a.lastError) + '</div>' : '';
-  const cred = a.credits;
-  let expBadge = '';
-  if(cred && cred.earliest_expiring && cred.earliest_expiring.days_left !== undefined && cred.earliest_expiring.days_left !== null){
-    const d = Number(cred.earliest_expiring.days_left);
-    if(d <= 3 && d >= 0){
-      expBadge = '<span class="badge mini bad" style="font-size:10px;padding:1px 4px" title="最近套餐包将于 ' + esc(cred.earliest_expiring.cycle_end_time.slice(5,10)) + ' 到期 (剩' + d.toFixed(1) + '天)">临期</span>';
-    } else if(d <= 7 && d >= 0){
-      expBadge = '<span class="badge mini warn" style="font-size:10px;padding:1px 4px" title="最近套餐包将于 ' + esc(cred.earliest_expiring.cycle_end_time.slice(5,10)) + ' 到期 (剩' + Math.ceil(d) + '天)">7天内到期</span>';
-    }
-  }
-  const credText = cred
-    ? ('<div style="display:inline-flex;align-items:center;gap:6px">'
-       + '<b style="color:var(--accent2)">' + fmt(cred.remain) + '</b>'
-       + '<span style="color:var(--dim)">/ ' + fmt(cred.size) + '</span>'
-       + expBadge
-       + '<span class="badge mini" style="font-size:10px;padding:1px 5px;cursor:pointer" onclick="openCreditsDetail(&quot;' + uidAttr + '&quot;)" title="点击查看积分与套餐明细">明细</span>'
-       + '</div>')
-    : ('<div style="display:inline-flex;align-items:center;gap:6px">'
-       + '<span style="color:var(--dim)">未查询</span>'
-       + '<span class="badge mini" style="font-size:10px;padding:1px 5px;cursor:pointer" onclick="openCreditsDetail(&quot;' + uidAttr + '&quot;)" title="点击查询积分明细">查询</span>'
-       + '</div>');
-  // 权重下拉：选项给 1-10；历史值超出范围时不让 select 悄悄跳回最近的档位，
-  // 补一个选中项把真实值显示出来。
-  const weight = Math.max(1, Math.min(100, Number(a.weight || 1) || 1));
-  let weightOpts = '';
-  for(let i = 1; i <= 10; i++){
-    weightOpts += '<option value="' + i + '"' + (weight === i ? ' selected' : '') + '>' + i + '</option>';
-  }
-  if(weight > 10) weightOpts += '<option value="' + weight + '" selected>' + weight + '</option>';
-  return '<tr>'
-    + '<td style="text-align:center;white-space:nowrap" data-label="版本">' + realmBadge + '</td>'
-    + '<td style="text-align:left" data-label="账号">'
-    +   '<div style="font-weight:600;font-size:13px;color:var(--fg)">' + esc(a.nickname) + '</div>'
-    + '<div class="mono" style="color:var(--dim);font-size:11px;white-space:nowrap">' + esc(a.uid.slice(0,8)) + ' · ' + esc(a.source) + ' · 到期 ' + esc(a.expiresIn || '?') + '</div>'
-    + (a.machineId ? ('<div class="mono" style="color:var(--dim);font-size:10px;margin-top:2px;white-space:nowrap" title="由账号UID稳定派生的专属设备码，防多号关联风控">设备码: ' + esc(a.machineId.slice(0,14)) + '...</div>') : '')
-    + (a.note
-        ? '<div style="font-size:11px;color:var(--accent2);margin-top:2px;cursor:pointer" title="点击编辑备注" onclick="editAccountNote(&quot;' + uidAttr + '&quot;)">备注: ' + esc(a.note) + '</div>'
-        : '<div style="font-size:10px;color:var(--dim);margin-top:2px;cursor:pointer;opacity:.7" title="点击添加备注，比如「批量」/「自用」" onclick="editAccountNote(&quot;' + uidAttr + '&quot;)">+ 备注</div>')
-    + err + pills + limitPills + '</td>'
-    + '<td style="text-align:center" data-label="状态">' + state + '</td>'
-    + '<td style="text-align:center" data-label="今日活动">' + activityStatusChip(a) + '</td>'
-    + '<td style="text-align:center" data-label="出口">' + slotSelectHtml(a) + '</td>'
-    + '<td style="text-align:center;white-space:nowrap" data-label="权重">'
-    +   '<select class="mini-select" title="' + esc(WEIGHT_TIP) + '" onchange="setAccountWeight(&quot;' + uidAttr + '&quot;, this.value, this)">' + weightOpts + '</select></td>'
-    + '<td style="text-align:left;white-space:nowrap" data-label="积分">' + credText + '</td>'
-    + '<td style="text-align:right" data-label="请求">' + fmt(usage.requests) + '</td>'
-    + '<td style="text-align:right" data-label="总 token">' + fmt(usage.total_tokens) + '</td>'
-    + '<td style="text-align:right" data-label="缓存">' + fmt(usage.cached_tokens) + '</td>'
-    + '<td class="acct-actions" style="text-align:center;white-space:nowrap;vertical-align:middle">'
-    + '<div class="acct-actions-col">'
-    +   '<div class="acct-actions-row">'
-    +     '<button class="sec mini" onclick="toggleAccount(&quot;' + uidAttr + '&quot;,' + (!a.enabled) + ', this)">' + (a.enabled ? '停用' : '启用') + '</button>'
-    +     '<button class="sec mini" onclick="testAccount(&quot;' + uidAttr + '&quot;, this)">测试</button>'
-    +     '<button class="sec mini" onclick="refreshOne(&quot;' + uidAttr + '&quot;, this)">刷新凭证</button>'
-    +     '<button class="sec mini" onclick="syncProfile(&quot;' + uidAttr + '&quot;, this)" title="从 Web 控制台同步最新昵称（改名后免重登）">同步昵称</button>'
-    +   '</div>'
-    +   '<div class="acct-actions-row">'
-    +     '<span class="id-btn-label">出站身份：</span>'
-    +     '<div class="id-btn-group" title="出站身份：WB = WorkBuddy 独立桌面客户端（默认），VSC = 官方 VSCode 插件，CLI = 官方 CodeBuddy CLI；三者对应不同的出站指纹与配额通道。">'
-    +       '<button class="id-btn' + ((!a.product || a.product === 'workbuddy') ? ' active' : '') + '" onclick="setAccountProduct(&quot;' + uidAttr + '&quot;, &quot;workbuddy&quot;, this)">WB</button>'
-    +       '<button class="id-btn' + (a.product === 'vscode' ? ' active' : '') + '" onclick="setAccountProduct(&quot;' + uidAttr + '&quot;, &quot;vscode&quot;, this)">VSC</button>'
-    +       '<button class="id-btn' + (a.product === 'cli' ? ' active' : '') + '" onclick="setAccountProduct(&quot;' + uidAttr + '&quot;, &quot;cli&quot;, this)">CLI</button>'
-    +     '</div>'
-    +     '<button class="sec mini" onclick="exportOne(&quot;' + uidAttr + '&quot;)">导出</button>'
-    +     '<button class="danger mini" onclick="deleteAccount(&quot;' + uidAttr + '&quot;,&quot;' + nameAttr + '&quot;, this)">删除</button>'
-    +   '</div>'
-    + '</div>'
-    + '</td></tr>';
-}
+
 
 // 悬停气泡（全局单例）。用自定义 DOM 而不是原生 title：原生 tooltip 由浏览器
 // 自己绘制，既截不进图、也没法控制样式与换行。元素只要带 data-tip 就生效，
@@ -6594,65 +6374,10 @@ async function loadActivityBoard(showToast, more){
   }
 }
 
-function renderAccounts(){
-  // 账号列表容器已随 WorkBuddy 账号子系统一起删除。积分明细弹窗里的
-  // 「刷新明细」仍会走到这里（reloadCreditsDetail），没有这个保护就会
-  // 在 box.innerHTML 上抛 TypeError。
-  if(!document.getElementById('accounts')) return;
-  // Same data source as the account cards, so the two views can never disagree.
-  renderDisabled();
-  const box = document.getElementById('accounts');
-  const currentView = (window.VIEW_REALM || "cn");
-  let list = accountsInView();
-  // 排序：停用的永远沉底（备注/权重再高也一样）→ 备注是启用组内的加分项
-  // （有备注的账号只在同权重时排前面，不再全局置顶）→ 权重高的在前 →
-  // 同权重保持服务端顺序稳定，表格不乱跳。
-  list = list.map((a, i) => [a, i])
-    .sort((x, y) => {
-      if(x[0].enabled !== y[0].enabled) return x[0].enabled ? -1 : 1;
-      const nx = x[0].note ? 0 : 1, ny = y[0].note ? 0 : 1;
-      if(nx !== ny) return nx - ny;
-      const wx = Number(x[0].weight || 1) || 1, wy = Number(y[0].weight || 1) || 1;
-      if(wx !== wy) return wy - wx;
-      return x[1] - y[1];
-    })
-    .map(pair => pair[0]);
-  const usable = list.filter(a => a.enabled).length;
-  const viewName = '国内版';
-  document.getElementById('acctCount').textContent =
-    list.length ? ('（' + viewName + '共 ' + list.length + ' 个，启用 ' + usable + ' 个）') : '';
-  if(!list.length){
-    box.innerHTML =
-      '<div style="text-align:center;padding:30px 16px">'
-      + '<div style="font-size:15px;margin-bottom:8px">当前' + viewName + '还没有账号</div>'
-      + '<div style="color:var(--dim);font-size:13px;margin-bottom:18px">'
-      +   '请先登录或导入一个 ' + viewName + ' 账号，之后相关请求都会走该账号'
-      + '</div>'
-      + '<button onclick="openLoginModal()" style="font-size:14px;padding:10px 22px">'
-      + '</button>'
-      + '</div>';
-    return;
-  }
-  box.innerHTML = '<div class="table-wrap"><table class="data-cards account-cards"><thead><tr>'
-    + '<th style="text-align:center;width:76px">版本</th>'
-    + '<th style="text-align:left">账号</th>'
-    + '<th style="text-align:center;width:84px">状态</th>'
-    + '<th style="text-align:center;width:118px">今日活动</th>'
-    + '<th style="text-align:center;width:150px">出口</th>'
-    + '<th style="text-align:center;width:64px">权重</th>'
-    + '<th style="text-align:left;width:120px">积分</th>'
-    + '<th style="text-align:right;width:70px">请求</th>'
-    + '<th style="text-align:right;width:88px">总 token</th>'
-    + '<th style="text-align:right;width:80px">缓存</th>'
-    + '<th style="text-align:center;width:232px">操作</th>'
-    + '</tr></thead><tbody>' + list.map(accountRow).join('') + '</tbody></table></div>';
-  // 表下不再堆两行说明图例（出站身份解释留在每行身份按钮组的悬停提示里，
-  // 轮询/粘性说明挂到「账号列表」标题上），表格底部保持干净。
-  applyTableSort('accounts');
-}
+
 
 async function loadAccounts(){
-  // 账号页已裁成码道专用：WorkBuddy 账号列表的容器不在了。各处的账号操作回调
+  // 账号页已裁成码道专用：账号列表的容器不在了。各处的账号操作回调
   // 仍会调用本函数，这里按容器是否存在早退，免得去操作空 DOM。
   if(!document.getElementById('accounts')) return;
   try{
@@ -6666,7 +6391,6 @@ async function loadAccounts(){
     USAGE_BY_ACCOUNT = {};
     (byAcct.accounts || []).forEach(a => { USAGE_BY_ACCOUNT[a.account] = a; });
     await loadProxySlots();
-    renderAccounts();
     updateUI();
     // 昵称刚到位，补画一次积分扣减历史：它和本请求是并行的，先渲染的那次只有 uid。
     if(LAST_CREDIT_DATA) renderCreditHistory();
@@ -6674,7 +6398,6 @@ async function loadAccounts(){
     if(window.ACCOUNTS.length && window.ACCOUNTS.some(a => !a.credits)){
       postJSON('/accounts/credits', {}).then(r => {
         window.ACCOUNTS = r.accounts || ACCOUNTS;
-        renderAccounts();
       }).catch(()=>{});
     }
   }catch(e){ toast('账号加载失败: ' + e.message); }
@@ -6710,19 +6433,7 @@ async function toggleAccount(uid, enable, btn){
     if(btn) btn.disabled = false;
   }
 }
-async function setAccountWeight(uid, weight, sel){
-  if(sel) sel.disabled = true;
-  try{
-    await postJSON('/accounts/set', {uid: uid, weight: Number(weight)});
-    await loadAccounts();
-    toast(Number(weight) > 1 ? '权重已调整：该账号将优先接单' : '权重已恢复默认', 'ok');
-  }catch(e){
-    toast('权重设置失败: ' + e.message, 'bad');
-    renderAccounts();
-  }finally{
-    if(sel) sel.disabled = false;
-  }
-}
+
 async function editAccountNote(uid){
   const cur = (window.ACCOUNTS || []).find(a => a.uid === uid);
   const next = prompt('账号备注（留空清除；可用来标记「批量」/「自用」）:', (cur && cur.note) || '');
@@ -6826,91 +6537,12 @@ async function testAccount(uid, btn){
 /* 一键测试：区域内每个已启用账号 + 本机连通性一次看全。
    池子出问题时最需要分辨的就是「账号真不行」与「本机没网 / 只是被本地窗口关着」，
    红点一屏的时候，逐个点测出来的结论往往是错的。 */
-function openTestAll(){
-  const m = document.getElementById('testAllModal');
-  const body = document.getElementById('testAllBody');
-  if(body) body.innerHTML = '<p class="hint">正在测试…</p>';
-  if(m) m.classList.add('show');
-}
-function closeTestAll(){
-  const m = document.getElementById('testAllModal');
-  if(m) m.classList.remove('show');
-}
 
-async function testAccounts(btn){
-  if(btn){ btn.disabled = true; btn.textContent = '测试中...'; }
-  openTestAll();
-  try{
-    const r = await postJSON('/accounts/test', {realm: window.VIEW_REALM});
-    renderTestAll(r);
-    const s = r.summary || {};
-    if(s.networkDown){
-      toast('本机网络不通：' + ((r.network || {}).error || 'DNS/路由失败') + '（账号未被计入熔断）', 'bad');
-    } else {
-      toast('一键测试: ' + (s.passed || 0) + '/' + (s.tested || 0) + ' 通过 (' + (s.elapsed_ms || 0) + 'ms)',
-            (s.failed ? 'warn' : 'ok'));
-    }
-    await loadAccounts();
-  }catch(e){
-    const body = document.getElementById('testAllBody');
-    if(body) body.innerHTML = '<p class="hint" style="color:var(--warn)">测试请求失败: ' + esc(e.message) + '</p>';
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '一键测试'; }
-  }
-}
 
-function renderTestAll(r){
-  const body = document.getElementById('testAllBody');
-  if(!body) return;
-  const net = r.network || {};
-  const s = r.summary || {};
-  const rows = r.results || [];
-  let html = '';
-  // 本机连通性单独一行放最前面：它不通的话，下面的红点一个都不能算账号的账。
-  html += '<div style="background:' + (net.ok ? 'var(--accent2-soft)' : 'var(--bad-soft)')
-    + ';border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:12px;font-size:13px">'
-    + '<b>' + (net.ok ? '本机网络正常' : '本机网络不通') + '</b>'
-    + '<span class="hint" style="margin-left:8px">' + esc(net.host || '')
-    + (net.ip ? ' → ' + esc(net.ip) : '')
-    + (net.dns_ms !== null && net.dns_ms !== undefined ? ' · DNS ' + net.dns_ms + 'ms' : '')
-    + (net.tcp_ms !== null && net.tcp_ms !== undefined ? ' · TCP ' + net.tcp_ms + 'ms' : '')
-    + (net.ok ? '' : ' · ' + esc(net.error || ''))
-    + '</span></div>';
-  html += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px;font-size:13px">'
-    + '<span>共测 <b>' + esc(String(s.tested || 0)) + '</b></span>'
-    + '<span>通过 <b style="color:var(--accent2)">' + esc(String(s.passed || 0)) + '</b></span>'
-    + '<span>失败 <b style="color:var(--warn)">' + esc(String(s.failed || 0)) + '</b></span>'
-    + '<span class="hint">模型 ' + esc(s.model || '') + ' · 耗时 ' + esc(String(s.elapsed_ms || 0)) + 'ms</span>'
-    + '</div>';
-  if(!rows.length){
-    html += '<p class="hint">该区域没有已启用的账号。</p>';
-  } else {
-    html += '<div class="table-wrap"><table class="data-cards"><thead><tr>'
-      + '<th style="text-align:left">账号</th><th style="text-align:center">结果</th>'
-      + '<th style="text-align:center;width:90px">耗时</th>'
-      + '<th style="text-align:left">回复 / 原因</th></tr></thead><tbody>';
-    rows.forEach(row => {
-      // 本机断网的行单独标出来：这不是账号的问题，不该跟真失败画成一个颜色。
-      const badge = row.ok ? '<span class="badge ok">通过</span>'
-                  : row.network ? '<span class="badge warn">本机网络</span>'
-                  : '<span class="badge bad">失败</span>';
-      const detail = row.ok ? (row.reply || '正常') : (row.error || '');
-      // 失败行带上「连续失败 N 次」：这是熔断的唯一依据，看得见才知道离熔断还有多远。
-      const ladder = (!row.ok && Number(row.fails || 0) > 0)
-        ? '（连续失败 ' + Number(row.fails) + ' 次）' : '';
-      html += '<tr>'
-        + '<td style="text-align:left"><b>' + esc(row.nickname || (row.uid || '').slice(0, 8)) + '</b>'
-        + '<div class="mono" style="font-size:11px;color:var(--dim)">'
-        + esc((row.uid || '').slice(0, 8)) + ' · 国内版' + '</div></td>'
-        + '<td style="text-align:center">' + badge + '</td>'
-        + '<td style="text-align:center">' + esc(String(row.elapsed_ms || 0)) + 'ms</td>'
-        + '<td style="text-align:left;font-size:12px">' + esc(detail + ladder) + '</td>'
-        + '</tr>';
-    });
-    html += '</tbody></table></div>';
-  }
-  body.innerHTML = html;
-}
+
+
+
+
 
 
 async function deleteAccount(uid, name, btn){
@@ -6971,77 +6603,13 @@ let importRows = null;   // 已解析、待导入的账号行
 
 
 
-function closeImport(){
-  const m = document.getElementById('importModal');
-  if(m) m.classList.remove('show');
-  importRows = null;
-  const btn = document.getElementById('btnImportCommit');
-  if(btn) btn.disabled = true;
-}
 
 
 
-function renderImportPreview(filename, res, total){
-  const body = document.getElementById('importBody');
-  const btn = document.getElementById('btnImportCommit');
-  const added = res.added || [], updated = res.updated || [];
-  const skipped = res.skipped || [], invalid = res.invalid || [];
 
-  const rowsHtml = list => list.map(x => {
-    const uid = (typeof x === 'string' ? x : x.uid) || '?';
-    const reason = (typeof x === 'object' && x.reason) ? ' — ' + esc(x.reason) : '';
-    return '<li><code>' + esc(String(uid).slice(0,8)) + '</code>' + reason + '</li>';
-  }).join('');
 
-  let html = '<p class="hint" style="margin-top:0">文件：<b>' + esc(filename) + '</b>'
-    + ' · 共 ' + total + ' 条</p>';
-  html += '<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px">'
-    + '<span>新增 <b style="color:var(--accent2)">' + added.length + '</b></span>'
-    + '<span>覆盖 <b>' + updated.length + '</b></span>'
-    + '<span>跳过 <b>' + skipped.length + '</b></span>'
-    + '<span>无效 <b style="color:var(--warn)">' + invalid.length + '</b></span>'
-    + '</div>';
 
-  if(added.length)   html += '<div style="margin-bottom:8px"><b>将新增</b><ul class="hint" style="margin:4px 0 0 18px;padding:0">' + rowsHtml(added) + '</ul></div>';
-  if(updated.length) html += '<div style="margin-bottom:8px"><b>将覆盖</b><ul class="hint" style="margin:4px 0 0 18px;padding:0">' + rowsHtml(updated) + '</ul></div>';
-  if(skipped.length) html += '<div style="margin-bottom:8px"><b>将跳过</b><ul class="hint" style="margin:4px 0 0 18px;padding:0">' + rowsHtml(skipped) + '</ul></div>';
-  if(invalid.length) html += '<div style="margin-bottom:8px"><b>无法解析</b><ul class="hint" style="margin:4px 0 0 18px;padding:0">' + rowsHtml(invalid) + '</ul></div>';
 
-  if(!added.length && !updated.length){
-    html += '<p class="hint" style="color:var(--warn)">没有可导入的账号。'
-      + (skipped.length ? '若要覆盖已存在的账号，请勾选下方「覆盖同 UID 账号」。' : '') + '</p>';
-  }
-  if(body) body.innerHTML = html;
-
-  const canCommit = (added.length + updated.length) > 0;
-  if(btn){
-    btn.disabled = !canCommit;
-    btn.textContent = '确认导入 ' + (added.length + updated.length) + ' 个';
-  }
-}
-
-async function commitImport(btn){
-  if(!importRows) return;
-  const ow = document.getElementById('importOverwrite');
-  const overwrite = !!(ow && ow.checked);
-  if(overwrite && !confirm('将覆盖同 UID 的现有账号（含其凭证），确定继续？')) return;
-
-  if(btn){ btn.disabled = true; btn.textContent = '导入中...'; }
-  try{
-    const r = await postJSON('/accounts/import', {data: importRows, overwrite: overwrite});
-    const res = r.result || {};
-    const n = (res.added || []).length + (res.updated || []).length;
-    toast('导入完成：新增 ' + (res.added || []).length
-          + '，覆盖 ' + (res.updated || []).length
-          + '，跳过 ' + (res.skipped || []).length
-          + '，无效 ' + (res.invalid || []).length);
-    if(n > 0){ closeImport(); await loadAccounts(); }
-    else { renderImportPreview('（已导入）', res, importRows.length); }
-  }catch(e){
-    toast('导入失败: ' + e.message, 'err');
-    if(btn){ btn.disabled = false; btn.textContent = '确认导入'; }
-  }
-}
 
 /* 桌面客户端账号：两步确认（先扫描展示弹窗，再逐条导入） */
 
@@ -7121,7 +6689,7 @@ async function reloadCreditsDetail(btn){
       const acct = (window.ACCOUNTS || []).find(a => a.uid === CURRENT_CREDIT_DETAIL_UID);
       if(acct){
         acct.credits = res.credits;
-        renderAccounts();
+        // 账号列表容器已删除，这里不再调 renderAccounts()。
       }
       renderCreditsDetail(res.credits, acct);
     } else {
@@ -7469,220 +7037,23 @@ function closeCreditsDetail(){
 
 
 
-function closeDesktopScan(){
-  const m = document.getElementById('desktopScanModal');
-  if(m) m.classList.remove('show');
-}
 
-async function refreshDesktopScan(btn){
-  if(btn){ btn.disabled = true; btn.textContent = '扫描中...'; }
-  const body = document.getElementById('desktopScanBody');
-  if(body) body.innerHTML = '<p class="hint">正在检测本机桌面客户端账号…</p>';
-  try{
-    const r = await postJSON('/accounts/import/desktop', {});
-    renderDesktopScan(r.detected || [], r.atrest || null);
-  }catch(e){
-    if(body) body.innerHTML = '<p class="hint" style="color:var(--warn)">扫描失败: ' + esc(e.message) + '</p>';
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '重新扫描'; }
-  }
-}
+
+
 
 /* at-rest 密钥：桌面端把 token 加密存了，得先从客户端进程内存里把静态密钥
    找回来才能解密导入。密钥只留在网关进程内存里，不落盘、不写日志。 */
-async function recoverAtrestKey(btn){
-  const idle = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '正在扫描 WorkBuddy.exe 内存…';
-  try{
-    const r = await postJSON('/accounts/import/desktop', {recoverKey: true});
-    if(!r.ok){ throw new Error(r.msg || '回收失败'); }
-    toast('密钥已回收，正在重新扫描');
-    await refreshDesktopScan();
-  }catch(e){
-    toast('回收失败: ' + e.message, 'err');
-    btn.disabled = false;
-    btn.textContent = idle;
-    const tip = document.getElementById('atrestTip');
-    if(tip){
-      tip.innerHTML = '回收失败：' + esc(e.message)
-        + '<br><span style="color:var(--dim)">请确认 WorkBuddy 桌面客户端正在运行并已登录；'
-        + '权限不足时可以管理员身份运行网关再试一次。</span>';
-    }
-  }
-}
+
 
 /* 手工导入解码密钥：macOS / Linux 上回收不了客户端进程内存（huntSupported
    为 false），用户可以把保护密钥贴进来。后端会用 keyblob 自检，贴错直接报错。 */
-async function adoptAtrestKey(btn){
-  const input = document.getElementById('adoptKeyInput');
-  const value = (input && input.value || '').trim();
-  if(!value){ toast('请先粘贴密钥', 'err'); return; }
-  const idle = btn.textContent;
-  btn.disabled = true;
-  btn.textContent = '校验中…';
-  try{
-    const r = await postJSON('/accounts/import/desktop', {keyText: value});
-    if(!r.ok){ throw new Error(r.msg || '导入失败'); }
-    if(input) input.value = '';
-    toast('密钥已导入，正在重新扫描');
-    await refreshDesktopScan();
-  }catch(e){
-    toast('导入失败: ' + e.message, 'err');
-    btn.disabled = false;
-    btn.textContent = idle;
-    const tip = document.getElementById('atrestTip');
-    if(tip){
-      tip.innerHTML = '导入失败：' + esc(e.message)
-        + '<br><span style="color:var(--dim)">密钥必须与桌面客户端 keyblob 里的 '
-        + 'protectorKeyId 对得上；贴错或客户端已换钥都会走到这里。</span>';
-    }
-  }
-}
 
-function renderAtrestBar(atrest, list){
-  if(!atrest) return '';
-  if(atrest.keyCached){
-    // 手工导入的密钥会随客户端换钥失效，所以把来路也写出来，便于用户对照。
-    const how = atrest.keySource === 'manual' ? '手动导入' : '进程内存回收';
-    return '<div class="hint" style="margin:0 0 12px;color:var(--accent2)">解码密钥已就绪（keyId '
-      + esc(atrest.keyId || '-') + '，' + how + '），加密凭据可直接导入。</div>';
-  }
-  if(!list.some(d => d.needsKey)) return '';
-  let html = '<div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;'
-    + 'padding:12px 14px;margin-bottom:14px;font-size:13px">'
-    + '<b>检测到加密凭据</b><div class="hint" style="margin:6px 0 8px" id="atrestTip">';
-  if(atrest.huntSupported){
-    html += '桌面客户端把 token 加密存储了，需要从正在运行的客户端进程内存里回收静态密钥'
-      + '（只读，密钥只留在网关内存里）。通常几秒钟，内存大时要十几秒。'
-      + '<br>回收不到时，也可以在下面手动粘贴密钥。';
-  }else{
-    html += esc(atrest.huntHint || '当前系统不支持从进程内存回收密钥。')
-      + '<br>可以在下面手动粘贴解码密钥，或改用「+ 添加账号 (OAuth)」走浏览器登录。';
-  }
-  html += '</div>';
-  if(atrest.huntSupported){
-    html += '<button class="primary mini" onclick="recoverAtrestKey(this)">回收密钥</button>';
-  }
-  html += '<div style="display:flex;gap:8px;align-items:center;margin-top:10px">'
-    + '<input id="adoptKeyInput" class="slot-input" type="password" autocomplete="off"'
-    + ' spellcheck="false" placeholder="粘贴解码密钥：64 位 hex，或 44 字符 base64"'
-    + ' style="flex:1;max-width:460px">'
-    + '<button class="mini" onclick="adoptAtrestKey(this)">导入密钥</button>'
-    + '</div>'
-    + '<div class="hint" style="margin-top:6px">手工导入的密钥只留在网关内存里，'
-    + '不落盘、不写日志；导入时会先用 keyblob 校验，贴错会直接报错。</div>';
-  return html + '</div>';
-}
 
-function renderDesktopScan(list, atrest){
-  const body = document.getElementById('desktopScanBody');
-  if(!body) return;
-  const valid = list.filter(d => d.valid);
-  const bad = list.filter(d => !d.valid);
-  const needKey = bad.filter(d => d.needsKey);
-  const broken = bad.filter(d => !d.needsKey);
-  // 回收只在 Windows 上有；其他平台这一列改成「导入」（手工粘贴）。
-  const keyAction = (atrest && atrest.huntSupported) ? '需要先回收密钥' : '需要先导入密钥';
-  // Use every account across both realms: the visible list is filtered by the
-  // current view, so an earlier import could otherwise look "not imported".
-  const already = window.SCAN_POOL && window.SCAN_POOL.size
-    ? window.SCAN_POOL
-    : new Set((window.ACCOUNTS || []).map(a => a.uid));
 
-  const section = (title, items, cls) => {
-    let html = '<div style="margin:14px 0 6px;font-size:12px;font-weight:600" class="' + cls + '">'
-      + title + ' <span style="color:var(--dim);font-weight:400">(' + items.length + ')</span></div>';
-    if(!items.length){
-      html += '<div class="hint" style="margin:4px 0 10px">未检测到该版本账号</div>';
-      return html;
-    }
-    html += '<table><thead><tr><th>账号</th><th>域名</th><th>有效期</th><th></th></tr></thead><tbody>';
-    items.forEach(d => {
-      const dup = already.has(d.uid);
-      // NOTE: never interpolate the path into an inline onclick - JSON.stringify
-      // emits double quotes, which would terminate the HTML attribute and make
-      // the button silently do nothing. Use a data attribute + delegation.
-      const act = dup
-        ? '<span class="badge off">已导入</span>'
-        : '<button class="primary mini btn-import-desktop"'
-          + ' data-path="' + esc(d.path) + '"'
-          + ' data-realm="' + esc(d.realm) + '">导入</button>';
-      html += '<tr>'
-        + '<td><b>' + esc(d.nickname || (d.uid||'').slice(0,8)) + '</b>'
-        + '<div class="mono" style="font-size:11px;color:var(--dim)">' + esc((d.uid||'').slice(0,8)) + ' · ' + esc(d.file) + '</div></td>'
-        + '<td class="mono" style="font-size:11px">' + esc(d.domain || '-') + '</td>'
-        + '<td>' + esc(d.expiresIn || '未知') + '</td>'
-        + '<td style="text-align:right">' + act + '</td>'
-        + '</tr>';
-    });
-    html += '</tbody></table>';
-    return html;
-  };
 
-  let html = renderAtrestBar(atrest, list);
-  if(!list.length && !html){
-    body.innerHTML = '<p class="hint">未在本机检测到桌面客户端登录凭证。<br>'
-      + '请确认已安装并登录 WorkBuddy 客户端后点「重新扫描」。</p>';
-    return;
-  }
-  if(list.length){
-    html += section('国内版 (China) · copilot.tencent.com', valid, '');
-  }
 
-  if(needKey.length){
-    html += '<div style="margin:14px 0 6px;font-size:12px;font-weight:600;color:var(--warn)">'
-      + '待解码的凭证（加密存储）</div>';
-    html += '<table><tbody>';
-    needKey.forEach(d => {
-      html += '<tr><td class="mono" style="font-size:11px">' + esc(d.file) + '</td>'
-        + '<td style="color:var(--dim);font-size:12px;text-align:right">' + esc(keyAction) + '</td></tr>';
-    });
-    html += '</tbody></table>';
-  }
-  if(broken.length){
-    html += '<div style="margin:14px 0 6px;font-size:12px;font-weight:600;color:var(--warn)">无法读取的凭证</div>';
-    html += '<table><tbody>';
-    broken.forEach(d => {
-      html += '<tr><td class="mono" style="font-size:11px">' + esc(d.file) + '</td>'
-        + '<td style="color:var(--warn);font-size:12px;text-align:right">' + esc(d.error || '未知原因') + '</td></tr>';
-    });
-    html += '</tbody></table>';
-  }
-  if(!html){
-    html = '<p class="hint">未在本机检测到桌面客户端登录凭证。<br>'
-      + '请确认已安装并登录 WorkBuddy 客户端后点「重新扫描」。</p>';
-  }
-  body.innerHTML = html;
-  // Wire the import buttons through event delegation (see renderDesktopScan).
-  body.querySelectorAll('.btn-import-desktop').forEach(btn => {
-    btn.addEventListener('click', () => {
-      doImportDesktop(btn, btn.getAttribute('data-path'), btn.getAttribute('data-realm'));
-    });
-  });
-}
 
-async function doImportDesktop(btn, path, realm){
-  btn.disabled = true;
-  btn.textContent = '导入中...';
-    try{
-    const r = await postJSON('/accounts/import/desktop', {path: path, realm: realm});
-    const a = (r.imported || [])[0] || {};
-    toast('已导入 ' + (a.nickname || (a.uid||'').slice(0,8)) + ' 到国内版');
-    if(a.uid && window.SCAN_POOL) window.SCAN_POOL.add(a.uid);
-    await loadAccounts();
-    await refresh();
-    try {
-      const s = await postJSON('/accounts/import/desktop', {});
-      if(s.pool_uids) window.SCAN_POOL = new Set(s.pool_uids);
-      renderDesktopScan(s.detected || [], s.atrest || null);
-    } catch(e2) { /* keep the refreshed toasts; list will refresh on next scan */ }
-  }catch(e){
-    toast('导入失败: ' + e.message, 'err');
-    btn.disabled = false;
-    btn.textContent = '导入';
-  }
-}
+
 
 /* ------------------------------- dashboard ------------------------------ */
 let REFRESH_RUNNING = false;
@@ -7704,13 +7075,7 @@ async function refresh(){
 }
 // 展示货币切换后，把带费用的视图就地重画：各接口有服务端 TTL 缓存，
 // 重新拉取的代价很小，不必为每处维护一份数据副本。
-function refreshAllCostViews(){
-  refresh();
-  if(currentMainTab === 'analytics'){
-    loadAnalytics();
-    loadAnalyticsMatrix();
-  }
-}
+
 async function refreshInner(gen){
   let usage, recent, perf;
   try{
@@ -10306,7 +9671,7 @@ function importDiscovered(){
 
 
 function switchMainTab(tab){
-  // 任务与福利页已随 WorkBuddy 账号子系统一起删掉；老书签 ?tab=tasks
+  // 任务与福利页已随旧账号子系统一起删掉；老书签 ?tab=tasks
   // 不能停在空白页，直接退回网关。
   if(tab === 'tasks' && !document.getElementById('pageTasks')) tab = 'gateway';
   // 被「顶部页签显示」收起来的页面同理：书签与上次停留的页签都不能把内容调出来，
@@ -12614,6 +11979,28 @@ function costTitle(r){
 
 function hiddenPages(){
   return _hiddenPages.slice();
+}
+
+function setCostCurrency(cur){
+  costCurrency = (cur === 'USD') ? 'USD' : 'CNY';
+  try { localStorage.setItem('wb-cost-currency', costCurrency); } catch(e) {}
+  renderCostToggle();
+  // 已经渲染出来的表格/卡片就地换算重画，不必等下一轮轮询。
+  if(typeof refreshAllCostViews === 'function') refreshAllCostViews();
+}
+function renderCostToggle(){
+  document.querySelectorAll('.cost-toggle').forEach(el => {
+    el.querySelectorAll('button').forEach(b => {
+      b.classList.toggle('active', b.dataset.cur === costCurrency);
+    });
+  });
+}
+function refreshAllCostViews(){
+  refresh();
+  if(currentMainTab === 'analytics'){
+    loadAnalytics();
+    loadAnalyticsMatrix();
+  }
 }
 </script>
 </body>
