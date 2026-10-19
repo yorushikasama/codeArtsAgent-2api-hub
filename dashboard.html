@@ -4459,13 +4459,9 @@ function openLoginModal(){
   triggerLoginForSelectedRealm();
 }
 
-function switchLoginRealm(realm){
-  triggerLoginForSelectedRealm();
-}
 
-function restartLogin(){
-  triggerLoginForSelectedRealm();
-}
+
+
 
 /* ---------------- 码道 CodeArts（华为云）账号 ----------------
    与上面 WorkBuddy 的 state + authUrl 轮询不同：码道是 PKCE + DPoP + 本地回跳。
@@ -5117,10 +5113,7 @@ function renderAvailableModels(){
 
 let CURRENT_GROWTH_UID = 'all';
 
-async function switchGrowthAccount(uid){
-  CURRENT_GROWTH_UID = uid;
-  await loadGrowthTasks();
-}
+
 
 async function loadGrowthTasks(){
   const sec = document.getElementById("sectionGrowthTasks");
@@ -5227,75 +5220,11 @@ async function loadGrowthTasks(){
   }
 }
 
-async function runGrowthTasks(btn){
-  btn.disabled = true;
-  const oldText = btn.textContent;
-  btn.textContent = '任务执行中...';
-  const logBox = document.getElementById("taskLogBox");
-  if(logBox){
-    logBox.style.display = 'block';
-    logBox.innerHTML = '<div style="color:var(--accent)">[task_runner] 正在启动全自动任务接取、事件上报与奖励领取流水...</div>';
-  }
-  try{
-    const payload = {};
-    if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
-      payload.uid = CURRENT_GROWTH_UID;
-    }
-    const r = await postJSON("/tasks/run", payload);
-    const logs = r.logs || [];
-    if(logBox){
-      logBox.innerHTML = logs.map(l => '<div>' + esc(l) + '</div>').join('');
-      logBox.scrollTop = logBox.scrollHeight;
-    }
-    await loadAccounts();
-    await loadGrowthTasks();
-    const sumC = r.credit_added != null ? ('，共增加 +' + r.credit_added + ' 积分') : '';
-    toast("成长任务流水执行完成" + sumC + "！");
-  }catch(e){
-    if(logBox) logBox.innerHTML += '<div style="color:var(--warn)">执行出错: ' + esc(e.message) + '</div>';
-    alert("任务执行失败: " + e.message);
-  }finally{
-    btn.disabled = false;
-    btn.textContent = oldText;
-  }
-}
 
-async function triggerCatTravel(btn){
-  if(btn){ btn.disabled = true; btn.textContent = '旅行中...'; }
-  try{
-    const payload = {};
-    if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
-      payload.uid = CURRENT_GROWTH_UID;
-    }
-    const r = await postJSON("/tasks/travel", payload);
-    toast(r.msg || (r.ok ? "猫猫旅行结算完成" : "操作失败"), r.ok ? "ok" : "warn");
-    await loadAccounts();
-    await loadGrowthTasks();
-  }catch(e){
-    toast("猫猫旅行失败: " + e.message, "bad");
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '猫猫旅行'; }
-  }
-}
 
-async function triggerStreakBonus(btn){
-  if(btn){ btn.disabled = true; btn.textContent = '执行中...'; }
-  try{
-    const payload = {};
-    if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
-      payload.uid = CURRENT_GROWTH_UID;
-    }
-    const r = await postJSON("/tasks/streak-bonus", payload);
-    const msg = r.msg || (r.ok ? "连登管家与抽奖执行完成" : "操作未完成");
-    toast(msg, r.ok ? "ok" : "warn");
-    await loadAccounts();
-    await loadGrowthTasks();
-  }catch(e){
-    toast("连登管家执行失败: " + e.message, "bad");
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '连登管家与抽奖'; }
-  }
-}
+
+
+
 
 async function loadSchedulerStatus(){
   try{
@@ -5342,13 +5271,7 @@ async function toggleScheduler(btn){
     if(btn){ btn.disabled = false; }
   }
 }
-function filterRealm(m){
-  REALM_FILTER = m;
-  const el = id => document.getElementById(id);
-  if(el("fltAll")) el("fltAll").className = m === "all" ? "active" : "";
-  if(el("fltCn")) el("fltCn").className = m === "cn" ? "active" : "";
-  renderAccounts();
-}
+
 const fmt = n => (n ?? 0).toLocaleString('en-US');
 /* Token 数的紧凑显示：<1 万精确显示（千分位），≥1 万 K，≥100 万 M，≥10 亿 B；
    小数位随量级收缩（123K / 12.3K / 1.23K），尾零去掉。单位用大写 K/M/B，
@@ -5795,17 +5718,7 @@ function costTipModel(r){
   return {lines: lines, rates: rows, notes: notes};
 }
 // 纯文本版（多行），给无气泡的场合与单元测试用。
-function costTitle(r){
-  const m = costTipModel(r);
-  const out = ['按 OpenRouter 公布的模型价折算的等价 token 花费'];
-  out.push.apply(out, m.lines);
-  if(m.rates.length){
-    out.push('单价（USD / ' + costUnitLabel(r) + '，OpenRouter 原始价，未折算）');
-    m.rates.forEach(row => out.push('　' + row.k + '：' + row.v));
-  }
-  out.push.apply(out, m.notes);
-  return out.join('\n');
-}
+
 function costTipHtml(r){
   const m = costTipModel(r);
   if(!m.rates.length && !m.lines.length){
@@ -5895,12 +5808,7 @@ function renderCostToggle(){
   });
 }
 // CNY/USD 二选一的切换按钮组；用于费用卡片与表格标题区。
-function costToggleHtml(){
-  return '<span class="cost-toggle" style="display:inline-flex;gap:4px">'
-    + '<button type="button" class="range-btn' + (costCurrency === 'CNY' ? ' active' : '') + '" data-cur="CNY" onclick="setCostCurrency(\'CNY\')">￥ 人民币</button>'
-    + '<button type="button" class="range-btn' + (costCurrency === 'USD' ? ' active' : '') + '" data-cur="USD" onclick="setCostCurrency(\'USD\')">$ 美元</button>'
-    + '</span>';
-}
+
 // 输入 / 输出 / 思考 三个数字，各自一色，斜杠分隔。思考为 0 也写出来，
 // 列的形状因此固定，不会因某个模型不推理就缩短。
 const tripleTokens = (inp, out, think) =>
@@ -5910,17 +5818,7 @@ const tripleTokens = (inp, out, think) =>
   ' <span style="color:var(--dim-light)">/</span> ' +
   '<span style="color:var(--think)">' + fmt(think || 0) + '</span>';
 
-function perfRow(label, b, unit, fmtFn, color){
-  if(!b) return '<tr><td>' + label + '</td><td colspan="5" style="color:var(--dim)">暂无数据</td></tr>';
-  const f = fmtFn || (v => v);
-  const dot = color ? ' <i style="display:inline-block;width:7px;height:7px;border-radius:2px;background:' + color + ';margin-left:6px"></i>' : '';
-  return '<tr><td>' + label + dot + '</td>'
-    + '<td><b>' + f(b.avg) + '</b>' + unit + '</td>'
-    + '<td>' + f(b.p50) + unit + '</td>'
-    + '<td>' + f(b.p90) + unit + '</td>'
-    + '<td>' + f(b.p99) + unit + '</td>'
-    + '<td style="color:var(--dim)">' + b.samples + ' 次</td></tr>';
-}
+
 
 function card(k, v, sub, cls){
   return '<div class="card ' + (cls||'') + '"><div class="k">' + k + '</div>'
@@ -6697,6 +6595,10 @@ async function loadActivityBoard(showToast, more){
 }
 
 function renderAccounts(){
+  // 账号列表容器已随 WorkBuddy 账号子系统一起删除。积分明细弹窗里的
+  // 「刷新明细」仍会走到这里（reloadCreditsDetail），没有这个保护就会
+  // 在 box.innerHTML 上抛 TypeError。
+  if(!document.getElementById('accounts')) return;
   // Same data source as the account cards, so the two views can never disagree.
   renderDisabled();
   const box = document.getElementById('accounts');
@@ -6851,7 +6753,7 @@ async function setAccountProduct(uid, prod, btn){
     if(btn){ btn.disabled = false; }
   }
 }
-async function switchProduct(uid, btn){ return setAccountProduct(uid, 'workbuddy', btn); }
+
 // 一键切换所有出站身份：后端 /accounts/product 不带 uid / realm 就是全量
 // （含另一个版本），所以这里只负责挑下一个身分、并把当前身分显示在按钮上。
 const PRODUCT_ORDER = ['workbuddy', 'vscode', 'cli'];
@@ -6870,25 +6772,7 @@ function updateProductAllButton(){
   const cur = allProductsUniform();
   label.textContent = cur ? PRODUCT_SHORT[cur] : '混合';
 }
-async function cycleAllProducts(btn){
-  const list = window.ACCOUNTS || [];
-  if(!list.length){ toast('还没有账号', 'bad'); return; }
-  const cur = allProductsUniform();
-  // cur 为 null（各账号身分不一致）时落到第一项，等于「统一成 WB」。
-  const next = PRODUCT_ORDER[(PRODUCT_ORDER.indexOf(cur) + 1) % PRODUCT_ORDER.length];
-  const label = PRODUCT_SHORT[next];
-  if(!confirm('将把全部账号的出站身份切换为 ' + label + '？（含另一个版本）')) return;
-  if(btn) btn.disabled = true;
-  try{
-    await postJSON('/accounts/product', {product: next});
-    await loadAccounts();
-    toast('已把全部账号的出站身份切换为 ' + label, 'ok');
-  }catch(e){
-    toast('切换失败: ' + e.message, 'bad');
-  }finally{
-    if(btn) btn.disabled = false;
-  }
-}
+
 
 async function refreshOne(uid, btn){
   if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
@@ -7027,36 +6911,8 @@ function renderTestAll(r){
   }
   body.innerHTML = html;
 }
-async function refreshAccounts(btn){
-  if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
-  try{
-    const r = await postJSON('/accounts/refresh', {});
-    const results = r.results || [];
-    const okc = results.filter(x=>x.ok).length;
-    const bad = results.filter(x=>!x.ok);
-    toast('刷新完成: ' + okc + '/' + results.length, bad.length ? 'warn' : 'ok');
-    if(bad.length){
-      toast('刷新失败: ' + (bad[0].error || '未知错误') + ' (' + bad.length + ')', 'bad');
-    }
-    await loadAccounts();
-  }catch(e){
-    toast('刷新失败: ' + e.message, 'bad');
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '一键刷新凭证'; }
-  }
-}
-async function setAll(enable, btn){
-  if(btn) btn.disabled = true;
-  try{
-    await postJSON('/accounts/set-all', {enabled: enable});
-    await loadAccounts();
-    toast(enable ? '已全部启用所有账号' : '已全部停用所有账号', 'ok');
-  }catch(e){
-    toast('批量操作失败: ' + e.message, 'bad');
-  }finally{
-    if(btn) btn.disabled = false;
-  }
-}
+
+
 async function deleteAccount(uid, name, btn){
   if(!confirm("确定删除账号 " + name + "？")) return;
   if(btn) btn.disabled = true;
@@ -7098,17 +6954,7 @@ async function downloadExport(query, fallbackLabel){
   return {count: doc.count || 0, name: name};
 }
 
-async function exportAccounts(btn){
-  if(btn){ btn.disabled = true; btn.textContent = '导出中...'; }
-  try{
-    const r = await downloadExport('', '');
-    toast('已导出 ' + r.count + ' 个账号 → ' + r.name);
-  }catch(e){
-    toast('导出失败: ' + e.message, 'err');
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '导出'; }
-  }
-}
+
 
 async function exportOne(uid){
   // Same document format as the bulk export, just narrowed to one account, so
@@ -7123,25 +6969,7 @@ async function exportOne(uid){
 
 let importRows = null;   // 已解析、待导入的账号行
 
-function openImport(){
-  importRows = null;
-  const m = document.getElementById('importModal');
-  const body = document.getElementById('importBody');
-  const ow = document.getElementById('importOverwrite');
-  if(ow) ow.checked = false;
-  if(body) body.innerHTML = '<p class="hint">正在打开文件…</p>';
-  if(m) m.classList.add('show');
-  // The picker is created per call so choosing the same file twice still fires.
-  const picker = document.createElement('input');
-  picker.type = 'file';
-  picker.accept = '.json,application/json';
-  picker.onchange = () => {
-    const f = picker.files && picker.files[0];
-    if(!f){ closeImport(); return; }
-    readImportFile(f);
-  };
-  picker.click();
-}
+
 
 function closeImport(){
   const m = document.getElementById('importModal');
@@ -7151,34 +6979,7 @@ function closeImport(){
   if(btn) btn.disabled = true;
 }
 
-async function readImportFile(file){
-  const body = document.getElementById('importBody');
-  try{
-    const text = await file.text();
-    let doc;
-    try{ doc = JSON.parse(text); }
-    catch(e){ throw new Error('文件不是合法 JSON'); }
 
-    // Accept the export document, a bare array, or a single account object.
-    let rows;
-    if(Array.isArray(doc)) rows = doc;
-    else if(doc && Array.isArray(doc.accounts)) rows = doc.accounts;
-    else if(doc && (doc.accessToken || doc.auth)) rows = [doc];
-    else throw new Error('文件里没有找到账号（既没有 accounts 数组，也不是单个账号）');
-
-    if(!rows.length) throw new Error('账号列表是空的');
-    importRows = rows;
-
-    // Dry-run first so the user sees exactly what will happen.
-    const r = await postJSON('/accounts/import', {data: doc, dryRun: true});
-    renderImportPreview(file.name, r.result || {}, rows.length);
-  }catch(e){
-    importRows = null;
-    const btn = document.getElementById('btnImportCommit');
-    if(btn) btn.disabled = true;
-    if(body) body.innerHTML = '<p class="hint" style="color:var(--warn)">读取失败: ' + esc(e.message) + '</p>';
-  }
-}
 
 function renderImportPreview(filename, res, total){
   const body = document.getElementById('importBody');
@@ -7243,21 +7044,7 @@ async function commitImport(btn){
 }
 
 /* 桌面客户端账号：两步确认（先扫描展示弹窗，再逐条导入） */
-async function scanDesktop(btn){
-  if(btn){ btn.disabled = true; btn.textContent = '扫描中...'; }
-  openDesktopScan();
-  try{
-    const acct = await getJSON('/accounts?realm=all').catch(() => ({accounts: []}));
-    window.SCAN_POOL = new Set((acct.accounts || []).map(a => a.uid));
-    const r = await postJSON('/accounts/import/desktop', {});
-    renderDesktopScan(r.detected || [], r.atrest || null);
-  }catch(e){
-    const body = document.getElementById('desktopScanBody');
-    if(body) body.innerHTML = '<p class="hint" style="color:var(--warn)">扫描失败: ' + esc(e.message) + '</p>';
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '扫描桌面客户端'; }
-  }
-}
+
 
 /* --------------------------- credits detail modal --------------------------- */
 let CURRENT_CREDIT_DETAIL_UID = null;
@@ -7680,12 +7467,7 @@ function closeCreditsDetail(){
   CURRENT_CREDIT_DETAIL_UID = null;
 }
 
-function openDesktopScan(){
-  const m = document.getElementById('desktopScanModal');
-  const body = document.getElementById('desktopScanBody');
-  if(body) body.innerHTML = '<p class="hint">正在检测本机桌面客户端账号…</p>';
-  if(m) m.classList.add('show');
-}
+
 
 function closeDesktopScan(){
   const m = document.getElementById('desktopScanModal');
@@ -8662,21 +8444,10 @@ function applyAccountsCollapsed(collapsed){
   return _accountsCollapsed;
 }
 
-function accountsCollapsed(){
-  return _accountsCollapsed;
-}
+
 
 // 显式选择走既有的 settings save 通道（一个键的 patch，不动别的设置）。
-async function toggleAccountsSection(evt){
-  if(evt && evt.preventDefault) evt.preventDefault();
-  const next = !_accountsCollapsed;
-  applyAccountsCollapsed(next);
-  try {
-    await postJSON('/settings/save', {accounts_collapsed: next});
-  } catch(e) {
-    toast('折叠状态保存失败: ' + e.message, 'bad');
-  }
-}
+
 // ==== 账号区折叠结束 ====
 
 // ==== 顶部页签显示开始 ====
@@ -8730,9 +8501,7 @@ function navPageLabel(row){
   return String(source || '').replace(/\s+/g, ' ').trim() || row.key;
 }
 
-function hiddenPages(){
-  return _hiddenPages.slice();
-}
+
 
 /* 「设置」固定可见，所以一定有结果；真到了没有可见页面那一步，退回网关页。 */
 function firstVisiblePage(){
@@ -8882,9 +8651,7 @@ function accountsPageSections(){
   return found;
 }
 
-function accountsSeparateTab(){
-  return _accountsSeparateTab;
-}
+
 
 // 插到锚点前面——插在锚点**所在的那个容器**里，而不是插到页面 div 上：
 // 锚点被 .page-nav-body 包起来之后就不再是页面 div 的直接子节点了，直接对页面
@@ -10536,23 +10303,7 @@ function importDiscovered(){
   toast('已加入 ' + picked.length + ' 个槽位，记得点「保存槽位」', 'ok');
 }
 
-async function autoAssignSlots(){
-  // Only fills in accounts that have no exit yet: an account that is already
-  // bound keeps its slot, so this is not a rebalancer.
-  const unbound = (window.ACCOUNTS || []).filter(a => a.enabled && !a.proxySlot);
-  if(!unbound.length){ toast('所有已启用账号都已绑定代理出口', 'ok'); return; }
-  const slots = PROXY_SLOTS.filter(s => s.enabled !== false);
-  if(!slots.length){ toast('没有启用的代理槽，请先在「设置 → 账号代理槽」添加并保存', 'warn'); return; }
-  let i = 0;
-  for(const a of unbound){
-    const slot = slots[i % slots.length];
-    i++;
-    try{ await postJSON('/accounts/set', {uid: a.uid, proxySlot: slot.id}); }catch(e){}
-  }
-  await loadAccounts();
-  await loadProxySlots();
-  toast('已为 ' + unbound.length + ' 个未绑定账号分配代理出口', 'ok');
-}
+
 
 function switchMainTab(tab){
   // 任务与福利页已随 WorkBuddy 账号子系统一起删掉；老书签 ?tab=tasks
@@ -10995,46 +10746,18 @@ async function clearServerLogs(){
  * 只有「今日 / 全部历史」时，一次 /usage/analytics 同时带回两个桶，切换按钮
  * 重渲染缓存就够了；窗口变多之后一个 payload 装不下所有窗口，继续重渲染缓存
  * 只会把上一个窗口的数字挂到新标签下面，所以一律重取。 */
-function setAnalyticsRange(range){
-  analyticsRange = range;
-  const btns = {today:'btnRangeToday', week:'btnRangeWeek', month:'btnRangeMonth',
-                all:'btnRangeAll', custom:'btnRangeCustom'};
-  Object.keys(btns).forEach(k => {
-    const b = document.getElementById(btns[k]);
-    if(b) b.classList.toggle('active', k === range);
-  });
-  const box = document.getElementById('rangeCustomBox');
-  if(box) box.style.display = (range === 'custom') ? 'inline-flex' : 'none';
-  if(range === 'custom') prefillCustomRange();
-  loadAnalytics();
-  // The model matrix reads /usage and /usage/perf directly, so it has to be
-  // refetched: without this the table kept showing all-time figures while the
-  // page said "today", which is the inconsistency the range buttons were
-  // meant to remove.
-  loadAnalyticsMatrix();
-}
+
 
 /* 自定义区间的输入框初始为空，而空 = 不限，画面会和「全部历史」一模一样，看起来
  * 像按钮坏了。第一次点开时把起点填成今天零点：一个能看懂的默认窗口，操作者再自己
  * 放宽或收窄；终点留空表示「到现在」。 */
-function prefillCustomRange(){
-  const el = document.getElementById('rangeCustomSince');
-  if(!el || el.value) return;
-  const d = new Date();
-  el.value = toLocalInputValue(new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() / 1000);
-}
 
-function pad2(n){ return String(n).padStart(2, '0'); }
+
+
 
 /* datetime-local 与 epoch 互转：输入框里是操作者按日历读到的本地墙上时间，所以
  * 转换用浏览器自己的时区；服务端拿 epoch 与它自己的时钟比较。 */
-function toLocalInputValue(epochSec){
-  if(!epochSec) return '';
-  const d = new Date(epochSec * 1000);
-  if(isNaN(d.getTime())) return '';
-  return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
-    + 'T' + pad2(d.getHours()) + ':' + pad2(d.getMinutes());
-}
+
 
 function fromLocalInputValue(value){
   if(!value) return null;
@@ -11042,10 +10765,7 @@ function fromLocalInputValue(value){
   return isNaN(t) ? null : Math.floor(t / 1000);
 }
 
-function onRangeCustomChange(){
-  loadAnalytics();
-  loadAnalyticsMatrix();
-}
+
 
 /* 三个取数端点共用同一个查询串，避免 /usage 与 /usage/perf 各拼一份而漏掉自定义
  * 区间——那正是「卡片与表格口径不一致」的复发路径。 */
@@ -11959,15 +11679,7 @@ function applyKeyBeforeHidden(hidden){
   return keyBeforeHidden;
 }
 // 显式选择走既有的 settings save 通道（一个键的 patch，不动别的设置）。
-async function onKeyBeforeToggle(box){
-  const next = !!(box && box.checked);
-  applyKeyBeforeHidden(next);
-  try {
-    await postJSON('/settings/save', {key_before_hidden: next});
-  } catch(e) {
-    toast('「(切换前)」行开关保存失败: ' + e.message, 'bad');
-  }
-}
+
 function keyRealmCell(k){
   if(k.source === 'bucket') return '<span style="color:var(--dim)">—</span>';
   if(k.realm === 'cn') return '<span class="badge warn" style="font-size:10px">国内版</span>';
@@ -12877,6 +12589,32 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
 }
 
 })();
+
+async function onKeyBeforeToggle(box){
+  const next = !!(box && box.checked);
+  applyKeyBeforeHidden(next);
+  try {
+    await postJSON('/settings/save', {key_before_hidden: next});
+  } catch(e) {
+    toast('「(切换前)」行开关保存失败: ' + e.message, 'bad');
+  }
+}
+
+function costTitle(r){
+  const m = costTipModel(r);
+  const out = ['按 OpenRouter 公布的模型价折算的等价 token 花费'];
+  out.push.apply(out, m.lines);
+  if(m.rates.length){
+    out.push('单价（USD / ' + costUnitLabel(r) + '，OpenRouter 原始价，未折算）');
+    m.rates.forEach(row => out.push('　' + row.k + '：' + row.v));
+  }
+  out.push.apply(out, m.notes);
+  return out.join('\n');
+}
+
+function hiddenPages(){
+  return _hiddenPages.slice();
+}
 </script>
 </body>
 </html>
