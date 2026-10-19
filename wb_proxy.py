@@ -10329,15 +10329,76 @@ def is_codearts_model(model_id):
     return str(model_id or "") in wb_codearts.CHAT_MODELS
 
 
+#: STS 剩这么多秒时就开始续期。码道的 STS 只有约 2 小时寿命，
+#: 不自动续的话服务会每隔两小时静默 503 一次（实测踩到过）。
+CODEARTS_REFRESH_MARGIN = float(os.environ.get("CODEARTS_REFRESH_MARGIN") or 300)
+
+_CODEARTS_RENEW_LOCK = threading.Lock()
+
+
+def _codearts_left(sess):
+    """返回 (剩余秒, 是否已过期, 是否可续期)。"""
+    try:
+        su = wb_codearts.summarize(sess)
+    except Exception:
+        return None, True, False
+    return (su.get("sts_remaining_seconds"), bool(su.get("sts_expired")),
+            bool(su.get("renewable")))
+
+
+def _ensure_fresh(sess):
+    """STS 快到期（或已过期）就先续一次，别等请求打到上游才 503。
+
+    refresh_token 是**一次性轮换**的，所以必须：
+      · 只在快过期时才续，不能每次请求都换（会疯狂轮换且并发必然撞车）；
+      · 续期全程持锁，并在锁内**重读存档** —— 别的线程可能刚续过，
+        再拿旧 refresh_token 去换会直接被判作废（1806）。
+    """
+    left, expired, renewable = _codearts_left(sess)
+    need = expired or (isinstance(left, (int, float)) and left < CODEARTS_REFRESH_MARGIN)
+    if not need or not renewable:
+        return sess
+    aid = (sess.get("account") or {}).get("id")
+    if not aid:
+        return sess
+    with _CODEARTS_RENEW_LOCK:
+        fresh = {((s.get("account") or {}).get("id")): s
+                 for s in wb_codearts.load_sessions(ACCOUNTS_DIR)}.get(aid)
+        if fresh:
+            fleft, fexpired, _ = _codearts_left(fresh)
+            if not fexpired and isinstance(fleft, (int, float)) \
+                    and fleft >= CODEARTS_REFRESH_MARGIN:
+                return fresh          # 别人刚续过，用他的
+        try:
+            renewed = wb_codearts.refresh_session(ACCOUNTS_DIR, aid)
+            log("codearts: renewed STS for %s (was %ss left)"
+                % ((sess.get("account") or {}).get("label"), left))
+            return renewed
+        except Exception as exc:      # noqa: BLE001
+            log("codearts: STS renew failed for %s: %s"
+                % ((sess.get("account") or {}).get("label"), exc), level="WARN")
+            return sess
+
+
 def pick_codearts_session():
-    """挑一个 STS 还有效的会话；多个时轮转，避免全压在一个会话上。"""
-    live = [s for s in wb_codearts.load_sessions(ACCOUNTS_DIR)
-            if not wb_codearts.summarize(s).get("sts_expired")]
-    if not live:
+    """挑一个可用会话并确保它的 STS 是新的；多个时轮转。
+
+    「可用」= STS 还没过期，**或者虽然过期但还能续期** —— 后者交给
+    _ensure_fresh 现续，这样停机超过两小时再恢复也不用人工介入。
+    """
+    sessions = wb_codearts.load_sessions(ACCOUNTS_DIR)
+    if not sessions:
         return None
-    idx = _CODEARTS_RR["next"] % len(live)
+    usable = []
+    for s in sessions:
+        left, expired, renewable = _codearts_left(s)
+        if not expired or renewable:
+            usable.append(s)
+    if not usable:
+        return None
+    idx = _CODEARTS_RR["next"] % len(usable)
     _CODEARTS_RR["next"] += 1
-    return live[idx]
+    return _ensure_fresh(usable[idx])
 
 
 def codearts_model_meta(m):
