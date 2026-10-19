@@ -811,6 +811,12 @@ CHAT_MODELS = ("deepseek-v4.1-flash",
 # （如 glm-5.2-sft-harmony 显示成「GLM-5.2-ArkTS-SPARK」），而请求要发的是
 # **model_id**。归一时两者都要留。
 
+#: 推理的读超时。DEFAULT_TIMEOUT(20s) 对**目录类**接口够用，对推理不够：
+#: 实测 GLM-5.2 单次回答要 17 秒以上，从远端机房打过去更慢，20 秒会稳定超时。
+#: 推理是「等它把话说完」，不是「探测对方在不在」，所以给足。
+#: 可用 CODEARTS_CHAT_TIMEOUT 环境变量覆盖。
+CHAT_TIMEOUT = float(os.environ.get("CODEARTS_CHAT_TIMEOUT") or 180.0)
+
 BUILTIN_MODELS_PATH = "/v1/model/builtin"
 
 #: PromptCenter 所在的主机，与推理入口同一台（agentChatDomain 在 prod 下就是它）
@@ -989,7 +995,7 @@ def chat_body(model, messages, max_tokens=256, stream=True):
 
 
 def chat_for_model(access_key, secret_key, security_token, model, messages,
-                   max_tokens=256, stream=True, timeout=DEFAULT_TIMEOUT):
+                   max_tokens=256, stream=True, timeout=None):
     """按模型所属分组自动选对请求头，发一次真实推理。
 
     分组 → maas_type 的映射在这里集中维护（见 chat_headers 的注释）：
@@ -999,6 +1005,7 @@ def chat_for_model(access_key, secret_key, security_token, model, messages,
     SSE 流包成 {"_raw": ...}，还会把流式帧里的 error_code 当业务错误抛掉，
     推理这边需要的是原样字节，判定交给调用方。
     """
+    timeout = CHAT_TIMEOUT if timeout is None else timeout
     maas = MAAS_BENEFIT if model_group(model) == GROUP_BENEFIT else None
     body = json.dumps(chat_body(model, messages, max_tokens=max_tokens,
                                 stream=stream), ensure_ascii=False).encode("utf-8")

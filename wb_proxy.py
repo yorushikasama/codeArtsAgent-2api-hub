@@ -10259,6 +10259,165 @@ def fetch_models(realm=None):
             _catalog_meta[r] = {"source": source, "fetched_at": time.time(),
                                 "file_mtime": file_mtime}
         return entries
+# ---------------------------------------------------------------------------
+# 码道（华为云）模型目录与路由
+# ---------------------------------------------------------------------------
+#
+# 码道账号与 WorkBuddy 账号池是两套独立的凭证体系，但**对外的 OpenAI 面应该
+# 是同一份**：客户端只认 /v1/models 与 /v1/chat/completions，不该为码道模型
+# 学一套新地址。所以这里把码道清单并进 /v1/models，并在聊天入口按模型名分流。
+#
+# 分流判定用 wb_codearts.CHAT_MODELS —— 那是**逐个真实推理验证过**的名单，
+# 不是「服务端报了什么就信什么」（内置/限时福利两组都实测过，见 wb_codearts
+# 里 chat_headers 的注释）。
+
+#: 码道账号的**并发会话上限只有 3 个**（撞上就是 400 TM.00001041）。网关是
+#: 单进程多线程，多个客户端同时打必然超；所以在这里串行化 —— 默认只放 1 个
+#: 请求进去，请求完成才放下一个。账号多时可用 CODEARTS_CONCURRENCY 调大。
+_CODEARTS_SLOTS = threading.Semaphore(
+    max(1, int(os.environ.get("CODEARTS_CONCURRENCY") or 1)))
+
+_CODEARTS_CATALOG = {"at": 0.0, "models": [], "errors": {}}
+_CODEARTS_CATALOG_TTL = 300.0
+_CODEARTS_RR = {"next": 0}
+
+
+def codearts_catalog(force=False):
+    """码道模型目录（内存缓存 5 分钟）。没有账号时返回空，不抛。"""
+    now = time.time()
+    if not force and (now - _CODEARTS_CATALOG["at"]) < _CODEARTS_CATALOG_TTL:
+        return _CODEARTS_CATALOG
+    sessions = wb_codearts.load_sessions(ACCOUNTS_DIR)
+    live = [s for s in sessions
+            if not wb_codearts.summarize(s).get("sts_expired")]
+    if not live:
+        # 把「为什么空」写进 errors：面板要靠它告诉用户是没账号还是 STS 过期，
+        # 而不是只显示一片空白。
+        reason = ("no codearts account" if not sessions
+                  else "all codearts sessions have expired STS")
+        _CODEARTS_CATALOG.update({"at": now, "models": [],
+                                  "errors": {"sessions": reason}})
+        return _CODEARTS_CATALOG
+    sess = live[0]
+    try:
+        cat = wb_codearts.model_catalog(
+            sess.get("accessKey"), sess.get("secretKey"),
+            sess.get("securitytoken"))
+        models, errors = cat.get("models") or [], cat.get("errors") or {}
+    except Exception as exc:
+        models, errors = [], {"catalog": str(exc)}
+    # 只暴露实测可用的那些：服务端报了但打不通的模型进清单只会误导客户端。
+    models = [m for m in models if m.get("id") in wb_codearts.CHAT_MODELS
+              and m.get("routable", True)]
+    _CODEARTS_CATALOG.update({"at": now, "models": models, "errors": errors})
+    return _CODEARTS_CATALOG
+
+
+def is_codearts_model(model_id):
+    return str(model_id or "") in wb_codearts.CHAT_MODELS
+
+
+def pick_codearts_session():
+    """挑一个 STS 还有效的会话；多个时轮转，避免全压在一个会话上。"""
+    live = [s for s in wb_codearts.load_sessions(ACCOUNTS_DIR)
+            if not wb_codearts.summarize(s).get("sts_expired")]
+    if not live:
+        return None
+    idx = _CODEARTS_RR["next"] % len(live)
+    _CODEARTS_RR["next"] += 1
+    return live[idx]
+
+
+def codearts_model_meta(m):
+    """把 wb_codearts 归一后的模型转成 model_entry 期望的 meta 形状。
+
+    这一步不能省：model_entry 的契约里 ``contextWindow`` 是**带
+    supportedLengths 的 dict**，而 wb_codearts 归一出来的是数字。直接把它自己
+    的输出喂进去会 AttributeError: 'int' object has no attribute 'get' ——
+    第一次接清单就栽在这上面，而且异常被外层 try 吞成了「清单里没有码道模型」，
+    表现成「功能没生效」，不报错也看不出原因。
+    """
+    ctx = int(m.get("contextWindow") or m.get("maxInputTokens") or 0)
+    meta = {
+        "name": m.get("name") or m.get("id"),
+        "descriptionZh": m.get("description") or "",
+        "supportsImages": bool(m.get("supportsImages")),
+        "supportsToolCall": bool(m.get("supportsToolCall")),
+        "supportsReasoning": bool(m.get("supportsReasoning")),
+        "vendor": "codearts",
+    }
+    if ctx:
+        meta["contextWindow"] = {"supportedLengths": [ctx]}
+        meta["maxInputTokens"] = ctx
+    out = int(m.get("maxOutputTokens") or 0)
+    if out:
+        meta["maxOutputTokens"] = out
+    if m.get("creditRatio"):
+        meta["credits"] = {"ratio": m["creditRatio"]}
+    return meta
+
+
+def codearts_model_entry(m):
+    """码道模型 → /v1/models 条目。形状跟 WorkBuddy 那批一致，厂商标明 codearts。"""
+    entry = model_entry(m["id"], codearts_model_meta(m))
+    entry["owned_by"] = "codearts"
+    entry["group"] = m.get("group") or ""
+    if m.get("creditRatio"):
+        entry["credit_ratio"] = m["creditRatio"]
+    return entry
+
+
+def _codearts_retryable(status, text):
+    """这个失败值得等一下重试吗？
+
+    码道有两种**瞬时限流**，看起来像「模型不可用」其实不是：
+      · 429 ModelArts.81111 / 81114  —— TPM 打满（日额度 1000 万，瞬时限流）
+      · 400 TM.00001041              —— 并发会话数已达上限（账号只给 3 个，
+                                        上一个请求还没从上游释放就会撞上）
+    网关连着发几个请求必然撞第二种，所以必须自己退避重试，
+    否则用户侧看到的是「这个模型坏了」。
+    """
+    if status == 429:
+        return True
+    if status and status >= 500:
+        return True
+    body = text or ""
+    return ("TM.00001041" in body or "ModelArts.811" in body
+            or "rate limit" in body.lower()
+            or "too many requests" in body.lower()
+            or "并发会话数已达上限" in body)
+
+
+def _collect_codearts_sse(text):
+    """把码道的 SSE 流聚合成 (正文, 推理, usage, 帧内错误)。
+
+    码道回的是 OpenAI 形状的 chunk，但错误可能藏在帧里而 HTTP 仍是 200，
+    所以必须逐帧扫 error_code —— 只看状态码会把失败读成成功。
+    """
+    content, reasoning, usage, err = "", "", {}, ""
+    for line in (text or "").splitlines():
+        if not line.startswith("data:"):
+            continue
+        chunk = line[5:].strip()
+        if not chunk or chunk == "[DONE]":
+            continue
+        try:
+            piece = json.loads(chunk)
+        except Exception:
+            continue
+        if piece.get("error_code"):
+            err = "%s %s" % (piece.get("error_code"),
+                             piece.get("error_msg") or piece.get("error") or "")
+            continue
+        if isinstance(piece.get("usage"), dict):
+            usage = piece["usage"]
+        for choice in piece.get("choices") or []:
+            delta = choice.get("delta") or {}
+            content += delta.get("content") or ""
+            reasoning += delta.get("reasoning_content") or ""
+    return content, reasoning, usage, err
+
+
 def model_entry(mid, meta):
     """Build a rich /v1/models entry from the desktop app catalog metadata.
     The OpenAI spec only names id/object/created/owned_by, so capability data is
@@ -16468,8 +16627,27 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         data = [model_entry(mid, meta) for mid, meta in entries]
+        known = {mid for mid, _ in entries}
+        # 码道模型并进同一份清单：客户端只认这个端点，不该为另一套凭证体系
+        # 学一个新地址。取数失败（没账号 / 上游抖动）就不加，不影响原有目录。
+        try:
+            cs = codearts_catalog()
+            for item in cs.get("models") or []:
+                if item["id"] not in known:
+                    data.append(codearts_model_entry(item))
+                    known.add(item["id"])
+            # 始终带出码道这一段的诊断信息：清单里没出现码道模型时，
+            # 调用方/面板要能一眼看出是「没账号」还是「取数失败」。
+            payload_extra = {"codearts": {
+                "count": len(cs.get("models") or []),
+                "errors": cs.get("errors") or {},
+            }}
+        except Exception as exc:
+            payload_extra = {"codearts": {"count": 0,
+                                          "errors": {"catalog": str(exc)}}}
         payload = {"object": "list", "data": data,
                    "realm": req_realm or CURRENT_REALM}
+        payload.update(payload_extra)
         # 来源说明（面板展示用）：这批清单是上游 API 实时取的，还是读的
         # 本机桌面缓存文件/内置快照，以及各自的时间戳。
         meta = catalog_meta(req_realm)
@@ -18951,6 +19129,145 @@ class Handler(BaseHTTPRequestHandler):
 
 
 
+    # ---- 码道模型：按模型名分流到华为云推理入口 ----
+    def _handle_codearts_chat(self, payload):
+        """把一个 OpenAI 形状的请求转发给码道，再把结果转回 OpenAI 形状。
+
+        上游**只支持流式**（glm-5.3 传非流式直接 400 空响应体），所以这里
+        统一按 stream=True 请求，客户端要非流式时由我们聚合 —— 不把上游的
+        形态限制泄漏给调用方。
+        """
+        model = str(payload.get("model") or "")
+        messages = payload.get("messages") or []
+        want_stream = bool(payload.get("stream"))
+        max_tokens = (payload.get("max_tokens")
+                      or payload.get("max_completion_tokens") or 4096)
+        try:
+            max_tokens = int(max_tokens)
+        except (TypeError, ValueError):
+            max_tokens = 4096
+
+        session = pick_codearts_session()
+        if session is None:
+            return self._error(
+                503,
+                "no usable codearts account (STS expired or not logged in); "
+                "re-authorize it in the panel",
+                "invalid_request_error")
+
+        account_label = (session.get("account") or {}).get("label")
+        t_start = time.time()
+        status, text, last_exc = None, "", None
+        # 三试：瞬时限流/并发上限退避重试；超时也值得再给一次机会。
+        delays = (5, 12, 25, 40)
+        for attempt in range(len(delays) + 1):
+            try:
+                # 闸门只包住「向上游要结果」这一段：并发上限是账号级的，
+                # 排队 waiting 期间不该占着名额。
+                with _CODEARTS_SLOTS:
+                    status, text = wb_codearts.chat_for_model(
+                        session.get("accessKey"), session.get("secretKey"),
+                        session.get("securitytoken"), model, messages,
+                        max_tokens=max_tokens, stream=True)
+                last_exc = None
+            except Exception as exc:                 # noqa: BLE001
+                status, text, last_exc = None, "", exc
+            if last_exc is None and not _codearts_retryable(status, text):
+                break
+            if attempt < len(delays):
+                log("codearts retry %d/%d: model=%s cause=%s"
+                    % (attempt + 1, len(delays), model,
+                       (str(last_exc) if last_exc else (text or "")[:120])))
+                time.sleep(delays[attempt])
+        if last_exc is not None:
+            record_error(model, 502, str(last_exc)[:200],
+                         elapsed_ms=int((time.time() - t_start) * 1000),
+                         account=account_label, key=self._key_id())
+            return self._error(502, "codearts unreachable: %s" % last_exc,
+                               "upstream_error")
+
+        if status not in (200, 201):
+            try:
+                d = json.loads(text)
+                detail = (d.get("error_msg") or d.get("message")
+                          or (d.get("error") or {}).get("message") or "")
+                code = (d.get("error_code")
+                        or (d.get("error") or {}).get("code") or "")
+            except Exception:
+                detail, code = text[:200], ""
+            record_error(model, 502, ("%s %s" % (code, detail))[:200],
+                         elapsed_ms=int((time.time() - t_start) * 1000),
+                         account=account_label, key=self._key_id())
+            return self._error(
+                502, "codearts returned %s: %s" % (status, detail or code),
+                "upstream_error")
+
+        content, reasoning, usage, frame_err = _collect_codearts_sse(text)
+        if frame_err and not content and not reasoning:
+            record_error(model, 502, frame_err[:200],
+                         elapsed_ms=int((time.time() - t_start) * 1000),
+                         account=account_label, key=self._key_id())
+            return self._error(502, "codearts error: %s" % frame_err,
+                               "upstream_error")
+
+        elapsed_ms = int((time.time() - t_start) * 1000)
+        try:
+            record_usage(model, usage, stream=want_stream,
+                         elapsed_ms=elapsed_ms, account=account_label,
+                         key=self._key_id(), outcome="completed")
+        except Exception:
+            pass
+
+        created = int(time.time())
+        cid = "chatcmpl-codearts-%s" % uuid.uuid4().hex[:24]
+
+        if not want_stream:
+            msg = {"role": "assistant", "content": content}
+            if reasoning:
+                msg["reasoning_content"] = reasoning
+            return self._json(200, {
+                "id": cid, "object": "chat.completion", "created": created,
+                "model": model,
+                "choices": [{"index": 0, "message": msg,
+                             "finish_reason": "stop"}],
+                "usage": usage,
+            })
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        if cors_origin_allowed(self.path):
+            self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+
+        def emit(obj):
+            blob = "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
+            self.wfile.write(blob.encode("utf-8"))
+            self.wfile.flush()
+
+        def chunk(delta, finish=None, extra=None):
+            body = {"id": cid, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": delta,
+                                 "finish_reason": finish}]}
+            if extra:
+                body.update(extra)
+            return body
+
+        try:
+            emit(chunk({"role": "assistant", "content": ""}))
+            if reasoning:
+                emit(chunk({"reasoning_content": reasoning}))
+            if content:
+                emit(chunk({"content": content}))
+            emit(chunk({}, "stop", {"usage": usage}))
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        return None
+
     def _dispatch_chat_post(self, path, payload):
         # 先挡背景请求：Codex 自己发的（记忆整理／环境建议／自动复核）
         # 不算「使用者实际使用」，一律本地拒绝，不碰上游。
@@ -18966,6 +19283,10 @@ class Handler(BaseHTTPRequestHandler):
                                    "invalid_request_error")
         if path in ("/v1/responses", "/responses"):
             return self._handle_responses(payload)
+        # 码道模型走另一套凭证体系，先按模型名分流，
+        # 别进 WorkBuddy 账号池的选路。
+        if is_codearts_model(payload.get("model")):
+            return self._handle_codearts_chat(payload)
         # Diagnostics: what the client actually asked for, and what we forward.
         # Only the knobs that change behaviour are logged - never message text.
         forwarded = build_upstream_body(payload)

@@ -798,6 +798,73 @@ check("两组都挂仍返回空清单而不是抛异常",
 
 
 # ---------------------------------------------------------------------------
+# 接进 /v1/models 的形状适配
+# ---------------------------------------------------------------------------
+#
+# model_entry 的 meta 契约里 contextWindow 是**带 supportedLengths 的 dict**，
+# 而 wb_codearts 归一出来的是数字。第一版直接把归一结果喂进去，抛
+# AttributeError: 'int' object has no attribute 'get'，又被外层 try 吞成
+# 「清单里没有码道模型」—— 表现成功能没生效、且不报错。这几条钉住那个适配。
+
+print()
+print("== 接进 /v1/models 的形状适配 ==")
+
+import wb_proxy as P  # noqa: E402  (需要它才能验 model_entry 契约)
+
+_META = {
+    "id": "deepseek-v4.1-flash", "name": "deepseek-v4.1-flash",
+    "group": C.GROUP_BENEFIT, "contextWindow": 1000000,
+    "maxInputTokens": 1000000, "maxOutputTokens": 384000,
+    "supportsImages": False, "supportsReasoning": True,
+    "supportsToolCall": True, "routable": True, "creditRatio": None,
+}
+
+adapt = P.codearts_model_meta(_META)
+check("contextWindow 被转成带 supportedLengths 的 dict",
+      isinstance(adapt.get("contextWindow"), dict)
+      and adapt["contextWindow"].get("supportedLengths") == [1000000], adapt)
+check("上下文长度同时给了 maxInputTokens",
+      adapt.get("maxInputTokens") == 1000000, adapt)
+check("maxOutputTokens 一并带出", adapt.get("maxOutputTokens") == 384000, adapt)
+check("厂商标成 codearts", adapt.get("vendor") == "codearts", adapt)
+
+# 关键：把适配结果喂给 model_entry 不能炸
+try:
+    entry = P.model_entry(_META["id"], adapt)
+    boom = None
+except Exception as exc:                      # noqa: BLE001
+    entry, boom = None, exc
+check("model_entry 能吃下适配后的 meta（曾经抛 int.get）", boom is None, boom)
+if entry:
+    check("条目 id 正确", entry.get("id") == _META["id"], entry.get("id"))
+    check("条目 object 是 model", entry.get("object") == "model")
+    check("条目有 context_length", bool(entry.get("context_length")), entry)
+
+# 没有上下文信息的模型（内置那组服务端不给）也不能炸
+bare = dict(_META, id="GLM-5.2", contextWindow=0, maxInputTokens=0,
+            maxOutputTokens=0, group=C.GROUP_BUILTIN, supportsImages=True)
+bare_adapt = P.codearts_model_meta(bare)
+check("缺上下文信息时不编造 contextWindow",
+      "contextWindow" not in bare_adapt, bare_adapt)
+try:
+    P.model_entry("GLM-5.2", bare_adapt)
+    bare_boom = None
+except Exception as exc:                      # noqa: BLE001
+    bare_boom = exc
+check("缺上下文信息时 model_entry 也不炸", bare_boom is None, bare_boom)
+
+wrapped = P.codearts_model_entry(_META)
+check("包装后 owned_by 是 codearts", wrapped.get("owned_by") == "codearts", wrapped)
+check("包装后带出分组", wrapped.get("group") == C.GROUP_BENEFIT, wrapped)
+
+check("分流判定认得码道模型", P.is_codearts_model("deepseek-v4.1-flash"))
+check("分流判定认得内置那组", P.is_codearts_model("GLM-5.2"))
+check("分流判定不误伤 WorkBuddy 模型", not P.is_codearts_model("hy4-preview-f"))
+check("空模型名不误判", not P.is_codearts_model(""))
+check("None 不误判", not P.is_codearts_model(None))
+
+
+# ---------------------------------------------------------------------------
 
 print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))
