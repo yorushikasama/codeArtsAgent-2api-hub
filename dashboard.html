@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WorkBuddy 用量看板</title>
+<title>CodeArts 用量看板</title>
 <style>
 :root{
   --bg:#f7f5ef; --panel:#ffffff; --panel2:#f1efe7; --panel3:#e9e6db;
@@ -1147,8 +1147,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     'OpenRouter 无对应': 'no OpenRouter match',
     'Token 消耗与推理指标透视': 'Token usage and reasoning metrics',
     'WorkBuddy 独立桌面客户端 (WB)': 'WorkBuddy standalone desktop client (WB)',
-    'WorkBuddy 用量看板': 'WorkBuddy Usage Dashboard',
-    'WorkBuddy 网关': 'WorkBuddy Gateway',
+    'CodeArts 用量看板': 'CodeArts Usage Dashboard',
+    'CodeArts 网关': 'CodeArts Gateway',
     '[task_runner] 正在启动全自动任务接取、事件上报与奖励领取流水...': '[task_runner] Starting the fully automatic task claiming, event reporting and reward claiming pipeline...',
     '] 吗？密钥会被抹掉且无法恢复；看板里它已经产生的历史用量仍会保留这个名字。': ']? The secret will be erased and cannot be recovered; the usage it already produced in the dashboard keeps this name.',
     '] 已保存': '] saved',
@@ -2204,7 +2204,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "Key 维度只从本次升级之后开始记录：更早的请求没有这个字段，会一直留在「(切换前)」里且不会再增长。": "Key 維度只從本次升級之後開始記錄：更早的請求沒有這個欄位，會一直留在「(切換前)」裡且不會再增長。",
     "OpenRouter 价估算：按 OpenRouter 公布的模型价折算，覆盖该账号在所选区间内的请求；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示": "OpenRouter 價估算：按 OpenRouter 公佈的模型價折算，覆蓋該帳號在所選區間內的請求；按條件定價的模型（輸入長度閾值或時段）按每條請求取檔；單條請求實際用的策略、三檔單價與匹配來源見「最近請求」裡那條的懸停提示",
     "OpenRouter 价估算：按该行（模型·区域·账号）的 token 消耗折算；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示": "OpenRouter 價估算：按該行（模型·區域·帳號）的 token 消耗折算；按條件定價的模型（輸入長度閾值或時段）按每條請求取檔；單條請求實際用的策略、三檔單價與匹配來源見「最近請求」裡那條的懸停提示",
-    "WorkBuddy 网关看板": "WorkBuddy 閘道看板",
+    "CodeArts 网关看板": "CodeArts 閘道看板",
     "[task_runner] 正在启动全自动任务接取、事件上报与奖励领取流水...": "[task_runner] 正在啟動全自動任務接取、事件上報與獎勵領取流水...",
     "] 吗？密钥会被抹掉且无法恢复；看板里它已经产生的历史用量仍会保留这个名字。": "] 嗎？金鑰會被抹掉且無法恢復；看板裡它已經產生的歷史用量仍會保留這個名字。",
     "] 已保存": "] 已儲存",
@@ -3192,7 +3192,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 <body>
 <header>
   <div class="header-left" style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
-    <h1><span class="dot" id="statusDot"></span>WorkBuddy 网关</h1>
+    <h1><span class="dot" id="statusDot"></span>CodeArts 网关</h1>
     <nav class="main-nav">
       <button class="main-nav-btn active" id="btnNavGateway" onclick="switchMainTab('gateway')">
         <span id="navGatewayLabel">网关</span>
@@ -3262,7 +3262,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
      align-items:center;justify-content:center;padding:20px;background:var(--bg)">
   <div style="width:min(380px,100%);background:var(--panel);border:1px solid var(--line);
               border-radius:14px;padding:26px 24px;box-shadow:0 10px 30px rgba(15,23,42,.12)">
-    <div style="font-size:16px;font-weight:700;margin-bottom:6px">WorkBuddy 网关</div>
+    <div style="font-size:16px;font-weight:700;margin-bottom:6px">CodeArts 网关</div>
     <div style="font-size:12px;color:var(--dim);margin-bottom:18px">请输入面板访问密码</div>
     <input id="panelPwdInput" type="password" placeholder="面板密码" autocomplete="current-password"
            onkeydown="if(event.key==='Enter') submitPanelLogin()"

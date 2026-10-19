@@ -10313,6 +10313,18 @@ def codearts_catalog(force=False):
     return _CODEARTS_CATALOG
 
 
+def wb_accounts_available():
+    """有没有配置 WorkBuddy 账号。
+
+    没有账号时**不该**把 WorkBuddy 那批模型挂进 /v1/models —— 清单是给客户端
+    选模型用的，宣告一批调用必然失败的模型只会让人以为是网关坏了。
+    （这是接码道时踩出来的：没账号时清单仍从内置快照兜底出 14 个模型，
+    实际一个都打不通。）
+    """
+    pool = POOL
+    return bool(pool is not None and getattr(pool, "accounts", None))
+
+
 def is_codearts_model(model_id):
     return str(model_id or "") in wb_codearts.CHAT_MODELS
 
@@ -16616,10 +16628,20 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         req_realm = self._request_realm() or CURRENT_REALM
-        try:
-            entries = fetch_models(realm=req_realm)
-        except Exception as exc:
-            return self._error(502, str(exc))
+        # 清单口径要跟「这个部署实际能服务谁」一致：
+        #   · 有 WorkBuddy 账号            → 照旧列出 WorkBuddy 目录（可能还有码道）
+        #   · 没有 WorkBuddy 但有码道账号   → **只列码道**，不要拿内置快照凑数
+        #     （那批模型一个都调不通，列出来只会让人以为网关坏了）
+        #   · 一个账号都没有                → 照旧列静态目录，纯预览用
+        # 第三条不能省：没有它，未配置账号的部署和测试里注入的目录都会变成空清单。
+        has_codearts = bool(codearts_catalog().get("models"))
+        if wb_accounts_available() or not has_codearts:
+            try:
+                entries = fetch_models(realm=req_realm)
+            except Exception as exc:
+                return self._error(502, str(exc))
+        else:
+            entries = []
         # Level 4 is best effort: warm the local cache in the background at
         # most once per cooldown; offline deployments just keep the fallback.
         try:
