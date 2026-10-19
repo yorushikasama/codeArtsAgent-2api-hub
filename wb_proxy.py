@@ -16632,10 +16632,24 @@ class Handler(BaseHTTPRequestHandler):
         # 学一个新地址。取数失败（没账号 / 上游抖动）就不加，不影响原有目录。
         try:
             cs = codearts_catalog()
+            # 按 id 建索引：有些模型名两边都有（glm-5.3 / glm-5.3-flash /
+            # deepseek-v4.1-flash），**分流时码道优先**，所以清单也必须这么标 ——
+            # 否则条目说 owned_by=workbuddy，请求其实去了码道，清单在撒谎。
+            # 但不整条替换：WorkBuddy 那份带更准的上下文窗口，保留它、只改归属。
+            index = {m.get("id"): m for m in data}
             for item in cs.get("models") or []:
-                if item["id"] not in known:
-                    data.append(codearts_model_entry(item))
-                    known.add(item["id"])
+                existing = index.get(item["id"])
+                if existing is None:
+                    entry = codearts_model_entry(item)
+                    data.append(entry)
+                    index[item["id"]] = entry
+                else:
+                    existing["owned_by"] = "codearts"
+                    existing["group"] = item.get("group") or ""
+                    existing["routed_via"] = "codearts"
+                    if item.get("creditRatio"):
+                        existing["credit_ratio"] = item["creditRatio"]
+                known.add(item["id"])
             # 始终带出码道这一段的诊断信息：清单里没出现码道模型时，
             # 调用方/面板要能一眼看出是「没账号」还是「取数失败」。
             payload_extra = {"codearts": {
