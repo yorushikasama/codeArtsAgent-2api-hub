@@ -59,10 +59,12 @@ for (const args of polled) {
     `轮询的用量读取必须允许回源校验（cache:'no-cache'），这一处没有：getJSON(${args})`);
 }
 
-// 2) 登录轮询与密钥类读取：绝不允许可缓存校验。
-const sensitive = calls.filter(args => /\/accounts\/login\/poll|\/settings\/reveal/.test(args));
-assert.ok(sensitive.length >= 2,
-  `只扫到 ${sensitive.length} 处登录/密钥读取，提取逻辑坏了`);
+// 2) 密钥类读取：绝不允许可缓存校验。
+//    （原先还有 /accounts/login/poll，那是旧登录流程的轮询接口，
+//      随该流程一起删除；剩下的 /settings/reveal 仍必须留在 no-store。）
+const sensitive = calls.filter(args => /\/settings\/reveal/.test(args));
+assert.ok(sensitive.length >= 1,
+  `只扫到 ${sensitive.length} 处密钥读取，提取逻辑坏了`);
 for (const args of sensitive) {
   assert.ok(!/\bPOLL_READ\b/.test(args),
     `登录轮询与密钥读取必须留在 no-store，这一处不该可校验：getJSON(${args})`);

@@ -17097,6 +17097,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": False, "msg": repr(exc)})
         return self._json(200, {"ok": True, "summary": wb_codearts.summarize(session)})
 
+    def _route_codearts_refresh_catalog(self, payload):
+        """强制重取一次码道模型目录。
+
+        看板上的「刷新模型榜单」原来打的是 /catalog/refresh —— 那是 WorkBuddy
+        上游（copilot.tencent.com）的目录接口。在这个部署里没有对应账号，
+        点了永远失败，看起来就是按钮坏了。改成刷码道自己的目录。
+        """
+        try:
+            cat = codearts_catalog(force=True)
+        except Exception as exc:
+            log("codearts catalog refresh failed: %r" % (exc,), level="WARN")
+            return self._json(200, {"ok": False, "msg": repr(exc)})
+        models = cat.get("models") or []
+        return self._json(200, {
+            "ok": True,
+            "count": len(models),
+            "models": [m.get("id") for m in models],
+            "errors": cat.get("errors") or {},
+            "msg": "%d 个模型已更新" % len(models) if models else "没有可用码道账号",
+        })
+
     def _route_codearts_delete(self, payload):
         account_id = str(payload.get("accountId") or "").strip()
         if not account_id:
@@ -18063,6 +18084,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_codearts_login_cancel(payload)
         if path == "/accounts/codearts/refresh":
             return self._route_codearts_refresh(payload)
+        if path == "/accounts/codearts/refresh-catalog":
+            return self._route_codearts_refresh_catalog(payload)
         if path == "/accounts/codearts/claim":
             return self._route_codearts_claim(payload)
         if path == "/accounts/codearts/delete":

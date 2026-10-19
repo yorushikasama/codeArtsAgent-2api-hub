@@ -42,7 +42,7 @@ function errRes(status){
 // 面板脚本作用域里的函数与状态（let 声明在 new Function 体内，只能由返回的
 // 闭包读写）。
 const EXPORTS = [
-  'getJSON', 'POLL_READ', 'panelSessionLost', 'pollLogin', 'fetchNewLogs',
+  'getJSON', 'POLL_READ', 'panelSessionLost', 'refresh', 'fetchNewLogs',
   'setLogFilterLevel', 'refresh', 'setCostCurrency', 'logMatchesFilter', 'logFilterKey',
   'WB_I18N: window.WB_I18N',
   'getLoginTimer: () => loginTimer', 'setLoginTimer: (t) => { loginTimer = t; }',
@@ -325,30 +325,7 @@ function check(ok, msg){
       '空态下不能把新行 append 到"暂无匹配"旁边，必须走整表重画');
   }
 
-  /* 7) 会话失效必须停掉「添加账号」弹窗的登录轮询（loginTimer），之后不再发请求。 */
-  {
-    const {api, callsTo} = boot({
-      '/accounts/login/poll': () => Promise.resolve(errRes(401)),
-    }, {realTimers: true});
-    api.setLoginState('state-1');
-    const timer = setInterval(api.pollLogin, 20);
-    api.setLoginTimer(timer);
-    try {
-      check(api.getLoginTimer() !== null, '前置条件：登录轮询定时器在跑');
-      await api.pollLogin();                            // 第一次轮询：401 → 会话失效
-      check(api.getLoginTimer() === null,
-        '会话失效后必须清掉登录轮询定时器（否则每 2.5 秒一个 401，永不停止）');
-      check(api.getPanelReady() === false, '会话失效后 PANEL_READY 必须落下');
-      const polls = callsTo('/accounts/login/poll');
-      await new Promise(r => setTimeout(r, 120));       // 等几个定时器周期
-      check(callsTo('/accounts/login/poll') === polls,
-        '会话失效之后不允许再发出任何登录轮询请求');
-    } finally {
-      if (api.getLoginTimer()) clearInterval(api.getLoginTimer());
-    }
-  }
-
-  /* 8) i18n 观察者路径：EN 下翻译照旧、跳过规则照旧；allowed() 缓存与
+    /* 8) i18n 观察者路径：EN 下翻译照旧、跳过规则照旧；allowed() 缓存与
         hasAttributes() 短路确实在生效，且不改变任何结果。 */
   {
     const {api} = boot({}, {beforeEval: () => localStorage.setItem('wb-lang', 'en')});

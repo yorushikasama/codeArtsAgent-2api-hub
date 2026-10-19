@@ -1361,7 +1361,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '顶部页签显示': 'Top tab visibility',
     '（国内版）': '(China)',
     '国内版 (China)': 'China',
-    '国内版 (China) · copilot.tencent.com': 'China · copilot.tencent.com',
     '国内版成长任务与日常福利': 'China growth tasks and daily perks',
     '国内版签到': 'China check-in',
     '国家未知': 'Country unknown',
@@ -1713,7 +1712,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '次 ·': 'calls ·',
     '次异常拦截': 'errors blocked',
     '次日 00:00 刷新': 'Resets at 00:00 the next day',
-    '正在向 copilot.tencent.com (国内版) 申请授权...': 'Requesting authorization from copilot.tencent.com (China)...',
     '正在向上游同步最新积分与权益包明细…': 'Syncing the latest credits and package details from upstream...',
     '正在打开文件…': 'Opening the file...',
     '正在拉取...': 'Fetching...',
@@ -3264,42 +3262,19 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <h2 id="gatewayPageTitle" style="margin:0;font-size:17px;color:var(--fg);font-family:var(--serif);font-weight:600;letter-spacing:.02em">网关与账号</h2>
     <div id="gatewayPageDesc" style="font-size:12px;color:var(--dim);margin-top:4px">管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。</div>
   </div>
-  <!-- 版本中枢控制栏 (三列等高对齐网格) -->
-  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px;margin-bottom:18px">
-    
-    <!-- 卡片 2: 国内版 (China) -->
-    <div id="tabCn" class="realm-card" onclick="switchViewRealm('cn')">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
-        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-          <span class="realm-badge-cn">国内版 (China)</span>
-          <span id="tabCnDefaultBadge" class="badge ok mini" style="font-weight:600;display:none">默认出口</span>
-          <span id="tabCnViewBadge" class="badge warn mini" style="display:none">当前视图</span>
-        </div>
-      </div>
-      <div class="mono" style="font-size:11px;color:var(--dim);margin-bottom:8px">copilot.tencent.com</div>
-      <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:8px">
-        <div style="display:flex;align-items:baseline;gap:6px">
-          <span id="tabCnCredits" style="font-size:22px;font-weight:700;color:var(--accent2);letter-spacing:-.5px" title="总剩余积分：全部账号（含停用）之和；「可用」只算启用且未触发限额护栏的账号">0</span>
-          <span style="font-size:12px;color:var(--dim)">剩余积分 · <span id="tabCnAvailCred" style="color:var(--fg);font-weight:600">可用 —</span> · <span id="tabCnAccts" style="color:var(--fg);font-weight:600">0/0 账号</span></span>
-        </div>
-        <span id="tabCnKeyBadge" class="badge warn mini" style="font-weight:600">0 个 Key</span>
+  <!-- 出口：只有一个（华为云码道），没有可切换的对象。
+       原来这里是两张「版本中枢」卡片，点一下切出口/看默认出口 ——
+       单一出口下这既是无效操作，卡片上还写着旧上游的域名，会误导人。 -->
+  <div class="realm-card" style="cursor:default;margin-bottom:18px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <span class="realm-badge-cn">华为云码道 (CodeArts)</span>
+        <span class="badge ok mini" style="font-weight:600">唯一出口</span>
       </div>
     </div>
-
-    <!-- 卡片 3: 网关出口控制 -->
-    <div id="cardGatewayCtrl" class="realm-card gateway-ctrl" style="cursor:default">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-        <span style="font-size:11px;font-weight:700;color:var(--dim);text-transform:uppercase;letter-spacing:.5px">网关默认出口</span>
-        <span id="activeGatewayKeyCount" class="badge ok mini" style="font-weight:600">0 个 Key 生效</span>
-      </div>
-      <div style="display:flex;align-items:center;gap:8px;margin:2px 0 8px">
-        <span id="gatewayDot" class="dot" style="width:9px;height:9px"></span>
-        <span id="activeGatewayName" style="font-size:20px;font-weight:700;color:var(--accent);letter-spacing:-.4px">国内版 (China)</span>
-      </div>
-      <div class="mono" style="font-size:11px;color:var(--dim);margin-top:auto">copilot.tencent.com · 唯一出口</div>
-    </div>
-
+    <div class="mono" style="font-size:11px;color:var(--dim)">snap-access.cn-north-4.myhuaweicloud.com</div>
   </div>
+
   <!-- 顶部统计条：三张统计卡（JS 每轮重画 #cards 内部）+ 调度器状态行，合成
        一块面板（分段的样式见 .gw-summary / #schedulerBar）。 -->
   <div class="gw-summary">
@@ -3399,11 +3374,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       </div>
       <button onclick="openCodeartsLogin()">添加 / 管理码道账号</button>
     </div>
-    <div id="codeartsPageHint">
-      <p class="hint" style="margin:0">
-        点上方按钮打开账号弹窗：可以看已连接的账号、领当日额度、重新授权。
-      </p>
-    </div>
+    <div id="codeartsPageList" data-codearts-list><p class="hint">正在读取…</p></div>
+    <p class="hint" style="margin:12px 0 0">
+      点上方按钮打开账号弹窗：可领当日额度、手动续期、重新授权或删除账号。
+    </p>
   </section>
   </div><!-- /pageAccounts -->
   
@@ -4219,7 +4193,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         与其它账号体系互不相干，也不参与请求调度。
       </p>
       <h3 style="font-size:13px;margin:18px 0 6px">已连接的码道账号</h3>
-      <div id="codeartsList"><p class="hint">正在读取…</p></div>
+      <div id="codeartsList" data-codearts-list><p class="hint">正在读取…</p></div>
       <h3 style="font-size:13px;margin:18px 0 6px">添加账号</h3>
       <div class="step" id="caStep1"><div class="n">1</div><div class="t" id="caStep1Text">正在生成授权链接…</div></div>
       <div class="step" id="caStep2"><div class="n">2</div><div class="t">在浏览器里打开下方链接，完成华为云登录</div></div>
@@ -4340,17 +4314,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 <script>
 let loginState = null, loginTimer = null;
 
-function openLogin(){
-  const m = document.getElementById("loginModal");
-  if(m) m.classList.add("show");
-}
 
-function closeLogin(){
-  const m = document.getElementById("loginModal");
-  if(m) m.classList.remove("show");
-  if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
-  if(loginState){ postJSON("/accounts/login/cancel", {state: loginState}).catch(()=>{}); loginState = null; }
-}
+
+
 
 
 
@@ -4455,17 +4421,20 @@ async function pollCodeartsLogin(){
 }
 
 async function loadCodeartsAccounts(){
-  const box = document.getElementById("codeartsList");
-  if(!box) return;
+  // 账号列表要同时出现在「账号」页和账号弹窗里，所以按标记取全部容器，
+  // 而不是只认弹窗里那个 —— 之前只渲染弹窗，页面上就看不到已添加的账号。
+  const boxes = Array.from(document.querySelectorAll('[data-codearts-list]'));
+  if(!boxes.length) return;
+  const set = function(html){ boxes.forEach(function(b){ b.innerHTML = html; }); };
   let r;
   try{ r = await getJSON("/accounts/codearts"); }
-  catch(e){ box.innerHTML = '<p class="hint">读取失败：' + esc(e.message) + '</p>'; return; }
+  catch(e){ set('<p class="hint">读取失败：' + esc(e.message) + '</p>'); return; }
   const list = (r && r.accounts) || [];
   if(!list.length){
-    box.innerHTML = '<p class="hint">还没有码道账号。走完下面一次授权就能添加一个。</p>';
+    set('<p class="hint">还没有码道账号。走完一次授权就能添加一个。</p>');
     return;
   }
-  box.innerHTML = list.map(function(a){
+  set(list.map(function(a){
     let badge = '<span class="ca-badge ok">有效</span>';
     let when = a.expires_at ? ("STS 到期 " + fmtTime(Date.parse(a.expires_at) / 1000)) : "STS 到期时间未知";
     if(a.sts_expired){
@@ -4487,7 +4456,7 @@ async function loadCodeartsAccounts(){
       + (a.renewable ? '<button class="sec mini" data-ca-id="' + id + '" onclick="refreshCodeartsAccount(this)">续期</button>' : "")
       + '<button class="sec mini" data-ca-id="' + id + '" onclick="deleteCodeartsAccount(this)">删除</button>'
       + '</div></div>';
-  }).join("");
+  }).join(""));
 }
 
 // 额度是「今天领没领」的唯一可信依据：领取接口幂等、查不到自己的履历，只有
@@ -4562,76 +4531,11 @@ async function deleteCodeartsAccount(btn){
 }
 
 
-async function triggerLoginForSelectedRealm(){
-  const realm = "cn";
-  const isCn = true;
 
-  if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
-  if(loginState){ postJSON("/accounts/login/cancel", {state: loginState}).catch(()=>{}); loginState = null; }
 
-  const linkBox = document.getElementById("loginLinkBox");
-  const statusBox = document.getElementById("loginStatus");
-  if(linkBox) linkBox.innerHTML = "";
-  if(statusBox) statusBox.textContent = "";
 
-  const s1 = document.getElementById("step1");
-  const s2 = document.getElementById("step2");
-  const s3 = document.getElementById("step3");
-  if(s1) s1.className = "step active";
-  if(s2) s2.className = "step";
-  if(s3) s3.className = "step";
 
-  const s1Text = document.getElementById("step1Text");
-  if(s1Text) s1Text.textContent = "正在向 copilot.tencent.com (国内版) 申请授权...";
 
-  try{
-    const r = await postJSON("/accounts/login/start", {platform: "CLI", realm: realm});
-    loginState = r.state;
-    if(s1) s1.className = "step done";
-    if(s2) s2.className = "step active";
-    if(linkBox) linkBox.innerHTML =
-      '<a class="login-link" id="loginLink" href="' + esc(r.authUrl) + '" target="_blank" rel="noopener">' + esc(r.authUrl) + '</a>'
-      + '<button class="sec mini" onclick="copyLoginLink()">复制登录链接</button>'
-      + '<div class="hint">点击上方链接在浏览器里完成登录授权。登录完成后本窗口会自动检测并完成入池。</div>';
-    pollLogin();
-    loginTimer = setInterval(pollLogin, 2500);
-  }catch(e){
-    if(statusBox) statusBox.textContent = "发起失败: " + e.message;
-    if(s1) s1.className = "step";
-  }
-}
-
-async function copyLoginLink(){
-  const link = document.getElementById("loginLink");
-  if(!link) return;
-  try{
-    await writeClipboard(link.getAttribute("href"));
-    toast('已复制到剪贴板', 'ok');
-  }catch(e){
-    toast('复制失败: ' + e.message, 'bad');
-  }
-}
-
-async function pollLogin(){
-  if(!loginState) return;
-  try{
-    const r = await getJSON("/accounts/login/poll?state=" + encodeURIComponent(loginState));
-    const s3 = document.getElementById("step3");
-    const statusBox = document.getElementById("loginStatus");
-    if(s3) s3.className = "step active";
-    if(statusBox) statusBox.textContent = r.message || r.status;
-    if(r.status === "ok"){
-      if(s3) s3.className = "step done";
-      if(statusBox) statusBox.textContent = "登录成功：" + (r.account && r.account.nickname) + " 已加入账号池";
-      if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
-      loginState = null;
-      await loadAccounts();
-      setTimeout(closeLogin, 1200);
-    }else if(r.status === "error" || r.status === "expired" || r.status === "unknown"){
-      if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
-    }
-  }catch(e){}
-}
 
 
 window.ACTIVE_GATEWAY_REALM = "cn";
@@ -4650,7 +4554,7 @@ function updateUI(){
   // 区块标题上的出口标签：这几个区块的内容都按当前视图区域取（账号、禁用汇总、
   // 最近请求、模型清单），标出来免得把数字看成全局的。用 <em> 承载：
   // 侧栏导航由 h2 生成时会剥掉 <em>，所以标签不会串进导航项。
-  const sectionRealm = "（国内版）";
+  const sectionRealm = "（码道）";
   ["disabledRealmTag", "recentRealmTag", "modelsRealmTag"].forEach(function(id){
     const el = document.getElementById(id);
     if(el) el.textContent = sectionRealm;
@@ -4669,7 +4573,7 @@ function updateUI(){
     gwName.style.color = "var(--bad)";
   }
   const ep = document.getElementById("activeEndpoint");
-  if(ep) ep.textContent = "https://copilot.tencent.com/v2";
+  // 网关出口信息卡已移除（原显示旧上游地址）
 
   const cardGw = document.getElementById("cardGatewayCtrl");
   if(cardGw){
@@ -4726,16 +4630,7 @@ function setViewRealm(r){
   renderDisabled();
 }
 
-async function switchViewRealm(r){
-  if(window.VIEW_REALM === r) return;
-  setViewRealm(r);
-  RECENT_PAGE = 1;
-  window.updateUI();
-  // 并行发起，不要逐个 await：国内版的成长任务一次要约 2 秒（上游两个接口），
-  // 串行排队时后面那些毫秒级的用量接口全被它堵着，切过去看着就是"过几秒才刷新"。
-  await Promise.all([loadAccounts(), loadModels(), loadGrowthTasks(),
-                     loadSchedulerStatus(), loadAnalytics(), refresh()]);
-};
+;
 
 async function refreshActiveRealm(){
   // Refresh which exit the gateway is switched to. Deliberately does NOT touch
@@ -4763,16 +4658,17 @@ async function initRealm(){
 }
 
 async function refreshModelCatalog(btn){
-  // 手动刷新模型清单：强制走一次上游 /v3/config（服务端执行，绕过 300s 缓存），
-  // 只刷当前视图版本——这张表显示的是哪个版本，刷新按钮就只拉哪个版本，绝
-  // 不跨区（服务端会挑该版本自己的账号发请求）。完成后立即重载表格。
-  const realm = 'cn';
-  const label = '国内版';
+  // 手动刷新模型清单：强制重取一次码道目录（服务端执行，绕过 300s 缓存），
+  // 完成后立即重载表格。
+  //
+  // 这里原本打的是 /catalog/refresh —— 那是旧上游（copilot.tencent.com）的
+  // 目录接口。本部署没有那种账号，点了必然失败，表现就是「按钮坏了」。
+  const label = '码道';
   if(btn) btn.disabled = true;
   const prevText = btn ? btn.textContent : '';
   if(btn) btn.textContent = '刷新中...';
   try{
-    const r = await postJSON('/catalog/refresh', {realm: realm});
+    const r = await postJSON('/accounts/codearts/refresh-catalog', {});
     if(r && r.ok){
       toast(label + '模型清单：' + (r.msg || '已更新'), 'ok');
       await loadModels();
@@ -9720,7 +9616,10 @@ function switchMainTab(tab){
     if(on) initPageNav(page);
   });
   if(tab === 'tasks'){ loadGrowthTasks(); }
-  if(tab === 'accounts' || (!_accountsSeparateTab && tab === 'gateway')){ loadActivityBoard(); }
+  if(tab === 'accounts' || (!_accountsSeparateTab && tab === 'gateway')){
+    loadActivityBoard();
+    loadCodeartsAccounts();
+  }
   if(tab === 'analytics'){ loadAnalytics(); loadAnalyticsMatrix(); }
   if(tab === 'settings'){ loadSettings(); loadProxySlots(); }
   if(tab === 'logs'){
