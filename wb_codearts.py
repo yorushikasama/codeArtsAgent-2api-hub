@@ -1300,32 +1300,86 @@ def delete_session(accounts_dir, account_id):
     return False
 
 
-def refresh_session(accounts_dir, account_id):
+#: STS 剩余寿命低于这个值就自动续期。码道 STS 只有约 2 小时寿命。
+REFRESH_MARGIN_SECONDS = float(os.environ.get("CODEARTS_REFRESH_MARGIN") or 300)
+
+#: refresh_token 一次性轮换：两个线程同时拿同一个旧 token 去换，后到的必然
+#: 1806。这里把「重读存档 → 换 token → 落盘」整段串行化，进程内只可能有一个
+#: 续期在飞；锁内重读还能让并发调用复用别人刚换回来的结果。
+_REFRESH_LOCK = threading.Lock()
+
+
+def refresh_session(accounts_dir, account_id, min_remaining=None):
     """用存档里的 DPoP 私钥 + refresh_token 续一次 STS，并覆盖存档。
+
+    min_remaining=None 表示无条件续期（面板上的「续期」按钮）；给数字则表示
+    「锁内重读后若剩余寿命已够长就直接复用」，自动续期走这条，避免刚续完又被
+    另一个线程拿新 token 再换一次。
 
     注意：refresh_token 是**一次性轮换**的，换成功会拿到新的 refresh_token。
     换失败（1806）说明被别的客户端用掉了或已过期，只能重新走浏览器登录。
     """
-    sessions = {((s.get("account") or {}).get("id")): s for s in load_sessions(accounts_dir)}
-    session = sessions.get(account_id)
+    with _REFRESH_LOCK:
+        sessions = {((s.get("account") or {}).get("id")): s
+                    for s in load_sessions(accounts_dir)}
+        session = sessions.get(account_id)
+        if not session:
+            raise CodeArtsError("找不到该码道账号的存档")
+        if min_remaining is not None:
+            current = summarize(session)
+            left = current.get("sts_remaining_seconds")
+            if not current.get("sts_expired") and isinstance(left, (int, float)) \
+                    and left >= min_remaining:
+                return session
+        if not session.get("refresh_token"):
+            raise CodeArtsError("该账号是 old_login 产物，没有 refresh_token，只能重新登录")
+
+        context = session.get("loginContext") or {}
+        key = import_keypair((context.get("dpopKeyPair") or {}).get("privateKeyJwk"))
+        pkce = context.get("pkcePair") or {}
+        if not pkce.get("codeVerifier"):
+            raise CodeArtsError("存档里缺少 code_verifier，无法续期")
+
+        response = refresh(key, pkce, session["refresh_token"])
+        renewed = session_from_iam_response(response, key, pkce, session.get("portal") or "")
+        # 服务端没回新 refresh_token 时沿用旧的（理论上不会，但别把好东西弄丢）
+        if not renewed.get("refresh_token"):
+            renewed["refresh_token"] = session["refresh_token"]
+        # 新 refresh_token 偶尔不带 user_profile。若直接落盘，account.id 会变成
+        # 空串、文件被写成 unknown.json，面板上账号名消失且旧文件再也续不上。
+        old_account = session.get("account") or {}
+        new_account = renewed.get("account") or {}
+        if not new_account.get("id"):
+            new_account["id"] = old_account.get("id") or ""
+        if not new_account.get("label"):
+            new_account["label"] = old_account.get("label") or ""
+        renewed["account"] = new_account
+        if not renewed.get("domainId"):
+            renewed["domainId"] = session.get("domainId") or ""
+        save_session(accounts_dir, renewed)
+        return renewed
+
+
+def ensure_fresh_session(accounts_dir, session, margin=None):
+    """STS 快到期/已过期且可续期时续一次，返回最新会话。
+
+    不需要续期、或该账号没有 refresh_token 时原样返回。真正续期失败会抛
+    CodeArtsError —— 调用方据此把「为什么领不到」写进日志/看板，而不是拿
+    过期凭证去打上游再收到一个含糊的 401。
+    """
     if not session:
-        raise CodeArtsError("找不到该码道账号的存档")
-    if not session.get("refresh_token"):
-        raise CodeArtsError("该账号是 old_login 产物，没有 refresh_token，只能重新登录")
-
-    context = session.get("loginContext") or {}
-    key = import_keypair((context.get("dpopKeyPair") or {}).get("privateKeyJwk"))
-    pkce = context.get("pkcePair") or {}
-    if not pkce.get("codeVerifier"):
-        raise CodeArtsError("存档里缺少 code_verifier，无法续期")
-
-    response = refresh(key, pkce, session["refresh_token"])
-    renewed = session_from_iam_response(response, key, pkce, session.get("portal") or "")
-    # 服务端没回新 refresh_token 时沿用旧的（理论上不会，但别把好东西弄丢）
-    if not renewed.get("refresh_token"):
-        renewed["refresh_token"] = session["refresh_token"]
-    save_session(accounts_dir, renewed)
-    return renewed
+        return session
+    current = summarize(session)
+    left = current.get("sts_remaining_seconds")
+    margin = REFRESH_MARGIN_SECONDS if margin is None else margin
+    need = current.get("sts_expired") or (
+        isinstance(left, (int, float)) and left < margin)
+    if not need or not current.get("renewable"):
+        return session
+    account_id = (session.get("account") or {}).get("id")
+    if not account_id:
+        return session
+    return refresh_session(accounts_dir, account_id, min_remaining=margin)
 
 
 # ---------------------------------------------------------------------------

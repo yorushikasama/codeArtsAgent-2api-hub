@@ -11,6 +11,7 @@
 """
 
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -651,6 +652,125 @@ finally:
 
 
 # ---------------------------------------------------------------------------
+# 自动续期：身份保留 + 过期判定
+# ---------------------------------------------------------------------------
+
+print()
+print("== 自动续期 ==")
+
+_root3 = tempfile.mkdtemp(prefix="wb-codearts-renew-")
+C.save_session(_root3, _session)
+_REFRESHED_NO_PROFILE = {
+    "credentials": {
+        "access_key_id": "HSTANEWKEY0000000000",
+        "secret_access_key": "SECRET2",
+        "security_token": "TOKEN2",
+        "expiration": "2099-01-01T00:00:00.000Z",
+    },
+    # 刻意不带 user_profile：服务端真实出现过这种响应，不能因此丢账号身份。
+    "refresh_token": _fake_jwt({}),
+}
+_real_refresh = C.refresh
+_refresh_calls = []
+
+
+def _stub_refresh(key, pkce, token):
+    _refresh_calls.append(token)
+    return _REFRESHED_NO_PROFILE
+
+
+C.refresh = _stub_refresh
+try:
+    _renewed = C.refresh_session(_root3, _session["account"]["id"])
+finally:
+    C.refresh = _real_refresh
+
+check("续期响应缺 user_profile 时保留原账号 id",
+      _renewed["account"]["id"] == _session["account"]["id"],
+      _renewed.get("account"))
+check("账号标签也保留",
+      _renewed["account"]["label"] == _session["account"]["label"],
+      _renewed.get("account"))
+check("domainId 不被清空", _renewed["domainId"] == _session["domainId"],
+      _renewed.get("domainId"))
+with open(C.session_path(_root3, _session["account"]["id"]), encoding="utf-8") as _fh:
+    _saved_renewed = json.load(_fh)
+check("新凭证落盘到原账号文件", _saved_renewed["accessKey"] == "HSTANEWKEY0000000000")
+check("不会额外写出 unknown.json",
+      not os.path.exists(os.path.join(C.session_dir(_root3), "unknown.json")))
+
+_now_fresh = dict(_session, expires_at="2099-01-01T00:00:00.000Z")
+_calls_before = len(_refresh_calls)
+C.refresh = _stub_refresh
+try:
+    _same = C.ensure_fresh_session(_root3, _now_fresh)
+finally:
+    C.refresh = _real_refresh
+check("STS 还很新时不续期", _same is _now_fresh and len(_refresh_calls) == _calls_before)
+
+_expired = dict(_session, expires_at="2020-01-01T00:00:00.000Z")
+C.save_session(_root3, _expired)
+C.refresh = _stub_refresh
+try:
+    _auto = C.ensure_fresh_session(_root3, _expired)
+finally:
+    C.refresh = _real_refresh
+check("过期会话续期后拿到新 AK", _auto["accessKey"] == "HSTANEWKEY0000000000",
+      _auto.get("accessKey"))
+
+_old_login = dict(_expired, refresh_token="")
+check("没有 refresh_token 的会话不会被误判为可续期",
+      C.ensure_fresh_session(_root3, _old_login) is _old_login)
+
+shutil.rmtree(_root3, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# 调度领取前先续期
+# ---------------------------------------------------------------------------
+
+print()
+print("== 调度领取前先续期 ==")
+
+_sched_dir = tempfile.mkdtemp(prefix="wb-sched-renew-")
+os.makedirs(os.path.join(_sched_dir, C.SESSION_SUBDIR), exist_ok=True)
+with open(os.path.join(_sched_dir, C.SESSION_SUBDIR, "live.json"), "w",
+          encoding="utf-8") as _fh:
+    json.dump(dict(_session, expires_at="2020-01-01T00:00:00.000Z"), _fh)
+
+_seen = {}
+
+
+def _stub_ensure(accounts_dir, session, margin=None):
+    _seen["ensure"] = (accounts_dir, (session.get("account") or {}).get("id"))
+    return dict(session, accessKey="RENEWEDAK", secretKey="S",
+                securitytoken="T", expires_at="2099-01-01T00:00:00.000Z")
+
+
+def _stub_claim(ak, sk, tok, session=None, trigger="unknown"):
+    _seen["claim"] = (ak, (session or {}).get("accessKey"))
+    return {"ok": True, "skipped": False, "msg": "ok"}
+
+
+_saved_ensure, _saved_claim = C.ensure_fresh_session, C.claim_and_verify
+C.ensure_fresh_session, C.claim_and_verify = _stub_ensure, _stub_claim
+try:
+    _sched2 = wb_scheduler.Scheduler(pool=None)
+    _sched2.accounts_dir = _sched_dir
+    _out = _sched2.claim_daily_tokens()
+finally:
+    C.ensure_fresh_session, C.claim_and_verify = _saved_ensure, _saved_claim
+    shutil.rmtree(_sched_dir, ignore_errors=True)
+
+check("领取前调用了续期",
+      _seen.get("ensure", (None, None))[1] == _session["account"]["id"], _seen)
+check("领取用的是续期后的 AK", _seen.get("claim") == ("RENEWEDAK", "RENEWEDAK"),
+      _seen)
+check("续期成功计为已领取",
+      _out.get("claimed") == 1 and _out.get("failed") == 0, _out)
+
+
+# ---------------------------------------------------------------------------
 # 模型清单：限时福利 + 内置两组
 # ---------------------------------------------------------------------------
 
@@ -865,6 +985,392 @@ check("None 不误判", not P.is_codearts_model(None))
 
 
 # ---------------------------------------------------------------------------
+# 模型目录：过期但可续期的账号仍要能刷出清单
+# ---------------------------------------------------------------------------
+#
+# 旧实现只留 STS 未过期的会话，闲置两小时后目录整体变空、看板「刷新榜单」
+# 只会回「没有可用码道账号」。refresh_token 明明还能换新 STS，所以判据必须
+# 是「未过期 **或** 可续期」。
+
+print()
+print("== 模型目录对可续期账号可用 ==")
+
+_cat_dir = tempfile.mkdtemp(prefix="wb-codearts-catalog-")
+C.save_session(_cat_dir, dict(_session, expires_at="2020-01-01T00:00:00.000Z"))
+_saved_dir = P.ACCOUNTS_DIR
+_saved_catalog = dict(P._CODEARTS_CATALOG)
+_saved_ensure_cat = C.ensure_fresh_session
+_saved_model_catalog = C.model_catalog
+
+
+def _ensure_cat(accounts_dir, session, margin=None):
+    return dict(session, accessKey="FRESHAK", secretKey="S",
+                securitytoken="T", expires_at="2099-01-01T00:00:00.000Z")
+
+
+def _model_catalog_cat(ak, sk, tok, timeout=None):
+    return {"models": [{"id": "deepseek-v4.1-flash", "routable": True}],
+            "errors": {}}
+
+
+P.ACCOUNTS_DIR = _cat_dir
+C.ensure_fresh_session = _ensure_cat
+C.model_catalog = _model_catalog_cat
+try:
+    _cat_out = dict(P.codearts_catalog(force=True))
+finally:
+    P.ACCOUNTS_DIR = _saved_dir
+    C.ensure_fresh_session = _saved_ensure_cat
+    C.model_catalog = _saved_model_catalog
+    P._CODEARTS_CATALOG.clear()
+    P._CODEARTS_CATALOG.update(_saved_catalog)
+    shutil.rmtree(_cat_dir, ignore_errors=True)
+
+check("过期但可续期的会话仍能刷新出模型",
+      [m.get("id") for m in _cat_out.get("models") or []]
+      == ["deepseek-v4.1-flash"], _cat_out)
+
+
+# ---------------------------------------------------------------------------
+# 分流前提：只有真的配了码道账号，重名模型才归码道
+# ---------------------------------------------------------------------------
+#
+# deepseek-v4.1-flash / glm-5.3 / glm-5.3-flash 两边都有。分流按「码道优先」，
+# 但前提是部署真的配了码道账号：纯 WorkBuddy 部署里这些名字在 /v1/models
+# 挂的是 WorkBuddy 条目，拐去码道只会让清单里列得出来的模型必然 503。
+
+print()
+print("== 重名模型的归属 ==")
+
+_ROUTE_DIR = tempfile.mkdtemp(prefix="wb-codearts-route-")
+os.makedirs(os.path.join(_ROUTE_DIR, C.SESSION_SUBDIR), exist_ok=True)
+with open(os.path.join(_ROUTE_DIR, C.SESSION_SUBDIR, "acct.json"), "w",
+          encoding="utf-8") as _fh:
+    json.dump({"accessKey": "AK", "secretKey": "SK", "securitytoken": "TK",
+               "account": {"id": "acct", "label": "acct"},
+               "expires_at": "2099-01-01T00:00:00.000Z"}, _fh)
+_saved_acc_dir = P.ACCOUNTS_DIR
+P.ACCOUNTS_DIR = _ROUTE_DIR
+check("配了码道账号后重名模型归码道",
+      P.routes_to_codearts("deepseek-v4.1-flash"))
+check("非码道模型永远不归码道", not P.routes_to_codearts("hy4-preview"))
+
+_NO_CS_DIR = tempfile.mkdtemp(prefix="wb-no-codearts-")
+P.ACCOUNTS_DIR = _NO_CS_DIR
+check("没有码道账号时重名模型留在 WorkBuddy 池",
+      not P.routes_to_codearts("deepseek-v4.1-flash"))
+P.ACCOUNTS_DIR = _ROUTE_DIR
+
+
+# ---------------------------------------------------------------------------
+# 清单归属必须跟分流一致
+# ---------------------------------------------------------------------------
+#
+# /v1/models 里那个 owned_by 是给客户端看的：它说这条模型归谁，请求就会发给谁。
+# 归属原来只跟着「码道目录这次取到了没有」走，上游抖动 / STS 过期时目录取空，
+# 条目就留在 owned_by=workbuddy 上，而请求其实拐去了码道 —— 清单在撒谎。
+
+print()
+print("== 清单归属跟着分流走 ==")
+
+_owned = [
+    {"id": "deepseek-v4.1-flash", "owned_by": "workbuddy"},
+    {"id": "hy4-preview", "owned_by": "workbuddy"},
+]
+P.mark_codearts_ownership(_owned)
+check("配了码道账号时重名条目标成 codearts",
+      _owned[0].get("owned_by") == "codearts"
+      and _owned[0].get("routed_via") == "codearts", _owned)
+check("不归码道的模型归属不动",
+      _owned[1].get("owned_by") == "workbuddy", _owned)
+
+P.ACCOUNTS_DIR = _NO_CS_DIR
+_owned2 = [{"id": "deepseek-v4.1-flash", "owned_by": "workbuddy"}]
+P.mark_codearts_ownership(_owned2)
+check("没有码道账号时归属保持 workbuddy",
+      _owned2[0].get("owned_by") == "workbuddy", _owned2)
+P.ACCOUNTS_DIR = _ROUTE_DIR
+
+
+# ---------------------------------------------------------------------------
+# 模型封锁不能被码道分流绕过去
+# ---------------------------------------------------------------------------
+#
+# /v1/responses 和 /v1/messages 都在分流前判「模型封禁 / 按 key 限模型」，
+# 唯独 /v1/chat/completions 原来先分流走码道，封锁判断压根没机会执行 ——
+# 面板里封掉的模型照样能通过码道调出去。三个入口必须一个口径。
+
+print()
+print("== 模型封锁不被码道分流绕过 ==")
+
+
+class _FakeBanHandler(object):
+    def __init__(self):
+        self.path = "/v1/chat/completions"
+        self.headers = {}
+        self.reached = False
+
+    def _error(self, code, message, err_type=None):
+        return {"code": code, "message": message}
+
+    def _banned_model_error(self, model):
+        return "model is banned" if model == "deepseek-v4.1-flash" else ""
+
+    def _key_model_error(self, model):
+        return "model not allowed for this key" if model == "glm-5.3-flash" else ""
+
+    def _handle_codearts_chat(self, payload):
+        self.reached = True
+        return {"code": 200}
+
+
+_ban = _FakeBanHandler()
+_banned_out = P.Handler._dispatch_chat_post(
+    _ban, "/v1/chat/completions", {"model": "deepseek-v4.1-flash"})
+check("封禁的码道模型在分流前就回 400",
+      isinstance(_banned_out, dict) and _banned_out.get("code") == 400,
+      _banned_out)
+check("封禁的模型没走到码道", not _ban.reached, _ban.reached)
+
+_ban2 = _FakeBanHandler()
+_keyed_out = P.Handler._dispatch_chat_post(
+    _ban2, "/v1/chat/completions", {"model": "glm-5.3-flash"})
+check("按 key 限掉的码道模型在分流前就回 400",
+      isinstance(_keyed_out, dict) and _keyed_out.get("code") == 400,
+      _keyed_out)
+check("按 key 限掉的模型没走到码道", not _ban2.reached, _ban2.reached)
+
+_ban3 = _FakeBanHandler()
+_ok_out = P.Handler._dispatch_chat_post(
+    _ban3, "/v1/chat/completions", {"model": "GLM-5.2"})
+check("没被封的码道模型照常走码道",
+      _ban3.reached and isinstance(_ok_out, dict)
+      and _ok_out.get("code") == 200, (_ban3.reached, _ok_out))
+
+
+# ---------------------------------------------------------------------------
+# /v1/responses：码道没有原生 Responses 端点，网关用翻译层桥接
+# ---------------------------------------------------------------------------
+#
+# 逆向本地 CodeArts 客户端（vscode-codebot/out/extension.js）确认：它只发
+# chat/completions 形状，没有 /v1/responses、previous_response_id 或 Responses
+# 流事件。所以网关必须自己把 Responses 请求翻成 chat，再把码道的 SSE 还原成
+# Responses 的 JSON / 事件流。这里钉住桥接的两条出口。
+
+print()
+print("== 码道 Responses 桥接 ==")
+
+
+class _FakeResponsesHandler(P.Handler):
+    def __init__(self):
+        self.path = "/v1/responses"
+        self.wfile = io.BytesIO()
+        self.status = None
+        self.payload = None
+
+    def _json(self, code, obj):
+        self.status = code
+        self.payload = obj
+        return code, obj
+
+    def send_response(self, code):
+        self.status = code
+
+    def send_header(self, key, value):
+        pass
+
+    def end_headers(self):
+        pass
+
+    def _key_id(self):
+        return "test-key"
+
+    def _anthropic_error(self, code, message, err_type=None):
+        self.status = code
+        self.payload = {"type": "error",
+                        "error": {"type": err_type or "api_error",
+                                  "message": message}}
+        return code, self.payload
+
+
+_CHAT_RAW = (
+    'data: {"choices":[{"delta":{"content":"你"}}]}\n\n'
+    'data: {"choices":[{"delta":{"content":"好"},"finish_reason":"stop"}]}\n\n'
+    "data: [DONE]\n\n"
+)
+
+
+def _stub_codearts(payload, want_stream=None, error_factory=None):
+    return None, {
+        "model": payload.get("model"),
+        "content": "你好",
+        "reasoning": "",
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        "raw": _CHAT_RAW,
+        "want_stream": bool(want_stream),
+    }
+
+
+_h = _FakeResponsesHandler()
+_h._codearts_chat_result = _stub_codearts
+_h._responses_codearts({"model": "deepseek-v4.1-flash", "messages": []},
+                       False, set(), {"tools": []}, None)
+check("非流式回 response 对象",
+      isinstance(_h.payload, dict) and _h.payload.get("object") == "response",
+      _h.payload)
+check("非流式正文进 output_text", _h.payload.get("output_text") == "你好",
+      _h.payload)
+check("非流式保留 usage",
+      (_h.payload.get("usage") or {}).get("input_tokens") == 3, _h.payload)
+
+_h = _FakeResponsesHandler()
+_h._codearts_chat_result = _stub_codearts
+_h._responses_codearts({"model": "deepseek-v4.1-flash", "messages": []},
+                       True, set(), {"tools": []}, None)
+_sse = _h.wfile.getvalue().decode("utf-8")
+check("流式发 Responses 事件（不是 chat.completion.chunk）",
+      "response.output_text.delta" in _sse
+      and "chat.completion.chunk" not in _sse, _sse[:300])
+check("流式事件带 sequence_number", '"sequence_number"' in _sse)
+check("流式以 response.completed 收尾",
+      "response.completed" in _sse and "你好" in _sse, _sse[-400:])
+
+# 入口分流：码道模型必须在这里就拐走，不能再落到 WorkBuddy 账号池
+# （修复前的病灶：/v1/responses 只认 WorkBuddy 的 open_upstream，
+# 码道模型在 /v1/models 里看得见，走 Responses 却永远 503）。
+_h = _FakeResponsesHandler()
+_h.headers = {}
+_h.key_entry = None
+_h._codearts_chat_result = _stub_codearts
+_h._request_realm = lambda explicit=None: "cn"
+_hit = {"open_upstream": False}
+_saved_open = P.open_upstream
+
+
+def _no_open(*args, **kwargs):
+    _hit["open_upstream"] = True
+    raise AssertionError("codearts 请求不该走 WorkBuddy 账号池")
+
+
+P.open_upstream = _no_open
+try:
+    _h._handle_responses({"model": "deepseek-v4.1-flash", "input": "hi"})
+finally:
+    P.open_upstream = _saved_open
+
+check("Responses 对码道模型不再落到 WorkBuddy 账号池",
+      not _hit["open_upstream"], _hit)
+check("Responses 入口能返回码道正文",
+      (_h.payload or {}).get("output_text") == "你好", _h.payload)
+
+
+# ---------------------------------------------------------------------------
+# Anthropic Messages：同一个缺口，开关打开后码道模型也不能掉进空池
+# ---------------------------------------------------------------------------
+
+print()
+print("== 码道 Messages 桥接 ==")
+
+_h = _FakeResponsesHandler()
+_h._codearts_chat_result = _stub_codearts
+_h._messages_codearts({"model": "deepseek-v4.1-flash", "messages": []}, False)
+_msg_blocks = (_h.payload or {}).get("content") or []
+check("Messages 非流式回 Anthropic message",
+      (_h.payload or {}).get("type") == "message", _h.payload)
+check("Messages 非流式正文进 text block",
+      any(b.get("type") == "text" and b.get("text") == "你好"
+          for b in _msg_blocks), _h.payload)
+check("Messages 非流式保留 usage",
+      (_h.payload.get("usage") or {}).get("input_tokens") == 3, _h.payload)
+check("Messages 非流式回填 model",
+      _h.payload.get("model") == "deepseek-v4.1-flash", _h.payload)
+
+_h = _FakeResponsesHandler()
+_h._codearts_chat_result = _stub_codearts
+_h._messages_codearts({"model": "deepseek-v4.1-flash", "messages": []}, True)
+_sse = _h.wfile.getvalue().decode("utf-8")
+check("Messages 流式事件齐全",
+      "event: message_start" in _sse
+      and "text_delta" in _sse
+      and "event: message_stop" in _sse, _sse[:400])
+
+_h = _FakeResponsesHandler()
+_h.headers = {}
+_h.key_entry = None
+_h._codearts_chat_result = _stub_codearts
+_h._request_realm = lambda explicit=None: "cn"
+_hit = {"open_upstream": False}
+P.open_upstream = _no_open
+try:
+    _h._handle_messages({"model": "deepseek-v4.1-flash",
+                         "messages": [{"role": "user", "content": "hi"}],
+                         "max_tokens": 16})
+finally:
+    P.open_upstream = _saved_open
+check("Messages 对码道模型不再落到 WorkBuddy 账号池",
+      not _hit["open_upstream"], _hit)
+check("Messages 入口能返回码道正文",
+      any(b.get("type") == "text" and b.get("text") == "你好"
+          for b in (_h.payload or {}).get("content") or []), _h.payload)
+
+
+# ---------------------------------------------------------------------------
+# 发给码道的消息：角色名归一，正文不动
+# ---------------------------------------------------------------------------
+
+print()
+print("== 码道链路的角色归一 ==")
+
+_seen = {}
+
+
+def _fake_chat(ak, sk, tok, model, messages, max_tokens=None, stream=True):
+    _seen["model"] = model
+    _seen["messages"] = messages
+    _seen["max_tokens"] = max_tokens
+    _seen["stream"] = stream
+    return 200, (
+        'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
+        'data: {"usage":{"prompt_tokens":1,"completion_tokens":1,'
+        '"total_tokens":2}}\n\ndata: [DONE]\n\n')
+
+
+_saved_pick = P.pick_codearts_session
+_saved_chat = C.chat_for_model
+_saved_record = P.record_usage
+P.pick_codearts_session = lambda: {
+    "accessKey": "AK", "secretKey": "SK", "securitytoken": "TK",
+    "account": {"id": "a", "label": "a"},
+    "expires_at": "2099-01-01T00:00:00.000Z"}
+C.chat_for_model = _fake_chat
+P.record_usage = lambda *a, **k: None
+try:
+    _err, _res = P.Handler._codearts_chat_result(
+        _FakeResponsesHandler(),
+        {"model": "deepseek-v4.1-flash",
+         "messages": [
+             {"role": "developer", "content": "you are a coding agent"},
+             {"role": "user", "content": [{"type": "text", "text": "yo"}]},
+         ]},
+        want_stream=False)
+finally:
+    P.pick_codearts_session = _saved_pick
+    C.chat_for_model = _saved_chat
+    P.record_usage = _saved_record
+
+_sent = _seen.get("messages") or []
+check("developer 角色发出去前归一成 system",
+      bool(_sent) and _sent[0].get("role") == "system", _sent)
+check("多模态的 content 分片保持原样",
+      len(_sent) > 1 and isinstance(_sent[1].get("content"), list), _sent)
+check("上游按流式请求（码道只收流式）", _seen.get("stream") is True, _seen)
+
+
+# ---------------------------------------------------------------------------
+
+P.ACCOUNTS_DIR = _saved_acc_dir
+shutil.rmtree(_ROUTE_DIR, ignore_errors=True)
+shutil.rmtree(_NO_CS_DIR, ignore_errors=True)
 
 print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))

@@ -150,6 +150,14 @@ class Scheduler:
         for sess in sessions:
             acct = sess.get("account") or {}
             label = acct.get("label") or acct.get("id") or "码道账号"
+            # STS 只有约 2 小时寿命，而调度是 09:00 / 21:00 各跑一次：不先在
+            # 这里续期，闲置两小时后领取永远是 401，日志里天天「领取失败」。
+            try:
+                sess = wb_codearts.ensure_fresh_session(self.accounts_dir, sess)
+                acct = sess.get("account") or acct
+                label = acct.get("label") or acct.get("id") or label
+            except Exception as exc:  # noqa: BLE001
+                logs.append("! %s STS 续期失败: %s" % (label, exc))
             key = (sess.get("accessKey"), sess.get("secretKey"),
                    sess.get("securitytoken"))
             if not all(key):

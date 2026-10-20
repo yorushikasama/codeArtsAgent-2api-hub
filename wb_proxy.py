@@ -10288,9 +10288,15 @@ def codearts_catalog(force=False):
     if not force and (now - _CODEARTS_CATALOG["at"]) < _CODEARTS_CATALOG_TTL:
         return _CODEARTS_CATALOG
     sessions = wb_codearts.load_sessions(ACCOUNTS_DIR)
-    live = [s for s in sessions
-            if not wb_codearts.summarize(s).get("sts_expired")]
-    if not live:
+    # 「可用」= STS 未过期，**或虽然过期但还能续期**。以前只留前者，导致服务
+    # 闲置两小时后 /v1/models 里的码道模型整体消失、看板「刷新榜单」也只会
+    # 回「没有可用码道账号」—— 明明账号还在、refresh_token 也还有效。
+    usable = []
+    for candidate in sessions:
+        _, expired, renewable = _codearts_left(candidate)
+        if not expired or renewable:
+            usable.append(candidate)
+    if not usable:
         # 把「为什么空」写进 errors：面板要靠它告诉用户是没账号还是 STS 过期，
         # 而不是只显示一片空白。
         reason = ("no codearts account" if not sessions
@@ -10298,7 +10304,18 @@ def codearts_catalog(force=False):
         _CODEARTS_CATALOG.update({"at": now, "models": [],
                                   "errors": {"sessions": reason}})
         return _CODEARTS_CATALOG
-    sess = live[0]
+    # 过期但可续期的会话现续；一个账号续失败就试下一个，全部失败才算空。
+    sess = None
+    for candidate in usable:
+        candidate = _ensure_fresh(candidate)
+        if not _codearts_left(candidate)[1]:
+            sess = candidate
+            break
+    if sess is None:
+        _CODEARTS_CATALOG.update({
+            "at": now, "models": [],
+            "errors": {"sessions": "codearts STS expired and renewal failed"}})
+        return _CODEARTS_CATALOG
     try:
         cat = wb_codearts.model_catalog(
             sess.get("accessKey"), sess.get("secretKey"),
@@ -10329,11 +10346,49 @@ def is_codearts_model(model_id):
     return str(model_id or "") in wb_codearts.CHAT_MODELS
 
 
+def codearts_deployed():
+    """这个部署是否真的配了码道账号（会话文件存在且能读出来）。
+
+    判据和 /v1/models 里那句「有没有码道账号」完全一致：都看会话存不存在，
+    不看目录取没取到模型 —— 上游抖动时目录会空，但账号还在。
+    """
+    try:
+        return bool(wb_codearts.load_sessions(ACCOUNTS_DIR))
+    except Exception:
+        return False
+
+
+def routes_to_codearts(model_id):
+    """这个模型该由码道服务吗。
+
+    重名模型（deepseek-v4.1-flash / glm-5.3 / glm-5.3-flash 两边都有）按
+    **码道优先** 分流，但前提是部署真的配了码道账号：纯 WorkBuddy 部署里
+    这些名字在 /v1/models 里挂的是 WorkBuddy 条目，无条件拐去码道只会让
+    清单里列得出来的模型必然 503。
+    """
+    return is_codearts_model(model_id) and codearts_deployed()
+
+
+def mark_codearts_ownership(entries):
+    """把重名条目的归属改成跟实际分流一致。
+
+    分流看的是「模型名在码道清单里 + 这个部署配了码道账号」
+    （routes_to_codearts），不依赖码道目录能不能取到。清单的归属必须跟着
+    分流走：否则上游抖动 / STS 过期时条目会留在 owned_by=workbuddy 上，
+    而请求其实拐去了码道 —— 清单在撒谎，客户端会以为打不通的是 WorkBuddy。
+    """
+    for entry in entries or []:
+        if entry.get("owned_by") == "codearts":
+            continue
+        if routes_to_codearts(entry.get("id")):
+            entry["owned_by"] = "codearts"
+            entry["routed_via"] = "codearts"
+    return entries
+
+
 #: STS 剩这么多秒时就开始续期。码道的 STS 只有约 2 小时寿命，
 #: 不自动续的话服务会每隔两小时静默 503 一次（实测踩到过）。
-CODEARTS_REFRESH_MARGIN = float(os.environ.get("CODEARTS_REFRESH_MARGIN") or 300)
-
-_CODEARTS_RENEW_LOCK = threading.Lock()
+CODEARTS_REFRESH_MARGIN = wb_codearts.REFRESH_MARGIN_SECONDS
 
 
 def _codearts_left(sess):
@@ -10349,35 +10404,21 @@ def _codearts_left(sess):
 def _ensure_fresh(sess):
     """STS 快到期（或已过期）就先续一次，别等请求打到上游才 503。
 
-    refresh_token 是**一次性轮换**的，所以必须：
-      · 只在快过期时才续，不能每次请求都换（会疯狂轮换且并发必然撞车）；
-      · 续期全程持锁，并在锁内**重读存档** —— 别的线程可能刚续过，
-        再拿旧 refresh_token 去换会直接被判作废（1806）。
+    串行化与「锁内重读」都在 wb_codearts.refresh_session 里完成，这里只管
+    打日志和兜底：续期失败时把旧会话原样交回，让调用方拿到上游的真实错误。
     """
-    left, expired, renewable = _codearts_left(sess)
-    need = expired or (isinstance(left, (int, float)) and left < CODEARTS_REFRESH_MARGIN)
-    if not need or not renewable:
+    left = _codearts_left(sess)[0]
+    try:
+        renewed = wb_codearts.ensure_fresh_session(
+            ACCOUNTS_DIR, sess, CODEARTS_REFRESH_MARGIN)
+    except Exception as exc:      # noqa: BLE001
+        log("codearts: STS renew failed for %s: %s"
+            % ((sess.get("account") or {}).get("label"), exc), level="WARN")
         return sess
-    aid = (sess.get("account") or {}).get("id")
-    if not aid:
-        return sess
-    with _CODEARTS_RENEW_LOCK:
-        fresh = {((s.get("account") or {}).get("id")): s
-                 for s in wb_codearts.load_sessions(ACCOUNTS_DIR)}.get(aid)
-        if fresh:
-            fleft, fexpired, _ = _codearts_left(fresh)
-            if not fexpired and isinstance(fleft, (int, float)) \
-                    and fleft >= CODEARTS_REFRESH_MARGIN:
-                return fresh          # 别人刚续过，用他的
-        try:
-            renewed = wb_codearts.refresh_session(ACCOUNTS_DIR, aid)
-            log("codearts: renewed STS for %s (was %ss left)"
-                % ((sess.get("account") or {}).get("label"), left))
-            return renewed
-        except Exception as exc:      # noqa: BLE001
-            log("codearts: STS renew failed for %s: %s"
-                % ((sess.get("account") or {}).get("label"), exc), level="WARN")
-            return sess
+    if renewed is not sess:
+        log("codearts: renewed STS for %s (was %ss left)"
+            % ((sess.get("account") or {}).get("label"), left))
+    return renewed
 
 
 def pick_codearts_session():
@@ -10489,6 +10530,24 @@ def _collect_codearts_sse(text):
             content += delta.get("content") or ""
             reasoning += delta.get("reasoning_content") or ""
     return content, reasoning, usage, err
+
+
+class _BufferedSSELines:
+    """把已经收完的 SSE 文本伪装成字节行流。
+
+    码道只支持「一次请求读完整条流」，而 Responses 的事件翻译器吃的是
+    可迭代的行流。桥接层拿到的既然已经是完整文本，就按行重放给它，
+    这样流式/非流式两条路径共用同一套事件生成逻辑。
+    """
+
+    def __init__(self, text):
+        self._lines = (text or "").encode("utf-8").splitlines(keepends=True)
+
+    def __iter__(self):
+        return iter(self._lines)
+
+    def close(self):
+        pass
 
 
 def model_entry(mid, meta):
@@ -16695,8 +16754,12 @@ class Handler(BaseHTTPRequestHandler):
         #     （那批模型一个都调不通，列出来只会让人以为网关坏了）
         #   · 一个账号都没有                → 照旧列静态目录，纯预览用
         # 第三条不能省：没有它，未配置账号的部署和测试里注入的目录都会变成空清单。
-        has_codearts = bool(codearts_catalog().get("models"))
-        if wb_accounts_available() or not has_codearts:
+        #
+        # 判据必须是「有没有码道账号」，不能是「目录取没取到模型」：后者在上游
+        # 抖动 / refresh_token 彻底失效时也是空的，那时拿内置快照兜底，等于向
+        # 客户端宣告一批必然 503 的模型。
+        has_codearts_account = codearts_deployed()
+        if wb_accounts_available() or not has_codearts_account:
             try:
                 entries = fetch_models(realm=req_realm)
             except Exception as exc:
@@ -16742,6 +16805,12 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             payload_extra = {"codearts": {"count": 0,
                                           "errors": {"catalog": str(exc)}}}
+        # 归属必须跟分流一致：分流看的是「模型名在码道清单里 + 这个部署配了
+        # 码道账号」（routes_to_codearts），不依赖码道目录能不能取到。上面的
+        # 循环只在目录非空时才会把重名条目标成 codearts，目录取空时（上游抖动 /
+        # STS 过期且 refresh_token 也失效）条目会留在 workbuddy 上，而请求其实
+        # 拐去了码道 —— 清单在撒谎，客户端会以为打不通的是 WorkBuddy 那边。
+        mark_codearts_ownership(data)
         payload = {"object": "list", "data": data,
                    "realm": req_realm or CURRENT_REALM}
         payload.update(payload_extra)
@@ -17027,6 +17096,16 @@ class Handler(BaseHTTPRequestHandler):
         for session in sessions:
             acct = session.get("account") or {}
             label = acct.get("label") or acct.get("id") or "码道账号"
+            try:
+                # 领取要打上游，先把快要过期的 STS 续掉。否则闲置两小时后
+                # 「一键领取」永远失败，而账号本身明明还能自动续期。
+                session = wb_codearts.ensure_fresh_session(
+                    ACCOUNTS_DIR, session, CODEARTS_REFRESH_MARGIN)
+                acct = session.get("account") or acct
+                label = acct.get("label") or acct.get("id") or label
+            except Exception as exc:  # noqa: BLE001
+                log("codearts: claim renew failed for %s: %s" % (label, exc),
+                    level="WARN")
             try:
                 res = wb_codearts.claim_and_verify(
                     session.get("accessKey"), session.get("secretKey"),
@@ -18767,6 +18846,11 @@ class Handler(BaseHTTPRequestHandler):
             key_blocked = self._key_model_error(chat_req.get("model"))
             if key_blocked:
                 return self._error(400, key_blocked, "invalid_request_error")
+            # 码道没有原生 Responses 端点（逆向本地客户端确认它只发
+            # chat/completions 形状），这里用同一套翻译层桥接。
+            if routes_to_codearts(chat_req.get("model")):
+                return self._responses_codearts(
+                    chat_req, want_stream, custom_names, request_meta, ns_map)
             upstream, account, effort = open_upstream(
                 chat_req, session_key=session_key, target_realm=req_realm)
         except ContentRejected as exc:
@@ -18985,6 +19069,9 @@ class Handler(BaseHTTPRequestHandler):
             key_blocked = self._key_model_error(chat_req.get("model"))
             if key_blocked:
                 return self._anthropic_error(400, key_blocked, "invalid_request_error")
+            # 与 /v1/responses 同一个缺口：码道模型不能落进 WorkBuddy 空池。
+            if routes_to_codearts(chat_req.get("model")):
+                return self._messages_codearts(chat_req, want_stream)
             upstream, account, effort = open_upstream(
                 chat_req, session_key=session_key, target_realm=req_realm)
         except ContentRejected as exc:
@@ -19250,16 +19337,29 @@ class Handler(BaseHTTPRequestHandler):
 
 
     # ---- 码道模型：按模型名分流到华为云推理入口 ----
-    def _handle_codearts_chat(self, payload):
-        """把一个 OpenAI 形状的请求转发给码道，再把结果转回 OpenAI 形状。
+    def _codearts_chat_result(self, payload, want_stream=None, error_factory=None):
+        """跑一次码道推理，把 SSE 聚合成结果。
 
         上游**只支持流式**（glm-5.3 传非流式直接 400 空响应体），所以这里
-        统一按 stream=True 请求，客户端要非流式时由我们聚合 —— 不把上游的
+        统一按 stream=True 请求，客户端要非流式时由调用方聚合 —— 不把上游的
         形态限制泄漏给调用方。
+
+        返回 (error, result)：失败时 error 是已构造好的响应元组；成功时
+        result 带 content/reasoning/usage/raw，供 Chat / Responses / Messages
+        三种协议各自渲染。error_factory 传对应协议的错误信封构造器（默认
+        OpenAI），Messages 链路必须换成 Anthropic 的，否则 Claude Code 认不出
+        错误体。
         """
+        fail = error_factory or self._error
         model = str(payload.get("model") or "")
-        messages = payload.get("messages") or []
-        want_stream = bool(payload.get("stream"))
+        # 角色名归一：OpenAI 的 chat 入口会带 "developer" 角色（Codex CLI 的
+        # 系统提示就是这么发的），上游只认 system / user / assistant。
+        # WorkBuddy 那条路走 build_upstream_body 时已经归一过一次，码道这条
+        # 路是直通的，漏掉就会整条 400。正文一律不动 —— 多模态模型靠
+        # content 里的图片分片表达。
+        messages = normalize_roles(payload.get("messages") or [])
+        if want_stream is None:
+            want_stream = bool(payload.get("stream"))
         max_tokens = (payload.get("max_tokens")
                       or payload.get("max_completion_tokens") or 4096)
         try:
@@ -19269,11 +19369,11 @@ class Handler(BaseHTTPRequestHandler):
 
         session = pick_codearts_session()
         if session is None:
-            return self._error(
+            return fail(
                 503,
                 "no usable codearts account (STS expired or not logged in); "
                 "re-authorize it in the panel",
-                "invalid_request_error")
+                "invalid_request_error"), None
 
         account_label = (session.get("account") or {}).get("label")
         t_start = time.time()
@@ -19303,8 +19403,8 @@ class Handler(BaseHTTPRequestHandler):
             record_error(model, 502, str(last_exc)[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=account_label, key=self._key_id())
-            return self._error(502, "codearts unreachable: %s" % last_exc,
-                               "upstream_error")
+            return fail(502, "codearts unreachable: %s" % last_exc,
+                        "upstream_error"), None
 
         if status not in (200, 201):
             try:
@@ -19318,17 +19418,17 @@ class Handler(BaseHTTPRequestHandler):
             record_error(model, 502, ("%s %s" % (code, detail))[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=account_label, key=self._key_id())
-            return self._error(
+            return fail(
                 502, "codearts returned %s: %s" % (status, detail or code),
-                "upstream_error")
+                "upstream_error"), None
 
         content, reasoning, usage, frame_err = _collect_codearts_sse(text)
         if frame_err and not content and not reasoning:
             record_error(model, 502, frame_err[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=account_label, key=self._key_id())
-            return self._error(502, "codearts error: %s" % frame_err,
-                               "upstream_error")
+            return fail(502, "codearts error: %s" % frame_err,
+                        "upstream_error"), None
 
         elapsed_ms = int((time.time() - t_start) * 1000)
         try:
@@ -19337,6 +19437,26 @@ class Handler(BaseHTTPRequestHandler):
                          key=self._key_id(), outcome="completed")
         except Exception:
             pass
+
+        return None, {
+            "model": model,
+            "content": content,
+            "reasoning": reasoning,
+            "usage": usage,
+            "raw": text,
+            "want_stream": want_stream,
+        }
+
+    def _handle_codearts_chat(self, payload):
+        """把一个 OpenAI 形状的请求转发给码道，再把结果转回 OpenAI 形状。"""
+        error, result = self._codearts_chat_result(payload)
+        if error is not None:
+            return error
+        model = result["model"]
+        content = result["content"]
+        reasoning = result["reasoning"]
+        usage = result["usage"]
+        want_stream = result["want_stream"]
 
         created = int(time.time())
         cid = "chatcmpl-codearts-%s" % uuid.uuid4().hex[:24]
@@ -19384,8 +19504,120 @@ class Handler(BaseHTTPRequestHandler):
             emit(chunk({}, "stop", {"usage": usage}))
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
+        return None
+
+    def _responses_codearts(self, chat_req, want_stream, custom_names,
+                            request_meta, namespace_map):
+        """用 Responses 协议服务码道模型。
+
+        翻译在进站时由 responses_to_chat() 完成；这里只负责把码道的
+        chat-completions 结果转回 Responses 的 JSON / 事件流。
+        """
+        error, result = self._codearts_chat_result(
+            chat_req, want_stream=want_stream)
+        if error is not None:
+            return error
+        model = result["model"]
+        if not want_stream:
+            message = {"role": "assistant", "content": result["content"]}
+            if result["reasoning"]:
+                message["reasoning_content"] = result["reasoning"]
+            chat_obj = {
+                "choices": [{"index": 0, "message": message,
+                             "finish_reason": "stop"}],
+                "usage": result["usage"],
+            }
+            return self._json(200, chat_to_response(
+                chat_obj, model, custom_names, request_meta, namespace_map))
+
+        holder = {
+            "usage": None,
+            "custom_names": custom_names,
+            "request_meta": request_meta,
+            "namespace_map": namespace_map,
+            "base_body": chat_req,
+            "base_messages": chat_req.get("messages"),
+        }
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        if cors_origin_allowed(self.path):
+            self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        try:
+            for frame in stream_responses_events(
+                    _BufferedSSELines(result["raw"]), model, holder):
+                self.wfile.write(clean_responses_frame(frame))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        except Exception as exc:                 # noqa: BLE001
+            # 头已经发出去了，不能再回 JSON 错误；按既有流式路径的约定
+            # 收尾，避免外层分发器触发「headers already sent」。
+            log("responses/codearts stream aborted: %s" % exc)
+            try:
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except Exception:
+                pass
+            return
+        return None
+
+    def _messages_codearts(self, chat_req, want_stream):
+        """用 Anthropic Messages 协议服务码道模型。
+
+        Messages 入口默认关闭，但一旦打开，码道模型同样不能落进
+        WorkBuddy 空池；错误信封也必须换成 Anthropic 的，否则 Claude Code
+        会把 503 当成不可重试的协议错误。
+        """
+        def anthropic_error(code, message, _err_type=None):
+            return self._anthropic_error(code, message)
+
+        error, result = self._codearts_chat_result(
+            chat_req, want_stream=want_stream, error_factory=anthropic_error)
+        if error is not None:
+            return error
+        model = result["model"]
+        if not want_stream:
+            message = {"role": "assistant", "content": result["content"]}
+            if result["reasoning"]:
+                message["reasoning_content"] = result["reasoning"]
+            chat_obj = {
+                "id": "chatcmpl-codearts-%s" % uuid.uuid4().hex[:24],
+                "model": model,
+                "choices": [{"index": 0, "message": message,
+                             "finish_reason": "stop"}],
+                "usage": result["usage"],
+            }
+            return self._json(200, chat_to_messages(chat_obj))
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        if cors_origin_allowed(self.path):
+            self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        holder = {"usage": None}
+        try:
+            for frame in stream_messages_events(
+                    _BufferedSSELines(result["raw"]), model, holder):
+                self.wfile.write(frame)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
+        except Exception as exc:                 # noqa: BLE001
+            log("messages/codearts stream aborted: %s" % exc)
+            try:
+                self.wfile.write(anthropic_sse_frame("error", {
+                    "error": {"type": "api_error", "message": str(exc)}}))
+                self.wfile.flush()
+            except Exception:
+                pass
+            return
         return None
 
     def _dispatch_chat_post(self, path, payload):
@@ -19403,9 +19635,18 @@ class Handler(BaseHTTPRequestHandler):
                                    "invalid_request_error")
         if path in ("/v1/responses", "/responses"):
             return self._handle_responses(payload)
+        # 模型封锁和 per-key 限模型在分流之前判：码道走的也是这个入口，
+        # 漏判的话面板里的封禁 / 按 key 限模型会被码道这条路绕过去
+        #（/v1/responses 和 /v1/messages 都是在分流前判的，三个入口必须一致）。
+        banned = self._banned_model_error(payload.get("model"))
+        if banned:
+            return self._error(400, banned, "invalid_request_error")
+        key_blocked = self._key_model_error(payload.get("model"))
+        if key_blocked:
+            return self._error(400, key_blocked, "invalid_request_error")
         # 码道模型走另一套凭证体系，先按模型名分流，
         # 别进 WorkBuddy 账号池的选路。
-        if is_codearts_model(payload.get("model")):
+        if routes_to_codearts(payload.get("model")):
             return self._handle_codearts_chat(payload)
         # Diagnostics: what the client actually asked for, and what we forward.
         # Only the knobs that change behaviour are logged - never message text.
@@ -19429,12 +19670,6 @@ class Handler(BaseHTTPRequestHandler):
         t_start = time.time()
         try:
             req_realm = self._request_realm() or CURRENT_REALM
-            banned = self._banned_model_error(payload.get("model"))
-            if banned:
-                return self._error(400, banned, "invalid_request_error")
-            key_blocked = self._key_model_error(payload.get("model"))
-            if key_blocked:
-                return self._error(400, key_blocked, "invalid_request_error")
             upstream, account, effort = open_upstream(
                 payload, session_key=session_key, target_realm=req_realm,
                 prebuilt_body=forwarded)
