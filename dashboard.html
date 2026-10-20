@@ -4450,6 +4450,17 @@ function caSetStep(n, cls){
   if(el) el.className = "step" + (cls ? " " + cls : "");
 }
 
+/* 时间戳格式化。注意：不能用数据看板那段的 fmtTime ——
+   它整个包在 (function(){...})() 里，是那段脚本的私有函数，
+   从账号区块调用会直接 ReferenceError（实测踩过，账号列表因此永远停在
+   「正在读取…」）。这里放一份全局可用的。 */
+function caStamp(epochSec){
+  const d = new Date(Number(epochSec) * 1000);
+  if(!isFinite(d.getTime())) return "时间未知";
+  const p = n => String(n).padStart(2, "0");
+  return (d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+
 function caLeft(seconds){
   const s = Math.max(0, Math.round(Number(seconds) || 0));
   if(s < 60) return s + " 秒";
@@ -4549,29 +4560,38 @@ async function loadCodeartsAccounts(){
     set('<p class="hint">还没有码道账号。走完一次授权就能添加一个。</p>');
     return;
   }
-  set(list.map(function(a){
-    let badge = '<span class="ca-badge ok">有效</span>';
-    let when = a.expires_at ? ("STS 到期 " + fmtTime(Date.parse(a.expires_at) / 1000)) : "STS 到期时间未知";
-    if(a.sts_expired){
-      badge = '<span class="ca-badge bad">STS 已过期</span>';
-    }else if(a.sts_remaining_seconds != null){
-      when = "STS 剩 " + caLeft(a.sts_remaining_seconds);
-      if(a.sts_remaining_seconds < 1800) badge = '<span class="ca-badge warn">即将过期</span>';
-    }
-    const renew = a.renewable ? "可续期" : "不可续期（需重新登录）";
-    const id = esc(a.account_id || "");
-    return '<div class="ca-row"><div class="ca-main">'
-      + '<span class="ca-name">' + esc(a.account || "(未命名)") + badge + '</span>'
-      + '<span class="ca-sub">' + esc(when) + " · " + esc(renew)
-      + (a.domain_id ? " · 账号域 " + esc(String(a.domain_id).slice(0, 8)) + "…" : "")
-      + '</span>'
-      + caBalanceHtml(a.balance, a.balanceError)
-      + '</div><div class="ca-actions">'
-      + '<button class="sec mini" data-ca-id="' + id + '" onclick="claimCodeartsBenefit(this)">领取今日额度</button>'
-      + (a.renewable ? '<button class="sec mini" data-ca-id="' + id + '" onclick="refreshCodeartsAccount(this)">续期</button>' : "")
-      + '<button class="sec mini" data-ca-id="' + id + '" onclick="deleteCodeartsAccount(this)">删除</button>'
-      + '</div></div>';
-  }).join(""));
+  // 渲染放进 try：一旦某一项抛错，之前的表现是 set() 永远不执行、页面就一直
+  // 停在「正在读取…」，看不出任何线索（fmtTime 那次就是这么被藏住的）。
+  let html;
+  try{
+    html = list.map(function(a){
+      let badge = '<span class="ca-badge ok">有效</span>';
+      let when = a.expires_at ? ("STS 到期 " + caStamp(Date.parse(a.expires_at) / 1000)) : "STS 到期时间未知";
+      if(a.sts_expired){
+        badge = '<span class="ca-badge bad">STS 已过期</span>';
+      }else if(a.sts_remaining_seconds != null){
+        when = "STS 剩 " + caLeft(a.sts_remaining_seconds);
+        if(a.sts_remaining_seconds < 1800) badge = '<span class="ca-badge warn">即将过期</span>';
+      }
+      const renew = a.renewable ? "可续期" : "不可续期（需重新登录）";
+      const id = esc(a.account_id || "");
+      return '<div class="ca-row"><div class="ca-main">'
+        + '<span class="ca-name">' + esc(a.account || "(未命名)") + badge + '</span>'
+        + '<span class="ca-sub">' + esc(when) + " · " + esc(renew)
+        + (a.domain_id ? " · 账号域 " + esc(String(a.domain_id).slice(0, 8)) + "…" : "")
+        + '</span>'
+        + caBalanceHtml(a.balance, a.balanceError)
+        + '</div><div class="ca-actions">'
+        + '<button class="sec mini" data-ca-id="' + id + '" onclick="claimCodeartsBenefit(this)">领取今日额度</button>'
+        + (a.renewable ? '<button class="sec mini" data-ca-id="' + id + '" onclick="refreshCodeartsAccount(this)">续期</button>' : "")
+        + '<button class="sec mini" data-ca-id="' + id + '" onclick="deleteCodeartsAccount(this)">删除</button>'
+        + '</div></div>';
+    }).join("");
+  }catch(e){
+    set('<p class="hint">账号列表渲染失败：' + esc(e && e.message ? e.message : e) + '</p>');
+    return;
+  }
+  set(html);
 }
 
 // 额度是「今天领没领」的唯一可信依据：领取接口幂等、查不到自己的履历，只有
@@ -7140,9 +7160,10 @@ async function refreshInner(gen){
   const succStr = (perf.success_rate_pct != null ? pct(perf.success_rate_pct) : '100.0%');
   if(t.usd_cny) costUsdRate = Number(t.usd_cny) || costUsdRate;
 
-  // 这三张卡的数字都按当前视图区域取（/usage 等接口带 realm），标题带上区域，
-  // 免得把局部区域的用量看成全局的。
-  const realmTag = '（国内版）';
+  // 这三张卡的数字都按当前视图区域取（/usage 等接口带 realm）。原先标题带
+  // 「（国内版）」后缀，但这个部署只剩码道一个出口，加后缀反而让人以为还有
+  // 另一个区域没看到，所以留空。
+  const realmTag = '';
   document.getElementById('cards').innerHTML =
     card('网关调用量' + realmTag, fmt(t.requests) + ' <span style="font-size:13px;font-weight:500;color:var(--dim);margin-left:4px">次</span>', '', '') +
     card('积分消耗' + realmTag, (t.credit != null ? Number(t.credit).toFixed(2) : '0.00') + ' <span style="font-size:13px;font-weight:500;color:var(--dim);margin-left:4px">积分</span>', ((PRICING_ON && t.cost_cny != null) ? ('估算价值: ' + fmtCostBoth(t.cost_cny, 12)) : ''), 'warn') +

@@ -65,7 +65,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 135 个套件：109 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 136 个套件：110 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12，Windows 上 python 3.12。
 
 ---
