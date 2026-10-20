@@ -25,11 +25,11 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts as A
-import wb_egress
-import wb_proxy
-import wb_settings
-import wb_upstream_pool
+import ca_accounts as A
+import ca_egress
+import ca_proxy
+import ca_settings
+import ca_upstream_pool
 
 
 class EgressKeyTests(unittest.TestCase):
@@ -39,31 +39,31 @@ class EgressKeyTests(unittest.TestCase):
 
     def test_direct_is_one_shared_egress(self):
         # No proxy: every account goes out the same way, so they share a key.
-        self.assertEqual(wb_upstream_pool.egress_key(self.URL, ""),
+        self.assertEqual(ca_upstream_pool.egress_key(self.URL, ""),
                          ("https", "www.workbuddy.ai", 443, ""))
 
     def test_proxy_string_is_the_identity_not_the_slot(self):
-        key = wb_upstream_pool.egress_key(self.URL, "http://10.0.0.9:8080")
+        key = ca_upstream_pool.egress_key(self.URL, "http://10.0.0.9:8080")
         self.assertEqual(key, ("https", "www.workbuddy.ai", 443,
                                "http://10.0.0.9:8080"))
 
     def test_two_slots_pointing_at_one_address_share_a_bucket(self):
         # Two slots with the same address must not be split into two counters.
         self.assertEqual(
-            wb_upstream_pool.egress_key(self.URL, "http://10.0.0.9:8080"),
-            wb_upstream_pool.egress_key(self.URL, " http://10.0.0.9:8080 "))
+            ca_upstream_pool.egress_key(self.URL, "http://10.0.0.9:8080"),
+            ca_upstream_pool.egress_key(self.URL, " http://10.0.0.9:8080 "))
 
     def test_bypassed_proxy_folds_to_direct(self):
         # The pool folds a system-bypassed proxy back to direct; accounting must
         # fold it the same way or one physical path becomes two counters.
-        with mock.patch.object(wb_upstream_pool, "_proxy_bypassed",
+        with mock.patch.object(ca_upstream_pool, "_proxy_bypassed",
                                return_value=True):
-            key = wb_upstream_pool.egress_key(self.URL, "http://10.0.0.9:8080")
+            key = ca_upstream_pool.egress_key(self.URL, "http://10.0.0.9:8080")
         self.assertEqual(key, ("https", "www.workbuddy.ai", 443, ""))
 
     def test_non_http_proxy_keeps_its_own_identity(self):
         # socks5 does not go through the pool, but it is still a distinct egress.
-        key = wb_upstream_pool.egress_key(self.URL, "socks5://10.0.0.9:1080")
+        key = ca_upstream_pool.egress_key(self.URL, "socks5://10.0.0.9:1080")
         self.assertEqual(key[3], "socks5://10.0.0.9:1080")
 
 
@@ -71,49 +71,49 @@ class EgressBackoffTests(unittest.TestCase):
     """The seconds-level ladder and the shared counter."""
 
     def setUp(self):
-        wb_egress.reset()
+        ca_egress.reset()
 
     def test_ladder_is_seconds_and_capped(self):
-        self.assertEqual(wb_egress.transient_backoff(1), 1.0)
-        self.assertEqual(wb_egress.transient_backoff(2), 2.0)
-        self.assertEqual(wb_egress.transient_backoff(3), 4.0)
-        self.assertEqual(wb_egress.transient_backoff(9),
-                         wb_egress.EGRESS_BACKOFF_MAX)
+        self.assertEqual(ca_egress.transient_backoff(1), 1.0)
+        self.assertEqual(ca_egress.transient_backoff(2), 2.0)
+        self.assertEqual(ca_egress.transient_backoff(3), 4.0)
+        self.assertEqual(ca_egress.transient_backoff(9),
+                         ca_egress.EGRESS_BACKOFF_MAX)
 
     def test_backoff_is_three_orders_below_the_account_ladder(self):
         # The account breaker starts at 30 minutes; this must start at seconds.
-        self.assertLess(wb_egress.EGRESS_BACKOFF_MAX, A.BREAKER_COOLDOWN)
+        self.assertLess(ca_egress.EGRESS_BACKOFF_MAX, A.BREAKER_COOLDOWN)
 
     def test_note_transient_grows_one_shared_counter(self):
         key = ("https", "www.workbuddy.ai", 443, "")
-        first = wb_egress.note_transient(key)
-        second = wb_egress.note_transient(key)
-        self.assertEqual(wb_egress.streak(key), 2)
+        first = ca_egress.note_transient(key)
+        second = ca_egress.note_transient(key)
+        self.assertEqual(ca_egress.streak(key), 2)
         # Jitter keeps the two apart, but the ladder underneath must have grown.
-        self.assertGreaterEqual(first, 1.0 * wb_egress.EGRESS_JITTER_LOW)
-        self.assertLessEqual(first, 1.0 * wb_egress.EGRESS_JITTER_HIGH)
-        self.assertGreaterEqual(second, 2.0 * wb_egress.EGRESS_JITTER_LOW)
-        self.assertLessEqual(second, 2.0 * wb_egress.EGRESS_JITTER_HIGH)
+        self.assertGreaterEqual(first, 1.0 * ca_egress.EGRESS_JITTER_LOW)
+        self.assertLessEqual(first, 1.0 * ca_egress.EGRESS_JITTER_HIGH)
+        self.assertGreaterEqual(second, 2.0 * ca_egress.EGRESS_JITTER_LOW)
+        self.assertLessEqual(second, 2.0 * ca_egress.EGRESS_JITTER_HIGH)
 
     def test_success_clears_the_streak(self):
         key = ("https", "www.workbuddy.ai", 443, "")
-        wb_egress.note_transient(key)
-        wb_egress.note_transient(key)
-        self.assertEqual(wb_egress.streak(key), 2)
-        wb_egress.note_success(key)
-        self.assertEqual(wb_egress.streak(key), 0)
+        ca_egress.note_transient(key)
+        ca_egress.note_transient(key)
+        self.assertEqual(ca_egress.streak(key), 2)
+        ca_egress.note_success(key)
+        self.assertEqual(ca_egress.streak(key), 0)
         # ...and the ladder restarts at its base, not at the old rung.
-        wait = wb_egress.note_transient(key)
-        self.assertLessEqual(wait, 1.0 * wb_egress.EGRESS_JITTER_HIGH)
+        wait = ca_egress.note_transient(key)
+        self.assertLessEqual(wait, 1.0 * ca_egress.EGRESS_JITTER_HIGH)
 
     def test_quiet_window_starts_a_new_ladder(self):
         key = ("https", "www.workbuddy.ai", 443, "")
         now = 1000.0
-        wb_egress.note_transient(key, now=now)
-        wb_egress.note_transient(key, now=now + 1)
-        self.assertEqual(wb_egress.streak(key, now=now + 1), 2)
-        later = now + wb_egress.EGRESS_STREAK_RESET + 5
-        self.assertEqual(wb_egress.streak(key, now=later), 0)
+        ca_egress.note_transient(key, now=now)
+        ca_egress.note_transient(key, now=now + 1)
+        self.assertEqual(ca_egress.streak(key, now=now + 1), 2)
+        later = now + ca_egress.EGRESS_STREAK_RESET + 5
+        self.assertEqual(ca_egress.streak(key, now=later), 0)
 
 
 class _Sock(object):
@@ -148,7 +148,7 @@ class _OpenUpstreamHarness(unittest.TestCase):
     """Drive the real open_upstream() with a stubbed pool and upstream."""
 
     def setUp(self):
-        wb_egress.reset()
+        ca_egress.reset()
         self.sleeps = []
         self._patches = [
             mock.patch.object(time, "sleep", side_effect=self.sleeps.append),
@@ -209,14 +209,14 @@ class _OpenUpstreamHarness(unittest.TestCase):
     def run_request(self, urlopen, egress_backoff=None):
         """Call open_upstream once; return (raised, payload) or (None, result)."""
         if egress_backoff is not None:
-            wb_settings.set_egress_backoff_enabled(self.dir, egress_backoff)
-        old_pool, old_urlopen = wb_proxy.POOL, A.urlopen
-        wb_proxy.POOL = self._pool()
+            ca_settings.set_egress_backoff_enabled(self.dir, egress_backoff)
+        old_pool, old_urlopen = ca_proxy.POOL, A.urlopen
+        ca_proxy.POOL = self._pool()
         A.urlopen = urlopen
         try:
-            with mock.patch.object(wb_proxy, "ACCOUNTS_DIR", self.dir):
+            with mock.patch.object(ca_proxy, "ACCOUNTS_DIR", self.dir):
                 try:
-                    result = wb_proxy.open_upstream(
+                    result = ca_proxy.open_upstream(
                         {"model": "deepseek-v4.1-flash",
                          "messages": [{"role": "user", "content": "hi"}]},
                         target_realm="intl")
@@ -224,7 +224,7 @@ class _OpenUpstreamHarness(unittest.TestCase):
                     return exc, None
                 return None, result
         finally:
-            wb_proxy.POOL, A.urlopen = old_pool, old_urlopen
+            ca_proxy.POOL, A.urlopen = old_pool, old_urlopen
 
 
 class SwitchOnTests(_OpenUpstreamHarness):
@@ -246,11 +246,11 @@ class SwitchOnTests(_OpenUpstreamHarness):
         # The egress counter moved instead - exactly once, even though the
         # retry round re-picked the same account - and every sleep stayed
         # seconds-level.
-        key = wb_upstream_pool.egress_key(
-            account.chat_base_url() + wb_proxy.CHAT_PATH, account.proxy)
-        self.assertEqual(wb_egress.streak(key), 1)
+        key = ca_upstream_pool.egress_key(
+            account.chat_base_url() + ca_proxy.CHAT_PATH, account.proxy)
+        self.assertEqual(ca_egress.streak(key), 1)
         self.assertTrue(self.sleeps)
-        self.assertLessEqual(max(self.sleeps), wb_proxy.EGRESS_SLEEP_MAX)
+        self.assertLessEqual(max(self.sleeps), ca_proxy.EGRESS_SLEEP_MAX)
 
     def test_one_request_charges_a_shared_egress_once(self):
         # tried.clear() re-picks the account after a transient, so without the
@@ -263,9 +263,9 @@ class SwitchOnTests(_OpenUpstreamHarness):
             raise urllib.error.URLError("The handshake operation timed out")
 
         self.run_request(urlopen, egress_backoff=True)
-        key = wb_upstream_pool.egress_key(
-            account.chat_base_url() + wb_proxy.CHAT_PATH, account.proxy)
-        self.assertEqual(wb_egress.streak(key), 1)
+        key = ca_upstream_pool.egress_key(
+            account.chat_base_url() + ca_proxy.CHAT_PATH, account.proxy)
+        self.assertEqual(ca_egress.streak(key), 1)
 
     def test_two_accounts_on_one_egress_share_the_counter(self):
         # The point of the whole change: N accounts behind one path must not
@@ -277,9 +277,9 @@ class SwitchOnTests(_OpenUpstreamHarness):
             raise urllib.error.URLError("connection reset by peer")
 
         self.run_request(urlopen, egress_backoff=True)
-        key = wb_upstream_pool.egress_key(
-            first.chat_base_url() + wb_proxy.CHAT_PATH, first.proxy)
-        self.assertEqual(wb_egress.streak(key), 1)
+        key = ca_upstream_pool.egress_key(
+            first.chat_base_url() + ca_proxy.CHAT_PATH, first.proxy)
+        self.assertEqual(ca_egress.streak(key), 1)
         for account in self.accounts:
             self.assertEqual(account.fails, 0)
             self.assertEqual(account.breaker_until, 0.0)
@@ -293,9 +293,9 @@ class SwitchOnTests(_OpenUpstreamHarness):
         raised, _result = self.run_request(urlopen, egress_backoff=True)
         self.assertIsNotNone(raised)
         self.assertEqual(account.fails, 0)
-        key = wb_upstream_pool.egress_key(
-            account.chat_base_url() + wb_proxy.CHAT_PATH, account.proxy)
-        self.assertEqual(wb_egress.streak(key), 1)
+        key = ca_upstream_pool.egress_key(
+            account.chat_base_url() + ca_proxy.CHAT_PATH, account.proxy)
+        self.assertEqual(ca_egress.streak(key), 1)
 
     def test_500_stays_on_the_account(self):
         # 500 is deliberately left with the account until it gets another look.
@@ -322,9 +322,9 @@ class SwitchOnTests(_OpenUpstreamHarness):
         self.assertIsNone(raised)
         self.assertIsNotNone(result)
         self.assertEqual(account.fails, 0)
-        key = wb_upstream_pool.egress_key(
-            account.chat_base_url() + wb_proxy.CHAT_PATH, account.proxy)
-        self.assertEqual(wb_egress.streak(key), 0)
+        key = ca_upstream_pool.egress_key(
+            account.chat_base_url() + ca_proxy.CHAT_PATH, account.proxy)
+        self.assertEqual(ca_egress.streak(key), 0)
 
 
 class SwitchOffTests(_OpenUpstreamHarness):
@@ -341,13 +341,13 @@ class SwitchOffTests(_OpenUpstreamHarness):
         # Old behaviour: the transport error grows fails and degrade_count.
         self.assertGreater(account.fails, 0)
         self.assertGreater(account.degrade_count, 0)
-        key = wb_upstream_pool.egress_key(
-            account.chat_base_url() + wb_proxy.CHAT_PATH, account.proxy)
-        self.assertEqual(wb_egress.streak(key), 0)
+        key = ca_upstream_pool.egress_key(
+            account.chat_base_url() + ca_proxy.CHAT_PATH, account.proxy)
+        self.assertEqual(ca_egress.streak(key), 0)
 
     def test_default_is_off(self):
         self.add_account("u-default")
-        self.assertFalse(wb_settings.egress_backoff_enabled(self.dir))
+        self.assertFalse(ca_settings.egress_backoff_enabled(self.dir))
 
 
 if __name__ == "__main__":

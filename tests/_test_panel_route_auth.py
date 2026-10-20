@@ -39,8 +39,8 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 
 _TMP = isolated_data_dirs("wb-panel-route-auth-")
 
-import wb_proxy as proxy  # noqa: E402
-import wb_settings  # noqa: E402
+import ca_proxy as proxy  # noqa: E402
+import ca_settings  # noqa: E402
 
 KEY = "panel-route-key"
 PANEL_ONLY_MESSAGE = "panel password required"
@@ -136,7 +136,7 @@ class BoundaryCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory(prefix="panel-route-")
         self.addCleanup(self._tmp.cleanup)
         self.directory = self._tmp.name
-        wb_settings.set_api_keys(self.directory, [
+        ca_settings.set_api_keys(self.directory, [
             {"id": "k1", "name": "k", "key": KEY, "enabled": True}])
         self.updates = StubUpdates()
 

@@ -151,7 +151,7 @@ with open(os.path.join(store, "settings.json"), "w", encoding="utf-8") as fh:
 # below takes the whole tree - a gateway that leaves a helper behind also leaves
 # its port held.
 proc = life.spawn_managed(
-    [PY, os.path.join(ROOT, "wb_proxy.py"), "--port", str(port), "--host", "127.0.0.1",
+    [PY, os.path.join(ROOT, "ca_proxy.py"), "--port", str(port), "--host", "127.0.0.1",
      "--accounts-dir", store],
     cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
     env=dict(os.environ, WB_PROXY_USAGE_DIR=os.path.join(work, "usage")))

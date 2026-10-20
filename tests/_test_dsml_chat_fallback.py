@@ -19,7 +19,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402
 
 _TMP = isolated_data_dirs("wb-dsml-chat-")
 
-import wb_proxy as P  # noqa: E402
+import ca_proxy as P  # noqa: E402
 
 PASS = 0
 FAIL = 0

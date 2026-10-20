@@ -24,9 +24,9 @@ _TMP = tempfile.mkdtemp(prefix="wb-product-")
 os.environ["ACCOUNTS_DIR"] = os.path.join(_TMP, "accounts")
 os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
-import wb_accounts as A
-import wb_fingerprint
-import wb_identity
+import ca_accounts as A
+import ca_fingerprint
+import ca_identity
 
 PASS = FAIL = 0
 
@@ -88,9 +88,9 @@ check("public() reports it, so the panel highlights the right button",
 check("to_dict() writes it, so the next save keeps it",
       cn.to_dict().get("product") == "vscode", cn.to_dict().get("product"))
 check("the chat endpoint follows it",
-      cn.chat_base_url() == wb_identity.endpoint_for("cn", "vscode")[0], cn.chat_base_url())
+      cn.chat_base_url() == ca_identity.endpoint_for("cn", "vscode")[0], cn.chat_base_url())
 check("and that is not the desktop endpoint",
-      cn.chat_base_url() != wb_identity.endpoint_for("cn", "workbuddy")[0])
+      cn.chat_base_url() != ca_identity.endpoint_for("cn", "workbuddy")[0])
 desktop = A.Account(credential("workbuddy", realm="cn", domain="www.workbuddy.cn"))
 check("the outbound headers follow it",
       cn.headers().get("X-IDE-Type") == "VSCode"
@@ -109,7 +109,7 @@ CONV_HEADERS = ("X-Conversation-ID", "X-Conversation-Request-ID",
 HEX32 = ("X-Request-ID", "X-Conversation-Request-ID", "X-Root-Request-ID",
          "X-Conversation-Message-ID")
 for want in ("workbuddy", "vscode", "cli"):
-    h = wb_identity.build_identity_headers(want, "intl", "u1", "tok")
+    h = ca_identity.build_identity_headers(want, "intl", "u1", "tok")
     check("%s sends the conversation header family" % want,
           all(h.get(k) for k in CONV_HEADERS),
           [k for k in CONV_HEADERS if not h.get(k)])
@@ -126,9 +126,9 @@ for want in ("workbuddy", "vscode", "cli"):
               for k in HEX32),
           [h.get(k) for k in HEX32])
 check("a fresh conversation id per call (upstream keeps no history by it)",
-      wb_identity.build_identity_headers("workbuddy", "intl", "u1", "tok")["X-Conversation-ID"]
-      != wb_identity.build_identity_headers("workbuddy", "intl", "u1", "tok")["X-Conversation-ID"])
-a7, b7 = wb_identity.uuid7(), wb_identity.uuid7()
+      ca_identity.build_identity_headers("workbuddy", "intl", "u1", "tok")["X-Conversation-ID"]
+      != ca_identity.build_identity_headers("workbuddy", "intl", "u1", "tok")["X-Conversation-ID"])
+a7, b7 = ca_identity.uuid7(), ca_identity.uuid7()
 check("uuid7 is time-ordered and version 7",
       a7.hex[:12] <= b7.hex[:12] and a7.version == 7 and b7.version == 7,
       (a7, b7))
@@ -137,7 +137,7 @@ print()
 print("[6] the desktop identity is the china one for every realm")
 # 5.8.4 那组头是国际版客户端的抓包，已随该区域删除；现在无论调用方传什么
 # 区域，出站都用国内版那套（这里传 "intl" 正是要钉住「已删区域被归一」）。
-d = wb_identity.build_identity_headers("workbuddy", "intl", "u1", "tok")
+d = ca_identity.build_identity_headers("workbuddy", "intl", "u1", "tok")
 check("X-IDE-Version is the china one", d.get("X-IDE-Version") == "5.5.6",
       d.get("X-IDE-Version"))
 check("the UA is the china one",
@@ -156,7 +156,7 @@ check("traceparent follows the W3C shape",
       str(d.get("traceparent", "")).startswith("00-")
       and str(d.get("traceparent", "")).endswith("-01"), d.get("traceparent"))
 check("the CN desktop keeps its own version and UA",
-      wb_identity.build_identity_headers("workbuddy", "cn", "u1", "tok")["X-IDE-Version"]
+      ca_identity.build_identity_headers("workbuddy", "cn", "u1", "tok")["X-IDE-Version"]
       == "5.5.6")
 
 print()
@@ -167,22 +167,22 @@ check("no X-Machine-ID on the chat request", "X-Machine-ID" not in chat)
 check("no X-Session-ID on the chat request", "X-Session-ID" not in chat)
 check("the billing headers carry no conversation family",
       "X-Conversation-ID" not in conv_acc.headers(purpose="billing"))
-machine = wb_fingerprint.derive_id("u1", "machine")
+machine = ca_fingerprint.derive_id("u1", "machine")
 check("the machine id is a stable dashed uuid",
-      machine == wb_fingerprint.derive_id("u1", "machine")
+      machine == ca_fingerprint.derive_id("u1", "machine")
       and len(machine) == 36 and machine.count("-") == 4, machine)
 # 每账号一台设备：sessionId 必须按账号派生。取进程级的值会让全部账号共用
 # 同一个 session id，那是把它们串起来的关联键（device_token 是同一类问题）。
-sess = wb_fingerprint.session_id("u1")
+sess = ca_fingerprint.session_id("u1")
 check("the session id is a stable dashed uuid",
-      sess == wb_fingerprint.session_id("u1")
+      sess == ca_fingerprint.session_id("u1")
       and len(sess) == 36 and sess.count("-") == 4, sess)
 check("the session id differs across accounts",
-      wb_fingerprint.session_id("u1") != wb_fingerprint.session_id("u2"))
+      ca_fingerprint.session_id("u1") != ca_fingerprint.session_id("u2"))
 check("the session id is not the machine id",
-      wb_fingerprint.session_id("u1") != machine)
+      ca_fingerprint.session_id("u1") != machine)
 check("the request id is 32 hex chars",
-      len(wb_fingerprint.generate_request_id("u1")) == 32)
+      len(ca_fingerprint.generate_request_id("u1")) == 32)
 
 # 计费路径同样按账号隔离：两个账号的 X-Session-ID 不能相同。
 sess_acc_a = A.Account(credential("workbuddy"))

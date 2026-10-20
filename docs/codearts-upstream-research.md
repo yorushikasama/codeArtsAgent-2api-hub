@@ -1,6 +1,6 @@
 # 码道 CodeArts Agent 上游调研报告
 
-> 目的：评估把 `workbuddy2api-hub`（原项目）改造为「华为云码道 CodeArts 代码智能体 → OpenAI 兼容 API」的可行性。
+> 目的：评估把 `codearts2api-hub`（原项目）改造为「华为云码道 CodeArts 代码智能体 → OpenAI 兼容 API」的可行性。
 > 方法：静态分析本机已安装的码道 Agent（Electron 应用 + 扩展 bundle）+ 日志实测取证。
 > 日期：2026-10-16
 
@@ -261,7 +261,7 @@ class Authentication {
       value = 10297 bytes，Electron safeStorage 加密（Windows 下即 DPAPI）
 ```
 
-对照原项目：`accounts/<uid>.json` **明文**存 token。新项目可以沿用明文（保持简单），也可以顺手把 `wb_atrest.py` 那套 AES-GCM 用上。
+对照原项目：`accounts/<uid>.json` **明文**存 token。新项目可以沿用明文（保持简单），也可以顺手把 `ca_atrest.py` 那套 AES-GCM 用上。
 
 ---
 
@@ -311,20 +311,20 @@ class Authentication {
 
 | 原项目位置 | 改什么 |
 |---|---|
-| `wb_accounts.py:177 REALM_CONFIGS` | 加 `hw` realm：`chat_upstream`/`billing_upstream` → `snap-access...`，`origin` → `codearts.huaweicloud.com` |
-| `wb_accounts.py:204-214` 端点常量 | 换成 `/v1/model/builtin`、`/v1/ops/credit/usage`、`/api/v2/`、`/v1/login/ticket`、`/v1/oauth2/tokens` |
-| `wb_accounts.py:3276 start_login` | 改成自造 ticket/生成 PKCE + 拼 `/portal/authorize` |
-| `wb_accounts.py:3298 poll_login` | 改成轮询 `/v1/login/ticket?ticket_id=&secret=`（判据：响应含 `user_name`） |
-| `wb_accounts.py:1259 refresh` | 改成 `POST {iamStsHost}/v1/oauth2/tokens` + `grant_type=refresh_token`；保留"按账号加锁"（refresh_token 单次有效） |
-| `wb_accounts.py:238 jwt_uid` | **失效**（码道凭证不是 JWT）→ 改用 `caller-identity` / `current/user` 的 `domainId`/`user_name` |
-| `wb_accounts.py:148 http_json` | 只能拿 body，**拿不到响应头**（STS 凭证可能在头里）→ 需加 header-aware 版本 |
-| `wb_accounts.py:1603 checkin` | 码道无签到概念 → 删除或改成"拉一次用量" |
-| `wb_identity.py:137 build_identity_headers` | 换成 `X-Auth-Token` / AK-SK 签名 + `X-Security-Token`，去掉 `X-IDE-Type` 族 |
-| `wb_fingerprint.py` | 可保留（设备指纹对 STS 无意义，但也不算错） |
-| `wb_atrest.py` | 可保留（若决定加密落盘） |
+| `ca_accounts.py:177 REALM_CONFIGS` | 加 `hw` realm：`chat_upstream`/`billing_upstream` → `snap-access...`，`origin` → `codearts.huaweicloud.com` |
+| `ca_accounts.py:204-214` 端点常量 | 换成 `/v1/model/builtin`、`/v1/ops/credit/usage`、`/api/v2/`、`/v1/login/ticket`、`/v1/oauth2/tokens` |
+| `ca_accounts.py:3276 start_login` | 改成自造 ticket/生成 PKCE + 拼 `/portal/authorize` |
+| `ca_accounts.py:3298 poll_login` | 改成轮询 `/v1/login/ticket?ticket_id=&secret=`（判据：响应含 `user_name`） |
+| `ca_accounts.py:1259 refresh` | 改成 `POST {iamStsHost}/v1/oauth2/tokens` + `grant_type=refresh_token`；保留"按账号加锁"（refresh_token 单次有效） |
+| `ca_accounts.py:238 jwt_uid` | **失效**（码道凭证不是 JWT）→ 改用 `caller-identity` / `current/user` 的 `domainId`/`user_name` |
+| `ca_accounts.py:148 http_json` | 只能拿 body，**拿不到响应头**（STS 凭证可能在头里）→ 需加 header-aware 版本 |
+| `ca_accounts.py:1603 checkin` | 码道无签到概念 → 删除或改成"拉一次用量" |
+| `ca_identity.py:137 build_identity_headers` | 换成 `X-Auth-Token` / AK-SK 签名 + `X-Security-Token`，去掉 `X-IDE-Type` 族 |
+| `ca_fingerprint.py` | 可保留（设备指纹对 STS 无意义，但也不算错） |
+| `ca_atrest.py` | 可保留（若决定加密落盘） |
 | `dashboard.html:4940-5007` 登录弹窗 | `old_login`：给链接 + 轮询（**几乎不用改**）；`AK/SK`：加表单 |
-| `wb_proxy.py:18512/18524` 路由 | 基本不动（只是转发） |
-| **新增** | `wb_codearts_auth.py`（OAuth2/PKCE/DPoP/ticket 轮询）、`wb_huawei_sign.py`（AK/SK 签名）、`wb_queue.py`（排队状态轮询） |
+| `ca_proxy.py:18512/18524` 路由 | 基本不动（只是转发） |
+| **新增** | `ca_codearts_auth.py`（OAuth2/PKCE/DPoP/ticket 轮询）、`ca_huawei_sign.py`（AK/SK 签名）、`ca_queue.py`（排队状态轮询） |
 | **必处理** | `/api/v1/queue/status` —— 网关有队列，前端要显示排队位置 |
 
 ---

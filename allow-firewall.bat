@@ -18,14 +18,14 @@ echo.
 
 powershell -NoProfile -Command ^
   "Start-Process -Verb RunAs -Wait -FilePath 'netsh' -ArgumentList 'advfirewall','firewall','add','rule',^
-  'name=WorkBuddy proxy (TCP %PORT%)','dir=in','action=allow','protocol=TCP','localport=%PORT%'"
+  'name=CodeArts Hub proxy (TCP %PORT%)','dir=in','action=allow','protocol=TCP','localport=%PORT%'"
 
 echo.
 echo Done. If the rule was added, other devices should now reach
 echo http://<this-pc-ip>:%PORT%/
 echo.
 echo To remove it later:
-echo   netsh advfirewall firewall delete rule name="WorkBuddy proxy (TCP %PORT%)"
+echo   netsh advfirewall firewall delete rule name="CodeArts Hub proxy (TCP %PORT%)"
 echo.
 pause
 

@@ -6,12 +6,12 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts
-import wb_settings
+import ca_accounts
+import ca_settings
 
 
 def make_account(uid, remain):
-    return wb_accounts.Account({
+    return ca_accounts.Account({
         "uid": uid,
         "accessToken": "token-%s" % uid,
         "realm": "cn",
@@ -22,12 +22,12 @@ def make_account(uid, remain):
 class ReserveCreditsTests(unittest.TestCase):
     def test_setting_round_trip(self):
         with tempfile.TemporaryDirectory(prefix="reserve-") as directory:
-            self.assertEqual(wb_settings.reserve_credits(directory), 0)
-            self.assertEqual(wb_settings.set_reserve_credits(directory, 10), 10)
-            self.assertEqual(wb_settings.reserve_credits(directory), 10)
+            self.assertEqual(ca_settings.reserve_credits(directory), 0)
+            self.assertEqual(ca_settings.set_reserve_credits(directory, 10), 10)
+            self.assertEqual(ca_settings.reserve_credits(directory), 10)
             # Garbage and negatives collapse to "off" instead of raising.
-            self.assertEqual(wb_settings.set_reserve_credits(directory, -5), 0)
-            self.assertEqual(wb_settings.set_reserve_credits(directory, "abc"), 0)
+            self.assertEqual(ca_settings.set_reserve_credits(directory, -5), 0)
+            self.assertEqual(ca_settings.set_reserve_credits(directory, "abc"), 0)
 
     def test_guard_parks_account_at_or_below_threshold(self):
         above = make_account("uid-above", 11)
@@ -50,15 +50,15 @@ class ReserveCreditsTests(unittest.TestCase):
         self.assertFalse(off.reserve_blocked())  # reserve 0 disables the guard
         self.assertTrue(off.ready())
 
-        unknown = wb_accounts.Account({"uid": "uid-unknown", "accessToken": "t"})
+        unknown = ca_accounts.Account({"uid": "uid-unknown", "accessToken": "t"})
         unknown.reserve_credits = 10
         self.assertFalse(unknown.reserve_blocked())
         self.assertTrue(unknown.ready())
 
     def test_pool_skips_parked_account_and_publishes_state(self):
         with tempfile.TemporaryDirectory(prefix="reserve-pool-") as directory:
-            wb_settings.set_reserve_credits(directory, 10)
-            pool = wb_accounts.AccountPool(directory)
+            ca_settings.set_reserve_credits(directory, 10)
+            pool = ca_accounts.AccountPool(directory)
             pool.accounts = [make_account("uid-rich", 90), make_account("uid-poor", 4)]
             pool.apply_reserve_credits()
             self.assertEqual(pool.accounts[0].reserve_credits, 10)
@@ -71,16 +71,16 @@ class ReserveCreditsTests(unittest.TestCase):
 
     def test_settings_change_reaches_the_pool(self):
         with tempfile.TemporaryDirectory(prefix="reserve-reload-") as directory:
-            pool = wb_accounts.AccountPool(directory)
+            pool = ca_accounts.AccountPool(directory)
             account = make_account("uid-one", 8)
             pool.accounts = [account]
             self.assertFalse(account.reserve_blocked())
 
-            wb_settings.set_reserve_credits(directory, 10)
+            ca_settings.set_reserve_credits(directory, 10)
             pool.apply_reserve_credits()
             self.assertTrue(account.reserve_blocked())
 
-            wb_settings.set_reserve_credits(directory, 0)
+            ca_settings.set_reserve_credits(directory, 0)
             pool.apply_reserve_credits()
             self.assertFalse(account.reserve_blocked())
 

@@ -22,7 +22,7 @@ import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_codearts as C  # noqa: E402
+import ca_codearts as C  # noqa: E402
 
 PASS = FAIL = 0
 
@@ -440,7 +440,7 @@ check("失败页提示重试", "重试" in _bad_page)
 check("页面可被浏览器正确解码（含中文字节）",
       _ok_page.encode("utf-8").decode("utf-8") == _ok_page)
 
-from wb_proxy import Handler  # noqa: E402  (需要完整模块才能取到静态方法)
+from ca_proxy import Handler  # noqa: E402  (需要完整模块才能取到静态方法)
 
 _allow = Handler._codearts_redirect_ok
 check("放行华为云地址", _allow("https://codearts.huaweicloud.com/portal/login?x=1"))
@@ -615,9 +615,9 @@ finally:
 
 
 # 调度器能独立跑领取
-import wb_scheduler  # noqa: E402
+import ca_scheduler  # noqa: E402
 
-_sched = wb_scheduler.Scheduler(pool=None)
+_sched = ca_scheduler.Scheduler(pool=None)
 check("没注入目录时明确失败",
       _sched.claim_daily_tokens().get("ok") is False)
 _sched.accounts_dir = tempfile.mkdtemp(prefix="wb-sched-")
@@ -755,7 +755,7 @@ def _stub_claim(ak, sk, tok, session=None, trigger="unknown"):
 _saved_ensure, _saved_claim = C.ensure_fresh_session, C.claim_and_verify
 C.ensure_fresh_session, C.claim_and_verify = _stub_ensure, _stub_claim
 try:
-    _sched2 = wb_scheduler.Scheduler(pool=None)
+    _sched2 = ca_scheduler.Scheduler(pool=None)
     _sched2.accounts_dir = _sched_dir
     _out = _sched2.claim_daily_tokens()
 finally:
@@ -868,8 +868,16 @@ check("当前没有已知不通的内置模型", C.BUILTIN_UNROUTABLE == set(),
       C.BUILTIN_UNROUTABLE)
 check("分类与描述带出",
       norm[0]["category"] == "文本生成" and norm[0]["provider"] == "zhipu", norm[0])
-check("服务端没给上下文窗口时不编造",
-      norm[0]["maxInputTokens"] == 0 and norm[0]["maxOutputTokens"] == 0, norm[0])
+# 上下文窗口：上游 /v1/model/builtin 不给这两个值，改用实测表兜底
+# （2026-10-20 从 AgentCenter 取得）。表里没有的模型仍然留 0 —— 不编数字。
+_LIMITS = C.BUILTIN_MODEL_LIMITS
+check("上下文窗口按实测表兜底",
+      (norm[0]["maxInputTokens"], norm[0]["maxOutputTokens"])
+      == _LIMITS.get(norm[0]["id"], (0, 0)), norm[0])
+check("实测表里没有的模型留 0，不编造",
+      all(m["maxInputTokens"] == 0 and m["maxOutputTokens"] == 0
+          for m in norm if m["id"] not in _LIMITS),
+      [m["id"] for m in norm if m["id"] not in _LIMITS])
 
 # 两组合并：任一组失败都不能让整份清单挂掉
 BENEFIT_RAW = [{"model_id": "deepseek-v4.1-flash", "context_window": 1000000,
@@ -922,14 +930,14 @@ check("两组都挂仍返回空清单而不是抛异常",
 # ---------------------------------------------------------------------------
 #
 # model_entry 的 meta 契约里 contextWindow 是**带 supportedLengths 的 dict**，
-# 而 wb_codearts 归一出来的是数字。第一版直接把归一结果喂进去，抛
+# 而 ca_codearts 归一出来的是数字。第一版直接把归一结果喂进去，抛
 # AttributeError: 'int' object has no attribute 'get'，又被外层 try 吞成
 # 「清单里没有码道模型」—— 表现成功能没生效、且不报错。这几条钉住那个适配。
 
 print()
 print("== 接进 /v1/models 的形状适配 ==")
 
-import wb_proxy as P  # noqa: E402  (需要它才能验 model_entry 契约)
+import ca_proxy as P  # noqa: E402  (需要它才能验 model_entry 契约)
 
 _META = {
     "id": "deepseek-v4.1-flash", "name": "deepseek-v4.1-flash",
@@ -1324,11 +1332,13 @@ print("== 码道链路的角色归一 ==")
 _seen = {}
 
 
-def _fake_chat(ak, sk, tok, model, messages, max_tokens=None, stream=True):
+def _fake_chat(ak, sk, tok, model, messages, max_tokens=None, stream=True,
+               extra=None):
     _seen["model"] = model
     _seen["messages"] = messages
     _seen["max_tokens"] = max_tokens
     _seen["stream"] = stream
+    _seen["extra"] = extra
     return 200, (
         'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
         'data: {"usage":{"prompt_tokens":1,"completion_tokens":1,'
@@ -1364,6 +1374,62 @@ check("developer 角色发出去前归一成 system",
 check("多模态的 content 分片保持原样",
       len(_sent) > 1 and isinstance(_sent[1].get("content"), list), _sent)
 check("上游按流式请求（码道只收流式）", _seen.get("stream") is True, _seen)
+
+
+# ---------------------------------------------------------------------------
+print()
+print("== 码道路径的思考参数透传 ==")
+
+_mapping = [
+    ({}, None, "不带参数 -> 不透传（沿用上游默认）"),
+    # 上游不接受关思考（会回 81001 参数错），所以这种请求被丢弃而不是透传。
+    ({"thinking": {"type": "disabled"}}, None, "disabled 被丢弃（上游不支持关）"),
+    ({"thinking": {"type": "enabled", "budget_tokens": 8192}},
+     {"thinking": {"type": "enabled", "budget_tokens": 8192}}, "budget 原样透传"),
+    ({"reasoning_effort": "none"}, None, "effort=none 同上，不发"),
+    ({"thinking": "disabled"}, None, "字符串 disabled 也丢弃"),
+    ({"reasoningEffort": "low"},
+     {"thinking": {"type": "enabled"}, "reasoning_effort": "low"}, "camelCase effort"),
+]
+for payload, expect, label in _mapping:
+    got = C.thinking_extra_from(payload)
+    check(label, got == expect, "得到 %r，期望 %r" % (got, expect))
+
+
+def _run_with(payload):
+    """跑一次码道聚合，返回 fake 收到的 extra。"""
+    _seen.clear()
+    saved_pick, saved_chat, saved_rec = (P.pick_codearts_session,
+                                         C.chat_for_model, P.record_usage)
+    P.pick_codearts_session = lambda: {
+        "accessKey": "AK", "secretKey": "SK", "securitytoken": "TK",
+        "account": {"id": "a", "label": "a"},
+        "expires_at": "2099-01-01T00:00:00.000Z"}
+    C.chat_for_model = _fake_chat
+    P.record_usage = lambda *a, **k: None
+    try:
+        body = {"model": "glm-5.3",
+                "messages": [{"role": "user", "content": "hi"}]}
+        body.update(payload)
+        P.Handler._codearts_chat_result(_FakeResponsesHandler(), body,
+                                        want_stream=False)
+        return _seen.get("extra")
+    finally:
+        P.pick_codearts_session = saved_pick
+        C.chat_for_model = saved_chat
+        P.record_usage = saved_rec
+
+
+check("开思考的请求，extra 传到上游",
+      _run_with({"thinking": {"type": "enabled", "budget_tokens": 4096}})
+      == {"thinking": {"type": "enabled", "budget_tokens": 4096}},
+      "extra 没传到 chat_for_model")
+check("关思考的请求不再发给上游（避免 81001）",
+      _run_with({"thinking": {"type": "disabled"}}) is None,
+      "disabled 不该被透传")
+check("没要求时 extra 为 None（不改变旧行为）",
+      _run_with({}) is None,
+      "默认请求不该带 thinking")
 
 
 # ---------------------------------------------------------------------------

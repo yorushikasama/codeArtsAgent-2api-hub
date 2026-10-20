@@ -29,13 +29,13 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts
+import ca_accounts
 
 
 def make_account(uid, realm="cn", **extra):
     data = {"uid": uid, "accessToken": "token-%s" % uid, "realm": realm}
     data.update(extra)
-    return wb_accounts.Account(data)
+    return ca_accounts.Account(data)
 
 
 def credits(*days, remain=100):
@@ -58,7 +58,7 @@ def credits(*days, remain=100):
 
 def make_pool(accounts, window=None):
     directory = tempfile.mkdtemp(prefix="affinity-pages-")
-    pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+    pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
     pool.accounts = accounts
     if window is not None:
         pool.apply_expiring_window({"global": window, "intl": window, "cn": window})
@@ -69,27 +69,27 @@ class SessionAffinityHistoryTests(unittest.TestCase):
     """The binding is a short most-recently-used list, not one account."""
 
     def test_the_last_account_is_the_front_entry(self):
-        affinity = wb_accounts.SessionAffinity()
+        affinity = ca_accounts.SessionAffinity()
         affinity.bind("s", "a")
         affinity.bind("s", "b")
         self.assertEqual(affinity.get("s"), "b")
         self.assertEqual(affinity.recent("s"), ["b", "a"])
 
     def test_binding_again_moves_an_account_to_the_front(self):
-        affinity = wb_accounts.SessionAffinity()
+        affinity = ca_accounts.SessionAffinity()
         for uid in ("a", "b", "c"):
             affinity.bind("s", uid)
         affinity.bind("s", "a")
         self.assertEqual(affinity.recent("s"), ["a", "c", "b"])
 
     def test_the_history_is_capped(self):
-        affinity = wb_accounts.SessionAffinity(history=3)
+        affinity = ca_accounts.SessionAffinity(history=3)
         for uid in ("a", "b", "c", "d"):
             affinity.bind("s", uid)
         self.assertEqual(affinity.recent("s"), ["d", "c", "b"])
 
     def test_demote_drops_one_account_and_keeps_the_rest(self):
-        affinity = wb_accounts.SessionAffinity()
+        affinity = ca_accounts.SessionAffinity()
         for uid in ("a", "b", "c"):
             affinity.bind("s", uid)
         affinity.demote("s", "c")
@@ -98,28 +98,28 @@ class SessionAffinityHistoryTests(unittest.TestCase):
         self.assertEqual(affinity.recent("s"), ["a"])
 
     def test_demoting_the_last_account_forgets_the_conversation(self):
-        affinity = wb_accounts.SessionAffinity()
+        affinity = ca_accounts.SessionAffinity()
         affinity.bind("s", "a")
         affinity.demote("s", "a")
         self.assertIsNone(affinity.get("s"))
         self.assertEqual(affinity.recent("s"), [])
 
     def test_unbind_forgets_the_whole_conversation(self):
-        affinity = wb_accounts.SessionAffinity()
+        affinity = ca_accounts.SessionAffinity()
         for uid in ("a", "b"):
             affinity.bind("s", uid)
         affinity.unbind("s")
         self.assertEqual(affinity.recent("s"), [])
 
     def test_expired_entries_drop_out(self):
-        affinity = wb_accounts.SessionAffinity(ttl=0.05)
+        affinity = ca_accounts.SessionAffinity(ttl=0.05)
         affinity.bind("s", "old")
         time.sleep(0.06)
         affinity.bind("s", "new")
         self.assertEqual(affinity.recent("s"), ["new"])
 
     def test_the_front_entry_slides_its_expiry(self):
-        affinity = wb_accounts.SessionAffinity(ttl=0.3)
+        affinity = ca_accounts.SessionAffinity(ttl=0.3)
         affinity.bind("s", "a")
         time.sleep(0.2)
         self.assertEqual(affinity.get("s"), "a")

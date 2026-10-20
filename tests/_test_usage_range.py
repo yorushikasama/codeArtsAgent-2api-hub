@@ -27,7 +27,7 @@ os.environ["ACCOUNTS_DIR"] = os.path.join(_TMP, "accounts")
 os.environ["WB_PROXY_USAGE_DIR"] = _TMP
 os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
-import wb_proxy as P
+import ca_proxy as P
 
 PASS = FAIL = 0
 

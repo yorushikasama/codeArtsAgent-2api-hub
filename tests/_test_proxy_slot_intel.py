@@ -18,9 +18,9 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_ipintel as I
-import wb_proxy as proxy
-import wb_settings as S
+import ca_ipintel as I
+import ca_proxy as proxy
+import ca_settings as S
 
 PASS = FAIL = 0
 

@@ -19,8 +19,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_pricing
-import wb_settings
+import ca_pricing
+import ca_settings
 
 
 def _read_settings(path):
@@ -40,43 +40,43 @@ class PricingRefreshSettingTests(unittest.TestCase):
         self.dir = tempfile.mkdtemp(prefix="wb-refresh-setting-")
 
     def test_default_is_five_minutes(self):
-        self.assertEqual(wb_settings.pricing_refresh_minutes(self.dir), 5.0)
+        self.assertEqual(ca_settings.pricing_refresh_minutes(self.dir), 5.0)
 
     def test_a_legacy_hours_value_is_converted_once(self):
         _write_settings(self.dir, {"pricing_refresh_hours": 6})
-        self.assertEqual(wb_settings.pricing_refresh_minutes(self.dir), 360.0)
+        self.assertEqual(ca_settings.pricing_refresh_minutes(self.dir), 360.0)
         stored = _read_settings(self.dir)
         self.assertEqual(stored["pricing_refresh_minutes"], 360.0)
         self.assertNotIn("pricing_refresh_hours", stored)
 
     def test_the_conversion_does_not_run_again(self):
         _write_settings(self.dir, {"pricing_refresh_hours": 6})
-        wb_settings.pricing_refresh_minutes(self.dir)
+        ca_settings.pricing_refresh_minutes(self.dir)
         # A stale legacy key - a rolled-back install writing one - must not
         # resurrect an hours value over the migrated one.
         data = _read_settings(self.dir)
         data["pricing_refresh_hours"] = 12
         _write_settings(self.dir, data)
-        self.assertEqual(wb_settings.pricing_refresh_minutes(self.dir), 360.0)
+        self.assertEqual(ca_settings.pricing_refresh_minutes(self.dir), 360.0)
 
     def test_a_legacy_zero_still_means_off(self):
         _write_settings(self.dir, {"pricing_refresh_hours": 0})
-        self.assertEqual(wb_settings.pricing_refresh_minutes(self.dir), 0.0)
+        self.assertEqual(ca_settings.pricing_refresh_minutes(self.dir), 0.0)
         self.assertEqual(_read_settings(self.dir)["pricing_refresh_minutes"], 0.0)
 
     def test_fractional_legacy_hours_convert(self):
         _write_settings(self.dir, {"pricing_refresh_hours": 0.5})
-        self.assertEqual(wb_settings.pricing_refresh_minutes(self.dir), 30.0)
+        self.assertEqual(ca_settings.pricing_refresh_minutes(self.dir), 30.0)
 
     def test_the_old_cap_remeasures_to_a_month_of_minutes(self):
         # The cap was 720 hours; in the new unit that is 43200 minutes and has
         # to survive rather than clamp to the same raw number.
         _write_settings(self.dir, {"pricing_refresh_hours": 720})
-        self.assertEqual(wb_settings.pricing_refresh_minutes(self.dir), 43200.0)
+        self.assertEqual(ca_settings.pricing_refresh_minutes(self.dir), 43200.0)
 
     def test_a_legacy_value_that_is_not_a_number_falls_back(self):
         _write_settings(self.dir, {"pricing_refresh_hours": "soon"})
-        self.assertEqual(wb_settings.pricing_refresh_minutes(self.dir), 5.0)
+        self.assertEqual(ca_settings.pricing_refresh_minutes(self.dir), 5.0)
         stored = _read_settings(self.dir)
         self.assertNotIn("pricing_refresh_hours", stored)
         self.assertNotIn("pricing_refresh_minutes", stored)
@@ -84,32 +84,32 @@ class PricingRefreshSettingTests(unittest.TestCase):
     def test_the_minutes_key_wins_over_a_leftover_legacy_key(self):
         _write_settings(self.dir, {"pricing_refresh_minutes": 15,
                                    "pricing_refresh_hours": 6})
-        self.assertEqual(wb_settings.pricing_refresh_minutes(self.dir), 15.0)
+        self.assertEqual(ca_settings.pricing_refresh_minutes(self.dir), 15.0)
 
     def test_a_negative_or_unparsable_minutes_value(self):
         _write_settings(self.dir, {"pricing_refresh_minutes": -5})
-        self.assertEqual(wb_settings.pricing_refresh_minutes(self.dir), 0.0)
+        self.assertEqual(ca_settings.pricing_refresh_minutes(self.dir), 0.0)
         _write_settings(self.dir, {"pricing_refresh_minutes": "often"})
-        self.assertEqual(wb_settings.pricing_refresh_minutes(self.dir), 5.0)
+        self.assertEqual(ca_settings.pricing_refresh_minutes(self.dir), 5.0)
 
     def test_the_setter_stores_minutes_and_drops_the_legacy_key(self):
         _write_settings(self.dir, {"pricing_refresh_hours": 6})
         self.assertEqual(
-            wb_settings.set_pricing_refresh_minutes(self.dir, 20), 20.0)
+            ca_settings.set_pricing_refresh_minutes(self.dir, 20), 20.0)
         stored = _read_settings(self.dir)
         self.assertEqual(stored["pricing_refresh_minutes"], 20.0)
         self.assertNotIn("pricing_refresh_hours", stored)
 
     def test_the_setter_clamps_in_minutes(self):
         self.assertEqual(
-            wb_settings.set_pricing_refresh_minutes(self.dir, 10 ** 9), 43200.0)
+            ca_settings.set_pricing_refresh_minutes(self.dir, 10 ** 9), 43200.0)
         self.assertEqual(
-            wb_settings.set_pricing_refresh_minutes(self.dir, -3), 0.0)
+            ca_settings.set_pricing_refresh_minutes(self.dir, -3), 0.0)
 
     def test_the_setter_keeps_the_stored_value_for_garbage_input(self):
         _write_settings(self.dir, {"pricing_refresh_minutes": 30})
         self.assertEqual(
-            wb_settings.set_pricing_refresh_minutes(self.dir, "x"), 30.0)
+            ca_settings.set_pricing_refresh_minutes(self.dir, "x"), 30.0)
 
 
 class PriceRefresherTests(unittest.TestCase):
@@ -117,18 +117,18 @@ class PriceRefresherTests(unittest.TestCase):
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="wb-refresher-")
-        self._previous = wb_pricing.data_dir()
-        wb_pricing.set_data_dir(self.dir)
+        self._previous = ca_pricing.data_dir()
+        ca_pricing.set_data_dir(self.dir)
         self._threads = []
 
     def tearDown(self):
         for thread in self._threads:
             thread.stop()
             thread.join(timeout=5)
-        wb_pricing.set_data_dir(self._previous)
+        ca_pricing.set_data_dir(self._previous)
 
     def _refresher(self, interval_minutes):
-        refresher = wb_pricing.PriceRefresher(interval_minutes=interval_minutes)
+        refresher = ca_pricing.PriceRefresher(interval_minutes=interval_minutes)
         refresher.log = lambda msg: None
         self.calls = []
         refresher.run_once = lambda: (self.calls.append(time.time()),
@@ -144,13 +144,13 @@ class PriceRefresherTests(unittest.TestCase):
         return len(calls)
 
     def test_the_unit_is_minutes(self):
-        refresher = wb_pricing.PriceRefresher(interval_minutes=5)
+        refresher = ca_pricing.PriceRefresher(interval_minutes=5)
         self.assertEqual(refresher.interval_minutes, 5)
         self.assertAlmostEqual(refresher.interval_seconds(), 300.0)
-        self.assertEqual(wb_pricing.DEFAULT_REFRESH_MINUTES, 5)
+        self.assertEqual(ca_pricing.DEFAULT_REFRESH_MINUTES, 5)
 
     def test_status_reports_minutes(self):
-        status = wb_pricing.PriceRefresher(interval_minutes=7).status()
+        status = ca_pricing.PriceRefresher(interval_minutes=7).status()
         self.assertEqual(status["interval_minutes"], 7)
         self.assertTrue(status["enabled"])
         self.assertNotIn("interval_hours", status)

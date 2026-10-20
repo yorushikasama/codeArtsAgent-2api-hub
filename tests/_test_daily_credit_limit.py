@@ -29,9 +29,9 @@ os.environ["ACCOUNTS_DIR"] = os.path.join(_TMP, "accounts")
 os.environ["WB_PROXY_USAGE_DIR"] = _TMP
 os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
-import wb_accounts
-import wb_settings
-import wb_proxy as P
+import ca_accounts
+import ca_settings
+import ca_proxy as P
 
 
 def row(at, account, model, tokens, credit=0.0, outcome="completed"):
@@ -53,28 +53,28 @@ class CreditGuardSettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="credit-set-") as directory:
             # Off by default, exactly like the other guards here: an install
             # that upgrades into this feature keeps behaving as before.
-            self.assertEqual(wb_settings.daily_credit_limit(directory), 0)
-            self.assertEqual(wb_settings.set_daily_credit_limit(directory, 80), 80)
-            self.assertEqual(wb_settings.daily_credit_limit(directory), 80)
-            self.assertEqual(wb_settings.set_daily_credit_limit(directory, 0), 0)
-            self.assertEqual(wb_settings.daily_credit_limit(directory), 0)
+            self.assertEqual(ca_settings.daily_credit_limit(directory), 0)
+            self.assertEqual(ca_settings.set_daily_credit_limit(directory, 80), 80)
+            self.assertEqual(ca_settings.daily_credit_limit(directory), 80)
+            self.assertEqual(ca_settings.set_daily_credit_limit(directory, 0), 0)
+            self.assertEqual(ca_settings.daily_credit_limit(directory), 0)
             # Garbage and negatives collapse to "off" instead of raising.
-            self.assertEqual(wb_settings.set_daily_credit_limit(directory, -5), 0)
-            self.assertEqual(wb_settings.set_daily_credit_limit(directory, "abc"), 0)
+            self.assertEqual(ca_settings.set_daily_credit_limit(directory, -5), 0)
+            self.assertEqual(ca_settings.set_daily_credit_limit(directory, "abc"), 0)
             # A corrupt stored value reads back as off too.
-            with open(wb_settings.settings_path(directory), "w", encoding="utf-8") as fh:
+            with open(ca_settings.settings_path(directory), "w", encoding="utf-8") as fh:
                 json.dump({"daily_credit_limit": "lots"}, fh)
-            self.assertEqual(wb_settings.daily_credit_limit(directory), 0)
+            self.assertEqual(ca_settings.daily_credit_limit(directory), 0)
 
     def test_model_daily_token_defaults_to_unlimited(self):
         with tempfile.TemporaryDirectory(prefix="credit-set-") as directory:
-            self.assertEqual(wb_settings.model_daily_token_limit(directory), 0)
+            self.assertEqual(ca_settings.model_daily_token_limit(directory), 0)
             self.assertEqual(
-                wb_settings.set_model_daily_token_limit(directory, 200000000), 200000000)
+                ca_settings.set_model_daily_token_limit(directory, 200000000), 200000000)
             self.assertEqual(
-                wb_settings.model_daily_token_limit(directory), 200000000)
-            self.assertEqual(wb_settings.set_model_daily_token_limit(directory, -5), 0)
-            self.assertEqual(wb_settings.set_model_daily_token_limit(directory, "abc"), 0)
+                ca_settings.model_daily_token_limit(directory), 200000000)
+            self.assertEqual(ca_settings.set_model_daily_token_limit(directory, -5), 0)
+            self.assertEqual(ca_settings.set_model_daily_token_limit(directory, "abc"), 0)
 
 
 class DailyUsageFoldTests(unittest.TestCase):
@@ -120,7 +120,7 @@ class DailyUsageFoldTests(unittest.TestCase):
 
 class CreditGuardAccountTests(unittest.TestCase):
     def test_guard_blocks_paid_models_and_keeps_free_ones(self):
-        account = wb_accounts.Account({"uid": "uid-a", "accessToken": "t",
+        account = ca_accounts.Account({"uid": "uid-a", "accessToken": "t",
                                       "realm": "cn"})
         account.daily_credit_limit = 50
         account.free_models = frozenset({"deepseek-v4.1-flash"})
@@ -148,7 +148,7 @@ class CreditGuardAccountTests(unittest.TestCase):
         self.assertTrue(account.ready("gpt-6-astra"))
 
     def test_model_guard_blocks_only_that_model(self):
-        account = wb_accounts.Account({"uid": "uid-b", "accessToken": "t"})
+        account = ca_accounts.Account({"uid": "uid-b", "accessToken": "t"})
         account.model_daily_token_limit = 200000000
         self.assertFalse(account.model_token_limit_blocked("hy4-preview"))
         account.model_daily_tokens = {"hy4-preview": 199999999,
@@ -173,11 +173,11 @@ class CreditGuardAccountTests(unittest.TestCase):
 class CreditGuardPoolTests(unittest.TestCase):
     def test_pool_caps_credit_per_account_and_publishes_state(self):
         with tempfile.TemporaryDirectory(prefix="credit-pool-") as directory:
-            spent = wb_accounts.Account({"uid": "uid-spent", "accessToken": "t",
+            spent = ca_accounts.Account({"uid": "uid-spent", "accessToken": "t",
                                          "realm": "cn"})
-            fresh = wb_accounts.Account({"uid": "uid-fresh", "accessToken": "t",
+            fresh = ca_accounts.Account({"uid": "uid-fresh", "accessToken": "t",
                                          "realm": "cn"})
-            pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+            pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
             pool.accounts = [spent, fresh]
             pool.apply_daily_credit_limit(
                 50, {"uid-spent": 60.0, "uid-fresh": 10.0},
@@ -202,11 +202,11 @@ class CreditGuardPoolTests(unittest.TestCase):
 
     def test_pool_caps_one_model_per_account(self):
         with tempfile.TemporaryDirectory(prefix="credit-model-") as directory:
-            a = wb_accounts.Account({"uid": "uid-a", "accessToken": "t",
+            a = ca_accounts.Account({"uid": "uid-a", "accessToken": "t",
                                      "realm": "cn"})
-            b = wb_accounts.Account({"uid": "uid-b", "accessToken": "t",
+            b = ca_accounts.Account({"uid": "uid-b", "accessToken": "t",
                                      "realm": "cn"})
-            pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+            pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
             pool.accounts = [a, b]
             pool.apply_model_daily_token_limit(1000, {"uid-a": {"hy4-preview": 1500}})
             self.assertTrue(a.model_token_limit_blocked("hy4-preview"))
@@ -250,7 +250,7 @@ class CreditGuardPoolTests(unittest.TestCase):
         return Pool()
 
     def test_pool_wide_credit_cap_answers_429_with_its_own_message(self):
-        account = wb_accounts.Account({"uid": "uid-cap", "accessToken": "t",
+        account = ca_accounts.Account({"uid": "uid-cap", "accessToken": "t",
                                       "realm": "cn"})
         account.daily_credit_limit = 50
         account.daily_credits_today = 50.0
@@ -270,7 +270,7 @@ class CreditGuardPoolTests(unittest.TestCase):
         self.assertGreaterEqual(caught.exception.wait, 60)
 
     def test_pool_wide_model_cap_answers_429_with_its_own_message(self):
-        account = wb_accounts.Account({"uid": "uid-model", "accessToken": "t",
+        account = ca_accounts.Account({"uid": "uid-model", "accessToken": "t",
                                       "realm": "cn"})
         account.model_daily_token_limit = 1000
         account.model_daily_tokens = {"gpt-6-astra": 1000}

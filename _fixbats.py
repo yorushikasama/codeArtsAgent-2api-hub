@@ -10,7 +10,7 @@ LAN = [
     "@echo off",
     "setlocal EnableExtensions",
     "rem ===========================================================",
-    "rem  WorkBuddy proxy - LAN mode",
+    "rem  CodeArts Hub proxy - LAN mode",
     "rem",
     "rem  Listens on every network interface so phones, laptops and",
     "rem  other PCs on the same network can use it.",
@@ -29,7 +29,7 @@ LAN = [
     'if "%PORT%"=="" set "PORT=8788"',
     'set "KEY=%~2"',
     'set "HERE=%~dp0"',
-    'set "SCRIPT=%HERE%wb_proxy.py"',
+    'set "SCRIPT=%HERE%ca_proxy.py"',
     "",
     'if not exist "%SCRIPT%" goto no_script',
     "",
@@ -72,7 +72,7 @@ LAN = [
     "exit /b 1",
     "",
     ":no_script",
-    "echo [ERROR] wb_proxy.py not found next to this script.",
+    "echo [ERROR] ca_proxy.py not found next to this script.",
     "echo         expected: %SCRIPT%",
     "echo.",
     "pause",
@@ -97,7 +97,7 @@ LAN = [
     "",
     ":run",
     "echo ===========================================================",
-    "echo   WorkBuddy proxy - LAN MODE",
+    "echo   CodeArts Hub proxy - LAN MODE",
     "echo.",
     "echo   Port %PORT% - your API address, dashboard link and API",
     "echo   key are printed below once the server is up.",
@@ -129,8 +129,8 @@ PLAIN = [
     "@echo off",
     "setlocal EnableExtensions",
     "rem ===========================================================",
-    "rem  WorkBuddy international proxy - launcher",
-    "rem  Usage: double-click, or  start-wb-proxy.bat [port]",
+    "rem  CodeArts Hub proxy - launcher",
+    "rem  Usage: double-click, or  start-codearts-hub.bat [port]",
     "rem",
     "rem  ASCII-only on purpose: .bat files are read using the",
     "rem  console code page, so non-ASCII text breaks the parser.",
@@ -143,7 +143,7 @@ PLAIN = [
     'set "PORT=%~1"',
     'if "%PORT%"=="" set "PORT=8788"',
     'set "HERE=%~dp0"',
-    'set "SCRIPT=%HERE%wb_proxy.py"',
+    'set "SCRIPT=%HERE%ca_proxy.py"',
     "",
     'if not exist "%SCRIPT%" goto no_script',
     "",
@@ -188,7 +188,7 @@ PLAIN = [
     "exit /b 1",
     "",
     ":no_script",
-    "echo [ERROR] wb_proxy.py not found next to this script.",
+    "echo [ERROR] ca_proxy.py not found next to this script.",
     "echo         expected: %SCRIPT%",
     "echo.",
     "pause",
@@ -213,7 +213,7 @@ PLAIN = [
     "",
     ":run",
     "echo ===========================================================",
-    "echo   WorkBuddy proxy",
+    "echo   CodeArts Hub proxy",
     "echo.",
     "echo   API      : http://127.0.0.1:%PORT%/v1",
     "echo   Dashboard: http://127.0.0.1:%PORT%/",
@@ -241,5 +241,5 @@ def dump(path, lines):
 
 
 base = pathlib.Path(__file__).parent
-dump(base / "start-wb-proxy-lan.bat", LAN)
-dump(base / "start-wb-proxy.bat", PLAIN)
+dump(base / "start-codearts-hub-lan.bat", LAN)
+dump(base / "start-codearts-hub.bat", PLAIN)

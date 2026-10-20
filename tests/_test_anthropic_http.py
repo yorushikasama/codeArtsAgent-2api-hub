@@ -123,13 +123,13 @@ class MockUpstream(BaseHTTPRequestHandler):
 upstream = ThreadingHTTPServer(("127.0.0.1", UPSTREAM_PORT), MockUpstream)
 threading.Thread(target=upstream.serve_forever, daemon=True).start()
 
-import wb_identity
-import wb_proxy as P
+import ca_identity
+import ca_proxy as P
 
-_ENDPOINTS = dict(wb_identity._ENDPOINTS)
+_ENDPOINTS = dict(ca_identity._ENDPOINTS)
 for key in list(_ENDPOINTS):
     _ENDPOINTS[key] = ("http://127.0.0.1:%d" % UPSTREAM_PORT, _ENDPOINTS[key][1])
-wb_identity._ENDPOINTS.update(_ENDPOINTS)
+ca_identity._ENDPOINTS.update(_ENDPOINTS)
 
 GATEWAY_PORT = life.free_port()
 

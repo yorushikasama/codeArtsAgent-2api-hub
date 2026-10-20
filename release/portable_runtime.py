@@ -5,7 +5,7 @@
 The existing portable asset is not a source archive: it carries a trimmed
 CPython 3.12 Windows runtime under ``python/``, and the launchers pick that up
 before falling back to a system interpreter (``%HERE%python\\python.exe`` in
-``start-wb-proxy.bat``). The repository cannot rebuild it - it is gitignored
+``start-codearts-hub.bat``). The repository cannot rebuild it - it is gitignored
 precisely because it is a build input - so CI fetches it from a pinned
 python-build-standalone release and trims it with the rules below.
 
@@ -69,7 +69,7 @@ DROP_SUFFIXES = (".pdb", ".pyc")
 # ---- what the package must be able to do ----------------------------------
 #
 # The launchers look for python/python.exe, and the gateway imports these
-# modules (ast-walked from wb_*.py) - so the trim may not take any of them,
+# modules (ast-walked from ca_*.py) - so the trim may not take any of them,
 # and their extension modules have to survive with them.
 REQUIRED_FILES = (
     "python.exe", "python3.dll", "python312.dll",

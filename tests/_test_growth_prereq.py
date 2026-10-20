@@ -18,7 +18,7 @@ import urllib.error
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-import wb_tasks as T  # noqa: E402
+import ca_tasks as T  # noqa: E402
 
 
 class FakeAccount(object):

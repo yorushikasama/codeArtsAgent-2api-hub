@@ -15,20 +15,20 @@ os.environ["ACCOUNTS_DIR"] = _startup_dir.name
 os.environ["WB_PROXY_USAGE_DIR"] = _startup_dir.name
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts
-import wb_proxy
-import wb_settings
+import ca_accounts
+import ca_proxy
+import ca_settings
 
 
 def clear_device_token_cache():
-    with wb_accounts._DEVICE_TOKEN_LOCK:
-        wb_accounts._DEVICE_TOKEN_CACHE.update({"key": None, "token": "", "at": 0.0})
+    with ca_accounts._DEVICE_TOKEN_LOCK:
+        ca_accounts._DEVICE_TOKEN_CACHE.update({"key": None, "token": "", "at": 0.0})
 
 
 class UpstreamSettingsTests(unittest.TestCase):
     def test_defaults_match_the_panel_semantics(self):
         with tempfile.TemporaryDirectory() as directory:
-            cfg = wb_settings.upstream_config(directory)
+            cfg = ca_settings.upstream_config(directory)
         self.assertEqual(cfg, {
             "header_timeout_seconds": 120,
             "idle_timeout_seconds": 300,
@@ -38,16 +38,16 @@ class UpstreamSettingsTests(unittest.TestCase):
 
     def test_partial_patch_merges_and_persists(self):
         with tempfile.TemporaryDirectory() as directory:
-            wb_settings.set_upstream_config(directory, {"header_timeout_seconds": 45})
-            cfg = wb_settings.upstream_config(directory)
+            ca_settings.set_upstream_config(directory, {"header_timeout_seconds": 45})
+            cfg = ca_settings.upstream_config(directory)
             self.assertEqual(cfg["header_timeout_seconds"], 45)
             self.assertEqual(cfg["idle_timeout_seconds"], 300)
-            wb_settings.set_upstream_config(directory, {"idle_timeout_seconds": 600})
-            cfg = wb_settings.upstream_config(directory)
+            ca_settings.set_upstream_config(directory, {"idle_timeout_seconds": 600})
+            cfg = ca_settings.upstream_config(directory)
             self.assertEqual(cfg["header_timeout_seconds"], 45)
             self.assertEqual(cfg["idle_timeout_seconds"], 600)
-            wb_settings.set_upstream_config(directory, {"device_token_file": " C:/tmp/tok "})
-            self.assertEqual(wb_settings.upstream_config(directory)["device_token_file"],
+            ca_settings.set_upstream_config(directory, {"device_token_file": " C:/tmp/tok "})
+            self.assertEqual(ca_settings.upstream_config(directory)["device_token_file"],
                              "C:/tmp/tok")
 
     def test_validate_rejects_bad_shapes(self):
@@ -59,31 +59,31 @@ class UpstreamSettingsTests(unittest.TestCase):
                     {"device_token_file": None},
                     {"unknown_setting": 1}):
             with self.assertRaises(ValueError, msg=repr(bad)):
-                wb_settings.validate_upstream_patch(bad)
-        self.assertEqual(wb_settings.validate_upstream_patch({"device_token": " tok "}),
+                ca_settings.validate_upstream_patch(bad)
+        self.assertEqual(ca_settings.validate_upstream_patch({"device_token": " tok "}),
                          {"device_token": "tok"})
 
     def test_lenient_load_ignores_corrupt_and_legacy_values(self):
         with tempfile.TemporaryDirectory() as directory:
-            with open(wb_settings.settings_path(directory), "w", encoding="utf-8") as fh:
+            with open(ca_settings.settings_path(directory), "w", encoding="utf-8") as fh:
                 json.dump({"upstream": {"header_timeout_seconds": "nope",
                                         "idle_timeout_seconds": -3,
                                         "device_token": 7,
                                         "device_token_file": None}}, fh)
-            cfg = wb_settings.upstream_config(directory)
+            cfg = ca_settings.upstream_config(directory)
             self.assertEqual(cfg["header_timeout_seconds"], 120)
             self.assertEqual(cfg["idle_timeout_seconds"], 300)
             self.assertEqual(cfg["device_token"], "")
             self.assertEqual(cfg["device_token_file"], "")
         with tempfile.TemporaryDirectory() as directory:
-            with open(wb_settings.settings_path(directory), "w", encoding="utf-8") as fh:
+            with open(ca_settings.settings_path(directory), "w", encoding="utf-8") as fh:
                 json.dump({"upstream": [], "reserve_credits": 5}, fh)
-            self.assertEqual(wb_settings.upstream_config(directory)["idle_timeout_seconds"],
+            self.assertEqual(ca_settings.upstream_config(directory)["idle_timeout_seconds"],
                              300)
         with tempfile.TemporaryDirectory() as directory:
-            with open(wb_settings.settings_path(directory), "w", encoding="utf-8") as fh:
+            with open(ca_settings.settings_path(directory), "w", encoding="utf-8") as fh:
                 fh.write("{not json")
-            self.assertEqual(wb_settings.upstream_config(directory)["header_timeout_seconds"],
+            self.assertEqual(ca_settings.upstream_config(directory)["header_timeout_seconds"],
                              120)
 
 
@@ -92,21 +92,21 @@ class DeviceTokenTests(unittest.TestCase):
         clear_device_token_cache()
 
     def make_account(self, directory, uid="uid-device"):
-        return wb_accounts.Account({"uid": uid, "accessToken": "t", "realm": "intl"},
+        return ca_accounts.Account({"uid": uid, "accessToken": "t", "realm": "intl"},
                                    os.path.join(directory, uid + ".json"))
 
     def test_no_configuration_injects_nothing(self):
         with tempfile.TemporaryDirectory() as directory:
             account = self.make_account(directory)
-            self.assertEqual(wb_accounts.resolve_device_token(directory), "")
+            self.assertEqual(ca_accounts.resolve_device_token(directory), "")
             self.assertNotIn("X-Device-Token", account.headers("chat"))
             self.assertNotIn("X-Device-Token", account.headers("billing"))
 
     def test_literal_token_is_injected_on_chat_and_billing(self):
         with tempfile.TemporaryDirectory() as directory:
-            wb_settings.set_upstream_config(directory, {"device_token": "tok-literal"})
+            ca_settings.set_upstream_config(directory, {"device_token": "tok-literal"})
             account = self.make_account(directory)
-            self.assertEqual(wb_accounts.resolve_device_token(directory), "tok-literal")
+            self.assertEqual(ca_accounts.resolve_device_token(directory), "tok-literal")
             self.assertEqual(account.headers("chat")["X-Device-Token"], "tok-literal")
             self.assertEqual(account.headers("billing")["X-Device-Token"], "tok-literal")
 
@@ -115,39 +115,39 @@ class DeviceTokenTests(unittest.TestCase):
             token_file = os.path.join(directory, "device_token")
             with open(token_file, "w", encoding="utf-8") as fh:
                 fh.write("  tok-file\n")
-            wb_settings.set_upstream_config(directory, {"device_token_file": token_file})
-            with mock.patch.object(wb_accounts.time, "time", return_value=1000.0):
-                self.assertEqual(wb_accounts.resolve_device_token(directory), "tok-file")
+            ca_settings.set_upstream_config(directory, {"device_token_file": token_file})
+            with mock.patch.object(ca_accounts.time, "time", return_value=1000.0):
+                self.assertEqual(ca_accounts.resolve_device_token(directory), "tok-file")
             with open(token_file, "w", encoding="utf-8") as fh:
                 fh.write("tok-rotated")
-            with mock.patch.object(wb_accounts.time, "time", return_value=1299.0):
-                self.assertEqual(wb_accounts.resolve_device_token(directory), "tok-file")
-            with mock.patch.object(wb_accounts.time, "time", return_value=1301.0):
-                self.assertEqual(wb_accounts.resolve_device_token(directory), "tok-rotated")
+            with mock.patch.object(ca_accounts.time, "time", return_value=1299.0):
+                self.assertEqual(ca_accounts.resolve_device_token(directory), "tok-file")
+            with mock.patch.object(ca_accounts.time, "time", return_value=1301.0):
+                self.assertEqual(ca_accounts.resolve_device_token(directory), "tok-rotated")
 
     def test_literal_wins_over_the_file(self):
         with tempfile.TemporaryDirectory() as directory:
             token_file = os.path.join(directory, "device_token")
             with open(token_file, "w", encoding="utf-8") as fh:
                 fh.write("tok-file")
-            wb_settings.set_upstream_config(directory, {"device_token": "tok-literal",
+            ca_settings.set_upstream_config(directory, {"device_token": "tok-literal",
                                                         "device_token_file": token_file})
-            self.assertEqual(wb_accounts.resolve_device_token(directory), "tok-literal")
+            self.assertEqual(ca_accounts.resolve_device_token(directory), "tok-literal")
 
     def test_oversized_file_is_ignored(self):
         with tempfile.TemporaryDirectory() as directory:
             token_file = os.path.join(directory, "device_token")
             with open(token_file, "w", encoding="utf-8") as fh:
                 fh.write("x" * 1025)
-            wb_settings.set_upstream_config(directory, {"device_token_file": token_file})
-            self.assertEqual(wb_accounts.resolve_device_token(directory), "")
+            ca_settings.set_upstream_config(directory, {"device_token_file": token_file})
+            self.assertEqual(ca_accounts.resolve_device_token(directory), "")
             self.assertNotIn("X-Device-Token", self.make_account(directory).headers("chat"))
 
     def test_missing_file_degrades_to_empty(self):
         with tempfile.TemporaryDirectory() as directory:
-            wb_settings.set_upstream_config(directory, {
+            ca_settings.set_upstream_config(directory, {
                 "device_token_file": os.path.join(directory, "does-not-exist")})
-            self.assertEqual(wb_accounts.resolve_device_token(directory), "")
+            self.assertEqual(ca_accounts.resolve_device_token(directory), "")
             self.assertNotIn("X-Device-Token", self.make_account(directory).headers("chat"))
 
     def test_key_change_bypasses_the_cache(self):
@@ -155,26 +155,26 @@ class DeviceTokenTests(unittest.TestCase):
             token_file = os.path.join(directory, "device_token")
             with open(token_file, "w", encoding="utf-8") as fh:
                 fh.write("tok-file")
-            wb_settings.set_upstream_config(directory, {"device_token_file": token_file})
-            with mock.patch.object(wb_accounts.time, "time", return_value=1000.0):
-                self.assertEqual(wb_accounts.resolve_device_token(directory), "tok-file")
-            wb_settings.set_upstream_config(directory, {"device_token": "tok-literal"})
-            with mock.patch.object(wb_accounts.time, "time", return_value=1001.0):
-                self.assertEqual(wb_accounts.resolve_device_token(directory), "tok-literal")
+            ca_settings.set_upstream_config(directory, {"device_token_file": token_file})
+            with mock.patch.object(ca_accounts.time, "time", return_value=1000.0):
+                self.assertEqual(ca_accounts.resolve_device_token(directory), "tok-file")
+            ca_settings.set_upstream_config(directory, {"device_token": "tok-literal"})
+            with mock.patch.object(ca_accounts.time, "time", return_value=1001.0):
+                self.assertEqual(ca_accounts.resolve_device_token(directory), "tok-literal")
 
     def test_account_without_a_directory_injects_nothing(self):
-        account = wb_accounts.Account({"uid": "uid-bare", "accessToken": "t"})
+        account = ca_accounts.Account({"uid": "uid-bare", "accessToken": "t"})
         self.assertNotIn("X-Device-Token", account.headers("chat"))
 
 
 class StreamTimeoutTests(unittest.TestCase):
     def test_upstream_timeouts_default_and_override(self):
         with tempfile.TemporaryDirectory() as directory:
-            with mock.patch.object(wb_proxy, "ACCOUNTS_DIR", directory):
-                self.assertEqual(wb_proxy.upstream_timeouts(), (120.0, 300.0))
-                wb_settings.set_upstream_config(directory, {
+            with mock.patch.object(ca_proxy, "ACCOUNTS_DIR", directory):
+                self.assertEqual(ca_proxy.upstream_timeouts(), (120.0, 300.0))
+                ca_settings.set_upstream_config(directory, {
                     "header_timeout_seconds": 45, "idle_timeout_seconds": 600})
-                self.assertEqual(wb_proxy.upstream_timeouts(), (45.0, 600.0))
+                self.assertEqual(ca_proxy.upstream_timeouts(), (45.0, 600.0))
 
     def test_apply_stream_idle_timeout_sets_the_socket(self):
         class Sock(object):
@@ -195,7 +195,7 @@ class StreamTimeoutTests(unittest.TestCase):
         class Response(object):
             fp = Fp()
 
-        self.assertTrue(wb_proxy._apply_stream_idle_timeout(Response(), 300))
+        self.assertTrue(ca_proxy._apply_stream_idle_timeout(Response(), 300))
         self.assertEqual(sock.timeouts, [300.0])
 
         class FpFallback(object):
@@ -204,16 +204,16 @@ class StreamTimeoutTests(unittest.TestCase):
         class ResponseFallback(object):
             fp = FpFallback()
 
-        self.assertTrue(wb_proxy._apply_stream_idle_timeout(ResponseFallback(), 12))
+        self.assertTrue(ca_proxy._apply_stream_idle_timeout(ResponseFallback(), 12))
         self.assertEqual(sock.timeouts, [300.0, 12.0])
 
     def test_apply_stream_idle_timeout_degrades_cleanly(self):
         class Response(object):
             pass
 
-        self.assertFalse(wb_proxy._apply_stream_idle_timeout(Response(), 300))
-        self.assertFalse(wb_proxy._apply_stream_idle_timeout(Response(), 0))
-        self.assertFalse(wb_proxy._apply_stream_idle_timeout(Response(), "nope"))
+        self.assertFalse(ca_proxy._apply_stream_idle_timeout(Response(), 300))
+        self.assertFalse(ca_proxy._apply_stream_idle_timeout(Response(), 0))
+        self.assertFalse(ca_proxy._apply_stream_idle_timeout(Response(), "nope"))
 
         class Sock(object):
             def settimeout(self, value):
@@ -225,7 +225,7 @@ class StreamTimeoutTests(unittest.TestCase):
         class ResponseWithSock(object):
             fp = Fp()
 
-        self.assertFalse(wb_proxy._apply_stream_idle_timeout(ResponseWithSock(), 300))
+        self.assertFalse(ca_proxy._apply_stream_idle_timeout(ResponseWithSock(), 300))
 
     def test_open_upstream_applies_header_timeout_and_idle_timeout(self):
         class Sock(object):
@@ -254,9 +254,9 @@ class StreamTimeoutTests(unittest.TestCase):
                 self.closed = True
 
         with tempfile.TemporaryDirectory() as directory:
-            wb_settings.set_upstream_config(directory, {
+            ca_settings.set_upstream_config(directory, {
                 "header_timeout_seconds": 45, "idle_timeout_seconds": 600})
-            account = wb_accounts.Account(
+            account = ca_accounts.Account(
                 {"uid": "uid-b1", "accessToken": "t", "realm": "intl"},
                 os.path.join(directory, "uid-b1.json"))
             sock = Sock()
@@ -296,12 +296,12 @@ class StreamTimeoutTests(unittest.TestCase):
                     # 优先调度的权重表也由请求路径推给池；桩只负责接住调用。
                     return weights or {}
 
-            old_pool, old_urlopen = wb_proxy.POOL, wb_accounts.urlopen
-            wb_proxy.POOL = Pool()
-            wb_accounts.urlopen = fake_urlopen
+            old_pool, old_urlopen = ca_proxy.POOL, ca_accounts.urlopen
+            ca_proxy.POOL = Pool()
+            ca_accounts.urlopen = fake_urlopen
             try:
-                with mock.patch.object(wb_proxy, "ACCOUNTS_DIR", directory):
-                    upstream, picked, _effort = wb_proxy.open_upstream(
+                with mock.patch.object(ca_proxy, "ACCOUNTS_DIR", directory):
+                    upstream, picked, _effort = ca_proxy.open_upstream(
                         {"model": "deepseek-v4.1-flash",
                          "messages": [{"role": "user", "content": "hi"}]},
                         target_realm="intl")
@@ -313,13 +313,13 @@ class StreamTimeoutTests(unittest.TestCase):
                     upstream.close()
                 self.assertTrue(response.closed)
             finally:
-                wb_proxy.POOL = old_pool
-                wb_accounts.urlopen = old_urlopen
+                ca_proxy.POOL = old_pool
+                ca_accounts.urlopen = old_urlopen
 
     def test_runtime_settings_view_exposes_upstream(self):
         with tempfile.TemporaryDirectory() as directory:
-            with mock.patch.object(wb_proxy, "ACCOUNTS_DIR", directory):
-                view = wb_proxy.runtime_settings_view()
+            with mock.patch.object(ca_proxy, "ACCOUNTS_DIR", directory):
+                view = ca_proxy.runtime_settings_view()
         self.assertIn("upstream", view)
         self.assertEqual(view["upstream"]["idle_timeout_seconds"], 300)
 

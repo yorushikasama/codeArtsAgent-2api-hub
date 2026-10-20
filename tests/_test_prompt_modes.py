@@ -18,10 +18,10 @@ os.environ["ACCOUNTS_DIR"] = _startup_dir.name
 os.environ["WB_PROXY_USAGE_DIR"] = _startup_dir.name
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts
-import wb_prompt
-import wb_proxy
-import wb_settings
+import ca_accounts
+import ca_prompt
+import ca_proxy
+import ca_settings
 
 CST = datetime.timezone(datetime.timedelta(hours=8))
 
@@ -33,7 +33,7 @@ class PromptTextTests(unittest.TestCase):
                     {"role": "developer", "content": "client-b"},
                     {"role": "assistant", "content": "ok"},
                     {"role": "tool", "tool_call_id": "c1", "content": "r"}]
-        out = wb_prompt.rewrite(messages, "GATEWAY")
+        out = ca_prompt.rewrite(messages, "GATEWAY")
         self.assertEqual(out[0], {"role": "system", "content": "GATEWAY"})
         self.assertEqual([m["role"] for m in out[1:]],
                          ["user", "assistant", "tool"])
@@ -42,48 +42,48 @@ class PromptTextTests(unittest.TestCase):
         messages = [{"role": "system", "content": "client-a"},
                     {"role": "developer", "content": "client-b"},
                     {"role": "user", "content": "hi"}]
-        out = wb_prompt.append(messages, "GATEWAY")
+        out = ca_prompt.append(messages, "GATEWAY")
         self.assertEqual([m["content"] for m in out[:3]],
                          ["client-a", "client-b", "GATEWAY"])
         self.assertEqual(out[3], {"role": "user", "content": "hi"})
 
     def test_append_without_a_leading_block_inserts_first(self):
-        out = wb_prompt.append([{"role": "user", "content": "hi"}], "GATEWAY")
+        out = ca_prompt.append([{"role": "user", "content": "hi"}], "GATEWAY")
         self.assertEqual(out[0], {"role": "system", "content": "GATEWAY"})
         self.assertEqual(out[1], {"role": "user", "content": "hi"})
 
     def test_apply_mode_routing(self):
         messages = [{"role": "system", "content": "client"},
                     {"role": "user", "content": "hi"}]
-        self.assertIs(wb_prompt.apply_mode(messages, "passthrough", "GW"), messages)
-        custom = wb_prompt.apply_mode(messages, "custom", "GW")
+        self.assertIs(ca_prompt.apply_mode(messages, "passthrough", "GW"), messages)
+        custom = ca_prompt.apply_mode(messages, "custom", "GW")
         self.assertEqual(custom[0]["content"], "GW")
         self.assertNotIn("client", [m.get("content") for m in custom])
-        appended = wb_prompt.apply_mode(messages, "append", "GW")
+        appended = ca_prompt.apply_mode(messages, "append", "GW")
         self.assertEqual([m["content"] for m in appended[:2]], ["client", "GW"])
 
     def test_degraded_routing_only_touches_passthrough_and_append(self):
         messages = [{"role": "system", "content": "client"},
                     {"role": "user", "content": "hi"}]
-        passthrough = wb_prompt.apply_mode(messages, "passthrough", "", degraded=True)
-        self.assertEqual(passthrough[0]["content"], wb_prompt.DEGRADED_PROMPT)
-        appended = wb_prompt.apply_mode(messages, "append", "GW", degraded=True)
-        self.assertEqual(appended[0]["content"], wb_prompt.DEGRADED_PROMPT)
-        custom = wb_prompt.apply_mode(messages, "custom", "GW", degraded=True)
+        passthrough = ca_prompt.apply_mode(messages, "passthrough", "", degraded=True)
+        self.assertEqual(passthrough[0]["content"], ca_prompt.DEGRADED_PROMPT)
+        appended = ca_prompt.apply_mode(messages, "append", "GW", degraded=True)
+        self.assertEqual(appended[0]["content"], ca_prompt.DEGRADED_PROMPT)
+        custom = ca_prompt.apply_mode(messages, "custom", "GW", degraded=True)
         self.assertEqual(custom[0]["content"], "GW")
 
     def test_next_midnight_cst(self):
         just_before = datetime.datetime(2026, 10, 5, 23, 59, 0, tzinfo=CST)
         expected = datetime.datetime(2026, 10, 6, 0, 0, 0, tzinfo=CST)
-        self.assertEqual(wb_prompt.next_midnight_cst(just_before.timestamp()),
+        self.assertEqual(ca_prompt.next_midnight_cst(just_before.timestamp()),
                          expected.timestamp())
         midnight = datetime.datetime(2026, 10, 5, 0, 0, 0, tzinfo=CST)
         expected2 = datetime.datetime(2026, 10, 6, 0, 0, 0, tzinfo=CST)
-        self.assertEqual(wb_prompt.next_midnight_cst(midnight.timestamp()),
+        self.assertEqual(ca_prompt.next_midnight_cst(midnight.timestamp()),
                          expected2.timestamp())
 
     def test_degrade_gate_trigger_does_not_renew(self):
-        gate = wb_prompt.DegradeGate()
+        gate = ca_prompt.DegradeGate()
         self.assertFalse(gate.active(now=1000.0))
         gate.trigger(now=1000.0)
         self.assertTrue(gate.active(now=1000.0))
@@ -98,45 +98,45 @@ class PromptTextTests(unittest.TestCase):
 class PromptSettingsTests(unittest.TestCase):
     def test_defaults_are_passthrough(self):
         with tempfile.TemporaryDirectory() as directory:
-            self.assertEqual(wb_settings.prompt_config(directory),
+            self.assertEqual(ca_settings.prompt_config(directory),
                              {"mode": "passthrough", "file": ""})
 
     def test_roundtrip_and_validation(self):
         with tempfile.TemporaryDirectory() as directory:
-            wb_settings.set_prompt_config(directory, {"mode": "custom"})
-            self.assertEqual(wb_settings.prompt_config(directory)["mode"], "custom")
-            wb_settings.set_prompt_config(directory, {"file": " C:/p.txt "})
-            cfg = wb_settings.prompt_config(directory)
+            ca_settings.set_prompt_config(directory, {"mode": "custom"})
+            self.assertEqual(ca_settings.prompt_config(directory)["mode"], "custom")
+            ca_settings.set_prompt_config(directory, {"file": " C:/p.txt "})
+            cfg = ca_settings.prompt_config(directory)
             self.assertEqual(cfg["mode"], "custom")
             self.assertEqual(cfg["file"], "C:/p.txt")
         for bad in ({"mode": "weird"}, {"mode": 1}, {"file": 2}, {"nope": 1}):
             with self.assertRaises(ValueError, msg=repr(bad)):
-                wb_settings.validate_prompt_patch(bad)
+                ca_settings.validate_prompt_patch(bad)
 
     def test_lenient_load(self):
         with tempfile.TemporaryDirectory() as directory:
-            with open(wb_settings.settings_path(directory), "w", encoding="utf-8") as fh:
+            with open(ca_settings.settings_path(directory), "w", encoding="utf-8") as fh:
                 json.dump({"prompt": {"mode": "BOGUS", "file": 7}}, fh)
-            self.assertEqual(wb_settings.prompt_config(directory),
+            self.assertEqual(ca_settings.prompt_config(directory),
                              {"mode": "passthrough", "file": ""})
         with tempfile.TemporaryDirectory() as directory:
-            with open(wb_settings.settings_path(directory), "w", encoding="utf-8") as fh:
+            with open(ca_settings.settings_path(directory), "w", encoding="utf-8") as fh:
                 json.dump({"prompt": []}, fh)
-            self.assertEqual(wb_settings.prompt_config(directory)["mode"], "passthrough")
+            self.assertEqual(ca_settings.prompt_config(directory)["mode"], "passthrough")
 
 
 class BuildBodyPromptTests(unittest.TestCase):
     def setUp(self):
-        wb_proxy.PROMPT_DEGRADE.reset()
+        ca_proxy.PROMPT_DEGRADE.reset()
 
     def tearDown(self):
-        wb_proxy.PROMPT_DEGRADE.reset()
+        ca_proxy.PROMPT_DEGRADE.reset()
 
     def build(self, directory, messages, **extra):
         payload = {"model": "deepseek-v4.1-flash", "messages": messages}
         payload.update(extra)
-        with mock.patch.object(wb_proxy, "ACCOUNTS_DIR", directory):
-            return wb_proxy.build_upstream_body(payload)
+        with mock.patch.object(ca_proxy, "ACCOUNTS_DIR", directory):
+            return ca_proxy.build_upstream_body(payload)
 
     def test_passthrough_keeps_the_client_system_prompt(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -147,34 +147,34 @@ class BuildBodyPromptTests(unittest.TestCase):
 
     def test_custom_replaces_the_client_system_prompt(self):
         with tempfile.TemporaryDirectory() as directory:
-            wb_settings.set_prompt_config(directory, {"mode": "custom"})
+            ca_settings.set_prompt_config(directory, {"mode": "custom"})
             body = self.build(directory, [
                 {"role": "system", "content": "CLIENT-SYS"},
                 {"role": "user", "content": "hi"}])
-        self.assertEqual(body["messages"][0]["content"], wb_prompt.DEFAULT_PROMPT)
+        self.assertEqual(body["messages"][0]["content"], ca_prompt.DEFAULT_PROMPT)
         self.assertNotIn("CLIENT-SYS", json.dumps(body["messages"]))
 
     def test_append_keeps_both_prompts(self):
         with tempfile.TemporaryDirectory() as directory:
-            wb_settings.set_prompt_config(directory, {"mode": "append"})
+            ca_settings.set_prompt_config(directory, {"mode": "append"})
             body = self.build(directory, [
                 {"role": "system", "content": "CLIENT-SYS"},
                 {"role": "user", "content": "hi"}])
         self.assertEqual([m["content"] for m in body["messages"][:2]],
-                         ["CLIENT-SYS", wb_prompt.DEFAULT_PROMPT])
+                         ["CLIENT-SYS", ca_prompt.DEFAULT_PROMPT])
 
     def test_custom_file_override(self):
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "prompt.txt")
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write("FILE-PROMPT")
-            wb_settings.set_prompt_config(directory, {"mode": "custom", "file": path})
+            ca_settings.set_prompt_config(directory, {"mode": "custom", "file": path})
             body = self.build(directory, [{"role": "user", "content": "hi"}])
         self.assertEqual(body["messages"][0]["content"], "FILE-PROMPT")
 
     def test_missing_file_fails_open_to_passthrough(self):
         with tempfile.TemporaryDirectory() as directory:
-            wb_settings.set_prompt_config(directory, {
+            ca_settings.set_prompt_config(directory, {
                 "mode": "custom", "file": os.path.join(directory, "nope.txt")})
             body = self.build(directory, [
                 {"role": "system", "content": "CLIENT-SYS"},
@@ -183,32 +183,32 @@ class BuildBodyPromptTests(unittest.TestCase):
 
     def test_degrade_window_replaces_passthrough_and_append(self):
         with tempfile.TemporaryDirectory() as directory:
-            wb_proxy.PROMPT_DEGRADE.trigger()
+            ca_proxy.PROMPT_DEGRADE.trigger()
             body = self.build(directory, [
                 {"role": "system", "content": "CLIENT-SYS"},
                 {"role": "user", "content": "hi"}])
-            self.assertEqual(body["messages"][0]["content"], wb_prompt.DEGRADED_PROMPT)
-            wb_settings.set_prompt_config(directory, {"mode": "append"})
+            self.assertEqual(body["messages"][0]["content"], ca_prompt.DEGRADED_PROMPT)
+            ca_settings.set_prompt_config(directory, {"mode": "append"})
             body2 = self.build(directory, [
                 {"role": "system", "content": "CLIENT-SYS"},
                 {"role": "user", "content": "hi"}])
-            self.assertEqual(body2["messages"][0]["content"], wb_prompt.DEGRADED_PROMPT)
+            self.assertEqual(body2["messages"][0]["content"], ca_prompt.DEGRADED_PROMPT)
             self.assertNotIn("CLIENT-SYS", json.dumps(body2["messages"]))
 
     def test_degrade_window_leaves_custom_alone(self):
         with tempfile.TemporaryDirectory() as directory:
-            wb_settings.set_prompt_config(directory, {"mode": "custom"})
-            wb_proxy.PROMPT_DEGRADE.trigger()
+            ca_settings.set_prompt_config(directory, {"mode": "custom"})
+            ca_proxy.PROMPT_DEGRADE.trigger()
             body = self.build(directory, [{"role": "user", "content": "hi"}])
-        self.assertEqual(body["messages"][0]["content"], wb_prompt.DEFAULT_PROMPT)
+        self.assertEqual(body["messages"][0]["content"], ca_prompt.DEFAULT_PROMPT)
 
 
 class DegradedRetryTests(unittest.TestCase):
     def setUp(self):
-        wb_proxy.PROMPT_DEGRADE.reset()
+        ca_proxy.PROMPT_DEGRADE.reset()
 
     def tearDown(self):
-        wb_proxy.PROMPT_DEGRADE.reset()
+        ca_proxy.PROMPT_DEGRADE.reset()
 
     def make_pool(self, account):
         class Pool(object):
@@ -243,7 +243,7 @@ class DegradedRetryTests(unittest.TestCase):
 
     def test_passthrough_403_retries_with_the_neutral_prompt(self):
         with tempfile.TemporaryDirectory() as directory:
-            account = wb_accounts.Account(
+            account = ca_accounts.Account(
                 {"uid": "uid-b3", "accessToken": "t", "realm": "intl"},
                 os.path.join(directory, "uid-b3.json"))
             bodies = []
@@ -260,31 +260,31 @@ class DegradedRetryTests(unittest.TestCase):
                         io.BytesIO(b"content policy rejected"))
                 return Response()
 
-            old_pool, old_urlopen = wb_proxy.POOL, wb_accounts.urlopen
-            wb_proxy.POOL = self.make_pool(account)
-            wb_accounts.urlopen = fake_urlopen
+            old_pool, old_urlopen = ca_proxy.POOL, ca_accounts.urlopen
+            ca_proxy.POOL = self.make_pool(account)
+            ca_accounts.urlopen = fake_urlopen
             try:
-                with mock.patch.object(wb_proxy, "ACCOUNTS_DIR", directory):
-                    upstream, _account, _effort = wb_proxy.open_upstream(
+                with mock.patch.object(ca_proxy, "ACCOUNTS_DIR", directory):
+                    upstream, _account, _effort = ca_proxy.open_upstream(
                         {"model": "deepseek-v4.1-flash",
                          "messages": [{"role": "system", "content": "CLIENT-SYS"},
                                       {"role": "user", "content": "hi"}]},
                         session_key="conv-b3", target_realm="intl")
                     upstream.close()
-                    self.assertTrue(wb_proxy.PROMPT_DEGRADE.active())
+                    self.assertTrue(ca_proxy.PROMPT_DEGRADE.active())
             finally:
-                wb_proxy.POOL = old_pool
-                wb_accounts.urlopen = old_urlopen
+                ca_proxy.POOL = old_pool
+                ca_accounts.urlopen = old_urlopen
 
             self.assertEqual(len(bodies), 2)
             self.assertIn("CLIENT-SYS", json.dumps(bodies[0]["messages"]))
-            self.assertIn(wb_prompt.DEGRADED_PROMPT, json.dumps(bodies[1]["messages"]))
+            self.assertIn(ca_prompt.DEGRADED_PROMPT, json.dumps(bodies[1]["messages"]))
             self.assertNotIn("CLIENT-SYS", json.dumps(bodies[1]["messages"]))
 
     def test_custom_mode_does_not_degrade(self):
         with tempfile.TemporaryDirectory() as directory:
-            wb_settings.set_prompt_config(directory, {"mode": "custom"})
-            account = wb_accounts.Account(
+            ca_settings.set_prompt_config(directory, {"mode": "custom"})
+            account = ca_accounts.Account(
                 {"uid": "uid-b3c", "accessToken": "t", "realm": "intl"},
                 os.path.join(directory, "uid-b3c.json"))
             calls = []
@@ -295,21 +295,21 @@ class DegradedRetryTests(unittest.TestCase):
                     "https://upstream.invalid", 403, "forbidden", {},
                     io.BytesIO(b"content policy rejected"))
 
-            old_pool, old_urlopen = wb_proxy.POOL, wb_accounts.urlopen
-            wb_proxy.POOL = self.make_pool(account)
-            wb_accounts.urlopen = fake_urlopen
+            old_pool, old_urlopen = ca_proxy.POOL, ca_accounts.urlopen
+            ca_proxy.POOL = self.make_pool(account)
+            ca_accounts.urlopen = fake_urlopen
             try:
-                with mock.patch.object(wb_proxy, "ACCOUNTS_DIR", directory):
-                    with self.assertRaises(wb_proxy.ContentRejected):
-                        wb_proxy.open_upstream(
+                with mock.patch.object(ca_proxy, "ACCOUNTS_DIR", directory):
+                    with self.assertRaises(ca_proxy.ContentRejected):
+                        ca_proxy.open_upstream(
                             {"model": "deepseek-v4.1-flash",
                              "messages": [{"role": "user", "content": "hi"}]},
                             session_key="conv-b3c", target_realm="intl")
             finally:
-                wb_proxy.POOL = old_pool
-                wb_accounts.urlopen = old_urlopen
+                ca_proxy.POOL = old_pool
+                ca_accounts.urlopen = old_urlopen
             self.assertEqual(len(calls), 1)
-            self.assertFalse(wb_proxy.PROMPT_DEGRADE.active())
+            self.assertFalse(ca_proxy.PROMPT_DEGRADE.active())
 
 
 if __name__ == "__main__":

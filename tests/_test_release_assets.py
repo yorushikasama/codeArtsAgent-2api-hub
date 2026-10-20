@@ -4,7 +4,7 @@ Issue #28 turns a `v*` tag into a portable ZIP, two OpenWrt packages and a
 SHA256SUMS file, and hands #29 an explicit list of the files a release owns.
 These assertions pin that contract locally, so a release cannot ship a ZIP that
 silently picked up whatever happened to be in the working tree (or dropped a
-newly added wb_*.py module), and the maintainer's release notes cannot be
+newly added ca_*.py module), and the maintainer's release notes cannot be
 overwritten by the generated download block.
 
 Two of them exist because a review round found the release doing the wrong
@@ -236,38 +236,38 @@ class ManifestTests(unittest.TestCase):
                             "清单里的 %s 不存在" % name)
 
     def test_every_module_is_listed(self):
-        # The regression this list exists for: a new wb_*.py that nobody
+        # The regression this list exists for: a new ca_*.py that nobody
         # remembered to add would otherwise be missing from the release, and
         # the launcher would fail with ModuleNotFoundError on a user's machine.
-        on_disk = sorted(os.path.basename(p) for p in glob.glob(os.path.join(ROOT, "wb_*.py")))
-        self.assertTrue(on_disk, "仓库里没有 wb_*.py？")
+        on_disk = sorted(os.path.basename(p) for p in glob.glob(os.path.join(ROOT, "ca_*.py")))
+        self.assertTrue(on_disk, "仓库里没有 ca_*.py？")
         listed = set(tools.read_manifest())
         self.assertEqual([n for n in on_disk if n not in listed], [])
 
     def test_launchers_and_dashboard_are_listed(self):
         listed = tools.read_manifest()
-        for name in ("dashboard.html", "wb_proxy.py", "README.md", "LICENSE",
-                     "start-wb-proxy.bat", "start-wb-proxy.sh",
-                     "start-wb-proxy.command", "start-wb-proxy-lan.sh"):
+        for name in ("dashboard.html", "ca_proxy.py", "README.md", "LICENSE",
+                     "start-codearts-hub.bat", "start-codearts-hub.sh",
+                     "start-codearts-hub.command", "start-codearts-hub-lan.sh"):
             self.assertIn(name, listed)
 
     def test_every_launcher_script_is_listed(self):
         """启动脚本按前缀全量扫：漏登记一个就在这儿红。
 
-        #285 的教训：portable.txt 里 start-wb-proxy-lan.bat 被 restart-wb-proxy.bat
+        #285 的教训：portable.txt 里 start-codearts-hub-lan.bat 被 restart-codearts-hub.bat
         顶掉了，而新脚本恰恰要调用它——便携包少了这个文件，Windows 的 LAN 启动与
         重启都会失败。上面那份手写清单只点了 .sh 的名，所以没拦住。
         quick-deploy.sh 是 Docker 路径、刻意不进便携包，不在前缀里。
         """
         listed = tools.read_manifest()
-        for prefix in ("start-wb-proxy", "restart-wb-proxy", "allow-firewall"):
+        for prefix in ("start-codearts-hub", "restart-codearts-hub", "allow-firewall"):
             for path in sorted(glob.glob(os.path.join(ROOT, prefix + "*"))):
                 name = os.path.basename(path)
                 if name.endswith((".bat", ".sh", ".command")):
                     self.assertIn(name, listed, "便携包清单缺少 %s" % name)
 
     def test_runtime_data_files_are_listed(self):
-        # wb_pricing._candidate_file() prefers pricing/pricing.json over the
+        # ca_pricing._candidate_file() prefers pricing/pricing.json over the
         # copy inlined in the module, so a package without it silently ships
         # older prices than the release it came from.
         self.assertIn("pricing/pricing.json", tools.read_manifest())
@@ -304,7 +304,7 @@ class RuntimeTrimTests(unittest.TestCase):
         # Every stdlib module the gateway imports has to be in the contract
         # list, or the trim could drop the thing it depends on.
         imported = set()
-        for path in glob.glob(os.path.join(ROOT, "wb_*.py")):
+        for path in glob.glob(os.path.join(ROOT, "ca_*.py")):
             with open(path, encoding="utf-8") as fh:
                 tree = ast.parse(fh.read())
             for node in ast.walk(tree):
@@ -312,7 +312,7 @@ class RuntimeTrimTests(unittest.TestCase):
                     imported.update(a.name.split(".")[0] for a in node.names)
                 elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                     imported.add(node.module.split(".")[0])
-        local = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "wb_*.py"))}
+        local = {os.path.basename(p)[:-3] for p in glob.glob(os.path.join(ROOT, "ca_*.py"))}
         # sys / time and friends are compiled into python312.dll, so the trim
         # cannot remove them and they have no Lib/ file to check.
         needed = sorted(m for m in imported
@@ -438,9 +438,9 @@ class PortableZipTests(unittest.TestCase):
     def test_the_launchers_look_where_the_runtime_is(self):
         # The packaged path and the path the launcher probes have to agree, or
         # the green package silently falls back to a system interpreter.
-        bat = read("start-wb-proxy.bat")
+        bat = read("start-codearts-hub.bat")
         self.assertIn("python\\python.exe", bat)
-        sh = read("start-wb-proxy.sh")
+        sh = read("start-codearts-hub.sh")
         self.assertIn("python/bin/python3", sh)
 
     def test_archive_paths_are_safe(self):
@@ -471,9 +471,9 @@ class PortableZipTests(unittest.TestCase):
 class ChecksumTests(unittest.TestCase):
     def test_covers_every_asset_once_in_sha256sum_format(self):
         with tempfile.TemporaryDirectory(prefix="relsum-") as directory:
-            names = ["workbuddy2api-hub-v1.6.17.zip",
-                     "workbuddy2api_1.6.17-1_all.ipk",
-                     "workbuddy2api-1.6.17-r1.apk"]
+            names = ["codearts2api-hub-v1.6.17.zip",
+                     "codearts2api_1.6.17-1_all.ipk",
+                     "codearts2api-1.6.17-r1.apk"]
             assets = []
             for i, name in enumerate(names):
                 p = os.path.join(directory, name)
@@ -511,9 +511,9 @@ class ReleaseBodyTests(unittest.TestCase):
     def test_first_compose_has_the_marker_and_the_fixed_block(self):
         body = tools.compose_body("", self.block)
         self.assertIn(tools.MARKER, body)
-        for expected in ("## 下载说明", "workbuddy2api-hub-v1.6.17.zip",
-                         "workbuddy2api_1.6.17-1_all.ipk",
-                         "workbuddy2api-1.6.17-r1.apk", "SHA256SUMS"):
+        for expected in ("## 下载说明", "codearts2api-hub-v1.6.17.zip",
+                         "codearts2api_1.6.17-1_all.ipk",
+                         "codearts2api-1.6.17-r1.apk", "SHA256SUMS"):
             self.assertIn(expected, body)
 
     def test_maintainer_notes_above_the_marker_survive(self):
@@ -655,7 +655,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         self.assertIn("server_version", self.text)
         self.assertIn('"version"', self.text)
         self.assertIn("TAGVER", self.text)
-        self.assertIn("wrt/openwrt/workbuddy2api/Makefile", self.text)
+        self.assertIn("wrt/openwrt/codearts2api/Makefile", self.text)
 
     def test_uses_the_manifest_tooling(self):
         self.assertIn("release/release_tools.py", self.text)

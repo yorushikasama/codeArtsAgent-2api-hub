@@ -6,7 +6,7 @@ turn emits thousands of events, so the process spends most of its time handing
 the GIL between handler threads instead of working. Measured on the 4 vCPU box
 running v1.7.2 at 15-20 req/s:
 
-    10s syscall profile of wb-proxy (strace -c -f -p <pid>)
+    10s syscall profile of codearts-hub (strace -c -f -p <pid>)
       71.44%   59.43s    559us/call   106214  futex     <- GIL handoff
       20.31%   16.89s  42659us/call      396  poll
        1.80%    1.50s     41us/call    36366  read      <- one per SSE line
@@ -30,7 +30,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # Its own directories, removed when this process exits.
 _TMP = isolated_data_dirs("wb-sse-read-batching-")
 
-import wb_proxy as P  # noqa: E402
+import ca_proxy as P  # noqa: E402
 
 PASS = 0
 FAIL = 0

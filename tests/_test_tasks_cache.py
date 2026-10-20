@@ -21,8 +21,8 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # and left directories in the repo after a run.
 _TMP = isolated_data_dirs("wb-tasks-cache-")
 
-import wb_proxy as P        # noqa: E402
-import wb_tasks as T        # noqa: E402
+import ca_proxy as P        # noqa: E402
+import ca_tasks as T        # noqa: E402
 
 
 class StubAccount(object):

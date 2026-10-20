@@ -38,11 +38,11 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 
 _TMP = isolated_data_dirs("wb-login-ratelimit-")
 
-import wb_proxy as proxy  # noqa: E402
-import wb_settings  # noqa: E402
+import ca_proxy as proxy  # noqa: E402
+import ca_settings  # noqa: E402
 
 WRONG_PASSWORD = "definitely-not-the-panel-password"
-RIGHT_PASSWORD = wb_settings.DEFAULT_PANEL_PASSWORD
+RIGHT_PASSWORD = ca_settings.DEFAULT_PANEL_PASSWORD
 
 
 class RateLimitKeyTests(unittest.TestCase):

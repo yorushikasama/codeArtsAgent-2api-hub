@@ -20,7 +20,7 @@ HERE="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOCKETFILTERFW="/usr/libexec/ApplicationFirewall/socketfilterfw"
 
 echo "==========================================================="
-echo "  WorkBuddy proxy - macOS firewall helper (port $PORT)"
+echo "  CodeArts Hub proxy - macOS firewall helper (port $PORT)"
 echo "==========================================================="
 echo
 echo "On macOS you normally do NOT need a firewall rule: the"
@@ -42,7 +42,7 @@ if echo "$STATE" | grep -qi "disabled"; then
   echo "The firewall is disabled, so no rule is needed at all."
   echo "If other devices still cannot connect, check that you are on"
   echo "the same network and that the proxy was started in LAN mode:"
-  echo "    ./start-wb-proxy-lan.sh $PORT"
+  echo "    ./start-codearts-hub-lan.sh $PORT"
   exit 0
 fi
 

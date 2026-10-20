@@ -9,7 +9,7 @@
 #                          release_tools.py portable --runtime 强制要求它存在，
 #                          缺了它就不是便携包而是源码包了
 #   release-manifest.json  包内标记文件，写死版本、root、受管文件与受保护目录
-# 整包放在 root 目录（默认 wb-proxy/）下，与既有便携包一致。
+# 整包放在 root 目录（默认 codearts-hub/）下，与既有便携包一致。
 #
 # 刻意不包含：
 #   accounts/  usage/      —— 用户数据，属于受保护路径，永不作为替换目标
@@ -17,47 +17,47 @@
 #   Dockerfile / docker-compose* / quick-deploy.sh —— Docker 部署路径，不进便携包
 #   tests/  .github/  release/  wrt/  scripts/ —— 开发与发布工具，不进便携包
 #
-# tests/_test_release_assets.py 会断言：仓库里每个 wb_*.py 都在这份清单里
+# tests/_test_release_assets.py 会断言：仓库里每个 ca_*.py 都在这份清单里
 # （新增模块忘了登记会直接红），且清单里的路径都存在。
 
 LICENSE
 README.md
 dashboard.html
 
-start-wb-proxy.bat
-start-wb-proxy.command
-start-wb-proxy.sh
-restart-wb-proxy.bat
-start-wb-proxy-lan.bat
-start-wb-proxy-lan.command
-restart-wb-proxy.command
-start-wb-proxy-lan.sh
-restart-wb-proxy.sh
+start-codearts-hub.bat
+start-codearts-hub.command
+start-codearts-hub.sh
+restart-codearts-hub.bat
+start-codearts-hub-lan.bat
+start-codearts-hub-lan.command
+restart-codearts-hub.command
+start-codearts-hub-lan.sh
+restart-codearts-hub.sh
 allow-firewall.bat
 allow-firewall.command
 
-# 随包价格快照：wb_pricing._candidate_file() 优先读它（存在即覆盖内置那份），
-# 少了它便携包只能退回 wb_pricing.py 里内嵌的旧价
+# 随包价格快照：ca_pricing._candidate_file() 优先读它（存在即覆盖内置那份），
+# 少了它便携包只能退回 ca_pricing.py 里内嵌的旧价
 pricing/pricing.json
 
-wb_accounts.py
-wb_activity.py
-wb_atrest.py
-wb_catalog.py
-wb_codearts.py
-wb_egress.py
-wb_fingerprint.py
-wb_identity.py
-wb_ipintel.py
-wb_logstore.py
-wb_modelsdev.py
-wb_pricing.py
-wb_probes.py
-wb_prompt.py
-wb_proxy.py
-wb_scheduler.py
-wb_settings.py
-wb_tasks.py
-wb_updates.py
-wb_upstream_pool.py
-wb_webtools.py
+ca_accounts.py
+ca_activity.py
+ca_atrest.py
+ca_catalog.py
+ca_codearts.py
+ca_egress.py
+ca_fingerprint.py
+ca_identity.py
+ca_ipintel.py
+ca_logstore.py
+ca_modelsdev.py
+ca_pricing.py
+ca_probes.py
+ca_prompt.py
+ca_proxy.py
+ca_scheduler.py
+ca_settings.py
+ca_tasks.py
+ca_updates.py
+ca_upstream_pool.py
+ca_webtools.py

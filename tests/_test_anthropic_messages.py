@@ -9,7 +9,7 @@ os.environ["ACCOUNTS_DIR"] = _startup_dir.name
 os.environ["WB_PROXY_USAGE_DIR"] = _startup_dir.name
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_proxy as P
+import ca_proxy as P
 
 PASS = FAIL = 0
 

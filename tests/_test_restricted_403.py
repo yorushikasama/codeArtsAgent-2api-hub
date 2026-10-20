@@ -31,8 +31,8 @@ os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts
-import wb_proxy as P
+import ca_accounts
+import ca_proxy as P
 
 
 RESTRICT_BODY = json.dumps({
@@ -58,7 +58,7 @@ class FakeResp(object):
 
 
 def make_account(uid):
-    return wb_accounts.Account({"uid": uid, "accessToken": "t-" + uid,
+    return ca_accounts.Account({"uid": uid, "accessToken": "t-" + uid,
                                 "realm": "intl"})
 
 
@@ -67,7 +67,7 @@ class StubPool(object):
 
     def __init__(self, accounts):
         self.accounts = accounts
-        self.affinity = wb_accounts.SessionAffinity()
+        self.affinity = ca_accounts.SessionAffinity()
 
     def count_ready(self, realm, model=None):
         return sum(1 for a in self.accounts
@@ -144,8 +144,8 @@ class Restricted403DispatchTests(unittest.TestCase):
     def _run(self, accounts, script):
         P.POOL = StubPool(accounts)
         upstream = ScriptedUpstream(script)
-        real_urlopen = wb_accounts.urlopen
-        wb_accounts.urlopen = upstream
+        real_urlopen = ca_accounts.urlopen
+        ca_accounts.urlopen = upstream
         try:
             result = P.open_upstream(dict(PAYLOAD), target_realm="intl")
             raised = None
@@ -153,7 +153,7 @@ class Restricted403DispatchTests(unittest.TestCase):
             result = None
             raised = exc
         finally:
-            wb_accounts.urlopen = real_urlopen
+            ca_accounts.urlopen = real_urlopen
         return result, raised
 
     def test_restricted_account_is_cooled_and_next_account_serves(self):

@@ -20,7 +20,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-import wb_accounts as A  # noqa: E402
+import ca_accounts as A  # noqa: E402
 
 CN_ISS = "https://www.workbuddy.cn/auth/realms/copilot"
 CN_ISS_LEGACY = "https://www.codebuddy.cn/auth/realms/copilot"

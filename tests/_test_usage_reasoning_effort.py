@@ -20,8 +20,8 @@ os.environ["ACCOUNTS_DIR"] = os.path.join(_TMP, "accounts")
 os.environ["WB_PROXY_USAGE_DIR"] = _TMP
 os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
-import wb_accounts
-import wb_proxy as P
+import ca_accounts
+import ca_proxy as P
 
 PASS = FAIL = 0
 
@@ -128,20 +128,20 @@ class _FakeResponse(object):
 
 # End to end over the real open_upstream(): the effort it hands back is the one
 # record_usage() writes, so a camelCase client gets its chip too.
-account = wb_accounts.Account({"uid": "uid-effort", "accessToken": "t", "realm": "intl"})
+account = ca_accounts.Account({"uid": "uid-effort", "accessToken": "t", "realm": "intl"})
 
 
 def open_with(payload):
     """Run the real open_upstream() against a stubbed pool and transport."""
-    old_pool, old_urlopen = P.POOL, wb_accounts.urlopen
+    old_pool, old_urlopen = P.POOL, ca_accounts.urlopen
     P.POOL = _StubPool([account])
-    wb_accounts.urlopen = lambda req, timeout=None, proxy=None: _FakeResponse()
+    ca_accounts.urlopen = lambda req, timeout=None, proxy=None: _FakeResponse()
     try:
         _resp, _acct, effort = P.open_upstream(payload, target_realm="intl")
         return effort
     finally:
         P.POOL = old_pool
-        wb_accounts.urlopen = old_urlopen
+        ca_accounts.urlopen = old_urlopen
 
 
 def chat(model, **extra):

@@ -59,12 +59,12 @@ os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 import time as _time
 _time.time = lambda: FROZEN
 
-import wb_proxy as P
-import wb_pricing
+import ca_proxy as P
+import ca_pricing
 
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-wb_pricing.set_data_dir(USAGE_DIR)
-wb_pricing.set_settings_dir(ACCOUNTS_DIR)
+ca_pricing.set_data_dir(USAGE_DIR)
+ca_pricing.set_settings_dir(ACCOUNTS_DIR)
 
 USAGE_LOG = P.USAGE_LOG
 PRICING_FILE = os.path.join(_TMP, "pricing.json")
@@ -354,7 +354,7 @@ print()
 print("[4] analytics：窗口半先扫描，all-time 半照折（它本来就是载荷的一半）")
 cache_env(enabled=0, min_bytes=0, min_seconds=0)
 restart()
-pricing_on = P.wb_pricing.pricing_enabled()
+pricing_on = P.ca_pricing.pricing_enabled()
 with FoldCounter("_fold_usage_analytics") as c:
     an_cold = P._analytics_window(None, TODAY0, None, None, pricing_on)
 check("冷态 analytics 窗口半：折的行数 == 窗口内的行数",

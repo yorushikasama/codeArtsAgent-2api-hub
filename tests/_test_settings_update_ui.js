@@ -113,7 +113,7 @@ const posts = () => calls.filter(c => c.method === 'POST');
     current_version: '1.6.17', latest_version: '1.6.18', update_available: true,
     enabled: true, checking: false,
     last_attempt: '2026-10-09 12:00:00', last_success: '2026-10-09 12:00:00',
-    last_error: '', release_url: 'https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases/tag/v1.6.18',
+    last_error: '', release_url: 'https://github.com/yorushikasama/codeArtsAgent-2api-hub/releases/tag/v1.6.18',
     published_at: '2026-10-09T00:00:00Z',
   };
   calls.length = 0;

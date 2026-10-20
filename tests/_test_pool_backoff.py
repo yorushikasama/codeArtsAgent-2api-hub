@@ -25,8 +25,8 @@ _TMP = tempfile.mkdtemp(prefix="wb-pool-backoff-")
 os.environ["ACCOUNTS_DIR"] = os.path.join(_TMP, "accounts")
 os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
-import wb_accounts as A
-import wb_proxy
+import ca_accounts as A
+import ca_proxy
 
 
 INTL_ISS = "https://www.workbuddy.ai/auth/realms/copilot"
@@ -105,15 +105,15 @@ class BackoffMathTests(unittest.TestCase):
 
     def test_the_real_unscoped_shapes_are_recognised(self):
         """S1 (87% of the recorded 429s) and the intl 14003 body."""
-        self.assertTrue(wb_proxy.rate_limit_is_soft_shape(S1_BARE))
-        self.assertTrue(wb_proxy.rate_limit_is_soft_shape(S2_INTL_JSON))
+        self.assertTrue(ca_proxy.rate_limit_is_soft_shape(S1_BARE))
+        self.assertTrue(ca_proxy.rate_limit_is_soft_shape(S2_INTL_JSON))
         # The recorded form is truncated mid-JSON and still matches on the text.
-        self.assertTrue(wb_proxy.rate_limit_is_soft_shape(S2_INTL_RECORDED))
-        self.assertEqual(wb_proxy.rate_limit_code(S2_INTL_JSON), 14003)
-        self.assertIsNone(wb_proxy.rate_limit_code(S1_BARE), "S1 is not JSON")
+        self.assertTrue(ca_proxy.rate_limit_is_soft_shape(S2_INTL_RECORDED))
+        self.assertEqual(ca_proxy.rate_limit_code(S2_INTL_JSON), 14003)
+        self.assertIsNone(ca_proxy.rate_limit_code(S1_BARE), "S1 is not JSON")
         # An unrelated 429 body must not be claimed as a rate-limit shape.
-        self.assertFalse(wb_proxy.rate_limit_is_soft_shape("<html>bad gateway</html>"))
-        self.assertFalse(wb_proxy.rate_limit_is_soft_shape(""))
+        self.assertFalse(ca_proxy.rate_limit_is_soft_shape("<html>bad gateway</html>"))
+        self.assertFalse(ca_proxy.rate_limit_is_soft_shape(""))
 
     def test_none_of_the_real_shapes_is_account_level_without_evidence(self):
         """S1/S2 carry no timestamp; S3/S4 are the parsed controls.
@@ -125,16 +125,16 @@ class BackoffMathTests(unittest.TestCase):
         credential healthy.
         """
         for detail in (S1_BARE, S2_INTL_JSON, S2_INTL_RECORDED):
-            self.assertIsNone(wb_proxy.parse_rate_limit_reset(detail), detail)
-            self.assertFalse(wb_proxy.rate_limit_is_account_level(detail, None), detail)
+            self.assertIsNone(ca_proxy.parse_rate_limit_reset(detail), detail)
+            self.assertFalse(ca_proxy.rate_limit_is_account_level(detail, None), detail)
         # S3/S4 parse to exactly the instant their text names (H's table).
-        self.assertEqual(wb_proxy.parse_rate_limit_reset(S3_INTL_6004), 1791291609)
-        self.assertEqual(wb_proxy.parse_rate_limit_reset(S4_CN_6004), 1791269104)
+        self.assertEqual(ca_proxy.parse_rate_limit_reset(S3_INTL_6004), 1791291609)
+        self.assertEqual(ca_proxy.parse_rate_limit_reset(S4_CN_6004), 1791269104)
         for detail in (S3_INTL_6004, S4_CN_6004):
-            reset_at = wb_proxy.parse_rate_limit_reset(detail)
-            self.assertFalse(wb_proxy.rate_limit_is_account_level(detail, reset_at), detail)
+            reset_at = ca_proxy.parse_rate_limit_reset(detail)
+            self.assertFalse(ca_proxy.rate_limit_is_account_level(detail, reset_at), detail)
         # Nor is a body we cannot read at all.
-        self.assertFalse(wb_proxy.rate_limit_is_account_level("", None))
+        self.assertFalse(ca_proxy.rate_limit_is_account_level("", None))
 
     def test_metadata_field_names_are_not_scope_evidence(self):
         """`accountId` is a field name, not "the account is rate limited".
@@ -143,25 +143,25 @@ class BackoffMathTests(unittest.TestCase):
         read that metadata tail as credential evidence and put the 600s -> 7200s
         ladder back in play for the most common intl shape.
         """
-        self.assertTrue(wb_proxy.rate_limit_is_soft_shape(S2_INTL_FULL))
-        self.assertIsNone(wb_proxy.parse_rate_limit_reset(S2_INTL_FULL))
-        self.assertIsNone(wb_proxy.credential_scope_phrase(S2_INTL_FULL))
-        self.assertFalse(wb_proxy.rate_limit_is_account_level(S2_INTL_FULL, None))
+        self.assertTrue(ca_proxy.rate_limit_is_soft_shape(S2_INTL_FULL))
+        self.assertIsNone(ca_proxy.parse_rate_limit_reset(S2_INTL_FULL))
+        self.assertIsNone(ca_proxy.credential_scope_phrase(S2_INTL_FULL))
+        self.assertFalse(ca_proxy.rate_limit_is_account_level(S2_INTL_FULL, None))
         for metadata in ('{"accountId":"x"}', '{"account_id":"x"}',
                          '{"accountName":"x"}', '{"credentialId":"x"}',
                          '{"subaccount":"x"}', '{"accountIds":["x"]}'):
-            self.assertFalse(wb_proxy.rate_limit_is_account_level(metadata, None),
+            self.assertFalse(ca_proxy.rate_limit_is_account_level(metadata, None),
                              metadata)
         # Scope has to be said, not implied by a field name.
-        self.assertTrue(wb_proxy.rate_limit_is_account_level(
+        self.assertTrue(ca_proxy.rate_limit_is_account_level(
             '{"msg":"account-level rate limit reached"}', None))
-        self.assertTrue(wb_proxy.rate_limit_is_account_level(
+        self.assertTrue(ca_proxy.rate_limit_is_account_level(
             '{"msg":"too many requests for this account"}', None))
-        self.assertTrue(wb_proxy.rate_limit_is_account_level(
+        self.assertTrue(ca_proxy.rate_limit_is_account_level(
             '{"msg":"该账号请求过于频繁"}', None))
-        self.assertEqual(wb_proxy.credential_scope_phrase(
+        self.assertEqual(ca_proxy.credential_scope_phrase(
             '{"msg":"This Account is rate limited"}'), "this account")
-        self.assertIsNone(wb_proxy.credential_scope_phrase(S1_BARE))
+        self.assertIsNone(ca_proxy.credential_scope_phrase(S1_BARE))
 
     def test_the_two_ladders_do_not_feed_each_other(self):
         """One shared counter pushed either ladder to the other's ceiling.
@@ -234,18 +234,18 @@ class BackoffMathTests(unittest.TestCase):
         Provisional by design: the phrase list is short because no captured body
         has shown yet what a genuine account-level 429 says.
         """
-        self.assertTrue(wb_proxy.rate_limit_is_account_level(
+        self.assertTrue(ca_proxy.rate_limit_is_account_level(
             '{"message":"too many requests for this account"}', None))
-        self.assertTrue(wb_proxy.rate_limit_is_account_level(
+        self.assertTrue(ca_proxy.rate_limit_is_account_level(
             '{"msg":"该账号请求过于频繁"}', None))
         # A reset clock still wins - that is the model-scoped form.
-        self.assertFalse(wb_proxy.rate_limit_is_account_level(
+        self.assertFalse(ca_proxy.rate_limit_is_account_level(
             '{"message":"account rate limit, reset at 2026-10-09 12:00:00 UTC"}',
             time.time() + 60))
 
     def test_a_genuine_account_level_429_still_backs_off(self):
         account = load_account("u-account-level")
-        self.assertTrue(wb_proxy.rate_limit_is_account_level(
+        self.assertTrue(ca_proxy.rate_limit_is_account_level(
             '{"message":"too many requests for this account"}', None))
         self.assertEqual(account.note_soft_rate("HTTP 429 (account soft rate)"),
                          A.SOFT_RATE_BASE)
@@ -258,13 +258,13 @@ class BackoffMathTests(unittest.TestCase):
               '将在 2026-10-09 14:44:59 UTC+8 重置。"}')
         intl = ('{"code":6004,"message":"your usage will reset at '
                 '2026-10-09 14:44:59 UTC+8"}')
-        cn_reset = wb_proxy.parse_rate_limit_reset(cn)
-        self.assertEqual(cn_reset, wb_proxy.parse_rate_limit_reset(intl))
+        cn_reset = ca_proxy.parse_rate_limit_reset(cn)
+        self.assertEqual(cn_reset, ca_proxy.parse_rate_limit_reset(intl))
         self.assertIsNotNone(cn_reset)
         # 14:44:59 UTC+8 is the same wall clock as 06:44:59 UTC.
         self.assertEqual(time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(cn_reset)),
                          "2026-10-09 06:44:59")
-        self.assertIsNone(wb_proxy.parse_rate_limit_reset('{"code":429}'))
+        self.assertIsNone(ca_proxy.parse_rate_limit_reset('{"code":429}'))
 
 
 class AccountGovernanceTests(unittest.TestCase):
@@ -351,15 +351,15 @@ class PanelTestSuccessTests(unittest.TestCase):
                 return account if uid == account.uid else None
 
         route = self._Route()
-        old = (wb_proxy.POOL, A.urlopen, wb_proxy.aggregate_stream)
-        wb_proxy.POOL = Pool()
+        old = (ca_proxy.POOL, A.urlopen, ca_proxy.aggregate_stream)
+        ca_proxy.POOL = Pool()
         A.urlopen = lambda *args, **kwargs: self._Response()
-        wb_proxy.aggregate_stream = lambda resp, model, key: {
+        ca_proxy.aggregate_stream = lambda resp, model, key: {
             "choices": [{"message": {"content": "OK"}}]}
         try:
-            return wb_proxy.Handler._route_accounts_test(route, {"uid": account.uid})
+            return ca_proxy.Handler._route_accounts_test(route, {"uid": account.uid})
         finally:
-            wb_proxy.POOL, A.urlopen, wb_proxy.aggregate_stream = old
+            ca_proxy.POOL, A.urlopen, ca_proxy.aggregate_stream = old
 
     def test_a_successful_panel_test_clears_the_streak(self):
         account = load_account("u-panel-test")
@@ -442,21 +442,21 @@ class RetryRoundChargeTests(unittest.TestCase):
             def apply_remaining_weights(self, weights=None):
                 return weights or {}
 
-        old_pool, old_urlopen = wb_proxy.POOL, A.urlopen
-        wb_proxy.POOL = Pool()
+        old_pool, old_urlopen = ca_proxy.POOL, A.urlopen
+        ca_proxy.POOL = Pool()
         A.urlopen = urlopen
         try:
-            with mock.patch.object(wb_proxy, "ACCOUNTS_DIR",
+            with mock.patch.object(ca_proxy, "ACCOUNTS_DIR",
                                    os.path.join(_TMP, account.uid)):
                 try:
-                    wb_proxy.open_upstream(
+                    ca_proxy.open_upstream(
                         {"model": "deepseek-v4.1-flash",
                          "messages": [{"role": "user", "content": "hi"}]},
                         target_realm="intl")
                 except Exception:
                     pass
         finally:
-            wb_proxy.POOL, A.urlopen = old_pool, old_urlopen
+            ca_proxy.POOL, A.urlopen = old_pool, old_urlopen
 
     def test_a_transport_blip_charges_the_account_once(self):
         account = load_account("u-charge-transient")

@@ -44,7 +44,7 @@ os.makedirs(ACCOUNTS_DIR, exist_ok=True)
 os.environ["WB_PROXY_USAGE_DIR"] = USAGE_DIR
 os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 
-import wb_proxy as P
+import ca_proxy as P
 
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
 P.POOL = None                     # 归属只走行自己的字段/模型前缀，可确定

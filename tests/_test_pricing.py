@@ -24,8 +24,8 @@ os.environ["ACCOUNTS_DIR"] = os.path.join(_TMP, "accounts")
 os.environ["WB_PROXY_USAGE_DIR"] = _TMP
 os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
-import wb_pricing
-import wb_proxy as P
+import ca_pricing
+import ca_proxy as P
 
 
 def utc_ts(text):
@@ -41,12 +41,12 @@ _AT = utc_ts("2026-09-30 20:00:00")
 
 class PricingEngineTests(unittest.TestCase):
     def setUp(self):
-        self.pricing = wb_pricing.load_pricing()
+        self.pricing = ca_pricing.load_pricing()
 
     def test_snapshot_loads_and_carries_the_rate(self):
         self.assertIn("models", self.pricing)
         self.assertGreater(len(self.pricing["models"]), 10)
-        self.assertGreater(wb_pricing.usd_cny(), 1.0)
+        self.assertGreater(ca_pricing.usd_cny(), 1.0)
 
     def test_every_entry_is_usd_with_a_base_price(self):
         # One source, one shape. The panel labels the number as OpenRouter's
@@ -90,12 +90,12 @@ class PricingEngineTests(unittest.TestCase):
                "cached_tokens": 0, "completion_tokens": 0}
         # 02:00 UTC lands in the first band, 17:00 UTC in the second.
         row["at"] = utc_ts("2026-09-30 02:00:00")
-        got = wb_pricing.compute_row(row, pricing=self.pricing)
+        got = ca_pricing.compute_row(row, pricing=self.pricing)
         self.assertEqual(got["band"], 0)
         self.assertAlmostEqual(
             got["cny"], bands[0]["flat"]["input_cache_miss"] * factor, places=6)
         row["at"] = utc_ts("2026-09-30 17:00:00")
-        got = wb_pricing.compute_row(row, pricing=self.pricing)
+        got = ca_pricing.compute_row(row, pricing=self.pricing)
         self.assertEqual(got["band"], 1)
         self.assertAlmostEqual(
             got["cny"], bands[1]["flat"]["input_cache_miss"] * factor, places=6)
@@ -111,15 +111,15 @@ class PricingEngineTests(unittest.TestCase):
             ],
         }
         # Saturday 12:00 UTC: the weekend band, which sets no hour range.
-        table, index = wb_pricing.band_for(entry, utc_ts("2026-10-03 12:00:00"))
+        table, index = ca_pricing.band_for(entry, utc_ts("2026-10-03 12:00:00"))
         self.assertEqual(index, 0)
         self.assertEqual(table["input_cache_miss"], 2.0)
         # Wednesday 02:00 UTC falls inside [01:00, 04:00).
         self.assertEqual(
-            wb_pricing.band_for(entry, utc_ts("2026-09-30 02:00:00"))[1], 1)
+            ca_pricing.band_for(entry, utc_ts("2026-09-30 02:00:00"))[1], 1)
         # Wednesday 05:00 UTC matches no band, so the flat price stands in.
         self.assertIsNone(
-            wb_pricing.band_for(entry, utc_ts("2026-09-30 05:00:00"))[1])
+            ca_pricing.band_for(entry, utc_ts("2026-09-30 05:00:00"))[1])
 
     def test_length_bands_take_the_tightest_match(self):
         # The source lists length bands in ascending order, so "the last one
@@ -128,17 +128,17 @@ class PricingEngineTests(unittest.TestCase):
             {"min_prompt_tokens": 32000, "flat": {"input_cache_miss": 2.0}},
             {"min_prompt_tokens": 128000, "flat": {"input_cache_miss": 3.0}},
         ]}
-        table, index = wb_pricing.band_for(entry, _AT, 40000)
+        table, index = ca_pricing.band_for(entry, _AT, 40000)
         self.assertEqual(index, 0)
         self.assertEqual(table["input_cache_miss"], 2.0)
-        table, index = wb_pricing.band_for(entry, _AT, 128000)
+        table, index = ca_pricing.band_for(entry, _AT, 128000)
         self.assertEqual(index, 1)
         self.assertEqual(table["input_cache_miss"], 3.0)
-        table, index = wb_pricing.band_for(entry, _AT, 200000)
+        table, index = ca_pricing.band_for(entry, _AT, 200000)
         self.assertEqual(index, 1)
         self.assertEqual(table["input_cache_miss"], 3.0)
         # Below the lowest threshold the base price stands in.
-        self.assertIsNone(wb_pricing.band_for(entry, _AT, 1000)[1])
+        self.assertIsNone(ca_pricing.band_for(entry, _AT, 1000)[1])
 
     def test_length_banded_model_picks_its_band(self):
         entry = self.pricing["models"]["gpt-6-astra"]
@@ -149,7 +149,7 @@ class PricingEngineTests(unittest.TestCase):
                 "completion_tokens": 0}
         # Just under the threshold the model's own base price applies.
         below = threshold - 1
-        got = wb_pricing.compute_row(dict(base, prompt_tokens=below),
+        got = ca_pricing.compute_row(dict(base, prompt_tokens=below),
                                      pricing=self.pricing)
         self.assertIsNone(got["band"])
         self.assertAlmostEqual(
@@ -157,7 +157,7 @@ class PricingEngineTests(unittest.TestCase):
             below * entry["flat"]["input_cache_miss"] / 1000000.0 * factor,
             places=6)
         # At the threshold the dearer band takes over.
-        got = wb_pricing.compute_row(dict(base, prompt_tokens=threshold),
+        got = ca_pricing.compute_row(dict(base, prompt_tokens=threshold),
                                      pricing=self.pricing)
         self.assertEqual(got["band"], 0)
         self.assertAlmostEqual(
@@ -172,14 +172,14 @@ class PricingEngineTests(unittest.TestCase):
         entry = {"flat": {}, "bands": [
             {"days": None, "start": 1600, "end": 0,
              "flat": {"input_cache_miss": 5.0}}]}
-        table, index = wb_pricing.band_for(entry, utc_ts("2026-09-30 20:00:00"))
+        table, index = ca_pricing.band_for(entry, utc_ts("2026-09-30 20:00:00"))
         self.assertEqual(index, 0)
         self.assertEqual(table["input_cache_miss"], 5.0)
         self.assertIsNone(
-            wb_pricing.band_for(entry, utc_ts("2026-09-30 10:00:00"))[1])
+            ca_pricing.band_for(entry, utc_ts("2026-09-30 10:00:00"))[1])
 
     def test_flat_model_reports_no_band(self):
-        got = wb_pricing.compute_row(
+        got = ca_pricing.compute_row(
             {"model": "deepseek-v4.1-flash", "at": _AT,
              "prompt_tokens": 1000000}, pricing=self.pricing)
         self.assertTrue(got["known"])
@@ -191,7 +191,7 @@ class PricingEngineTests(unittest.TestCase):
         row = {"model": "deepseek-v4.1-flash", "at": _AT,
                "prompt_tokens": 1000000, "cached_tokens": 0,
                "completion_tokens": 0}
-        got = wb_pricing.compute_row(row, pricing=self.pricing)
+        got = ca_pricing.compute_row(row, pricing=self.pricing)
         self.assertTrue(got["known"])
         # 1M cache-miss input at the snapshot's miss rate, in CNY.
         self.assertAlmostEqual(
@@ -200,21 +200,21 @@ class PricingEngineTests(unittest.TestCase):
         row["cached_tokens"] = 800000
         expected = (0.2 * rate["input_cache_miss"]
                     + 0.8 * rate["input_cache_hit"]) * factor
-        got = wb_pricing.compute_row(row, pricing=self.pricing)
+        got = ca_pricing.compute_row(row, pricing=self.pricing)
         self.assertAlmostEqual(got["cny"], expected, places=6)
         # Output tokens are priced separately, at the output rate.
         row["completion_tokens"] = 1000000
-        got = wb_pricing.compute_row(row, pricing=self.pricing)
+        got = ca_pricing.compute_row(row, pricing=self.pricing)
         self.assertAlmostEqual(got["cny"], expected + rate["output"] * factor,
                                places=6)
 
     def test_unknown_model_is_reported_not_guessed(self):
-        got = wb_pricing.compute_row(
+        got = ca_pricing.compute_row(
             {"model": "no-such-model", "at": _AT,
              "prompt_tokens": 1000000}, pricing=self.pricing)
         self.assertFalse(got["known"])
         self.assertEqual(got["cny"], 0.0)
-        total = wb_pricing.sum_rows([
+        total = ca_pricing.sum_rows([
             {"model": "no-such-model", "at": _AT, "prompt_tokens": 1},
             {"model": "deepseek-v4.1-flash", "at": _AT,
              "prompt_tokens": 1000000},
@@ -239,10 +239,10 @@ class PricingEngineTests(unittest.TestCase):
         factor = self.pricing["meta"]["usd_cny"]
         row = {"model": "deepseek-v4.1-flash", "at": _AT, "prompt_tokens": 0,
                "cached_tokens": 0, "completion_tokens": 1000}
-        plain = wb_pricing.compute_row(dict(row), pricing=self.pricing)
+        plain = ca_pricing.compute_row(dict(row), pricing=self.pricing)
         self.assertAlmostEqual(
             plain["cny"], 1000 * rate["output"] / 1000000.0 * factor, places=9)
-        with_reasoning = wb_pricing.compute_row(
+        with_reasoning = ca_pricing.compute_row(
             dict(row, reasoning_tokens=900), pricing=self.pricing)
         self.assertAlmostEqual(with_reasoning["cny"], plain["cny"], places=12)
 
@@ -250,7 +250,7 @@ class PricingEngineTests(unittest.TestCase):
         row = {"model": "deepseek-v4.1-flash", "at": _AT,
                "prompt_tokens": 1000, "cached_tokens": 5000,
                "completion_tokens": 0}
-        got = wb_pricing.compute_row(row, pricing=self.pricing)
+        got = ca_pricing.compute_row(row, pricing=self.pricing)
         # The whole 1000 is billed at the hit rate; the extra "cached" is
         # clamped away instead of producing negative miss tokens.
         rate = self.pricing["models"]["deepseek-v4.1-flash"]["flat"]
@@ -266,45 +266,45 @@ class PricingMatcherTests(unittest.TestCase):
     """
 
     def test_normalize_ignores_case_and_punctuation(self):
-        self.assertEqual(wb_pricing.normalize("hy4-preview-f"),
-                         wb_pricing.normalize("HY4.Preview_F"))
-        self.assertEqual(wb_pricing.normalize(None), "")
+        self.assertEqual(ca_pricing.normalize("hy4-preview-f"),
+                         ca_pricing.normalize("HY4.Preview_F"))
+        self.assertEqual(ca_pricing.normalize(None), "")
 
     def test_auto_match_wants_an_exact_unique_name(self):
-        by_norm = wb_pricing.index_openrouter({
+        by_norm = ca_pricing.index_openrouter({
             "vendor/some-model": {},
             "other/another": {},
         })
-        self.assertEqual(wb_pricing.auto_match("some-model", by_norm), "vendor/some-model")
-        self.assertEqual(wb_pricing.auto_match("Some.Model", by_norm), "vendor/some-model")
+        self.assertEqual(ca_pricing.auto_match("some-model", by_norm), "vendor/some-model")
+        self.assertEqual(ca_pricing.auto_match("Some.Model", by_norm), "vendor/some-model")
         # Two vendors publishing the same leaf name is too ambiguous to guess.
-        ambiguous = wb_pricing.index_openrouter({"a/dup": {}, "b/dup": {}})
-        self.assertIsNone(wb_pricing.auto_match("dup", ambiguous))
-        self.assertIsNone(wb_pricing.auto_match("no-such-model", by_norm))
+        ambiguous = ca_pricing.index_openrouter({"a/dup": {}, "b/dup": {}})
+        self.assertIsNone(ca_pricing.auto_match("dup", ambiguous))
+        self.assertIsNone(ca_pricing.auto_match("no-such-model", by_norm))
 
     def test_index_drops_variant_suffixes(self):
         # :free / :batch are separate products with their own prices; keeping
         # them would make an equally-named base model ambiguous.
         self.assertEqual(
-            wb_pricing.index_openrouter({"vendor/m:free": {}, "vendor/m:batch": {}}), {})
+            ca_pricing.index_openrouter({"vendor/m:free": {}, "vendor/m:batch": {}}), {})
 
     def test_resolve_prefers_the_override_table(self):
         or_models = {"tencent/hy4-preview": {"prompt": "0.000001"}}
-        by_norm = wb_pricing.index_openrouter(or_models)
-        self.assertEqual(wb_pricing.resolve("hy4-preview-f", or_models, by_norm),
+        by_norm = ca_pricing.index_openrouter(or_models)
+        self.assertEqual(ca_pricing.resolve("hy4-preview-f", or_models, by_norm),
                          ("tencent/hy4-preview", True))
         # An override that is missing from the fetched list falls through to
         # "unpriced" rather than pointing at a non-existent entry.
-        self.assertEqual(wb_pricing.resolve("hy4-preview-f", {}, {}), (None, False))
+        self.assertEqual(ca_pricing.resolve("hy4-preview-f", {}, {}), (None, False))
 
     def test_overrides_point_at_openrouter_shaped_ids(self):
         # A typo in the override table silently unprices the model.
-        for hub_id, ref in wb_pricing.OVERRIDES.items():
+        for hub_id, ref in ca_pricing.OVERRIDES.items():
             self.assertIn("/", ref, hub_id)
             self.assertNotIn(":", ref, hub_id)
 
     def test_bands_cover_both_kinds_of_condition(self):
-        bands = wb_pricing.bands_from_overrides({"overrides": [
+        bands = ca_pricing.bands_from_overrides({"overrides": [
             {"min_prompt_tokens": 200000, "prompt": "0.000006",
              "completion": "0.0000225"},
             {"utc_start": 0, "utc_end": 1600, "prompt": "0.000000834",
@@ -330,34 +330,34 @@ class PricingMatcherTests(unittest.TestCase):
         self.assertEqual((bands[2]["start"], bands[2]["end"]), (1600, 2400))
 
     def test_bands_need_a_condition(self):
-        self.assertEqual(wb_pricing.bands_from_overrides({}), [])
+        self.assertEqual(ca_pricing.bands_from_overrides({}), [])
         # An entry carrying no condition repeats the base price: not a band.
-        self.assertEqual(wb_pricing.bands_from_overrides({"overrides": [
+        self.assertEqual(ca_pricing.bands_from_overrides({"overrides": [
             {"prompt": "0.00001", "completion": "0.00005"}]}), [])
         # The audio/cache-write axes have no token count in the local usage
         # log, so an entry priced only on them is not a band either.
-        self.assertEqual(wb_pricing.bands_from_overrides({"overrides": [
+        self.assertEqual(ca_pricing.bands_from_overrides({"overrides": [
             {"audio": "0.00002", "input_audio_cache": "0.000004"}]}), [])
 
     def test_snapshot_reflects_the_matchers_choice(self):
         # hy4-preview-f only exists under a different name upstream, so it
         # must appear in the snapshot through the override.
         entry = self._snapshot_entry("hy4-preview-f")
-        self.assertEqual(entry["or_id"], wb_pricing.OVERRIDES["hy4-preview-f"])
+        self.assertEqual(entry["or_id"], ca_pricing.OVERRIDES["hy4-preview-f"])
         self.assertEqual(entry["source"], "openrouter")
         # A model the catalogue knows and OpenRouter names identically is
         # matched automatically, with no override behind it.
-        self.assertNotIn("kimi-k2.6", wb_pricing.OVERRIDES)
+        self.assertNotIn("kimi-k2.6", ca_pricing.OVERRIDES)
         auto = self._snapshot_entry("kimi-k2.6")
         self.assertEqual(auto["or_id"], "moonshotai/kimi-k2.6")
 
     def test_catalogue_ids_are_unique(self):
-        ids = wb_pricing.hub_model_ids()
+        ids = ca_pricing.hub_model_ids()
         self.assertIn("hy4-preview-f", ids)
         self.assertEqual(len(ids), len(set(ids)))
 
     def _snapshot_entry(self, mid):
-        entry = wb_pricing.load_pricing()["models"].get(mid)
+        entry = ca_pricing.load_pricing()["models"].get(mid)
         self.assertIsNotNone(entry, "snapshot has no entry for %s" % mid)
         return entry
 
@@ -367,19 +367,19 @@ class PricingPolicyTests(unittest.TestCase):
 
     def setUp(self):
         self.dir = tempfile.mkdtemp(prefix="wb-price-policy-")
-        self._previous = wb_pricing.data_dir()
-        wb_pricing.set_data_dir(self.dir)
+        self._previous = ca_pricing.data_dir()
+        ca_pricing.set_data_dir(self.dir)
         # Real, recent timestamps: the refresher stamps what it records with
         # the wall clock, and invented epochs would look like the distant past.
         self.now = time.time()
 
     def tearDown(self):
-        wb_pricing.set_data_dir(self._previous)
+        ca_pricing.set_data_dir(self._previous)
 
     def _record(self, models, at):
         """Register a fetched snapshot the way the refresher does."""
         doc = {"meta": {"base_currency": "CNY", "usd_cny": 7.1}, "models": models}
-        return wb_pricing.record_policies(doc, at=at)
+        return ca_pricing.record_policies(doc, at=at)
 
     @staticmethod
     def _entry(rate, or_id="vendor/m"):
@@ -395,43 +395,43 @@ class PricingPolicyTests(unittest.TestCase):
         _n, _c, second = self._record({"m": self._entry(2.0)}, self.now - 3600)
         _n, back, third = self._record({"m": self._entry(1.0)}, self.now - 60)
         self.assertTrue(moved and back)
-        self.assertEqual(len(wb_pricing.load_policies()), 2)
+        self.assertEqual(len(ca_pricing.load_policies()), 2)
         self.assertEqual(first["m"], third["m"])
         self.assertNotEqual(first["m"], second["m"])
         # Switching back is a real change, so all three steps stay on the
         # timeline - it is the *policy* that is shared, not the history.
-        self.assertEqual(len(wb_pricing.load_timeline()), 3)
+        self.assertEqual(len(ca_pricing.load_timeline()), 3)
 
     def test_an_unchanged_price_does_not_grow_the_timeline(self):
         self._record({"m": self._entry(1.0)}, self.now - 3600)
         added, changed, _a = self._record({"m": self._entry(1.0)}, self.now - 60)
         self.assertEqual(added, 0)
         self.assertFalse(changed)
-        self.assertEqual(len(wb_pricing.load_timeline()), 1)
+        self.assertEqual(len(ca_pricing.load_timeline()), 1)
 
     def test_the_current_assignment_says_what_is_in_force(self):
         self._record({"m": self._entry(1.0)}, self.now - 3600)
         _n, _c, second = self._record({"m": self._entry(2.0)}, self.now - 60)
-        at, assignment = wb_pricing.current_assignment()
+        at, assignment = ca_pricing.current_assignment()
         self.assertEqual(assignment["m"], second["m"])
-        self.assertEqual(wb_pricing.current_policy_id("m"), second["m"])
+        self.assertEqual(ca_pricing.current_policy_id("m"), second["m"])
         self.assertAlmostEqual(at, self.now - 60, places=3)
 
     def test_a_row_is_priced_by_the_policy_it_references(self):
         self._record({"m": self._entry(1.0)}, self.now - 7200)
         _n, _c, second = self._record({"m": self._entry(2.0)}, self.now - 3600)
-        older = [p for p in wb_pricing.load_policies().values()
+        older = [p for p in ca_pricing.load_policies().values()
                  if p["flat"]["input_cache_miss"] == 1.0][0]
         # A row carrying the older reference keeps its price even though a
         # newer policy is in force - that is what the reference buys.
-        got = wb_pricing.cost_for_row(
+        got = ca_pricing.cost_for_row(
             {"model": "m", "at": self.now - 60, "prompt_tokens": 1000000,
              "cost_policy": older["id"]})
         self.assertAlmostEqual(got["cny"], 1.0 * 7.1, places=6)
         self.assertEqual(got["source"], older["id"])
         self.assertFalse(got["backfilled"])
         # A row without a reference is resolved from the timeline.
-        got = wb_pricing.cost_for_row(
+        got = ca_pricing.cost_for_row(
             {"model": "m", "at": self.now - 60, "prompt_tokens": 1000000})
         self.assertAlmostEqual(got["cny"], 2.0 * 7.1, places=6)
         self.assertEqual(got["source"], second["m"])
@@ -441,13 +441,13 @@ class PricingPolicyTests(unittest.TestCase):
         # and the row is marked so the panel can say so.
         self._record({"other": self._entry(9.0, "vendor/o")}, self.now - 7200)
         self._record({"m": self._entry(5.0)}, self.now - 3600)
-        got = wb_pricing.cost_for_row(
+        got = ca_pricing.cost_for_row(
             {"model": "m", "at": self.now - 5400, "prompt_tokens": 1000000})
         self.assertTrue(got["backfilled"])
         self.assertAlmostEqual(got["cny"], 5.0 * 7.1, places=6)
 
     def test_no_policies_at_all_falls_back_to_the_factory_snapshot(self):
-        got = wb_pricing.cost_for_row(
+        got = ca_pricing.cost_for_row(
             {"model": "deepseek-v4.1-flash", "at": self.now,
              "prompt_tokens": 1000000})
         self.assertTrue(got["known"])
@@ -458,34 +458,34 @@ class PricingPolicyTests(unittest.TestCase):
         # Two policies for "m", nothing references either; the live one stays.
         self._record({"m": self._entry(1.0)}, self.now - 7200)
         _n, _c, live = self._record({"m": self._entry(2.0)}, self.now - 3600)
-        removed = wb_pricing.prune_policies()
+        removed = ca_pricing.prune_policies()
         self.assertEqual(len(removed), 1)
-        self.assertIn(live["m"], wb_pricing.load_policies())
+        self.assertIn(live["m"], ca_pricing.load_policies())
 
     def test_prune_never_leaves_a_model_without_a_policy(self):
         # "gone" is no longer in the live assignment and nothing references
         # it, but it is that model's only row and has to survive.
         _n, _c, dropped = self._record({"gone": self._entry(3.0)}, self.now - 7200)
         self._record({"m": self._entry(1.0)}, self.now - 3600)
-        self.assertEqual(wb_pricing.prune_policies(), [])
-        self.assertIn(dropped["gone"], wb_pricing.load_policies())
+        self.assertEqual(ca_pricing.prune_policies(), [])
+        self.assertIn(dropped["gone"], ca_pricing.load_policies())
 
     def test_prune_keeps_a_referenced_policy(self):
         _n, _c, first = self._record({"m": self._entry(1.0)}, self.now - 7200)
         self._record({"m": self._entry(2.0)}, self.now - 3600)
-        with open(wb_pricing.usage_log_path(), "a", encoding="utf-8") as fh:
+        with open(ca_pricing.usage_log_path(), "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"model": "m", "cost_policy": first["m"]}) + "\n")
-        self.assertEqual(wb_pricing.prune_policies(), [])
-        self.assertIn(first["m"], wb_pricing.load_policies())
+        self.assertEqual(ca_pricing.prune_policies(), [])
+        self.assertIn(first["m"], ca_pricing.load_policies())
 
     def test_prune_spares_the_batch_just_fetched(self):
         # The newest batch is pinned explicitly, so a sweep that runs right
         # after a fetch cannot delete what the fetch just produced.
         _n, _c, older = self._record({"m": self._entry(1.0)}, self.now - 7200)
         _n, _c, newer = self._record({"m": self._entry(2.0)}, self.now - 3600)
-        removed = wb_pricing.prune_policies(protect={older["m"]})
+        removed = ca_pricing.prune_policies(protect={older["m"]})
         self.assertEqual(removed, [])
-        policies = wb_pricing.load_policies()
+        policies = ca_pricing.load_policies()
         self.assertIn(older["m"], policies)
         self.assertIn(newer["m"], policies)
 
@@ -501,7 +501,7 @@ class PricingIntegrationTests(unittest.TestCase):
         with P._daily_usage_lock:
             P._daily_usage.update({"day": "", "totals": None, "credits": None,
                                    "models": None, "offset": 0, "at": 0.0})
-        self.usd_rate = wb_pricing.load_pricing()["models"][self.MODEL]["flat"][
+        self.usd_rate = ca_pricing.load_pricing()["models"][self.MODEL]["flat"][
             "input_cache_miss"]
         row = {"at": time.time() - 120, "iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
                "model": self.MODEL, "stream": True, "outcome": "completed",

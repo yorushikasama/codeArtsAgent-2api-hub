@@ -22,7 +22,7 @@ _TMP = tempfile.mkdtemp(prefix="wb-balance-park-")
 os.environ["ACCOUNTS_DIR"] = os.path.join(_TMP, "accounts")
 os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
-import wb_accounts as A
+import ca_accounts as A
 
 PASS = FAIL = 0
 

@@ -44,7 +44,7 @@ os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 # 不写 checkpoint：本套件只测读取路径，别让落盘状态掺进来。
 os.environ["WB_USAGE_CACHE"] = "0"
 
-import wb_proxy as P
+import ca_proxy as P
 
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
 P.POOL = None                     # 归属只走行自己的字段，可确定

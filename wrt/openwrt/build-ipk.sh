@@ -1,15 +1,15 @@
 #!/bin/sh
 # ============================================================================
-# WorkBuddy2API-Hub · OpenWrt 版 —— .ipk 打包脚本（opkg 系，OpenWrt <= 24.10）
+# CodeArts2API-Hub · OpenWrt 版 —— .ipk 打包脚本（opkg 系，OpenWrt <= 24.10）
 #
 # 用法：
 #   sh wrt/openwrt/build-ipk.sh [--arch <arch>] [--app-src <目录>]
 #
 # 产物（写到 wrt/ipk/ 目录）：
-#   wrt/ipk/workbuddy2api_<版本>-<发布号>_all.ipk
+#   wrt/ipk/codearts2api_<版本>-<发布号>_all.ipk
 #
 # 为什么默认 Architecture: all
-#   本包**全部是脚本**：wb_*.py（纯标准库 Python）+ dashboard.html + ash 服务脚本 +
+#   本包**全部是脚本**：ca_*.py（纯标准库 Python）+ dashboard.html + ash 服务脚本 +
 #   uci 配置 —— 没有任何架构相关二进制。所以一个 all 包在 x86_64 / aarch64 /
 #   armv7a 等架构上通用，不需要为每个架构各打一份。--arch 只改 control 的
 #   Architecture 字段与产物文件名，给「按架构分目录的私有源」这类场景用。
@@ -27,12 +27,12 @@
 #     排序、mtime 统一取 SOURCE_DATE_EPOCH（默认 1700000000，保证可复现）。
 #   * control.tar.gz 里按需放：./control（必需）、./conffiles、./postinst、
 #     ./prerm、./postrm。
-#   * data.tar.gz 里的路径带前缀 ./（如 ./usr/bin/workbuddy2api-warm）。
+#   * data.tar.gz 里的路径带前缀 ./（如 ./usr/bin/codearts2api-warm）。
 #
-# 源文件：应用源码（wb_*.py + dashboard.html）与 build-apk.sh 同源——都取自
+# 源文件：应用源码（ca_*.py + dashboard.html）与 build-apk.sh 同源——都取自
 #   --app-src（默认就是本仓库检出），不手工复制内容，也不从网络拉取。元数据
 #   （版本 / 发布号 / 许可 / 维护者 / 依赖 / 描述）从 openwrt/*/Makefile 解析，
-#   避免两处维护；版本号本身以 wb_proxy.py 为准，与 Makefile 对不上就拒绝打包。
+#   避免两处维护；版本号本身以 ca_proxy.py 为准，与 Makefile 对不上就拒绝打包。
 #
 # 幂等：重复运行覆盖 ipk/ 下同名产物；同一份源码 + 同一个 SOURCE_DATE_EPOCH
 #   得到逐字节相同的包。
@@ -45,10 +45,10 @@ usage() {
 
   --arch <arch>    写进 control 的 Architecture 字段与产物文件名（默认 all）。
                    纯脚本包用 all 即可（x86_64 / aarch64 / armv7a 通用）。
-  --app-src <目录> 含 wb_*.py + dashboard.html 的目录（可选，默认本仓库检出）。
+  --app-src <目录> 含 ca_*.py + dashboard.html 的目录（可选，默认本仓库检出）。
   -h, --help       显示本帮助
 
-产物: wrt/ipk/workbuddy2api_<版本>-<发布号>_<架构>.ipk
+产物: wrt/ipk/codearts2api_<版本>-<发布号>_<架构>.ipk
 EOF
 }
 
@@ -73,7 +73,7 @@ case "$ARCH" in
 esac
 
 # REPO 是 wrt/ 目录（本脚本住在 wrt/openwrt/ 下）：产物落 wrt/ipk，
-# 包目录是 wrt/openwrt/workbuddy2api，应用源码默认取仓库根。
+# 包目录是 wrt/openwrt/codearts2api，应用源码默认取仓库根。
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 REPO=$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)
 
@@ -156,27 +156,27 @@ if [ -z "$APP_SRC" ]; then
 	APP_SRC=$(CDPATH= cd -- "$REPO/.." && pwd)
 	echo "    未指定 --app-src，按仓库检出取: $APP_SRC"
 fi
-[ -f "$APP_SRC/wb_proxy.py" ] || {
-	echo "错误: $APP_SRC 里没有 wb_proxy.py（--app-src 应指向含 wb_*.py 的仓库根）" >&2; exit 1; }
+[ -f "$APP_SRC/ca_proxy.py" ] || {
+	echo "错误: $APP_SRC 里没有 ca_proxy.py（--app-src 应指向含 ca_*.py 的仓库根）" >&2; exit 1; }
 [ -f "$APP_SRC/dashboard.html" ] || { echo "错误: $APP_SRC 里没有 dashboard.html" >&2; exit 1; }
-DETECTED_VER="$(sed -n 's/.*server_version = "wb-proxy\/\([0-9.]*\)".*/\1/p' "$APP_SRC/wb_proxy.py" | head -n1)"
-MAKE_VER="$(mk_var "$REPO/openwrt/workbuddy2api/Makefile" PKG_VERSION)"
+DETECTED_VER="$(sed -n 's/.*server_version = "codearts-hub\/\([0-9.]*\)".*/\1/p' "$APP_SRC/ca_proxy.py" | head -n1)"
+MAKE_VER="$(mk_var "$REPO/openwrt/codearts2api/Makefile" PKG_VERSION)"
 [ -n "$DETECTED_VER" ] || {
-	echo "错误: 从 $APP_SRC/wb_proxy.py 解析不出 server_version" >&2; exit 1; }
+	echo "错误: 从 $APP_SRC/ca_proxy.py 解析不出 server_version" >&2; exit 1; }
 [ "$DETECTED_VER" = "$MAKE_VER" ] || {
 	echo "错误: 源码版本（$DETECTED_VER）与 Makefile PKG_VERSION（${MAKE_VER:-未知}）不一致。" >&2
-	echo "      升级时请把 wrt/openwrt/workbuddy2api/Makefile 的 PKG_VERSION 改成 $DETECTED_VER。" >&2
+	echo "      升级时请把 wrt/openwrt/codearts2api/Makefile 的 PKG_VERSION 改成 $DETECTED_VER。" >&2
 	exit 1
 }
-echo "    源码版本 $DETECTED_VER（$(ls "$APP_SRC"/wb_*.py | wc -l | tr -d ' ') 个 py + dashboard.html）"
+echo "    源码版本 $DETECTED_VER（$(ls "$APP_SRC"/ca_*.py | wc -l | tr -d ' ') 个 py + dashboard.html）"
 
 # ---- 暂存目录 ---------------------------------------------------------------
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/build-ipk.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT INT TERM
 
-DATA="$WORK/data-workbuddy2api"
-CTRL="$WORK/control-workbuddy2api"
+DATA="$WORK/data-codearts2api"
+CTRL="$WORK/control-codearts2api"
 
 # install_file <源文件> <暂存根> <安装路径> <权限>
 install_file() {
@@ -187,19 +187,19 @@ install_file() {
 }
 
 echo "==> 2/4 暂存包内文件"
-PKG="$REPO/openwrt/workbuddy2api"
-install_file "$PKG/files/etc/init.d/workbuddy2api"  "$DATA" etc/init.d/workbuddy2api  0755
-install_file "$PKG/files/etc/config/workbuddy2api"  "$DATA" etc/config/workbuddy2api  0600
-install_file "$PKG/files/usr/bin/workbuddy2api-warm"   "$DATA" usr/bin/workbuddy2api-warm   0755
+PKG="$REPO/openwrt/codearts2api"
+install_file "$PKG/files/etc/init.d/codearts2api"  "$DATA" etc/init.d/codearts2api  0755
+install_file "$PKG/files/etc/config/codearts2api"  "$DATA" etc/config/codearts2api  0600
+install_file "$PKG/files/usr/bin/codearts2api-warm"   "$DATA" usr/bin/codearts2api-warm   0755
 # 应用源码：遍历目录，别写死文件名（上游新增模块时不会漏打包）
-for _f in "$APP_SRC"/wb_*.py; do
-	install_file "$_f" "$DATA" "usr/lib/workbuddy2api/$(basename "$_f")" 0644
+for _f in "$APP_SRC"/ca_*.py; do
+	install_file "$_f" "$DATA" "usr/lib/codearts2api/$(basename "$_f")" 0644
 done
-install_file "$APP_SRC/dashboard.html" "$DATA" usr/lib/workbuddy2api/dashboard.html 0644
+install_file "$APP_SRC/dashboard.html" "$DATA" usr/lib/codearts2api/dashboard.html 0644
 
 mkdir -p "$CTRL"
-write_control "$PKG/Makefile" workbuddy2api net feeds/base/workbuddy2api "" "$CTRL/control"
-printf '/etc/config/workbuddy2api\n' > "$CTRL/conffiles"
+write_control "$PKG/Makefile" codearts2api net feeds/base/codearts2api "" "$CTRL/control"
+printf '/etc/config/codearts2api\n' > "$CTRL/conffiles"
 chmod 0644 "$CTRL/control" "$CTRL/conffiles"
 
 # postinst：与 apk 包语义一致（真 ipk 的标准开头 + default_postinst，再跟自定义代码）。
@@ -212,11 +212,11 @@ cat > "$CTRL/postinst" <<'EOF'
 . ${IPKG_INSTROOT}/lib/functions.sh
 default_postinst $0 $@
 [ -n "${IPKG_INSTROOT}" ] || {
-	mkdir -p /etc/workbuddy2api/accounts /etc/workbuddy2api/usage
-	chmod 700 /etc/workbuddy2api /etc/workbuddy2api/accounts
-	[ -f /etc/config/workbuddy2api ] && chmod 600 /etc/config/workbuddy2api
-	grep -q '^/etc/workbuddy2api$' /etc/sysupgrade.conf 2>/dev/null || \
-		echo '/etc/workbuddy2api' >> /etc/sysupgrade.conf
+	mkdir -p /etc/codearts2api/accounts /etc/codearts2api/usage
+	chmod 700 /etc/codearts2api /etc/codearts2api/accounts
+	[ -f /etc/config/codearts2api ] && chmod 600 /etc/config/codearts2api
+	grep -q '^/etc/codearts2api$' /etc/sysupgrade.conf 2>/dev/null || \
+		echo '/etc/codearts2api' >> /etc/sysupgrade.conf
 	# 缓存预热：每 2 分钟把面板的贵接口（/usage 汇总、统计页矩阵、analytics/
 	# timeseries 时间窗、面板轮询的 realm 接口）先跑一遍。**缓存命中不会延长
 	# TTL**，条目从上次重建起算过期，所以预热间隔必须显著小于 TTL，否则
@@ -224,12 +224,12 @@ default_postinst $0 $@
 	# 分钟一轮 → 窗口约 6%，而全部命中时一轮只有毫秒级成本）。uci main.warm=0 可关。
 	# 这一行按规范形式重写（老版本装的是 */12，直接 sed 掉，保证升级后也对齐）
 	mkdir -p /etc/crontabs
-	sed -i '/workbuddy2api-warm/d' /etc/crontabs/root 2>/dev/null
-	echo '*/2 * * * * /usr/bin/workbuddy2api-warm --quiet' >> /etc/crontabs/root
+	sed -i '/codearts2api-warm/d' /etc/crontabs/root 2>/dev/null
+	echo '*/2 * * * * /usr/bin/codearts2api-warm --quiet' >> /etc/crontabs/root
 	/etc/init.d/cron restart >/dev/null 2>&1 || true
 	[ "${PKG_UPGRADE}" = "1" ] || {
-		/etc/init.d/workbuddy2api disable >/dev/null 2>&1
-		/etc/init.d/workbuddy2api stop >/dev/null 2>&1
+		/etc/init.d/codearts2api disable >/dev/null 2>&1
+		/etc/init.d/codearts2api stop >/dev/null 2>&1
 	}
 }
 # init.d 的 disable/stop 失败不该让 opkg 报 postinst 失败（apk 版没有这行，语义不变）
@@ -245,13 +245,13 @@ default_prerm $0 $@
 EOF
 
 # postrm：清理包自己的文件（与 apk 包的 postrm 一致）；
-# /etc/workbuddy2api（账号/用量）与 /etc/config/workbuddy2api 是用户数据，保留。
+# /etc/codearts2api（账号/用量）与 /etc/config/codearts2api 是用户数据，保留。
 cat > "$CTRL/postrm" <<'EOF'
 #!/bin/sh
 [ -n "${IPKG_INSTROOT}" ] || {
-	rm -rf /usr/lib/workbuddy2api
-	rm -f /usr/bin/workbuddy2api-warm
-	sed -i '/workbuddy2api-warm/d' /etc/crontabs/root 2>/dev/null
+	rm -rf /usr/lib/codearts2api
+	rm -f /usr/bin/codearts2api-warm
+	sed -i '/codearts2api-warm/d' /etc/crontabs/root 2>/dev/null
 	/etc/init.d/cron restart >/dev/null 2>&1 || true
 }
 EOF
@@ -450,7 +450,7 @@ echo "==> 3/4 打包"
 mkdir -p "$REPO/ipk"
 P_VER=$(mk_var "$PKG/Makefile" PKG_VERSION)
 P_REL=$(mk_var "$PKG/Makefile" PKG_RELEASE)
-P_OUT="$REPO/ipk/workbuddy2api_${P_VER}-${P_REL}_${ARCH}.ipk"
+P_OUT="$REPO/ipk/codearts2api_${P_VER}-${P_REL}_${ARCH}.ipk"
 $PY "$PY_HELPER" pack "$DATA" "$CTRL" "$P_OUT" "$EPOCH"
 
 echo "==> 4/4 自检"

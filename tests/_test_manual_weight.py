@@ -23,7 +23,7 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts
+import ca_accounts
 
 
 def make_account(uid, realm="cn", credits=None, **extra):
@@ -31,7 +31,7 @@ def make_account(uid, realm="cn", credits=None, **extra):
     if credits is not None:
         data["credits"] = credits
     data.update(extra)
-    return wb_accounts.Account(data)
+    return ca_accounts.Account(data)
 
 
 def credits(days_left):
@@ -71,12 +71,12 @@ class AccountWeightFieldTests(unittest.TestCase):
     def test_weight_round_trips_through_the_credential_file(self):
         with tempfile.TemporaryDirectory(prefix="weight-persist-") as directory:
             make_account("w-disk", weight=3).save(directory)
-            pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+            pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
             loaded = {a.uid: a for a in pool.load()}
             self.assertEqual(loaded["w-disk"].weight, 3)
             # 面板改权重后落盘：换个新池重读，值还在。
             self.assertEqual(pool.set_weight("w-disk", 7)["weight"], 7)
-            pool2 = wb_accounts.AccountPool(directory, log=lambda _m: None)
+            pool2 = ca_accounts.AccountPool(directory, log=lambda _m: None)
             self.assertEqual({a.uid: a for a in pool2.load()}["w-disk"].weight, 7)
 
     def test_saved_json_keeps_the_field(self):
@@ -89,7 +89,7 @@ class AccountWeightFieldTests(unittest.TestCase):
 class SetWeightTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.mkdtemp(prefix="weight-set-")
-        self.pool = wb_accounts.AccountPool(self.directory, log=lambda _m: None)
+        self.pool = ca_accounts.AccountPool(self.directory, log=lambda _m: None)
         self.pool.accounts = [make_account("s-a", weight=1), make_account("s-b", weight=2)]
 
     def test_updates_and_returns_the_public_view(self):
@@ -108,7 +108,7 @@ class SetWeightTests(unittest.TestCase):
 class PickWeightedFirstTests(unittest.TestCase):
     def _pool(self, accounts, window=0):
         directory = tempfile.mkdtemp(prefix="weight-pool-")
-        pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+        pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
         pool.accounts = accounts
         if window:
             pool.apply_expiring_window({"global": window, "intl": window, "cn": window})

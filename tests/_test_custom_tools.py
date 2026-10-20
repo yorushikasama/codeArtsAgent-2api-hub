@@ -12,7 +12,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # unsafe to run at the same time and left directories in the repo after a run.
 _TMP = isolated_data_dirs("wb-custom-tools-")
 
-import wb_proxy as P
+import ca_proxy as P
 
 PASS = FAIL = 0
 def check(label, cond, extra=""):

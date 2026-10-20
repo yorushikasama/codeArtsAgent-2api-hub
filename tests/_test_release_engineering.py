@@ -21,9 +21,9 @@ def read(*parts):
 
 class VersionStringTests(unittest.TestCase):
     def test_source_version_strings_agree(self):
-        src = read("wb_proxy.py")
+        src = read("ca_proxy.py")
         overview = re.search(r'"version"\s*:\s*"([^"]+)"', src)
-        server = re.search(r'server_version\s*=\s*"wb-proxy/([^"]+)"', src)
+        server = re.search(r'server_version\s*=\s*"codearts-hub/([^"]+)"', src)
         self.assertIsNotNone(overview, "overview version string not found")
         self.assertIsNotNone(server, "server header version string not found")
         self.assertEqual(overview.group(1), server.group(1))

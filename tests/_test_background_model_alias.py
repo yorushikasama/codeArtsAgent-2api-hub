@@ -26,22 +26,22 @@ os.environ["ACCOUNTS_DIR"] = _startup_dir.name
 os.environ["WB_PROXY_USAGE_DIR"] = _startup_dir.name
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_proxy
+import ca_proxy
 
 
 class BackgroundModelAliasTests(unittest.TestCase):
     """The rewrite must be narrow: listed models only, everything else intact."""
 
     def setUp(self):
-        self._saved_names = wb_proxy.BACKGROUND_MODEL_NAMES
-        self._saved_target = wb_proxy.BACKGROUND_MODEL_TARGET
+        self._saved_names = ca_proxy.BACKGROUND_MODEL_NAMES
+        self._saved_target = ca_proxy.BACKGROUND_MODEL_TARGET
 
     def tearDown(self):
-        wb_proxy.BACKGROUND_MODEL_NAMES = self._saved_names
-        wb_proxy.BACKGROUND_MODEL_TARGET = self._saved_target
+        ca_proxy.BACKGROUND_MODEL_NAMES = self._saved_names
+        ca_proxy.BACKGROUND_MODEL_TARGET = self._saved_target
 
     def _apply(self, payload):
-        wb_proxy._apply_background_model_alias(payload)
+        ca_proxy._apply_background_model_alias(payload)
         return payload
 
     def test_listed_models_are_redirected(self):
@@ -65,9 +65,9 @@ class BackgroundModelAliasTests(unittest.TestCase):
 
     def test_non_dict_payload_is_ignored(self):
         # The dispatch point forwards whatever it parsed; it must never raise.
-        wb_proxy._apply_background_model_alias(None)
-        wb_proxy._apply_background_model_alias("not-a-body")
-        wb_proxy._apply_background_model_alias(["also", "not", "a-body"])
+        ca_proxy._apply_background_model_alias(None)
+        ca_proxy._apply_background_model_alias("not-a-body")
+        ca_proxy._apply_background_model_alias(["also", "not", "a-body"])
 
     def test_other_body_fields_survive_the_rewrite(self):
         body = self._apply({"model": "gpt-5.6-terra", "stream": True,
@@ -86,8 +86,8 @@ class BackgroundModelAliasTests(unittest.TestCase):
             for m in "Model-A, model-b".split(",")
             if m.strip()
         )
-        wb_proxy.BACKGROUND_MODEL_NAMES = names
-        wb_proxy.BACKGROUND_MODEL_TARGET = "some-free-model"
+        ca_proxy.BACKGROUND_MODEL_NAMES = names
+        ca_proxy.BACKGROUND_MODEL_TARGET = "some-free-model"
         body = self._apply({"model": "MODEL-B"})
         self.assertEqual(body["model"], "some-free-model")
         untouched = self._apply({"model": "gpt-5.6-terra"})

@@ -7,8 +7,8 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_proxy as proxy
-import wb_settings as settings
+import ca_proxy as proxy
+import ca_settings as settings
 
 
 class RequestWithoutKey(object):

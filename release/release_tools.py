@@ -16,7 +16,7 @@ repository-wide glob: that list is also the contract #29's updater consumes
 an accidental new file in the checkout can never end up in a release.
 
     python release/release_tools.py portable --version 1.6.17 --tag v1.6.17 \
-        --out dist/workbuddy2api-hub-v1.6.17.zip
+        --out dist/codearts2api-hub-v1.6.17.zip
 """
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ SCHEMA = 1
 # The folder every packaged file lives under. The asset this replaces nests the
 # same way, so extracting gives one folder instead of a loose pile, and the
 # updater planned in #29 has a single prefix to strip (declared in the manifest).
-PACKAGE_ROOT = "wb-proxy"
+PACKAGE_ROOT = "codearts-hub"
 
 # Paths the updater must never touch. They travel with the archive's manifest
 # so #29 can assert the contract instead of hardcoding it a second time.
@@ -63,13 +63,13 @@ def read_manifest(path=MANIFEST):
 
 
 def source_version(source=ROOT):
-    """The version the code itself claims, from wb_proxy.py's two strings."""
+    """The version the code itself claims, from ca_proxy.py's two strings."""
     import re
-    with open(os.path.join(source, "wb_proxy.py"), encoding="utf-8") as fh:
+    with open(os.path.join(source, "ca_proxy.py"), encoding="utf-8") as fh:
         text = fh.read()
-    server = re.search(r'server_version\s*=\s*"wb-proxy/([^"]+)"', text)
+    server = re.search(r'server_version\s*=\s*"codearts-hub/([^"]+)"', text)
     if not server:
-        raise SystemExit("wb_proxy.py 里找不到 server_version")
+        raise SystemExit("ca_proxy.py 里找不到 server_version")
     return server.group(1)
 
 
@@ -89,7 +89,7 @@ def build_portable(version, tag, out_path, source=ROOT, runtime_dir=None,
     """
     got = source_version(source)
     if got != version:
-        raise SystemExit("版本不一致：wb_proxy.py=%s，参数=%s" % (got, version))
+        raise SystemExit("版本不一致：ca_proxy.py=%s，参数=%s" % (got, version))
     if not runtime_dir or not os.path.isdir(runtime_dir):
         raise SystemExit("缺少 --runtime：便携包必须带 python/ 运行时"
                          "（先用 release/portable_runtime.py prepare 生成）")
@@ -132,7 +132,7 @@ def build_portable(version, tag, out_path, source=ROOT, runtime_dir=None,
 
     manifest = {
         "schema": SCHEMA,
-        "name": "workbuddy2api-hub",
+        "name": "codearts2api-hub",
         "version": version,
         "tag": tag,
         # Everything below `files` lives under this folder, so an updater can
@@ -227,9 +227,9 @@ def compose_body(existing, block):
 
 def asset_names(version, release):
     return (
-        "workbuddy2api-hub-v%s.zip" % version,
-        "workbuddy2api_%s-%s_all.ipk" % (version, release),
-        "workbuddy2api-%s-r%s.apk" % (version, release),
+        "codearts2api-hub-v%s.zip" % version,
+        "codearts2api_%s-%s_all.ipk" % (version, release),
+        "codearts2api-%s-r%s.apk" % (version, release),
     )
 
 

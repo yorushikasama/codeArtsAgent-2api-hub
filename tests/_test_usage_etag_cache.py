@@ -11,7 +11,7 @@
    tag 永远不命中，304 一次也拿不到。这条推理钉在 [5]/[7]：缓存没重建时 tag
    必须稳定，重建后必须变化。
 3. 校验符还必须**描述它跟着一起发出去的那份响应体**：取数前后各取一次缓存戳，
-   两次一致才发 tag（见 wb_proxy._json_cached 的注释）。不一致说明中间发生了
+   两次一致才发 tag（见 ca_proxy._json_cached 的注释）。不一致说明中间发生了
    重建，这次就不发校验符、走普通 200——宁可少一次 304，也不能让客户端拿着一个
    不描述当前响应体的 tag 回来命中 304、然后一直显示过期数字。[6] 钉住这条。
 4. 只改服务端等于没改：面板前端用 cache:'no-store' 发 fetch，浏览器既不存副本
@@ -100,7 +100,7 @@ write_rows([row(now - 600 - 30 * i, total_tokens=100 + i, account="a%d" % (i % 2
             for i in range(12)])
 
 proc = life.spawn_managed(
-    [PY, os.path.join(ROOT, "wb_proxy.py"), "--port", str(port), "--host", "127.0.0.1",
+    [PY, os.path.join(ROOT, "ca_proxy.py"), "--port", str(port), "--host", "127.0.0.1",
      "--accounts-dir", store],
     cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
     env=dict(os.environ, WB_PROXY_USAGE_DIR=usage_dir, WB_STATS_TTL=str(TTL)))

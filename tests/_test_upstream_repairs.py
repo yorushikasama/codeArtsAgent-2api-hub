@@ -20,7 +20,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # _test_namespace_tools.py, and every run left those directories in the checkout.
 _TMP = isolated_data_dirs("wb-upstream-repairs-")
 
-import wb_proxy as P
+import ca_proxy as P
 
 PASS = FAIL = 0
 

@@ -49,13 +49,13 @@ os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 import time as _time
 _time.time = lambda: FROZEN
 
-import wb_proxy as P
-import wb_accounts
-import wb_pricing
+import ca_proxy as P
+import ca_accounts
+import ca_pricing
 
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-wb_pricing.set_data_dir(USAGE_DIR)
-wb_pricing.set_settings_dir(ACCOUNTS_DIR)
+ca_pricing.set_data_dir(USAGE_DIR)
+ca_pricing.set_settings_dir(ACCOUNTS_DIR)
 
 USAGE_LOG = P.USAGE_LOG
 LEGACY = os.path.join(USAGE_DIR, "usage-aggregate-cache.json")
@@ -198,7 +198,7 @@ def live_all(accounts=None):
     """五条折叠各走一遍：snapshot / by_account / analytics / series /
     remaining（three realms where the state is per-realm）。"""
     if accounts is None:
-        accounts = [wb_accounts.Account({"uid": "u1", "nickname": "u1",
+        accounts = [ca_accounts.Account({"uid": "u1", "nickname": "u1",
                                          "accessToken": "t", "realm": "intl"})]
     return {
         # 走公开入口（与面板同一条路）：realm="all" 折不限 realm 的那份，
@@ -444,7 +444,7 @@ before_files = {kind: io.open(path, "rb").read()
 append_log([row(FROZEN - 100, "m-a", "u1", 500, 50)])
 cache_env_force()
 restart()
-P._remaining_payload(now=FROZEN, accounts=[wb_accounts.Account(
+P._remaining_payload(now=FROZEN, accounts=[ca_accounts.Account(
     {"uid": "u1", "nickname": "u1", "accessToken": "t", "realm": "intl"})])
 after_files = {kind: io.open(path, "rb").read()
                for kind, path in cache_files().items()}

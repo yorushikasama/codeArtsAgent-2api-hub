@@ -24,9 +24,9 @@ os.environ["ACCOUNTS_DIR"] = os.path.join(_TMP, "accounts")
 os.environ["WB_PROXY_USAGE_DIR"] = _TMP
 os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
-import wb_accounts
-import wb_settings
-import wb_proxy as P
+import ca_accounts
+import ca_settings
+import ca_proxy as P
 
 
 def row(at, account, total, outcome="completed"):
@@ -48,13 +48,13 @@ class DailyTokenLimitTests(unittest.TestCase):
 
     def test_setting_round_trip(self):
         with tempfile.TemporaryDirectory(prefix="daily-set-") as directory:
-            self.assertEqual(wb_settings.daily_token_limit(directory), 0)
+            self.assertEqual(ca_settings.daily_token_limit(directory), 0)
             self.assertEqual(
-                wb_settings.set_daily_token_limit(directory, 200000000), 200000000)
-            self.assertEqual(wb_settings.daily_token_limit(directory), 200000000)
+                ca_settings.set_daily_token_limit(directory, 200000000), 200000000)
+            self.assertEqual(ca_settings.daily_token_limit(directory), 200000000)
             # Garbage and negatives collapse to "off" instead of raising.
-            self.assertEqual(wb_settings.set_daily_token_limit(directory, -5), 0)
-            self.assertEqual(wb_settings.set_daily_token_limit(directory, "abc"), 0)
+            self.assertEqual(ca_settings.set_daily_token_limit(directory, -5), 0)
+            self.assertEqual(ca_settings.set_daily_token_limit(directory, "abc"), 0)
 
     def test_scan_counts_today_only_and_resumes_incrementally(self):
         midnight = P._local_midnight()
@@ -90,7 +90,7 @@ class DailyTokenLimitTests(unittest.TestCase):
                     {"acct-A": 2050, "acct-B": 400})
 
     def test_guard_blocks_at_threshold_and_needs_a_count(self):
-        account = wb_accounts.Account({"uid": "uid-a", "accessToken": "t"})
+        account = ca_accounts.Account({"uid": "uid-a", "accessToken": "t"})
         account.daily_token_limit = 1000
         self.assertFalse(account.daily_limit_blocked())  # not counted yet
         self.assertTrue(account.ready())
@@ -106,11 +106,11 @@ class DailyTokenLimitTests(unittest.TestCase):
 
     def test_pool_skips_parked_account_and_publishes_state(self):
         with tempfile.TemporaryDirectory(prefix="daily-pool-") as directory:
-            pool = wb_accounts.AccountPool(directory)
+            pool = ca_accounts.AccountPool(directory)
             pool.accounts = [
-                wb_accounts.Account({"uid": "uid-spent", "accessToken": "t",
+                ca_accounts.Account({"uid": "uid-spent", "accessToken": "t",
                                "realm": "intl"}),
-                wb_accounts.Account({"uid": "uid-fresh", "accessToken": "t",
+                ca_accounts.Account({"uid": "uid-fresh", "accessToken": "t",
                                "realm": "intl"}),
             ]
             pool.apply_daily_token_limit(1000, {"uid-spent": 1000, "uid-fresh": 10})
@@ -126,9 +126,9 @@ class DailyTokenLimitTests(unittest.TestCase):
 
     def test_settings_value_reaches_the_pool(self):
         with tempfile.TemporaryDirectory(prefix="daily-reload-") as directory:
-            wb_settings.set_daily_token_limit(directory, 500)
-            pool = wb_accounts.AccountPool(directory)
-            account = wb_accounts.Account({"uid": "uid-one", "accessToken": "t"})
+            ca_settings.set_daily_token_limit(directory, 500)
+            pool = ca_accounts.AccountPool(directory)
+            account = ca_accounts.Account({"uid": "uid-one", "accessToken": "t"})
             account.daily_tokens_today = 600
             pool.accounts = [account]
             self.assertFalse(account.daily_limit_blocked())  # limit not applied yet
@@ -136,17 +136,17 @@ class DailyTokenLimitTests(unittest.TestCase):
             self.assertEqual(account.daily_token_limit, 500)
             self.assertTrue(account.daily_limit_blocked())
 
-            wb_settings.set_daily_token_limit(directory, 0)
+            ca_settings.set_daily_token_limit(directory, 0)
             pool.apply_daily_token_limit()
             self.assertFalse(account.daily_limit_blocked())
 
 
     def test_pool_wide_park_answers_429_with_its_own_message(self):
-        account = wb_accounts.Account({"uid": "uid-spent", "accessToken": "t",
+        account = ca_accounts.Account({"uid": "uid-spent", "accessToken": "t",
                                       "realm": "intl"})
         account.daily_token_limit = 1000
         account.daily_tokens_today = 1000
-        wb_settings.set_daily_token_limit(os.environ["ACCOUNTS_DIR"], 1000)
+        ca_settings.set_daily_token_limit(os.environ["ACCOUNTS_DIR"], 1000)
 
         class Pool(object):
             accounts = [account]
@@ -184,7 +184,7 @@ class DailyTokenLimitTests(unittest.TestCase):
                     target_realm="intl")
         finally:
             P.POOL = old_pool
-            wb_settings.set_daily_token_limit(os.environ["ACCOUNTS_DIR"], 0)
+            ca_settings.set_daily_token_limit(os.environ["ACCOUNTS_DIR"], 0)
         self.assertIn("token limit", str(caught.exception.message))
         self.assertIn("local midnight", str(caught.exception.message))
         self.assertGreaterEqual(caught.exception.wait, 60)

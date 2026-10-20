@@ -27,8 +27,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_proxy as proxy
-import wb_settings as S
+import ca_proxy as proxy
+import ca_settings as S
 
 
 class FakeRequest(object):

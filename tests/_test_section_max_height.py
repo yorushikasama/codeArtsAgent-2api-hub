@@ -32,11 +32,11 @@ sys.path.insert(0, ROOT)
 
 from _isolated_dirs import isolated_data_dirs  # noqa: E402
 
-# Its own accounts/ + usage/ before wb_proxy reads ACCOUNTS_DIR at import.
+# Its own accounts/ + usage/ before ca_proxy reads ACCOUNTS_DIR at import.
 _TMP = isolated_data_dirs("wb-section-max-height-")
 
-import wb_proxy as proxy  # noqa: E402
-import wb_settings as S  # noqa: E402
+import ca_proxy as proxy  # noqa: E402
+import ca_settings as S  # noqa: E402
 
 
 class FakeRequest(object):
@@ -175,7 +175,7 @@ class SectionMaxHeightTests(unittest.TestCase):
     def test_a_new_process_sees_the_persisted_value(self):
         """A restart re-reads the file, so the cap is not process-local."""
         S.set_section_max_height(self.dir, 500)
-        code = ("import sys; sys.path.insert(0, %r); import wb_settings as S; "
+        code = ("import sys; sys.path.insert(0, %r); import ca_settings as S; "
                 "print(S.section_max_height(%r))" % (ROOT, self.dir))
         done = subprocess.run([sys.executable, "-c", code], cwd=ROOT,
                               capture_output=True, text=True, timeout=60)

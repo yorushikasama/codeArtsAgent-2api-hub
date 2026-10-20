@@ -77,7 +77,7 @@ jobs:
           if-no-files-found: ignore
 
   # Release discipline: a v* tag must match the version baked into
-  # wb_proxy.py, and the two source version strings must agree with each
+  # ca_proxy.py, and the two source version strings must agree with each
   # other. A tag carrying a -ci suffix is a rehearsal and skips only the tag
   # comparison (the source-consistency check still runs).
   version-assert:
@@ -89,8 +89,8 @@ jobs:
       - name: Assert tag == source version
         run: |
           set -euo pipefail
-          OVERVIEW=$(grep -oP '"version"\s*:\s*"\K[^"]+' wb_proxy.py | head -n1 || true)
-          SERVER=$(grep -oP 'server_version\s*=\s*"wb-proxy/\K[^"]+' wb_proxy.py | head -n1 || true)
+          OVERVIEW=$(grep -oP '"version"\s*:\s*"\K[^"]+' ca_proxy.py | head -n1 || true)
+          SERVER=$(grep -oP 'server_version\s*=\s*"codearts-hub/\K[^"]+' ca_proxy.py | head -n1 || true)
           echo "source: overview=$OVERVIEW server=$SERVER tag=$GITHUB_REF_NAME"
           if [ -z "$OVERVIEW" ] || [ "$OVERVIEW" != "$SERVER" ]; then
             echo "::error::source version strings disagree ($OVERVIEW vs $SERVER)"

@@ -86,8 +86,8 @@ jobs:
         id: v
         run: |
           set -euo pipefail
-          OVERVIEW=$(grep -oP '"version"\s*:\s*"\K[^"]+' wb_proxy.py | head -n1 || true)
-          SERVER=$(grep -oP 'server_version\s*=\s*"wb-proxy/\K[^"]+' wb_proxy.py | head -n1 || true)
+          OVERVIEW=$(grep -oP '"version"\s*:\s*"\K[^"]+' ca_proxy.py | head -n1 || true)
+          SERVER=$(grep -oP 'server_version\s*=\s*"codearts-hub/\K[^"]+' ca_proxy.py | head -n1 || true)
           echo "source: overview=$OVERVIEW server=$SERVER tag=$TAG"
           if [ -z "$OVERVIEW" ] || [ "$OVERVIEW" != "$SERVER" ]; then
             echo "::error::source version strings disagree ($OVERVIEW vs $SERVER)"
@@ -105,11 +105,11 @@ jobs:
           # The OpenWrt recipe carries the same version in its package Makefile
           # and is the third place that has to agree, so check it here instead
           # of discovering the mismatch inside the SDK build.
-          PKGVER=$(sed -n 's/^PKG_VERSION:=//p' wrt/openwrt/workbuddy2api/Makefile | head -n1)
-          PKGREL=$(sed -n 's/^PKG_RELEASE:=//p' wrt/openwrt/workbuddy2api/Makefile | head -n1)
+          PKGVER=$(sed -n 's/^PKG_VERSION:=//p' wrt/openwrt/codearts2api/Makefile | head -n1)
+          PKGREL=$(sed -n 's/^PKG_RELEASE:=//p' wrt/openwrt/codearts2api/Makefile | head -n1)
           if [ "$PKGVER" != "$OVERVIEW" ]; then
             echo "::error::wrt Makefile PKG_VERSION=$PKGVER != source version $OVERVIEW"
-            echo "        bump PKG_VERSION in wrt/openwrt/workbuddy2api/Makefile"
+            echo "        bump PKG_VERSION in wrt/openwrt/codearts2api/Makefile"
             exit 1
           fi
           echo "version=$OVERVIEW" >> "$GITHUB_OUTPUT"
@@ -270,7 +270,7 @@ jobs:
             --version "${{ needs.version.outputs.version }}" `
             --tag "$env:TAG" `
             --runtime python `
-            --out "dist/workbuddy2api-hub-v${{ needs.version.outputs.version }}.zip"
+            --out "dist/codearts2api-hub-v${{ needs.version.outputs.version }}.zip"
       - name: Boot the packaged runtime
         # Presence is not enough: the archive has to start the gateway with the
         # interpreter it carries, which is what a user double-clicks.
@@ -290,27 +290,27 @@ jobs:
           if (-not (Test-Path (Join-Path $stage 'release-manifest.json'))) {
             throw "包内没有 release-manifest.json"
           }
-          $root = Join-Path $stage 'wb-proxy'
-          if (-not (Test-Path $root)) { throw "包内没有 wb-proxy/ 目录" }
+          $root = Join-Path $stage 'codearts-hub'
+          if (-not (Test-Path $root)) { throw "包内没有 codearts-hub/ 目录" }
           $py = Join-Path $root 'python\python.exe'
           if (-not (Test-Path $py)) { throw "包内没有 python\python.exe" }
 
           # The launcher has to look exactly where the runtime is.
-          $bat = Get-Content (Join-Path $root 'start-wb-proxy.bat') -Raw
+          $bat = Get-Content (Join-Path $root 'start-codearts-hub.bat') -Raw
           if ($bat -notmatch 'python\\python\.exe') { throw "启动脚本没有找 python\python.exe" }
 
           & $py --version
           if ($LASTEXITCODE -ne 0) { throw "包内运行时无法执行" }
           Push-Location $root
           try {
-            & $py -c "import wb_proxy, wb_accounts, wb_pricing, wb_atrest, wb_webtools, wb_scheduler, wb_tasks; print('app imports ok')"
+            & $py -c "import ca_proxy, ca_accounts, ca_pricing, ca_atrest, ca_webtools, ca_scheduler, ca_tasks; print('app imports ok')"
             if ($LASTEXITCODE -ne 0) { throw "包内运行时跑不动应用模块" }
           } finally { Pop-Location }
 
           $outLog = Join-Path $env:RUNNER_TEMP 'smoke-out.log'
           $errLog = Join-Path $env:RUNNER_TEMP 'smoke-err.log'
           $proc = Start-Process -FilePath $py `
-            -ArgumentList 'wb_proxy.py', '--host', '127.0.0.1', '--port', '8799' `
+            -ArgumentList 'ca_proxy.py', '--host', '127.0.0.1', '--port', '8799' `
             -WorkingDirectory $root -PassThru -WindowStyle Hidden `
             -RedirectStandardOutput $outLog -RedirectStandardError $errLog
           try {
@@ -403,8 +403,8 @@ jobs:
           set -euo pipefail
           V="${{ needs.version.outputs.version }}"
           R="${{ needs.version.outputs.release }}"
-          IPK="wrt/ipk/workbuddy2api_${V}-${R}_all.ipk"
-          APK="wrt/apk/workbuddy2api-${V}-r${R}.apk"
+          IPK="wrt/ipk/codearts2api_${V}-${R}_all.ipk"
+          APK="wrt/apk/codearts2api-${V}-r${R}.apk"
           for f in "$IPK" "$APK"; do
             [ -s "$f" ] || { echo "::error::资产为空或不存在：$f"; exit 1; }
           done
@@ -570,9 +570,9 @@ jobs:
             --jq '"draft=\(.isDraft) prerelease=\(.isPrerelease)", (.assets[].name)'
           [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = "true" ] \
             || { echo "::error::$TAG 不是 draft，立即停止"; exit 1; }
-          for want in workbuddy2api-hub-v${{ needs.version.outputs.version }}.zip \
-                      workbuddy2api_${{ needs.version.outputs.version }}-${{ needs.version.outputs.release }}_all.ipk \
-                      workbuddy2api-${{ needs.version.outputs.version }}-r${{ needs.version.outputs.release }}.apk \
+          for want in codearts2api-hub-v${{ needs.version.outputs.version }}.zip \
+                      codearts2api_${{ needs.version.outputs.version }}-${{ needs.version.outputs.release }}_all.ipk \
+                      codearts2api-${{ needs.version.outputs.version }}-r${{ needs.version.outputs.release }}.apk \
                       SHA256SUMS; do
             gh release view "$TAG" --json assets --jq '.assets[].name' | grep -qx "$want" \
               || { echo "::error::draft 里缺少资产 $want"; exit 1; }

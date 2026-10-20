@@ -29,9 +29,9 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_pricing
-import wb_proxy as P
-import wb_settings
+import ca_pricing
+import ca_proxy as P
+import ca_settings
 
 T0 = 1791000000.0
 MODEL_A = "fold-model-a"          # 走策略分支（行上带 cost_policy）
@@ -79,7 +79,7 @@ def fold_rows(rows):
     for r in rows:
         if P.row_outcome(r) == "client_aborted":
             continue
-        cost = wb_pricing.cost_for_row(dict(r))
+        cost = ca_pricing.cost_for_row(dict(r))
         if P.row_outcome(r) != "completed":
             stat["errors"] += 1
         else:
@@ -108,11 +108,11 @@ class AggregateHarness(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="wb-agg-fold-")
         self.accounts = os.path.join(self.tmp, "accounts")
         os.makedirs(self.accounts, exist_ok=True)
-        self._prev_data = wb_pricing.data_dir()
-        self._prev_settings = wb_pricing._settings_dir_override
+        self._prev_data = ca_pricing.data_dir()
+        self._prev_settings = ca_pricing._settings_dir_override
         self._prev_log = P.USAGE_LOG
-        wb_pricing.set_data_dir(self.tmp)
-        wb_pricing.set_settings_dir(self.accounts)
+        ca_pricing.set_data_dir(self.tmp)
+        ca_pricing.set_settings_dir(self.accounts)
 
         # 策略表与时间线：一条模型策略，行上的 cost_policy 与时间线回填都指它。
         doc = {"meta": {"usd_cny": 7.1},
@@ -126,13 +126,13 @@ class AggregateHarness(unittest.TestCase):
                              "currency": "USD", "unit": 1000000,
                              "or_id": "vendor/" + MODEL_B},
                }}
-        _added, _changed, assignment = wb_pricing.record_policies(doc, at=T0)
+        _added, _changed, assignment = ca_pricing.record_policies(doc, at=T0)
         self.pid_a = assignment[MODEL_A]
 
         # 内置快照里挑一个能定价的模型，覆盖 cost_for_row 的 builtin 分支。
         self.builtin = ""
-        for mid in sorted((wb_pricing.load_pricing().get("models") or {})):
-            probe = wb_pricing.cost_for_row(
+        for mid in sorted((ca_pricing.load_pricing().get("models") or {})):
+            probe = ca_pricing.cost_for_row(
                 {"at": T0, "model": mid, "prompt_tokens": 10,
                  "completion_tokens": 5})
             if probe["known"]:
@@ -163,8 +163,8 @@ class AggregateHarness(unittest.TestCase):
 
     def tearDown(self):
         P.USAGE_LOG = self._prev_log
-        wb_pricing.set_data_dir(self._prev_data)
-        wb_pricing.set_settings_dir(self._prev_settings)
+        ca_pricing.set_data_dir(self._prev_data)
+        ca_pricing.set_settings_dir(self._prev_settings)
 
 
 class AggregateSkipsDetailsTests(AggregateHarness):
@@ -173,13 +173,13 @@ class AggregateSkipsDetailsTests(AggregateHarness):
     def test_aggregates_survive_a_raising_details_stub(self):
         def boom(*_args, **_kwargs):
             raise AssertionError("聚合路径不该构造悬停明细")
-        original = wb_pricing._details_for
-        wb_pricing._details_for = boom
+        original = ca_pricing._details_for
+        ca_pricing._details_for = boom
         try:
             analytics = P._compute_usage_analytics_uncached()
             snap = P._usage_snapshot_uncached()
         finally:
-            wb_pricing._details_for = original
+            ca_pricing._details_for = original
         # 明细被跳过，价本身照算：三档单价那部分才是被省掉的。
         self.assertGreater(analytics["summary"]["all_time"]["cost_cny"], 0)
         self.assertGreater(snap["cost_cny"], 0)
@@ -192,27 +192,27 @@ class AggregateSkipsDetailsTests(AggregateHarness):
 
         def boom(*_args, **_kwargs):
             raise AssertionError("聚合路径不该构造悬停明细")
-        original = wb_pricing._details_for
-        wb_pricing._details_for = boom
+        original = ca_pricing._details_for
+        ca_pricing._details_for = boom
         try:
             lean = P._compute_usage_analytics_uncached()
         finally:
-            wb_pricing._details_for = original
+            ca_pricing._details_for = original
         self.assertEqual(normal, lean)
 
     def test_the_per_row_path_still_builds_them(self):
         seen = []
-        original = wb_pricing._details_for
+        original = ca_pricing._details_for
 
         def counting(*args, **kwargs):
             seen.append(1)
             return original(*args, **kwargs)
 
-        wb_pricing._details_for = counting
+        ca_pricing._details_for = counting
         try:
             page = P.recent_usage(limit=100)
         finally:
-            wb_pricing._details_for = original
+            ca_pricing._details_for = original
         # 逐行展示：每一页行都调用一次明细，包括没价的行（整组 None）。
         self.assertEqual(len(seen), len(self.rows))
         row = page["rows"][0]
@@ -221,8 +221,8 @@ class AggregateSkipsDetailsTests(AggregateHarness):
             self.assertIn(key, row)
 
     def test_a_lean_cost_carries_no_detail_keys(self):
-        full = wb_pricing.cost_for_row(dict(self.rows[0]))
-        lean = wb_pricing.cost_for_row(dict(self.rows[0]), details=False)
+        full = ca_pricing.cost_for_row(dict(self.rows[0]))
+        lean = ca_pricing.cost_for_row(dict(self.rows[0]), details=False)
         self.assertEqual(full["known"], lean["known"])
         self.assertEqual(full["cny"], lean["cny"])
         # 聚合只读 known/cny：明细专属的键一个都不该出现。
@@ -236,8 +236,8 @@ class AggregateSkipsDetailsTests(AggregateHarness):
     def test_a_disabled_lean_cost_keeps_the_flag_the_snapshot_reads(self):
         # 快照的 _fold_cost 靠 disabled 区分「没价」与「功能关着」，
         # 跳过明细之后这个标记必须原样在。
-        wb_settings.set_pricing_enabled(self.accounts, False)
-        lean = wb_pricing.cost_for_row(dict(self.rows[0]), details=False)
+        ca_settings.set_pricing_enabled(self.accounts, False)
+        lean = ca_pricing.cost_for_row(dict(self.rows[0]), details=False)
         self.assertFalse(lean["known"])
         self.assertTrue(lean.get("disabled"))
         self.assertNotIn("unit", lean)
@@ -248,14 +248,14 @@ class SwitchReadCountTests(AggregateHarness):
 
     def _counting_switch(self, value=True):
         calls = []
-        original = wb_pricing.pricing_enabled
+        original = ca_pricing.pricing_enabled
 
         def stub(*_args, **_kwargs):
             calls.append(1)
             return value
 
-        wb_pricing.pricing_enabled = stub
-        self.addCleanup(lambda: setattr(wb_pricing, "pricing_enabled", original))
+        ca_pricing.pricing_enabled = stub
+        self.addCleanup(lambda: setattr(ca_pricing, "pricing_enabled", original))
         return calls
 
     def test_a_scan_asks_the_switch_once(self):
@@ -269,30 +269,30 @@ class SwitchReadCountTests(AggregateHarness):
     def test_the_per_row_path_still_asks_per_row(self):
         calls = self._counting_switch(True)
         for row in self.rows[:5]:
-            wb_pricing.cost_for_row(dict(row))
+            ca_pricing.cost_for_row(dict(row))
         self.assertEqual(len(calls), 5, "逐行路径仍然每行都查")
         # 传了 enabled 就不再自己查：聚合侧把值带进来的形状。
         del calls[:]
-        wb_pricing.cost_for_row(dict(self.rows[0]), details=False, enabled=True)
-        wb_pricing.cost_for_row(dict(self.rows[0]), details=False, enabled=False)
+        ca_pricing.cost_for_row(dict(self.rows[0]), details=False, enabled=True)
+        ca_pricing.cost_for_row(dict(self.rows[0]), details=False, enabled=False)
         self.assertEqual(len(calls), 0)
 
     def test_a_falsy_row_does_not_consult_the_switch(self):
         # 原语义的短路：row 为空时连问都不问，行为一字不变。
         calls = self._counting_switch(True)
-        cost = wb_pricing.cost_for_row({})
+        cost = ca_pricing.cost_for_row({})
         self.assertEqual(len(calls), 0)
         self.assertFalse(cost["known"])
         self.assertNotIn("disabled", cost)
 
     def test_the_switch_value_wins_over_the_file(self):
         # enabled 是「扫描开始时的那份判定」，它比此刻的 settings.json 权威。
-        wb_settings.set_pricing_enabled(self.accounts, False)
-        priced = wb_pricing.cost_for_row(dict(self.rows[0]), details=False,
+        ca_settings.set_pricing_enabled(self.accounts, False)
+        priced = ca_pricing.cost_for_row(dict(self.rows[0]), details=False,
                                          enabled=True)
         self.assertTrue(priced["known"])
-        wb_settings.set_pricing_enabled(self.accounts, True)
-        off = wb_pricing.cost_for_row(dict(self.rows[0]), details=False,
+        ca_settings.set_pricing_enabled(self.accounts, True)
+        off = ca_pricing.cost_for_row(dict(self.rows[0]), details=False,
                                       enabled=False)
         self.assertFalse(off["known"])
         self.assertTrue(off.get("disabled"))
@@ -302,7 +302,7 @@ class SwitchReadCountTests(AggregateHarness):
         # 新值——这正是把查询提到循环外要写进注释的语义变化。
         state = {"on": True}
         calls = []
-        original = wb_pricing.pricing_enabled
+        original = ca_pricing.pricing_enabled
 
         def flaky(*_args, **_kwargs):
             calls.append(1)
@@ -310,7 +310,7 @@ class SwitchReadCountTests(AggregateHarness):
             state["on"] = False
             return value
 
-        wb_pricing.pricing_enabled = flaky
+        ca_pricing.pricing_enabled = flaky
         try:
             first = P._usage_snapshot_uncached()
             self.assertEqual(len(calls), 1)
@@ -320,9 +320,9 @@ class SwitchReadCountTests(AggregateHarness):
             self.assertEqual(second["cost_cny"], 0, "下一次扫描才看到新值")
             self.assertEqual(second.get("cost_missing"), {})
             # 逐行路径相反：同一时刻已经关掉，下一行立刻是 disabled。
-            self.assertTrue(wb_pricing.cost_for_row(dict(self.rows[0])).get("disabled"))
+            self.assertTrue(ca_pricing.cost_for_row(dict(self.rows[0])).get("disabled"))
         finally:
-            wb_pricing.pricing_enabled = original
+            ca_pricing.pricing_enabled = original
 
 
 class AggregateMatchesPerRowCostingTests(AggregateHarness):
@@ -373,7 +373,7 @@ class AggregateMatchesPerRowCostingTests(AggregateHarness):
         pills_a = accounts[ACCT_A]["window_models"]
         # +100 成功、+600 中止被整行跳过 → 只剩一条。
         row_a = self.rows[0]
-        cost_a = wb_pricing.cost_for_row(dict(row_a))
+        cost_a = ca_pricing.cost_for_row(dict(row_a))
         self.assertEqual(pills_a[MODEL_A]["requests"], 1)
         self.assertEqual(pills_a[MODEL_A]["tokens"], row_a["total_tokens"])
         self.assertAlmostEqual(pills_a[MODEL_A]["cost_cny"], cost_a["cny"],
@@ -401,7 +401,7 @@ class AggregateMatchesPerRowCostingTests(AggregateHarness):
             outcome = P.row_outcome(r)
             if outcome == "client_aborted":
                 continue
-            cost = wb_pricing.cost_for_row(dict(r))
+            cost = ca_pricing.cost_for_row(dict(r))
             if cost["known"]:
                 expected_cost += cost["cny"]
             else:
@@ -512,7 +512,7 @@ class RowResultMemoTests(AggregateHarness):
     def test_each_row_is_day_keyed_and_priced_once_per_scan_batch(self):
         counts = {"strftime": 0, "cost": 0}
         real_strftime = P.time.strftime
-        real_cost = wb_pricing.cost_for_row
+        real_cost = ca_pricing.cost_for_row
 
         def counted_strftime(fmt, *args, **kwargs):
             if fmt == "%Y-%m-%d":        # _local_day_key 的格式
@@ -524,7 +524,7 @@ class RowResultMemoTests(AggregateHarness):
             return real_cost(row, details=details, enabled=enabled)
 
         P.time.strftime = counted_strftime
-        wb_pricing.cost_for_row = counted_cost
+        ca_pricing.cost_for_row = counted_cost
         try:
             self._memo_on()
             self._cold_views()
@@ -538,7 +538,7 @@ class RowResultMemoTests(AggregateHarness):
             plain = dict(counts)
         finally:
             P.time.strftime = real_strftime
-            wb_pricing.cost_for_row = real_cost
+            ca_pricing.cost_for_row = real_cost
 
         n = len(self.rows)
         # 第一遍：日键每行一次（+ 剪枝线那几次），算价每行一次（analytics 对
@@ -586,7 +586,7 @@ class RowResultMemoTests(AggregateHarness):
         """
         first = P._usage_snapshot_uncached()
         self.assertGreater(first["cost_cny"], 0)
-        path = wb_pricing.policies_path()
+        path = ca_pricing.policies_path()
         lines = []
         with open(path, encoding="utf-8") as fh:
             for line in fh:
@@ -604,7 +604,7 @@ class RowResultMemoTests(AggregateHarness):
                 fh.write(line + "\n")
         # 路径指纹有个 1 秒 TTL（本进程之外写下的变更最迟 1 秒内可见）：
         # 测试不等这一秒，直接把它清掉，语义与「等过了 TTL」一致。
-        wb_pricing._file_key_cache.clear()
+        ca_pricing._file_key_cache.clear()
         second = P._usage_snapshot_uncached()
         self.assertGreater(second["cost_cny"], first["cost_cny"])
         # 表里那条旧价必须已经作废：再折一遍仍是新价。
@@ -653,7 +653,7 @@ class RowResultMemoTests(AggregateHarness):
         off_pricing = P._pricing_inputs(False)
         for r in self.rows:
             for enabled, inputs in ((True, pricing), (False, off_pricing)):
-                want = wb_pricing.cost_for_row(dict(r), details=False,
+                want = ca_pricing.cost_for_row(dict(r), details=False,
                                                enabled=enabled)
                 miss = P._row_cost(dict(r), inputs, enabled)
                 hit = P._row_cost(dict(r), inputs, enabled)
@@ -667,16 +667,16 @@ class RowResultMemoTests(AggregateHarness):
         for empty in (None, {}, []):
             self.assertEqual(
                 P._row_cost(empty, pricing, True),
-                wb_pricing.cost_for_row(empty, details=False, enabled=True))
+                ca_pricing.cost_for_row(empty, details=False, enabled=True))
         # 字段不可哈希（坏行）：两边都从同一处抛 TypeError，记忆不抢先。
         bad = {"model": ["x"], "at": T0}
         with self.assertRaises(TypeError):
             P._row_cost(bad, pricing, True)
         with self.assertRaises(TypeError):
-            wb_pricing.cost_for_row(bad, details=False, enabled=True)
+            ca_pricing.cost_for_row(bad, details=False, enabled=True)
         # 价表读不出来（_pricing_inputs 返回 None）时不进表，照旧现算。
         self.assertEqual(P._row_cost(dict(self.rows[0]), None, True),
-                         wb_pricing.cost_for_row(dict(self.rows[0]),
+                         ca_pricing.cost_for_row(dict(self.rows[0]),
                                                  details=False, enabled=True))
 
 

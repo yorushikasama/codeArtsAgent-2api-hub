@@ -58,9 +58,9 @@ ACCOUNTS_DIR = os.environ["ACCOUNTS_DIR"] = os.path.join(_TMP, "accounts")
 os.environ["WB_PROXY_USAGE_DIR"] = _TMP
 os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
-import wb_accounts
-import wb_settings
-import wb_proxy as P
+import ca_accounts
+import ca_settings
+import ca_proxy as P
 
 MODEL = "deepseek-v4.1-flash"
 HOUR = 3600
@@ -213,7 +213,7 @@ def cache_env(min_bytes=None, min_seconds=None):
 
 
 def account(uid, nickname="", realm="cn"):
-    return wb_accounts.Account({"uid": uid, "nickname": nickname,
+    return ca_accounts.Account({"uid": uid, "nickname": nickname,
                                 "accessToken": "t", "realm": realm})
 
 
@@ -840,13 +840,13 @@ class RemainingUsageTests(unittest.TestCase):
             # 没配限额：一次折叠都不该发生，也不该碰池子。
             for key in ("daily_token_limit", "daily_credit_limit",
                         "model_daily_token_limit"):
-                wb_settings.set_limit(ACCOUNTS_DIR, key, "global", 0)
+                ca_settings.set_limit(ACCOUNTS_DIR, key, "global", 0)
             self.assertEqual(P.apply_daily_guards(), 0)
             self.assertEqual(stats_calls["n"], 0)
             self.assertEqual(calls, [])
 
-            wb_settings.set_limit(ACCOUNTS_DIR, "daily_token_limit", "global", 1000)
-            wb_settings.set_limit(ACCOUNTS_DIR, "model_daily_token_limit", "global", 50)
+            ca_settings.set_limit(ACCOUNTS_DIR, "daily_token_limit", "global", 1000)
+            ca_settings.set_limit(ACCOUNTS_DIR, "model_daily_token_limit", "global", 50)
             write_log([usage_row(time.time() - HOUR, "acct-A", 700)])
             self.assertEqual(P.apply_daily_guards(), 2)
             self.assertEqual(stats_calls["n"], 1, "三份限额共用一次折叠")
@@ -863,7 +863,7 @@ class RemainingUsageTests(unittest.TestCase):
                             "读不到计数时必须传 None（未知 ≠ 0）")
 
             # 真池再走一遍：桩的返回形状写错（比如返回 1）时这条会红。
-            real_pool = wb_accounts.AccountPool(ACCOUNTS_DIR, log=None)
+            real_pool = ca_accounts.AccountPool(ACCOUNTS_DIR, log=None)
             real_pool.accounts = [account("acct-A")]
             P.POOL = real_pool
             self.assertEqual(P.apply_daily_guards(refresh=True), 2)
@@ -871,24 +871,24 @@ class RemainingUsageTests(unittest.TestCase):
 
             # 一次读取多键：逐值与单键入口一致，且只读一次限额表。
             reads = {"n": 0}
-            real_limits_data = wb_settings.limits_data
+            real_limits_data = ca_settings.limits_data
 
             def counting_limits_data(directory):
                 reads["n"] += 1
                 return real_limits_data(directory)
 
-            wb_settings.limits_data = counting_limits_data
+            ca_settings.limits_data = counting_limits_data
             try:
-                many = wb_settings.limit_values_many(
+                many = ca_settings.limit_values_many(
                     ACCOUNTS_DIR, ("daily_token_limit", "daily_credit_limit",
                                    "model_daily_token_limit"))
                 self.assertEqual(reads["n"], 1, "三份限额共用一次读取")
             finally:
-                wb_settings.limits_data = real_limits_data
+                ca_settings.limits_data = real_limits_data
             for key in ("daily_token_limit", "daily_credit_limit",
                         "model_daily_token_limit"):
                 self.assertEqual(many[key],
-                                 wb_settings.limit_values(ACCOUNTS_DIR, key))
+                                 ca_settings.limit_values(ACCOUNTS_DIR, key))
         finally:
             P.POOL = old_pool
             P.ACCOUNTS_DIR = old_dir
@@ -896,7 +896,7 @@ class RemainingUsageTests(unittest.TestCase):
             for key in ("daily_token_limit", "daily_credit_limit",
                         "model_daily_token_limit"):
                 try:
-                    wb_settings.set_limit(ACCOUNTS_DIR, key, "global", 0)
+                    ca_settings.set_limit(ACCOUNTS_DIR, key, "global", 0)
                 except Exception:
                     pass
 
@@ -952,11 +952,11 @@ class RemainingUsageTests(unittest.TestCase):
         429 行（2026-10-10 真机实测），跨天归档则会写错目录，recent 的行偏移
         索引同样会写错目录（换目录后每次冷启动都要重扫一遍日志）。
         """
-        import wb_activity
+        import ca_activity
         directory = tempfile.mkdtemp(prefix="wb-usage-dir-")
         old = (P.USAGE_DIR, P.USAGE_LOG, P.LIMIT_EVENTS_FILE,
                P.ESTIMATE_DAILY_FILE, P.RECENT_INDEX_FILE)
-        old_activity = wb_activity.data_dir()
+        old_activity = ca_activity.data_dir()
         try:
             P._apply_cli_overrides(types.SimpleNamespace(
                 lan=False, host="127.0.0.1", user_agent=None, usage_dir=directory))
@@ -976,7 +976,7 @@ class RemainingUsageTests(unittest.TestCase):
         finally:
             P.USAGE_DIR, P.USAGE_LOG, P.LIMIT_EVENTS_FILE, \
                 P.ESTIMATE_DAILY_FILE, P.RECENT_INDEX_FILE = old
-            wb_activity.set_data_dir(old_activity)
+            ca_activity.set_data_dir(old_activity)
             # 缓存里还留着临时目录的戳，还原后立刻失效掉。
             P._estimate_daily_cache["entry"] = (
                 (P.ESTIMATE_DAILY_FILE, None, None), {})
@@ -1316,27 +1316,27 @@ class RemainingPrioritySettingTests(unittest.TestCase):
 
     def test_default_is_off(self):
         with tempfile.TemporaryDirectory(prefix="remaining-priority-setting-") as directory:
-            self.assertFalse(wb_settings.remaining_priority_enabled(directory))
+            self.assertFalse(ca_settings.remaining_priority_enabled(directory))
 
     def test_round_trip(self):
         with tempfile.TemporaryDirectory(prefix="remaining-priority-setting-") as directory:
-            self.assertTrue(wb_settings.set_remaining_priority_enabled(directory, True))
-            self.assertTrue(wb_settings.remaining_priority_enabled(directory))
-            self.assertFalse(wb_settings.set_remaining_priority_enabled(directory, False))
-            self.assertFalse(wb_settings.remaining_priority_enabled(directory))
+            self.assertTrue(ca_settings.set_remaining_priority_enabled(directory, True))
+            self.assertTrue(ca_settings.remaining_priority_enabled(directory))
+            self.assertFalse(ca_settings.set_remaining_priority_enabled(directory, False))
+            self.assertFalse(ca_settings.remaining_priority_enabled(directory))
 
     def test_a_hand_edited_string_does_not_read_as_enabled(self):
         with tempfile.TemporaryDirectory(prefix="remaining-priority-setting-") as directory:
-            data = wb_settings.load(directory)
-            data[wb_settings.REMAINING_PRIORITY_ENABLED_KEY] = "true"
-            wb_settings.save(directory, data)
-            self.assertFalse(wb_settings.remaining_priority_enabled(directory))
+            data = ca_settings.load(directory)
+            data[ca_settings.REMAINING_PRIORITY_ENABLED_KEY] = "true"
+            ca_settings.save(directory, data)
+            self.assertFalse(ca_settings.remaining_priority_enabled(directory))
 
 
 class RemainingPriorityTests(unittest.TestCase):
     """优先调度：估计剩余越少的 (账号, 模型) 权重越高、先被交出。
 
-    权重表由 wb_proxy 从剩余估算载荷算出（_remaining_schedule_weight /
+    权重表由 ca_proxy 从剩余估算载荷算出（_remaining_schedule_weight /
     remaining_schedule_weights），池只消费（apply_remaining_weights 推表、
     _pick_remaining_first 加权轮询）。这里同时钉住：分档边界、无预算样本 /
     剩余为 0 不加权、开关关（表为空）时与纯轮询逐字节一致、冷却或被排除的
@@ -1349,7 +1349,7 @@ class RemainingPriorityTests(unittest.TestCase):
 
     def _pool(self, accounts, weights=None):
         directory = tempfile.mkdtemp(prefix="remaining-priority-")
-        pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+        pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
         pool.accounts = accounts
         if weights is not None:
             pool.apply_remaining_weights(weights)

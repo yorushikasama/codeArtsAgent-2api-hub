@@ -23,8 +23,8 @@ from collections import Counter
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts
-import wb_settings
+import ca_accounts
+import ca_settings
 
 
 def make_account(uid, realm="cn", credits=None, **extra):
@@ -32,7 +32,7 @@ def make_account(uid, realm="cn", credits=None, **extra):
     if credits is not None:
         data["credits"] = credits
     data.update(extra)
-    return wb_accounts.Account(data)
+    return ca_accounts.Account(data)
 
 
 def credits(*days, package_code="package", remain=100, no_expiry=False):
@@ -87,48 +87,48 @@ def built_package(cycle_end, deduction_end):
 class ExpiringWindowSettingTests(unittest.TestCase):
     def test_default_is_seven_days(self):
         with tempfile.TemporaryDirectory(prefix="expiry-setting-") as directory:
-            self.assertEqual(wb_settings.expiring_window_days(directory), 7)
-            snapshot = wb_settings.limits_snapshot(directory)
+            self.assertEqual(ca_settings.expiring_window_days(directory), 7)
+            snapshot = ca_settings.limits_snapshot(directory)
             self.assertEqual(snapshot["expiring_window_days"]["global"], 7)
 
     def test_round_trip_and_explicit_off_survives_reread(self):
         with tempfile.TemporaryDirectory(prefix="expiry-setting-") as directory:
-            self.assertEqual(wb_settings.set_expiring_window_days(directory, 0), 0)
+            self.assertEqual(ca_settings.set_expiring_window_days(directory, 0), 0)
             # 显式写 0 表示「关」，重读时不能被默认值 7 顶回来。
-            self.assertEqual(wb_settings.expiring_window_days(directory), 0)
-            self.assertEqual(wb_settings.set_expiring_window_days(directory, 3), 3)
-            self.assertEqual(wb_settings.expiring_window_days(directory), 3)
+            self.assertEqual(ca_settings.expiring_window_days(directory), 0)
+            self.assertEqual(ca_settings.set_expiring_window_days(directory, 3), 3)
+            self.assertEqual(ca_settings.expiring_window_days(directory), 3)
 
     def test_other_guards_still_default_to_off(self):
         with tempfile.TemporaryDirectory(prefix="expiry-setting-") as directory:
-            self.assertEqual(wb_settings.reserve_credits(directory), 0)
-            self.assertEqual(wb_settings.daily_credit_limit(directory), 0)
-            self.assertEqual(wb_settings.model_daily_token_limit(directory), 0)
+            self.assertEqual(ca_settings.reserve_credits(directory), 0)
+            self.assertEqual(ca_settings.daily_credit_limit(directory), 0)
+            self.assertEqual(ca_settings.model_daily_token_limit(directory), 0)
 
 
 class CreditsRefreshSettingTests(unittest.TestCase):
     def test_default_is_twelve_hours(self):
         with tempfile.TemporaryDirectory(prefix="refresh-setting-") as directory:
-            self.assertEqual(wb_settings.credits_refresh_hours(directory), 12.0)
+            self.assertEqual(ca_settings.credits_refresh_hours(directory), 12.0)
 
     def test_round_trip(self):
         with tempfile.TemporaryDirectory(prefix="refresh-setting-") as directory:
-            self.assertEqual(wb_settings.set_credits_refresh_hours(directory, 24), 24.0)
-            self.assertEqual(wb_settings.credits_refresh_hours(directory), 24.0)
-            self.assertEqual(wb_settings.set_credits_refresh_hours(directory, 0), 0.0)
-            self.assertEqual(wb_settings.credits_refresh_hours(directory), 0.0)
+            self.assertEqual(ca_settings.set_credits_refresh_hours(directory, 24), 24.0)
+            self.assertEqual(ca_settings.credits_refresh_hours(directory), 24.0)
+            self.assertEqual(ca_settings.set_credits_refresh_hours(directory, 0), 0.0)
+            self.assertEqual(ca_settings.credits_refresh_hours(directory), 0.0)
 
     def test_junk_and_negative_fall_back_to_the_default(self):
         with tempfile.TemporaryDirectory(prefix="refresh-setting-") as directory:
-            data = wb_settings.load(directory)
-            data[wb_settings.CREDITS_REFRESH_HOURS_KEY] = "not a number"
-            wb_settings.save(directory, data)
-            self.assertEqual(wb_settings.credits_refresh_hours(directory), 12.0)
+            data = ca_settings.load(directory)
+            data[ca_settings.CREDITS_REFRESH_HOURS_KEY] = "not a number"
+            ca_settings.save(directory, data)
+            self.assertEqual(ca_settings.credits_refresh_hours(directory), 12.0)
 
-            data = wb_settings.load(directory)
-            data[wb_settings.CREDITS_REFRESH_HOURS_KEY] = -5
-            wb_settings.save(directory, data)
-            self.assertEqual(wb_settings.credits_refresh_hours(directory), 12.0)
+            data = ca_settings.load(directory)
+            data[ca_settings.CREDITS_REFRESH_HOURS_KEY] = -5
+            ca_settings.save(directory, data)
+            self.assertEqual(ca_settings.credits_refresh_hours(directory), 12.0)
 
 
 class ExpirySemanticsTests(unittest.TestCase):
@@ -224,7 +224,7 @@ class InWindowTests(unittest.TestCase):
 class PickPrefersExpiringTests(unittest.TestCase):
     def _pool(self, accounts, window=7):
         directory = tempfile.mkdtemp(prefix="expiry-pool-")
-        pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+        pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
         pool.accounts = accounts
         pool.apply_expiring_window({"global": window, "intl": window, "cn": window})
         return pool
@@ -288,7 +288,7 @@ class LoadSpreadTests(unittest.TestCase):
 
     def _pool(self, accounts, window=7):
         directory = tempfile.mkdtemp(prefix="expiry-spread-")
-        pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+        pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
         pool.accounts = accounts
         pool.apply_expiring_window({"global": window, "intl": window, "cn": window})
         return pool
@@ -315,7 +315,7 @@ class LoadSpreadTests(unittest.TestCase):
 class SessionAffinityTests(unittest.TestCase):
     def _pool(self, accounts):
         directory = tempfile.mkdtemp(prefix="expiry-affinity-")
-        pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+        pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
         pool.accounts = accounts
         pool.apply_expiring_window({"global": 7, "intl": 7, "cn": 7})
         return pool
@@ -341,19 +341,19 @@ class SessionAffinityTests(unittest.TestCase):
 class ApplyWindowTests(unittest.TestCase):
     def test_pool_copies_the_setting_onto_every_account(self):
         with tempfile.TemporaryDirectory(prefix="expiry-apply-") as directory:
-            wb_settings.set_expiring_window_days(directory, 3)
-            pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+            ca_settings.set_expiring_window_days(directory, 3)
+            pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
             pool.accounts = [make_account("a1"), make_account("a2", realm="intl")]
             pool.apply_expiring_window()
             self.assertEqual([a.expiring_window_days for a in pool.accounts], [3, 3])
 
     def test_load_applies_the_window(self):
         with tempfile.TemporaryDirectory(prefix="expiry-load-") as directory:
-            wb_settings.set_expiring_window_days(directory, 5)
+            ca_settings.set_expiring_window_days(directory, 5)
             account = make_account("loaded", credits=credits(4))
             account.path = os.path.join(directory, "loaded.json")
             account.save(directory)
-            pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+            pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
             pool.load()
             self.assertEqual(pool.accounts[0].expiring_window_days, 5)
             self.assertTrue(pool.accounts[0].in_expiring_window())
@@ -362,8 +362,8 @@ class ApplyWindowTests(unittest.TestCase):
 class CreditsRefresherTests(unittest.TestCase):
     def _pool_with(self, accounts, hours=6):
         directory = tempfile.mkdtemp(prefix="expiry-refresh-")
-        wb_settings.set_credits_refresh_hours(directory, hours)
-        pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+        ca_settings.set_credits_refresh_hours(directory, hours)
+        pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
         pool.accounts = accounts
         return directory, pool
 
@@ -382,19 +382,19 @@ class CreditsRefresherTests(unittest.TestCase):
         fresh = self._account("fresh", 60)
         old = self._account("old", 7 * 3600)
         _, pool = self._pool_with([fresh, old])
-        refresher = wb_accounts.CreditsRefresher(pool)
+        refresher = ca_accounts.CreditsRefresher(pool)
         self.assertEqual(refresher.stalest_account(refresher.ttl_seconds()).uid, "old")
 
     def test_never_fetched_counts_as_the_oldest(self):
         fetched = self._account("fetched", 7 * 3600)
         never = self._account("never", None)
         _, pool = self._pool_with([fetched, never])
-        refresher = wb_accounts.CreditsRefresher(pool)
+        refresher = ca_accounts.CreditsRefresher(pool)
         self.assertEqual(refresher.stalest_account(refresher.ttl_seconds()).uid, "never")
 
     def test_nothing_is_due_inside_the_ttl(self):
         _, pool = self._pool_with([self._account("fresh", 60)])
-        refresher = wb_accounts.CreditsRefresher(pool)
+        refresher = ca_accounts.CreditsRefresher(pool)
         self.assertIsNone(refresher.stalest_account(refresher.ttl_seconds()))
         self.assertIsNone(refresher.refresh_once())
 
@@ -403,14 +403,14 @@ class CreditsRefresherTests(unittest.TestCase):
         account = self._account("off", None,
                                 fetch=lambda: called.append(1) or {"ok": True})
         _, pool = self._pool_with([account], hours=0)
-        refresher = wb_accounts.CreditsRefresher(pool)
+        refresher = ca_accounts.CreditsRefresher(pool)
         self.assertIsNone(refresher.refresh_once())
         self.assertEqual(called, [])
 
     def test_a_successful_refresh_records_the_uid(self):
         account = self._account("ok", None, fetch=lambda: {"ok": True})
         _, pool = self._pool_with([account])
-        refresher = wb_accounts.CreditsRefresher(pool)
+        refresher = ca_accounts.CreditsRefresher(pool)
         self.assertEqual(refresher.refresh_once(), "ok")
         self.assertEqual(refresher.last_uid, "ok")
         self.assertIsNone(refresher.last_error)
@@ -419,7 +419,7 @@ class CreditsRefresherTests(unittest.TestCase):
         account = self._account("bad", None,
                                 fetch=lambda: {"ok": False, "error": "boom"})
         _, pool = self._pool_with([account])
-        refresher = wb_accounts.CreditsRefresher(pool)
+        refresher = ca_accounts.CreditsRefresher(pool)
         self.assertIsNone(refresher.refresh_once())
         self.assertEqual(refresher.last_error, "boom")
         # 失败后一小时内不再重试同一个账号，免得每个 tick 都打上游。
@@ -429,7 +429,7 @@ class CreditsRefresherTests(unittest.TestCase):
         account = self._account("off-account", None)
         account.enabled = False
         _, pool = self._pool_with([account])
-        refresher = wb_accounts.CreditsRefresher(pool)
+        refresher = ca_accounts.CreditsRefresher(pool)
         self.assertIsNone(refresher.stalest_account(refresher.ttl_seconds()))
 
 
@@ -438,8 +438,8 @@ class RefreshCadenceTests(unittest.TestCase):
 
     def _pool(self, count=28, hours=12, age_hours=12):
         directory = tempfile.mkdtemp(prefix="expiry-cadence-")
-        wb_settings.set_credits_refresh_hours(directory, hours)
-        pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+        ca_settings.set_credits_refresh_hours(directory, hours)
+        pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
         base = time.time() - age_hours * 3600
         accounts = []
         for index in range(count):
@@ -463,17 +463,17 @@ class RefreshCadenceTests(unittest.TestCase):
 
     def test_the_tick_is_half_an_hour(self):
         pool, _ = self._pool(count=1)
-        refresher = wb_accounts.CreditsRefresher(pool)
+        refresher = ca_accounts.CreditsRefresher(pool)
         self.assertEqual(refresher.interval_seconds, 1800)
 
     def test_a_broken_account_is_parked_for_hours_not_minutes(self):
         pool, _ = self._pool(count=1)
-        refresher = wb_accounts.CreditsRefresher(pool)
+        refresher = ca_accounts.CreditsRefresher(pool)
         self.assertEqual(refresher._failed_cooldown, 6 * 3600)
 
     def test_a_day_of_ticks_stays_within_the_request_budget(self):
         pool, accounts = self._pool(count=28)
-        refresher = wb_accounts.CreditsRefresher(pool)
+        refresher = ca_accounts.CreditsRefresher(pool)
         clock = [time.time()]
         calls = []
         self._wire(accounts, clock, calls)
@@ -492,7 +492,7 @@ class RefreshCadenceTests(unittest.TestCase):
 
     def test_a_small_pool_is_not_refreshed_more_often_than_the_ttl(self):
         pool, accounts = self._pool(count=3, hours=12, age_hours=12)
-        refresher = wb_accounts.CreditsRefresher(pool)
+        refresher = ca_accounts.CreditsRefresher(pool)
         clock = [time.time()]
         calls = []
         self._wire(accounts, clock, calls)
@@ -508,7 +508,7 @@ class RefreshCadenceTests(unittest.TestCase):
 
     def test_nothing_is_fetched_before_the_ttl_elapses(self):
         pool, accounts = self._pool(count=4, hours=12, age_hours=0)
-        refresher = wb_accounts.CreditsRefresher(pool)
+        refresher = ca_accounts.CreditsRefresher(pool)
         clock = [time.time()]
         calls = []
         self._wire(accounts, clock, calls)
@@ -525,7 +525,7 @@ class ConcurrencyTests(unittest.TestCase):
 
     def _pool(self, accounts, window=7):
         directory = tempfile.mkdtemp(prefix="expiry-concurrent-")
-        pool = wb_accounts.AccountPool(directory, log=lambda _m: None)
+        pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
         pool.accounts = accounts
         pool.apply_expiring_window({"global": window, "intl": window, "cn": window})
         return pool

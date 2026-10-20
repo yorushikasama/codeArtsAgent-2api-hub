@@ -47,12 +47,12 @@ os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 os.environ["WB_USAGE_CACHE"] = "0"          # checkpoint 与本套件无关
 os.environ["WB_COUNT_TTL"] = "0"            # 老路的页数标签每次现算
 
-import wb_proxy as P          # noqa: E402
-import wb_pricing             # noqa: E402
+import ca_proxy as P          # noqa: E402
+import ca_pricing             # noqa: E402
 
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-wb_pricing.set_data_dir(USAGE_DIR)
-wb_pricing.set_settings_dir(ACCOUNTS_DIR)
+ca_pricing.set_data_dir(USAGE_DIR)
+ca_pricing.set_settings_dir(ACCOUNTS_DIR)
 
 USAGE_LOG = P.USAGE_LOG
 INDEX = P.RECENT_INDEX_FILE
@@ -339,7 +339,7 @@ for _key, _kw in CASES:
 RUNNER = r'''
 import json, os, sys
 sys.path.insert(0, __ROOT__)
-import wb_proxy as P
+import ca_proxy as P
 out = {}
 for key, kw in __CASES__:
     out[key] = json.dumps(P.recent_usage(**kw), ensure_ascii=False)
@@ -602,8 +602,8 @@ check("池没就绪：索引没有落盘（写下去别的进程也不敢用）"
       not os.path.exists(INDEX), os.listdir(USAGE_DIR))
 
 # 池与磁盘一致：realm 页可以用索引
-import wb_accounts            # noqa: E402
-P.POOL = wb_accounts.AccountPool(ACCOUNTS_DIR)
+import ca_accounts            # noqa: E402
+P.POOL = ca_accounts.AccountPool(ACCOUNTS_DIR)
 P.POOL.load()
 got, used = call_page(realm="cn", use_index=True, fresh=True)
 want = page(use_index=False, realm="cn")
@@ -621,7 +621,7 @@ want = page(use_index=False, realm="cn")
 check("账号文件改了：realm 页与老路一致", got == want, first_diff(want, got))
 
 # 磁盘归属改了、池也重载了：索引整份重折（老行的归属跟着变），结果仍一致
-P.POOL = wb_accounts.AccountPool(ACCOUNTS_DIR)
+P.POOL = ca_accounts.AccountPool(ACCOUNTS_DIR)
 P.POOL.load()
 got, used = call_page(realm="cn", use_index=True, fresh=True)
 want = page(use_index=False, realm="cn")

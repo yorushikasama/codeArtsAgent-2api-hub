@@ -1,11 +1,11 @@
-# WorkBuddy2API-Hub Docker Compose
+# CodeArts2API-Hub Docker Compose
 # 部署：docker compose up -d
 # 更新：docker compose pull && docker compose up -d
 services:
-  wb-proxy:
+  codearts-hub:
     # 追最新稳定版用 :latest；想固定版本可换成具体版本号（如 :v1.6.11）
-    image: ghcr.io/ardeyouxipianyi/workbuddy2api-hub:latest
-    container_name: wb-proxy
+    image: ghcr.io/yorushikasama/codeartsagent-2api-hub:latest
+    container_name: codearts-hub
     restart: unless-stopped
     # Defaults to root (0:0), i.e. the historical behaviour. To run as your own
     # host user instead, set PUID/PGID (e.g. PUID=$(id -u) PGID=$(id -g)
@@ -27,11 +27,11 @@ services:
       - ./usage:/app/usage
 
   # 可选：Watchtower 自动静默更新服务（取消注释即可开启）
-  # 每天自动检查镜像更新，拉取新版本并优雅重启 wb-proxy
+  # 每天自动检查镜像更新，拉取新版本并优雅重启 codearts-hub
   # watchtower:
   #   image: containrrr/watchtower:latest
-  #   container_name: wb-proxy-watchtower
+  #   container_name: codearts-hub-watchtower
   #   restart: unless-stopped
   #   volumes:
   #     - /var/run/docker.sock:/var/run/docker.sock
-  #   command: --interval 86400 --cleanup wb-proxy
+  #   command: --interval 86400 --cleanup codearts-hub

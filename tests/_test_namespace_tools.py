@@ -16,7 +16,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # every run left those directories behind in the checkout.
 _TMP = isolated_data_dirs("wb-namespace-tools-")
 
-import wb_proxy as P
+import ca_proxy as P
 
 PASS = FAIL = 0
 
@@ -109,23 +109,23 @@ check("namespace map rides along for the return trip",
 # The gateway used to turn this declaration into a function of its own and run
 # it locally, then stopped standing in for it because the upstream has no
  # server-side search tool at all; standing in for it again is opt-in through
- # the panel switch (wb_settings.local_web_tools), so this case follows it.
-_orig_local_web = P.wb_settings.local_web_tools
-P.wb_settings.local_web_tools = lambda accounts_dir: False
+ # the panel switch (ca_settings.local_web_tools), so this case follows it.
+_orig_local_web = P.ca_settings.local_web_tools
+P.ca_settings.local_web_tools = lambda accounts_dir: False
 try:
     chat_off = P.responses_to_chat({"model": "m", "input": "hi",
                                    "tools": [CUSTOM_TOOL, WEB_TOOL, FUNC_TOOL] + NAMESPACES})
 finally:
-    P.wb_settings.local_web_tools = _orig_local_web
+    P.ca_settings.local_web_tools = _orig_local_web
 tools_off = chat_off["tools"]
 check("with the switch off the declaration is passed through untouched",
       any(t.get("type") == "web_search" for t in tools_off), tools_off)
-P.wb_settings.local_web_tools = lambda accounts_dir: True
+P.ca_settings.local_web_tools = lambda accounts_dir: True
 try:
     chat_on = P.responses_to_chat({"model": "m", "input": "hi",
                                   "tools": [CUSTOM_TOOL, WEB_TOOL, FUNC_TOOL] + NAMESPACES})
 finally:
-    P.wb_settings.local_web_tools = _orig_local_web
+    P.ca_settings.local_web_tools = _orig_local_web
 tools_on = chat_on["tools"]
 check("with the switch on it is replaced by the gateway's own function",
       any(t.get("name") == "web_search" for t in tools_on)

@@ -23,10 +23,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 _TMP = isolated_data_dirs("wb-activity-")
 
-import wb_accounts
-import wb_activity
-import wb_proxy
-import wb_scheduler
+import ca_accounts
+import ca_activity
+import ca_proxy
+import ca_scheduler
 
 SAFE_FIELDS = {"ts", "uid", "nickname", "realm", "task", "trigger", "ok", "message"}
 
@@ -72,16 +72,16 @@ class IsolatedCase(unittest.TestCase):
     def setUp(self):
         self.dir = tempfile.TemporaryDirectory(prefix="wb-activity-case-")
         self.addCleanup(self.dir.cleanup)
-        wb_activity.set_data_dir(self.dir.name)
-        self.addCleanup(wb_activity.set_data_dir, None)
+        ca_activity.set_data_dir(self.dir.name)
+        self.addCleanup(ca_activity.set_data_dir, None)
 
     def rows(self):
         """按写入顺序读出记录。"""
-        return wb_activity.load(usage_dir=self.dir.name)
+        return ca_activity.load(usage_dir=self.dir.name)
 
     def query(self, **kwargs):
         """读取 API 的口径（数据目录固定在本用例的临时目录）。"""
-        return wb_activity.query(usage_dir=self.dir.name, **kwargs)
+        return ca_activity.query(usage_dir=self.dir.name, **kwargs)
 
     def messages(self, **kwargs):
         return [row["message"] for row in self.query(**kwargs)["rows"]]
@@ -95,13 +95,13 @@ class IsolatedCase(unittest.TestCase):
         data = {"uid": uid, "nickname": "nick-" + uid, "realm": realm,
                 "accessToken": "dummy-token", "expiresAt": 0}
         data.update(extra)
-        return wb_accounts.Account(data)
+        return ca_accounts.Account(data)
 
 
 class PersistenceTests(IsolatedCase):
     def test_one_attempt_is_one_row_of_allowlisted_fields(self):
-        row = wb_activity.record(uid="u1", nickname="Nick", realm="cn",
-                                 task=wb_activity.TASK_CHECKIN, trigger="manual",
+        row = ca_activity.record(uid="u1", nickname="Nick", realm="cn",
+                                 task=ca_activity.TASK_CHECKIN, trigger="manual",
                                  ok=True, message="签到成功")
         self.assertIsNotNone(row)
         self.assertEqual(set(row), SAFE_FIELDS)
@@ -115,16 +115,16 @@ class PersistenceTests(IsolatedCase):
                          r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}$")
 
     def test_an_unknown_trigger_is_kept_as_unknown_not_dropped(self):
-        row = wb_activity.record(uid="u1", nickname="Nick", realm="cn",
+        row = ca_activity.record(uid="u1", nickname="Nick", realm="cn",
                                  task="checkin", trigger="something-new",
                                  ok=True, message="ok")
         self.assertEqual(row["trigger"], "unknown")
 
     def test_malformed_and_truncated_lines_are_skipped(self):
-        good = {"ts": wb_activity._timestamp(), "uid": "good", "nickname": "n",
+        good = {"ts": ca_activity._timestamp(), "uid": "good", "nickname": "n",
                 "realm": "cn", "task": "checkin", "trigger": "manual",
                 "ok": True, "message": "ok"}
-        with open(wb_activity.history_path(), "a", encoding="utf-8") as fh:
+        with open(ca_activity.history_path(), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(good, ensure_ascii=False) + "\n")
             fh.write("{not json at all\n")
             fh.write('{"ts": "2026-01-01T00:00:00+08:00", "uid": "trunc\n')
@@ -135,13 +135,13 @@ class PersistenceTests(IsolatedCase):
     def test_restart_keeps_the_history(self):
         # 用环境变量指定的目录（也就是进程重启后模块自己会选的那个），再整模块
         # 重新加载一次：历史只可能在磁盘上，内存里没有任何东西可依赖。
-        wb_activity.set_data_dir(None)
-        path = wb_activity.history_path()
+        ca_activity.set_data_dir(None)
+        path = ca_activity.history_path()
         self.assertTrue(os.path.abspath(path).startswith(os.path.abspath(_TMP.name)),
                         "这个用例必须写在临时目录里")
-        wb_activity.record(uid="u1", nickname="Nick", realm="cn", task="checkin",
+        ca_activity.record(uid="u1", nickname="Nick", realm="cn", task="checkin",
                            trigger="scheduler", ok=True, message="签到成功")
-        module = importlib.reload(wb_activity)
+        module = importlib.reload(ca_activity)
         self.assertEqual([r["uid"] for r in module.load()], ["u1"])
 
     def test_retention_caps_age_and_records(self):
@@ -157,10 +157,10 @@ class PersistenceTests(IsolatedCase):
             lines.append({"ts": fresh, "uid": "fresh-%d" % i, "nickname": "n",
                           "realm": "cn", "task": "checkin",
                           "trigger": "scheduler", "ok": True, "message": "fresh"})
-        with open(wb_activity.history_path(), "w", encoding="utf-8") as fh:
+        with open(ca_activity.history_path(), "w", encoding="utf-8") as fh:
             for line in lines:
                 fh.write(json.dumps(line, ensure_ascii=False) + "\n")
-        kept, dropped = wb_activity.compact(usage_dir=self.dir.name, max_records=4,
+        kept, dropped = ca_activity.compact(usage_dir=self.dir.name, max_records=4,
                                             max_age_days=90)
         self.assertEqual((kept, dropped), (4, 4))
         remaining = self.rows()
@@ -169,11 +169,11 @@ class PersistenceTests(IsolatedCase):
 
     def test_compaction_runs_on_size_not_on_every_append(self):
         # 时间节奏在这里关掉（区间调到很大），单独验大小阈值那条触发。
-        with mock.patch.object(wb_activity, "COMPACT_TRIGGER_BYTES", 300), \
-                mock.patch.object(wb_activity, "COMPACT_INTERVAL_SECONDS", 10 ** 9), \
-                mock.patch.object(wb_activity, "MAX_RECORDS", 2):
+        with mock.patch.object(ca_activity, "COMPACT_TRIGGER_BYTES", 300), \
+                mock.patch.object(ca_activity, "COMPACT_INTERVAL_SECONDS", 10 ** 9), \
+                mock.patch.object(ca_activity, "MAX_RECORDS", 2):
             for i in range(10):
-                wb_activity.record(uid="u%d" % i, nickname="n", realm="cn",
+                ca_activity.record(uid="u%d" % i, nickname="n", realm="cn",
                                    task="checkin", trigger="scheduler", ok=True,
                                    message="row %d" % i)
         self.assertLessEqual(len(self.rows()), 2)
@@ -181,18 +181,18 @@ class PersistenceTests(IsolatedCase):
     def test_retention_happens_on_the_normal_recording_path(self):
         """不手动调 compact()、也不跨大小阈值：时间节奏自己把条数上限压下来。"""
         now = time.time()
-        with mock.patch.object(wb_activity, "MAX_RECORDS", 3), \
-                mock.patch.object(wb_activity, "COMPACT_TRIGGER_BYTES", 10 ** 9), \
-                mock.patch.object(wb_activity, "COMPACT_INTERVAL_SECONDS", 3600), \
-                mock.patch.object(wb_activity, "_last_compact", now):
+        with mock.patch.object(ca_activity, "MAX_RECORDS", 3), \
+                mock.patch.object(ca_activity, "COMPACT_TRIGGER_BYTES", 10 ** 9), \
+                mock.patch.object(ca_activity, "COMPACT_INTERVAL_SECONDS", 3600), \
+                mock.patch.object(ca_activity, "_last_compact", now):
             for i in range(10):
-                wb_activity.record(uid="u%d" % i, nickname="n", realm="cn",
+                ca_activity.record(uid="u%d" % i, nickname="n", realm="cn",
                                    task="checkin", trigger="scheduler", ok=True,
                                    message="row %d" % i)
             self.assertEqual(len(self.rows()), 10, "节奏没到，不该每条都整理")
             # 六小时后的第一条正常记录：到点了，整理发生。
-            with mock.patch.object(wb_activity, "_last_compact", now - 6 * 3600):
-                wb_activity.record(uid="last", nickname="n", realm="cn",
+            with mock.patch.object(ca_activity, "_last_compact", now - 6 * 3600):
+                ca_activity.record(uid="last", nickname="n", realm="cn",
                                    task="checkin", trigger="scheduler", ok=True,
                                    message="row last")
         remaining = self.rows()
@@ -203,17 +203,17 @@ class PersistenceTests(IsolatedCase):
         """低流量历史跨不过大小阈值，年龄上限同样靠时间节奏落地。"""
         now = datetime.datetime.now().astimezone()
         old = (now - datetime.timedelta(days=200)).isoformat(timespec="seconds")
-        with open(wb_activity.history_path(), "a", encoding="utf-8") as fh:
+        with open(ca_activity.history_path(), "a", encoding="utf-8") as fh:
             for i in range(2):
                 fh.write(json.dumps({"ts": old, "uid": "ancient-%d" % i,
                                      "nickname": "n", "realm": "cn",
                                      "task": "checkin", "trigger": "scheduler",
                                      "ok": True, "message": "old"}) + "\n")
-        with mock.patch.object(wb_activity, "COMPACT_TRIGGER_BYTES", 10 ** 9), \
-                mock.patch.object(wb_activity, "COMPACT_INTERVAL_SECONDS", 3600), \
-                mock.patch.object(wb_activity, "_last_compact",
+        with mock.patch.object(ca_activity, "COMPACT_TRIGGER_BYTES", 10 ** 9), \
+                mock.patch.object(ca_activity, "COMPACT_INTERVAL_SECONDS", 3600), \
+                mock.patch.object(ca_activity, "_last_compact",
                                   time.time() - 6 * 3600):
-            wb_activity.record(uid="fresh", nickname="n", realm="cn",
+            ca_activity.record(uid="fresh", nickname="n", realm="cn",
                                task="checkin", trigger="scheduler", ok=True,
                                message="row fresh")
         self.assertEqual([r["uid"] for r in self.rows()], ["fresh"])
@@ -226,7 +226,7 @@ class PersistenceTests(IsolatedCase):
         def appender(number):
             try:
                 for i in range(25):
-                    row = wb_activity.record(uid="u%d" % number, nickname="n",
+                    row = ca_activity.record(uid="u%d" % number, nickname="n",
                                              realm="cn", task="checkin",
                                              trigger="scheduler", ok=True,
                                              message="row %d" % i)
@@ -237,7 +237,7 @@ class PersistenceTests(IsolatedCase):
         def compactor():
             try:
                 while not stop.is_set():
-                    wb_activity.compact(max_records=100000, max_age_days=3650)
+                    ca_activity.compact(max_records=100000, max_age_days=3650)
             except Exception as exc:          # pragma: no cover
                 errors.append(exc)
 
@@ -254,7 +254,7 @@ class PersistenceTests(IsolatedCase):
         self.assertEqual(errors, [])
         self.assertEqual(len(written), 200)
         self.assertTrue(all(row is not None for row in written), "有记录没写进去")
-        with open(wb_activity.history_path(), encoding="utf-8") as fh:
+        with open(ca_activity.history_path(), encoding="utf-8") as fh:
             raw = fh.read().splitlines()
         self.assertEqual(len(raw), 200, "并发追加/整理丢了行")
         for line in raw:
@@ -270,7 +270,7 @@ class RecordingTests(IsolatedCase):
     EMPTY = {"daily_limit": 1000, "total_balance": 0, "used_today": 0}
 
     def claim(self, before, after=None, ok=True, msg="领取成功"):
-        import wb_codearts
+        import ca_codearts
         seq = [dict(before), dict(after if after is not None else before)]
         seen = []
 
@@ -283,9 +283,9 @@ class RecordingTests(IsolatedCase):
                 raise RuntimeError("APIG.0303 app not found")
             return {"ok": True, "msg": msg, "user_name": "hid", "raw": {}}
 
-        with mock.patch.object(wb_codearts, "balance_summary", fake_balance), \
-                mock.patch.object(wb_codearts, "claim_benefit", fake_claim):
-            res = wb_codearts.claim_and_verify(
+        with mock.patch.object(ca_codearts, "balance_summary", fake_balance), \
+                mock.patch.object(ca_codearts, "claim_benefit", fake_claim):
+            res = ca_codearts.claim_and_verify(
                 "AK", "SK", "TOK", session=dict(self.SESSION), trigger="manual")
         return res, seen
 
@@ -331,9 +331,9 @@ class RecordingTests(IsolatedCase):
 
     def test_a_failed_upstream_still_leaves_one_row(self):
         # record_claim 自身吞掉写失败，所以真正的失败必须由调用方补记一行。
-        import wb_codearts
+        import ca_codearts
         res = {"ok": False, "msg": "APIG.0303 app not found"}
-        wb_codearts.record_claim(dict(self.SESSION), res, trigger="scheduler")
+        ca_codearts.record_claim(dict(self.SESSION), res, trigger="scheduler")
         rows = self.rows()
         self.assertEqual(len(rows), 1)
         self.assertFalse(rows[0]["ok"])
@@ -344,7 +344,7 @@ class RecordingTests(IsolatedCase):
 
 class SchedulerRecordingTests(IsolatedCase):
     def test_the_scheduler_records_only_the_attempts_it_makes(self):
-        import wb_codearts
+        import ca_codearts
         calls = []
 
         def fake_verify(ak, sk, tok, timeout=None, session=None, trigger="unknown"):
@@ -354,21 +354,21 @@ class SchedulerRecordingTests(IsolatedCase):
             calls.append(session["account"]["id"])
             result = {"ok": True, "skipped": True, "msg": "今日已领取",
                       "balance": dict(RecordingTests.FULL)}
-            wb_codearts.record_claim(session, result, trigger=trigger)
+            ca_codearts.record_claim(session, result, trigger=trigger)
             return result
 
         tmp = tempfile.mkdtemp(prefix="wb-activity-sched-")
-        os.makedirs(os.path.join(tmp, wb_codearts.SESSION_SUBDIR))
+        os.makedirs(os.path.join(tmp, ca_codearts.SESSION_SUBDIR))
         for name, uid in (("a.json", "cn-due"), ("b.json", "cn-done")):
-            with open(os.path.join(tmp, wb_codearts.SESSION_SUBDIR, name),
+            with open(os.path.join(tmp, ca_codearts.SESSION_SUBDIR, name),
                       "w", encoding="utf-8") as fh:
                 json.dump({"account": {"id": uid, "label": "nick-" + uid},
                            "accessKey": "AK", "secretKey": "SK",
                            "securitytoken": "TOK"}, fh)
 
         try:
-            with mock.patch.object(wb_codearts, "claim_and_verify", fake_verify):
-                scheduler = wb_scheduler.Scheduler(None)
+            with mock.patch.object(ca_codearts, "claim_and_verify", fake_verify):
+                scheduler = ca_scheduler.Scheduler(None)
                 scheduler.accounts_dir = tmp
                 scheduler._run_cycle("测试第一轮")
                 first_round = len(self.rows())
@@ -398,8 +398,8 @@ class CallSiteAuditTests(unittest.TestCase):
     def test_every_call_site_names_its_trigger(self):
         bare = re.compile(r"\.(checkin)\(\s*\)")
         offenders = []
-        for name in ("wb_proxy.py", "wb_accounts.py", "wb_scheduler.py",
-                     "wb_tasks.py"):
+        for name in ("ca_proxy.py", "ca_accounts.py", "ca_scheduler.py",
+                     "ca_tasks.py"):
             with open(os.path.join(self.ROOT, name), encoding="utf-8") as fh:
                 for number, line in enumerate(fh, 1):
                     if bare.search(line):
@@ -411,7 +411,7 @@ class CallSiteAuditTests(unittest.TestCase):
         # 漏掉会写成 unknown，事后没法从历史里分辨是谁领的。
         bare = re.compile(r"claim_and_verify\((?:(?!trigger)[^)])*\)")
         offenders = []
-        for name in ("wb_proxy.py", "wb_scheduler.py"):
+        for name in ("ca_proxy.py", "ca_scheduler.py"):
             with open(os.path.join(self.ROOT, name), encoding="utf-8") as fh:
                 for number, line in enumerate(fh, 1):
                     if bare.search(line):
@@ -419,11 +419,11 @@ class CallSiteAuditTests(unittest.TestCase):
         self.assertEqual(offenders, [], "这些调用点没有说明触发来源")
 
     def test_the_claim_records_through_the_shared_task_name(self):
-        # 领取与旧的签到共用 wb_activity.TASK_CHECKIN，历史页与筛选下拉不用改。
-        import wb_codearts
-        self.assertIn("wb_activity.record(", inspect.getsource(
-            wb_codearts.record_claim))
-        self.assertIn("TASK_CHECKIN", inspect.getsource(wb_codearts.record_claim))
+        # 领取与旧的签到共用 ca_activity.TASK_CHECKIN，历史页与筛选下拉不用改。
+        import ca_codearts
+        self.assertIn("ca_activity.record(", inspect.getsource(
+            ca_codearts.record_claim))
+        self.assertIn("TASK_CHECKIN", inspect.getsource(ca_codearts.record_claim))
 
 
 class ReadApiTests(IsolatedCase):
@@ -433,8 +433,8 @@ class ReadApiTests(IsolatedCase):
         """按时间顺序写入（追加序即时间序）。"""
         for message, uid, realm, task, trigger, ok, ts in sorted(
                 rows, key=lambda item: item[6]):
-            with mock.patch.object(wb_activity, "_timestamp", lambda ts=ts: ts):
-                wb_activity.record(uid=uid, nickname="nick-" + uid, realm=realm,
+            with mock.patch.object(ca_activity, "_timestamp", lambda ts=ts: ts):
+                ca_activity.record(uid=uid, nickname="nick-" + uid, realm=realm,
                                    task=task, trigger=trigger, ok=ok,
                                    message=message)
 
@@ -463,9 +463,9 @@ class ReadApiTests(IsolatedCase):
         self.seed(self.window_rows())
         payload = self.query()
         self.assertEqual(payload["range"], "7d")
-        self.assertEqual(payload["limit"], wb_activity.DEFAULT_LIMIT)
+        self.assertEqual(payload["limit"], ca_activity.DEFAULT_LIMIT)
         self.assertEqual(payload["total"], 5, "40 天前那条落在默认窗口外")
-        stamps = [wb_activity._parse_ts(row["ts"]) for row in payload["rows"]]
+        stamps = [ca_activity._parse_ts(row["ts"]) for row in payload["rows"]]
         self.assertEqual(stamps, sorted(stamps, reverse=True), "必须最新在前")
         self.assertNotIn("old-40d", self.messages())
 
@@ -503,13 +503,13 @@ class ReadApiTests(IsolatedCase):
     def test_local_midnight_is_the_local_calendar_zero(self):
         """零点的 epoch：它的本地时间必须是今天 00:00:00，而不是昨天 23:00。"""
         injected = time.time()
-        midnight = wb_activity.local_midnight(injected)
+        midnight = ca_activity.local_midnight(injected)
         local = time.localtime(midnight)
         today = time.localtime(injected)
         self.assertEqual((local.tm_hour, local.tm_min, local.tm_sec), (0, 0, 0))
         self.assertEqual((local.tm_year, local.tm_mon, local.tm_mday),
                          (today.tm_year, today.tm_mon, today.tm_mday))
-        now_midnight = time.localtime(wb_activity.local_midnight())
+        now_midnight = time.localtime(ca_activity.local_midnight())
         self.assertEqual((now_midnight.tm_hour, now_midnight.tm_min), (0, 0))
 
     def test_local_midnight_uses_the_offset_in_force_at_midnight(self):
@@ -531,12 +531,12 @@ class ReadApiTests(IsolatedCase):
             if time.localtime(spring_noon).tm_hour != 12:
                 self.skipTest("no America/New_York tz data on this platform")
             # 春季：真零点 05:00Z（EST），按此刻的 -4 会算成 04:00Z
-            self.assertEqual(wb_activity.local_midnight(spring_noon),
+            self.assertEqual(ca_activity.local_midnight(spring_noon),
                              calendar.timegm((2026, 3, 8, 5, 0, 0, 0, 0, 0)))
             # 秋季：真零点 04:00Z（EDT），按此刻的 -5 会算成 05:00Z
             fall_noon = calendar.timegm((2026, 11, 1, 17, 0, 0, 0, 0, 0))
             self.assertEqual(time.localtime(fall_noon).tm_hour, 12)
-            self.assertEqual(wb_activity.local_midnight(fall_noon),
+            self.assertEqual(ca_activity.local_midnight(fall_noon),
                              calendar.timegm((2026, 11, 1, 4, 0, 0, 0, 0, 0)))
         finally:
             if original is None:
@@ -558,8 +558,8 @@ class ReadApiTests(IsolatedCase):
         bounded = self.query(limit=2)
         self.assertEqual(len(bounded["rows"]), 2)
         self.assertEqual(bounded["total"], 5, "total 是筛选后的总数，不是本页条数")
-        self.assertEqual(self.query(limit=99999)["limit"], wb_activity.MAX_LIMIT)
-        self.assertEqual(self.query(limit="junk")["limit"], wb_activity.DEFAULT_LIMIT)
+        self.assertEqual(self.query(limit=99999)["limit"], ca_activity.MAX_LIMIT)
+        self.assertEqual(self.query(limit="junk")["limit"], ca_activity.DEFAULT_LIMIT)
         self.assertEqual(self.query(limit=0)["limit"], 1)
 
     def test_an_unknown_filter_is_rejected_not_ignored(self):
@@ -573,12 +573,12 @@ class ReadPathSchemaTests(IsolatedCase):
     """读取路径只认 8 个字段：文件里多出来的键不能从 API 漏出去。"""
 
     def append_raw(self, row):
-        with open(wb_activity.history_path(), "a", encoding="utf-8") as fh:
+        with open(ca_activity.history_path(), "a", encoding="utf-8") as fh:
             fh.write(json.dumps(row, ensure_ascii=False) + "\n")
 
     def test_a_row_with_extra_credential_fields_does_not_leak_them(self):
         self.append_raw({
-            "ts": wb_activity._timestamp(), "uid": "u1", "nickname": "Nick",
+            "ts": ca_activity._timestamp(), "uid": "u1", "nickname": "Nick",
             "realm": "cn", "task": "checkin", "trigger": "scheduler", "ok": True,
             "message": "签到成功",
             # 合法 JSON，但 schema 不对：夹带了凭证与内部字段
@@ -604,7 +604,7 @@ class ReadPathSchemaTests(IsolatedCase):
         self.assertTrue(row["ok"])
 
     def test_a_wrong_schema_row_is_normalised_not_trusted(self):
-        self.append_raw({"ts": wb_activity._timestamp(), "uid": 42,
+        self.append_raw({"ts": ca_activity._timestamp(), "uid": 42,
                          "nickname": None, "realm": "mars", "task": "mining",
                          "trigger": "somebody", "ok": "false",
                          "message": ["not", "a", "string"]})
@@ -623,7 +623,7 @@ class ReadPathSchemaTests(IsolatedCase):
             self.append_raw({"ts": ts, "uid": "u1", "nickname": "n",
                              "realm": "cn", "task": "checkin",
                              "trigger": "manual", "ok": True, "message": "bad ts"})
-        self.append_raw({"ts": wb_activity._timestamp(), "uid": "u2",
+        self.append_raw({"ts": ca_activity._timestamp(), "uid": "u2",
                          "nickname": "n", "realm": "cn", "task": "checkin",
                          "trigger": "manual", "ok": True, "message": "good ts"})
         for key in ("today", "7d", "30d", "90d"):
@@ -636,7 +636,7 @@ class ReadPathSchemaTests(IsolatedCase):
 
 
 class RouteTests(IsolatedCase):
-    class Handler(wb_proxy.Handler):
+    class Handler(ca_proxy.Handler):
         def __init__(self, authorized=True):
             self.headers = {}
             self.path = "/activity/history"
@@ -646,7 +646,7 @@ class RouteTests(IsolatedCase):
         def _authorized(self):
             if self.authorized:
                 return True
-            return wb_proxy.Handler._authorized(self)
+            return ca_proxy.Handler._authorized(self)
 
         def _json(self, code, obj):
             self.captured = (code, obj)
@@ -655,7 +655,7 @@ class RouteTests(IsolatedCase):
             self.captured = (code, {"error": message})
 
     def test_route_serves_the_history_from_the_gateway_data_dir(self):
-        wb_activity.record(uid="u1", nickname="Nick", realm="cn", task="checkin",
+        ca_activity.record(uid="u1", nickname="Nick", realm="cn", task="checkin",
                            trigger="scheduler", ok=True, message="签到成功")
         handler = self.Handler()
         handler._get_activity_history({"range": ["7d"], "limit": ["10"]})
@@ -672,7 +672,7 @@ class RouteTests(IsolatedCase):
         self.assertIn("result must be one of", payload["error"])
 
     def test_route_needs_credentials(self):
-        with mock.patch.object(wb_proxy, "auth_required", lambda: True):
+        with mock.patch.object(ca_proxy, "auth_required", lambda: True):
             handler = self.Handler(authorized=False)
             handler._get_activity_history({})
         code, _payload = handler.captured
@@ -680,18 +680,18 @@ class RouteTests(IsolatedCase):
 
     def test_route_is_registered_and_panel_gated(self):
         self.assertIn('"/activity/history"',
-                      inspect.getsource(wb_proxy.Handler.do_GET))
-        self.assertTrue(wb_proxy.Handler._is_panel_route("/activity/history"))
-        self.assertFalse(wb_proxy.Handler._is_panel_route("/v1/chat/completions"))
+                      inspect.getsource(ca_proxy.Handler.do_GET))
+        self.assertTrue(ca_proxy.Handler._is_panel_route("/activity/history"))
+        self.assertFalse(ca_proxy.Handler._is_panel_route("/v1/chat/completions"))
 
     def test_startup_points_the_module_at_the_gateway_data_dir(self):
-        self.assertIn("wb_activity.set_data_dir(USAGE_DIR)",
-                      inspect.getsource(wb_proxy))
+        self.assertIn("ca_activity.set_data_dir(USAGE_DIR)",
+                      inspect.getsource(ca_proxy))
 
 
 class SecretSafetyTests(IsolatedCase):
     def test_the_record_is_an_allowlist_of_operational_fields(self):
-        row = wb_activity.record(uid="u1", nickname="Nick", realm="cn",
+        row = ca_activity.record(uid="u1", nickname="Nick", realm="cn",
                                  task="checkin", trigger="manual", ok=True,
                                  message="ok")
         self.assertEqual(set(row), SAFE_FIELDS)
@@ -708,16 +708,16 @@ class SecretSafetyTests(IsolatedCase):
             "accessToken=deadbeefdeadbeefdeadbeefdeadbeef",
             "9f2c1b4a7e6d8c0f1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
         ]
-        wb_activity.record(uid="u1", nickname="Nick", realm="cn", task="checkin",
+        ca_activity.record(uid="u1", nickname="Nick", realm="cn", task="checkin",
                            trigger="manual", ok=False,
                            message="HTTP 401: " + " | ".join(secrets))
-        with open(wb_activity.history_path(), encoding="utf-8") as fh:
+        with open(ca_activity.history_path(), encoding="utf-8") as fh:
             raw = fh.read()
         self.assertIn("[redacted]", raw)
         for secret in secrets:
             self.assertNotIn(secret, raw)
             self.assertNotIn(secret.split()[-1], raw)
-        served = json.dumps(wb_activity.query(usage_dir=self.dir.name,
+        served = json.dumps(ca_activity.query(usage_dir=self.dir.name,
                                               range_key="all"),
                             ensure_ascii=False)
         for secret in secrets:
@@ -725,16 +725,16 @@ class SecretSafetyTests(IsolatedCase):
             self.assertNotIn(secret.split()[-1], served)
 
     def test_a_long_upstream_message_is_truncated_to_one_line(self):
-        row = wb_activity.record(uid="u1", nickname="Nick", realm="cn",
+        row = ca_activity.record(uid="u1", nickname="Nick", realm="cn",
                                  task="checkin", trigger="manual", ok=False,
                                  message="line one\nline two " + "x" * 500)
-        self.assertLessEqual(len(row["message"]), wb_activity.MAX_MESSAGE)
+        self.assertLessEqual(len(row["message"]), ca_activity.MAX_MESSAGE)
         self.assertNotIn("\n", row["message"])
 
     def test_the_history_never_lands_in_the_repository_tree(self):
         repository = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self.assertFalse(
-            os.path.abspath(wb_activity.data_dir()).startswith(
+            os.path.abspath(ca_activity.data_dir()).startswith(
                 os.path.abspath(repository)),
             "用例必须写在临时目录里，而不是仓库的 usage/")
 

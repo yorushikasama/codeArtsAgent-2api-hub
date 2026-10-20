@@ -58,15 +58,15 @@ os.makedirs(ACCOUNTS_DIR, exist_ok=True)
 os.environ["WB_PROXY_USAGE_DIR"] = USAGE_DIR
 os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 
-import wb_proxy as P
-import wb_accounts
-import wb_pricing
+import ca_proxy as P
+import ca_accounts
+import ca_pricing
 
 # 这个套件不碰真 accounts/ 目录：ACCOUNTS_DIR 是脚本旁边的硬编码路径，只能
 # 在导入后重绑（_test_analytics_by_key.py 里记过同样的坑）。
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-wb_pricing.set_data_dir(USAGE_DIR)
-wb_pricing.set_settings_dir(ACCOUNTS_DIR)
+ca_pricing.set_data_dir(USAGE_DIR)
+ca_pricing.set_settings_dir(ACCOUNTS_DIR)
 
 USAGE_LOG = P.USAGE_LOG
 # v4 布局：一类状态一份文件。套件按 kind 读写这些文件，个别用例还会直接
@@ -319,10 +319,10 @@ import time as _t
 FROZEN = __FROZEN__
 _t.time = lambda: FROZEN
 sys.path.insert(0, __ROOT__)
-import wb_proxy as P
-import wb_pricing
-wb_pricing.set_data_dir(P.USAGE_DIR)
-wb_pricing.set_settings_dir(P.ACCOUNTS_DIR)
+import ca_proxy as P
+import ca_pricing
+ca_pricing.set_data_dir(P.USAGE_DIR)
+ca_pricing.set_settings_dir(P.ACCOUNTS_DIR)
 out = {
     "snap": P._usage_snapshot_uncached(),
     "snap_intl": P._usage_snapshot_uncached(realm="intl"),
@@ -1110,7 +1110,7 @@ try:
 
     # 判据：同一份磁盘 + 同一份配置，三种启动状态算出的指纹必须一模一样。
     fp_none = P._realm_inputs()
-    P.POOL = wb_accounts.AccountPool(REAL_ACCOUNTS)      # 建好了，还没 load()
+    P.POOL = ca_accounts.AccountPool(REAL_ACCOUNTS)      # 建好了，还没 load()
     fp_unloaded = P._realm_inputs()
     P.POOL.load()                                        # 加载完成
     fp_loaded = P._realm_inputs()
@@ -1126,7 +1126,7 @@ try:
           _entry(stored, "snapshot", None)["realm_inputs"]
           == P._realm_inputs_key(fp_loaded),
           _entry(stored, "snapshot", None)["realm_inputs"])
-    P.POOL = wb_accounts.AccountPool(REAL_ACCOUNTS)      # 重启：池还没 load()
+    P.POOL = ca_accounts.AccountPool(REAL_ACCOUNTS)      # 重启：池还没 load()
     cache_env_nowrite()
     restart()
     got, err = live_canon()

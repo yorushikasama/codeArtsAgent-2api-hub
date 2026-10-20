@@ -29,8 +29,8 @@ from _isolated_dirs import isolated_data_dirs    # noqa: E402
 
 _TMP = isolated_data_dirs("wb-breaker-fair-")
 
-import wb_accounts as A        # noqa: E402
-import wb_proxy as P           # noqa: E402
+import ca_accounts as A        # noqa: E402
+import ca_proxy as P           # noqa: E402
 
 
 def account(uid="aaaa1111-bbbb-cccc-dddd-eeeeffff0000", realm="intl", **overrides):

@@ -10,12 +10,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # One private directory tree, removed when this process exits. It holds the
 # per-section settings/account stores below and the USAGE_DIR the suite hands to
-# wb_proxy, so two runs of it cannot share a directory and a run leaves nothing
+# ca_proxy, so two runs of it cannot share a directory and a run leaves nothing
 # behind in the checkout.
 _TMP = tempfile.TemporaryDirectory(prefix="wb-slots-")
 atexit.register(_TMP.cleanup)
 
-import wb_settings as S
+import ca_settings as S
 
 PASS = FAIL = 0
 
@@ -100,7 +100,7 @@ check("empty id -> None", S.find_proxy_slot(d, "") is None)
 
 print()
 print("[5] Account: proxySlot persisted, proxy is resolved runtime value")
-import wb_accounts as A
+import ca_accounts as A
 
 d2 = os.path.join(_TMP.name, "account")
 S.set_proxy_slots(d2, [{"id": "slot-1", "name": "one", "url": "http://slot:1"}])
@@ -194,7 +194,7 @@ import importlib
 
 os.environ["ACCOUNTS_DIR"] = d2
 os.environ["WB_PROXY_USAGE_DIR"] = os.path.join(_TMP.name, "usage")
-P = importlib.import_module("wb_proxy")
+P = importlib.import_module("ca_proxy")
 P.ACCOUNTS_DIR = d2
 P.POOL = pool
 S.set_proxy_slots(d2, [{"id": "slot-2", "name": "two", "url": "http://slot:2"}])

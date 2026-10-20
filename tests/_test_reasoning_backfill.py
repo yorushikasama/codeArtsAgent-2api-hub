@@ -23,7 +23,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # and every run left those directories behind in the checkout.
 _TMP = isolated_data_dirs("wb-reasoning-backfill-")
 
-import wb_proxy as P
+import ca_proxy as P
 
 PASS = FAIL = 0
 

@@ -36,14 +36,14 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, ROOT)
 
-# 导入 wb_proxy 前先把可写目录指到临时区：模块级虽不落盘，但保持一致，避免任何
+# 导入 ca_proxy 前先把可写目录指到临时区：模块级虽不落盘，但保持一致，避免任何
 # 意外路径写进仓库（与 _test_anthropic_http.py 同一套做法）。
 _WORK = tempfile.mkdtemp(prefix="http-limits-")
 os.environ.setdefault("WB_PROXY_USAGE_DIR", os.path.join(_WORK, "usage"))
 os.environ.setdefault("HOME", _WORK)
 os.environ.setdefault("USERPROFILE", _WORK)
 
-import wb_proxy as P  # noqa: E402  (needs sys.path/env set above)
+import ca_proxy as P  # noqa: E402  (needs sys.path/env set above)
 
 
 class CountingReader(object):
@@ -184,7 +184,7 @@ class BacklogTests(unittest.TestCase):
         ThreadingHTTPServer。源码文本断言与 _test_release_engineering.py 的
         做法一致（那类接线没有便宜的运行期入口）。
         """
-        with open(os.path.join(ROOT, "wb_proxy.py"), encoding="utf-8") as fh:
+        with open(os.path.join(ROOT, "ca_proxy.py"), encoding="utf-8") as fh:
             src = fh.read()
         self.assertIn("server = GatewayServer((args.host, args.port), Handler)",
                       src,
@@ -266,7 +266,7 @@ class PayloadCapTests(unittest.TestCase):
         env["PYTHONPATH"] = ROOT
         done = subprocess.run(
             [sys.executable, "-c",
-             "import wb_proxy; print(wb_proxy.MAX_PAYLOAD_BYTES)"],
+             "import ca_proxy; print(ca_proxy.MAX_PAYLOAD_BYTES)"],
             cwd=ROOT, env=env, capture_output=True, text=True, timeout=120)
         self.assertEqual(done.returncode, 0, done.stderr[-2000:])
         self.assertEqual(done.stdout.strip(), str(32 * 1024 * 1024))

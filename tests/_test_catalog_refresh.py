@@ -28,7 +28,7 @@ What that function must guarantee, and what this suite pins:
 失败静默，不影响取数。
 
 No network: fetch_remote_product_config is stubbed in every test; the dump
-test exercises the real fetch with wb_accounts.urlopen stubbed instead.
+test exercises the real fetch with ca_accounts.urlopen stubbed instead.
 """
 import json
 import os
@@ -44,7 +44,7 @@ os.environ["ACCOUNTS_DIR"] = os.path.join(_TMP, "accounts")
 os.environ["WB_PROXY_USAGE_DIR"] = _TMP
 os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
-import wb_proxy as P
+import ca_proxy as P
 
 
 CN_LIVE = (["hy4-preview-f", "hy3", "deepseek-v4.1-flash", "glm-5.3"],
@@ -418,12 +418,12 @@ class CatalogDiskDumpTests(unittest.TestCase):
 
     def setUp(self):
         self._dir = tempfile.mkdtemp(prefix="wb-catalog-dump-")
-        self._orig = (P.CATALOG_CACHE_DIR, P.POOL, P.wb_accounts.urlopen)
+        self._orig = (P.CATALOG_CACHE_DIR, P.POOL, P.ca_accounts.urlopen)
         P.CATALOG_CACHE_DIR = self._dir
         P.POOL = _FakePool()
 
     def tearDown(self):
-        P.CATALOG_CACHE_DIR, P.POOL, P.wb_accounts.urlopen = self._orig
+        P.CATALOG_CACHE_DIR, P.POOL, P.ca_accounts.urlopen = self._orig
         shutil.rmtree(self._dir, ignore_errors=True)
 
     def test_a_successful_fetch_dumps_the_payload(self):
@@ -432,7 +432,7 @@ class CatalogDiskDumpTests(unittest.TestCase):
         def fake_urlopen(req, timeout=10, proxy=None):
             return _FakeResponse(payload)
 
-        P.wb_accounts.urlopen = fake_urlopen
+        P.ca_accounts.urlopen = fake_urlopen
         parsed = P.fetch_remote_product_config("cn")
         self.assertIsNotNone(parsed)
         path = P.catalog_cache_path("cn")
@@ -446,7 +446,7 @@ class CatalogDiskDumpTests(unittest.TestCase):
         def fake_urlopen(req, timeout=10, proxy=None):
             raise OSError("boom")
 
-        P.wb_accounts.urlopen = fake_urlopen
+        P.ca_accounts.urlopen = fake_urlopen
         self.assertIsNone(P.fetch_remote_product_config("cn"))
         self.assertEqual(os.listdir(self._dir), [])
 

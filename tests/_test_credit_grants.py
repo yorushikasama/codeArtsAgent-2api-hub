@@ -22,7 +22,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 
 _TMP = isolated_data_dirs("wb-credit-grants-")
 
-import wb_proxy as P  # noqa: E402
+import ca_proxy as P  # noqa: E402
 
 PASS = FAIL = 0
 
@@ -205,7 +205,7 @@ print("[6] 发放记录 ↔ 本机签到 / 每日活跃的关联")
 
 import json as _json  # noqa: E402
 import datetime as _dt  # noqa: E402
-import wb_activity as A  # noqa: E402
+import ca_activity as A  # noqa: E402
 
 index = {"uid-alpha": [
     {"at": 1000.0, "ts": "2026-10-10T00:00:00+08:00", "task": "checkin", "ok": True},

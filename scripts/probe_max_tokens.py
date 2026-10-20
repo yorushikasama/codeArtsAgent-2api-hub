@@ -22,8 +22,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_probes
-import wb_settings
+import ca_probes
+import ca_settings
 
 
 def main(argv=None):
@@ -48,14 +48,14 @@ def main(argv=None):
     api_key = args.api_key
     if not api_key and not args.dry_run:
         try:
-            api_key, _generated = wb_settings.ensure_launcher_key(args.accounts_dir)
+            api_key, _generated = ca_settings.ensure_launcher_key(args.accounts_dir)
         except Exception:
             api_key = ""
     out_dir = args.output_dir or args.accounts_dir
     failed = 0
     for model in args.model:
         try:
-            result = wb_probes.probe_model(
+            result = ca_probes.probe_model(
                 args.base_url, api_key, model, max_tokens=args.max_tokens,
                 timeout=args.timeout, dry_run=args.dry_run)
         except Exception as exc:
@@ -63,7 +63,7 @@ def main(argv=None):
             print(json.dumps({model: {"error": str(exc)[:300]}}, ensure_ascii=False))
             continue
         if not args.dry_run:
-            wb_probes.save_probe(out_dir, model, result)
+            ca_probes.save_probe(out_dir, model, result)
         print(json.dumps({model: result}, ensure_ascii=False))
     return 1 if failed else 0
 

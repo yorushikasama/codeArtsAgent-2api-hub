@@ -54,12 +54,12 @@ os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 import time as _time
 _time.time = lambda: FROZEN
 
-import wb_proxy as P
-import wb_pricing
+import ca_proxy as P
+import ca_pricing
 
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-wb_pricing.set_data_dir(USAGE_DIR)
-wb_pricing.set_settings_dir(ACCOUNTS_DIR)
+ca_pricing.set_data_dir(USAGE_DIR)
+ca_pricing.set_settings_dir(ACCOUNTS_DIR)
 
 USAGE_LOG = P.USAGE_LOG
 # v4 布局：一类状态一份文件（usage-aggregate-cache-<kind>.json）。
@@ -321,10 +321,10 @@ import time as _t
 FROZEN = __FROZEN__
 _t.time = lambda: FROZEN
 sys.path.insert(0, __ROOT__)
-import wb_proxy as P
-import wb_pricing
-wb_pricing.set_data_dir(P.USAGE_DIR)
-wb_pricing.set_settings_dir(P.ACCOUNTS_DIR)
+import ca_proxy as P
+import ca_pricing
+ca_pricing.set_data_dir(P.USAGE_DIR)
+ca_pricing.set_settings_dir(P.ACCOUNTS_DIR)
 
 
 def window_start(name):
@@ -940,7 +940,7 @@ print()
 print("[10] 浮点口径：价不是二进制精确值时，只有浮点求和顺序的差异")
 # 0.1 这类价不是二进制精确数：多天窗口「按日相加」与「逐行相加」会有末位
 # 差。这里把它钉成「只有浮点累加器允许 <=1e-9 相对误差，其余逐字节相同」
-# ——这是日桶推导的固有代价（逐行顺序无法从日聚合还原），见 wb_proxy.py
+# ——这是日桶推导的固有代价（逐行顺序无法从日聚合还原），见 ca_proxy.py
 # 里「按日分桶」一节的说明。
 write_pricing({**PRICING, "models": {
     **PRICING["models"],

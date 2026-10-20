@@ -35,9 +35,9 @@ os.environ["ACCOUNTS_DIR"] = os.path.join(_TMP, "accounts")
 os.environ["WB_PROXY_USAGE_DIR"] = _TMP
 os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
-import wb_pricing
-import wb_proxy as P
-import wb_settings
+import ca_pricing
+import ca_proxy as P
+import ca_settings
 
 
 def rate(prompt, completion, cache=None):
@@ -71,21 +71,21 @@ class PricingTestCase(unittest.TestCase):
         self.dir = tempfile.mkdtemp(prefix="wb-price-auto-case-")
         self.accounts = os.path.join(self.dir, "accounts")
         os.makedirs(self.accounts, exist_ok=True)
-        self._previous_dir = wb_pricing.data_dir()
-        self._previous_settings = wb_pricing._settings_dir_override
-        wb_pricing.set_data_dir(self.dir)
-        wb_pricing.set_settings_dir(self.accounts)
-        self._fetch = wb_pricing.fetch_openrouter
-        self._live = wb_pricing._live_index["models"]
-        wb_pricing.fetch_openrouter = lambda: dict(OR)
+        self._previous_dir = ca_pricing.data_dir()
+        self._previous_settings = ca_pricing._settings_dir_override
+        ca_pricing.set_data_dir(self.dir)
+        ca_pricing.set_settings_dir(self.accounts)
+        self._fetch = ca_pricing.fetch_openrouter
+        self._live = ca_pricing._live_index["models"]
+        ca_pricing.fetch_openrouter = lambda: dict(OR)
 
     def tearDown(self):
-        wb_pricing.fetch_openrouter = self._fetch
-        wb_pricing.set_settings_dir(self._previous_settings)
-        wb_pricing.set_data_dir(self._previous_dir)
-        wb_pricing.remember_live_index(None)
+        ca_pricing.fetch_openrouter = self._fetch
+        ca_pricing.set_settings_dir(self._previous_settings)
+        ca_pricing.set_data_dir(self._previous_dir)
+        ca_pricing.remember_live_index(None)
         if self._live is not None:
-            wb_pricing.remember_live_index(self._live)
+            ca_pricing.remember_live_index(self._live)
 
     def _lines(self, name):
         path = os.path.join(self.dir, name)
@@ -95,7 +95,7 @@ class PricingTestCase(unittest.TestCase):
             return [line for line in fh.read().splitlines() if line.strip()]
 
     def _refresher(self, interval=5):
-        refresher = wb_pricing.PriceRefresher(interval)
+        refresher = ca_pricing.PriceRefresher(interval)
         refresher.log = lambda msg: None
         return refresher
 
@@ -104,7 +104,7 @@ class UnionInputTests(PricingTestCase):
     """The fetch input is the bundled catalogue plus the live additions."""
 
     def test_the_static_baseline_is_unchanged(self):
-        ids = wb_pricing.hub_model_ids()
+        ids = ca_pricing.hub_model_ids()
         self.assertEqual(len(ids), len(set(ids)))
         self.assertIn("hy4-preview-f", ids)
         # A live-only name must not leak into the baseline; that is the whole
@@ -112,14 +112,14 @@ class UnionInputTests(PricingTestCase):
         self.assertNotIn("glm-5.3-flashx", ids)
 
     def test_extra_ids_are_appended_in_order_without_duplicates(self):
-        static = wb_pricing.hub_model_ids()
-        ids = wb_pricing.priced_model_ids(
+        static = ca_pricing.hub_model_ids()
+        ids = ca_pricing.priced_model_ids(
             ["glm-5.3-flashx", "deepseek-v4.1-flash", "glm-5.3-flashx", "  "])
         self.assertEqual(ids[:len(static)], static)
         self.assertEqual(ids[len(static):], ["glm-5.3-flashx"])
 
     def test_the_snapshot_covers_a_live_only_model(self):
-        doc, unpriced, overridden = wb_pricing.build_snapshot(
+        doc, unpriced, overridden = ca_pricing.build_snapshot(
             OR, None, ["glm-5.3-flashx"])
         self.assertIn("glm-5.3-flashx", doc["models"])
         self.assertEqual(doc["models"]["glm-5.3-flashx"]["or_id"],
@@ -129,10 +129,10 @@ class UnionInputTests(PricingTestCase):
         self.assertNotIn("glm-5.3-flashx", overridden)
 
     def test_a_failed_snapshot_fetch_keeps_previous_prices(self):
-        doc, unpriced, _ov = wb_pricing.build_snapshot(
+        doc, unpriced, _ov = ca_pricing.build_snapshot(
             OR, None, ["glm-5.3-flashx"])
         previous = doc["models"]
-        again, unpriced2, _ov2 = wb_pricing.build_snapshot(
+        again, unpriced2, _ov2 = ca_pricing.build_snapshot(
             None, previous, ["glm-5.3-flashx"])
         self.assertEqual(again["models"]["glm-5.3-flashx"],
                          previous["glm-5.3-flashx"])
@@ -151,7 +151,7 @@ class UnionInputTests(PricingTestCase):
             P.read_cached_remote_catalog = original
         self.assertTrue(ok, message)
         self.assertEqual(refresher.last_extra, 1)
-        _at, assignment = wb_pricing.current_assignment()
+        _at, assignment = ca_pricing.current_assignment()
         self.assertIn("glm-5.3-flashx", assignment)
         self.assertEqual(refresher.last_models, len(assignment))
 
@@ -169,7 +169,7 @@ class UnionInputTests(PricingTestCase):
         self.assertTrue(ok, message)
         self.assertEqual(refresher.last_extra, 0)
         # Coverage is exactly the static baseline - not less than it.
-        static_doc, _unpriced, _ov = wb_pricing.build_snapshot(OR)
+        static_doc, _unpriced, _ov = ca_pricing.build_snapshot(OR)
         self.assertEqual(refresher.last_models, len(static_doc["models"]))
         self.assertGreater(refresher.last_models, 3)
 
@@ -220,7 +220,7 @@ class UnionInputTests(PricingTestCase):
 
         P.curated_live_sources = fake
         try:
-            refresher = wb_pricing.PriceRefresher(5)
+            refresher = ca_pricing.PriceRefresher(5)
             ids = refresher.live_ids()
         finally:
             P.curated_live_sources = original
@@ -230,7 +230,7 @@ class UnionInputTests(PricingTestCase):
     def test_an_extra_id_never_pollutes_the_alias_rows(self):
         # A live catalogue that somehow still names an alias must not get it
         # priced (it cannot match OpenRouter anyway) nor logged as an override.
-        doc, unpriced, overridden = wb_pricing.build_snapshot(
+        doc, unpriced, overridden = ca_pricing.build_snapshot(
             OR, None, list(ALIASES))
         for alias in ALIASES:
             self.assertNotIn(alias, doc["models"])
@@ -240,8 +240,8 @@ class UnionInputTests(PricingTestCase):
 
 
 # Run in a fresh interpreter: set up a gateway standing in for __main__, then
-# import wb_pricing and see what that left in sys.modules. __ROOT__ is the
-# directory wb_pricing itself was imported from, so a mutated copy beside this
+# import ca_pricing and see what that left in sys.modules. __ROOT__ is the
+# directory ca_pricing itself was imported from, so a mutated copy beside this
 # test is the one the probe loads.
 _TWIN_IMPORT_PROBE = '''\
 import sys
@@ -249,7 +249,7 @@ sys.path.insert(0, __ROOT__)
 
 
 class FakeGateway(object):
-    """Stands in for the running `python wb_proxy.py` instance."""
+    """Stands in for the running `python ca_proxy.py` instance."""
 
     VIRTUAL_ALIAS_MODELS = ("default-model", "auto")
 
@@ -259,14 +259,14 @@ class FakeGateway(object):
 
 sys.modules["__main__"] = FakeGateway()
 
-import wb_pricing  # noqa: E402
+import ca_pricing  # noqa: E402
 
 problems = []
-if wb_pricing.gateway_module() is not sys.modules["__main__"]:
+if ca_pricing.gateway_module() is not sys.modules["__main__"]:
     problems.append("gateway_module() did not resolve to the running __main__, "
                     "so this probe is not measuring what it thinks it is")
-if "wb_proxy" in sys.modules:
-    problems.append("importing wb_pricing executed wb_proxy a second time")
+if "ca_proxy" in sys.modules:
+    problems.append("importing ca_pricing executed ca_proxy a second time")
 if problems:
     print("\\n".join(problems))
     raise SystemExit(1)
@@ -276,13 +276,13 @@ if problems:
 class SingleGatewayInstanceTests(PricingTestCase):
     """Pricing must talk to the gateway module the server actually runs.
 
-    The container starts `python wb_proxy.py`, which makes the live instance
-    __main__; a second `import wb_proxy` inside that process has no account
+    The container starts `python ca_proxy.py`, which makes the live instance
+    __main__; a second `import ca_proxy` inside that process has no account
     pool - the live catalogue reads empty, silently - and its own log buffer,
     so pricing lines never reach the panel. Production showed exactly both: a
     refresh reporting no live additions while /v1/models still listed them,
     and an empty log page for the pricing tag. `__main__` stands in for the
-    server here, with wb_proxy imported the ordinary way right beside it.
+    server here, with ca_proxy imported the ordinary way right beside it.
     """
 
     @staticmethod
@@ -315,42 +315,42 @@ class SingleGatewayInstanceTests(PricingTestCase):
 
     def test_the_pricing_lines_reach_the_running_gateway(self):
         fake = self._fake_gateway()
-        refresher = wb_pricing.PriceRefresher(5)
+        refresher = ca_pricing.PriceRefresher(5)
         with unittest.mock.patch.dict(sys.modules, {"__main__": fake}):
             refresher.log("已取价：1 个模型")
-            wb_pricing._log_pricing("按需补价：gpt-6-sol")
+            ca_pricing._log_pricing("按需补价：gpt-6-sol")
         self.assertEqual(fake.lines, [("[定价] 已取价：1 个模型", "pricing"),
                                       ("[定价] 按需补价：gpt-6-sol", "pricing")])
 
     def test_the_alias_set_comes_from_the_running_gateway_too(self):
         fake = self._fake_gateway()
         with unittest.mock.patch.dict(sys.modules, {"__main__": fake}):
-            self.assertEqual(wb_pricing.virtual_alias_names(),
+            self.assertEqual(ca_pricing.virtual_alias_names(),
                              {"default-model", "auto"})
 
     def test_a_stale_second_copy_is_never_preferred(self):
         running, twin = self._fake_gateway(), self._fake_gateway()
         with unittest.mock.patch.dict(sys.modules, {"__main__": running,
-                                                    "wb_proxy": twin}):
-            self.assertIs(wb_pricing.gateway_module(), running)
+                                                    "ca_proxy": twin}):
+            self.assertIs(ca_pricing.gateway_module(), running)
 
     def test_a_plain_process_uses_the_imported_wb_proxy_module(self):
         with unittest.mock.patch.dict(
                 sys.modules, {"__main__": types.ModuleType("__main__")}):
-            self.assertIs(wb_pricing.gateway_module(), P)
+            self.assertIs(ca_pricing.gateway_module(), P)
 
     def test_nothing_imports_wb_proxy_behind_the_resolver(self):
-        """Importing wb_pricing must not bring a second wb_proxy with it.
+        """Importing ca_pricing must not bring a second ca_proxy with it.
 
-        The gateway runs as `python wb_proxy.py`, so the live instance is
-        __main__; any `import wb_proxy` that executes while wb_pricing is being
+        The gateway runs as `python ca_proxy.py`, so the live instance is
+        __main__; any `import ca_proxy` that executes while ca_pricing is being
         imported runs that file a second time and produces the twin with no
         account pool and its own log buffer.
 
-        This used to scan wb_pricing.py for a line starting with
-        "import wb_proxy". A scan can only say the text is there, not when it
+        This used to scan ca_pricing.py for a line starting with
+        "import ca_proxy". A scan can only say the text is there, not when it
         runs: moving the lazy fallback in gateway_module() to module level
-        leaves the line byte-identical, and `from wb_proxy import Handler` is
+        leaves the line byte-identical, and `from ca_proxy import Handler` is
         not that text at all - both recreate the twin while the scan stays
         green. It also went red for a docstring that merely quoted the line.
         Asking a real interpreter what it ended up importing has neither
@@ -358,12 +358,12 @@ class SingleGatewayInstanceTests(PricingTestCase):
         """
         probe = _TWIN_IMPORT_PROBE.replace(
             "__ROOT__",
-            repr(os.path.dirname(os.path.abspath(wb_pricing.__file__))))
+            repr(os.path.dirname(os.path.abspath(ca_pricing.__file__))))
         result = subprocess.run([sys.executable, "-c", probe],
                                 capture_output=True, text=True, timeout=120)
         self.assertEqual(
             result.returncode, 0,
-            "importing wb_pricing pulled in a second wb_proxy:\n"
+            "importing ca_pricing pulled in a second ca_proxy:\n"
             + (result.stdout or "") + (result.stderr or ""))
 
 
@@ -372,81 +372,81 @@ class OnDemandPricingTests(PricingTestCase):
 
     def setUp(self):
         super().setUp()
-        wb_pricing.remember_live_index(OR)
+        ca_pricing.remember_live_index(OR)
 
     def test_a_hit_registers_a_policy_and_returns_its_id(self):
-        pid = wb_pricing.ensure_policy("glm-5.3-flashx")
+        pid = ca_pricing.ensure_policy("glm-5.3-flashx")
         self.assertIsNotNone(pid)
-        policy = wb_pricing.load_policies()[pid]
+        policy = ca_pricing.load_policies()[pid]
         self.assertEqual(policy["model"], "glm-5.3-flashx")
         self.assertEqual(policy["or_id"], "z-ai/glm-5.3-flashx")
         self.assertEqual(policy["via"], "direct")
-        self.assertEqual(wb_pricing.current_policy_id("glm-5.3-flashx"), pid)
+        self.assertEqual(ca_pricing.current_policy_id("glm-5.3-flashx"), pid)
 
     def test_the_write_path_prices_the_first_row_of_a_live_only_model(self):
-        # wb_proxy stamps every row with current_policy_id(model) at write
+        # ca_proxy stamps every row with current_policy_id(model) at write
         # time; that call must mint the price on the spot, from memory only.
-        pid = wb_pricing.current_policy_id("glm-5.3-flashx")
+        pid = ca_pricing.current_policy_id("glm-5.3-flashx")
         self.assertIsNotNone(pid)
         row = {"model": "glm-5.3-flashx", "at": time.time(),
                "cost_policy": pid, "prompt_tokens": 1000000,
                "completion_tokens": 0, "cached_tokens": 0}
-        cost = wb_pricing.cost_for_row(row)
+        cost = ca_pricing.cost_for_row(row)
         self.assertTrue(cost["known"])
-        self.assertAlmostEqual(cost["cny"], 0.2 * wb_pricing.USD_CNY, places=6)
+        self.assertAlmostEqual(cost["cny"], 0.2 * ca_pricing.USD_CNY, places=6)
         self.assertEqual(cost["source"], pid)
 
     def test_the_registered_price_is_what_the_row_is_stamped_with(self):
-        pid = wb_pricing.ensure_policy("glm-5.3-flashx")
+        pid = ca_pricing.ensure_policy("glm-5.3-flashx")
         row = {"model": "glm-5.3-flashx", "at": time.time(),
                "prompt_tokens": 1000000, "completion_tokens": 0,
                "cached_tokens": 0}
-        cost = wb_pricing.cost_for_row(row)
+        cost = ca_pricing.cost_for_row(row)
         self.assertTrue(cost["known"])
-        self.assertAlmostEqual(cost["cny"], 0.2 * wb_pricing.USD_CNY, places=6)
+        self.assertAlmostEqual(cost["cny"], 0.2 * ca_pricing.USD_CNY, places=6)
         self.assertEqual(cost["source"], pid)
 
     def test_a_miss_returns_none_and_writes_nothing(self):
-        self.assertIsNone(wb_pricing.ensure_policy("kimi-k2.8-preview"))
-        self.assertIsNone(wb_pricing.ensure_policy("no-such-model"))
+        self.assertIsNone(ca_pricing.ensure_policy("kimi-k2.8-preview"))
+        self.assertIsNone(ca_pricing.ensure_policy("no-such-model"))
         self.assertEqual(self._lines("pricing-policies.jsonl"), [])
         self.assertEqual(self._lines("pricing-timeline.jsonl"), [])
 
     def test_a_cold_index_degrades_to_none(self):
-        wb_pricing.remember_live_index(None)
-        wb_pricing._live_index.update({"models": None, "by_norm": None, "at": None})
-        self.assertIsNone(wb_pricing.ensure_policy("glm-5.3-flashx"))
+        ca_pricing.remember_live_index(None)
+        ca_pricing._live_index.update({"models": None, "by_norm": None, "at": None})
+        self.assertIsNone(ca_pricing.ensure_policy("glm-5.3-flashx"))
         self.assertEqual(self._lines("pricing-policies.jsonl"), [])
 
     def test_the_second_call_writes_nothing_again(self):
-        first = wb_pricing.ensure_policy("deepseek-r1-0528-lkeap")
-        second = wb_pricing.ensure_policy("deepseek-r1-0528-lkeap")
+        first = ca_pricing.ensure_policy("deepseek-r1-0528-lkeap")
+        second = ca_pricing.ensure_policy("deepseek-r1-0528-lkeap")
         self.assertEqual(first, second)
         self.assertEqual(len(self._lines("pricing-policies.jsonl")), 1)
         self.assertEqual(len(self._lines("pricing-timeline.jsonl")), 1)
 
     def test_a_variant_hit_records_where_the_price_came_from(self):
-        pid = wb_pricing.ensure_policy("deepseek-r1-0528-lkeap")
-        policy = wb_pricing.load_policies()[pid]
+        pid = ca_pricing.ensure_policy("deepseek-r1-0528-lkeap")
+        policy = ca_pricing.load_policies()[pid]
         self.assertEqual(policy["via"], "variant")
         self.assertEqual(policy["inherited_from"], "deepseek-r1-0528")
         self.assertEqual(policy["or_id"], "deepseek/deepseek-r1-0528")
 
     def test_an_inherited_price_still_prices_the_row(self):
-        wb_pricing.ensure_policy("deepseek-v3-1-lkeap")
+        ca_pricing.ensure_policy("deepseek-v3-1-lkeap")
         row = {"model": "deepseek-v3-1-lkeap", "at": time.time(),
                "prompt_tokens": 1000000, "completion_tokens": 0,
                "cached_tokens": 0}
-        cost = wb_pricing.cost_for_row(row)
+        cost = ca_pricing.cost_for_row(row)
         self.assertTrue(cost["known"])
-        self.assertAlmostEqual(cost["cny"], 0.25 * wb_pricing.USD_CNY, places=6)
+        self.assertAlmostEqual(cost["cny"], 0.25 * ca_pricing.USD_CNY, places=6)
 
     def test_concurrent_first_requests_register_once(self):
         results = []
         lock = threading.Lock()
 
         def work():
-            pid = wb_pricing.ensure_policy("glm-5.3-flashx")
+            pid = ca_pricing.ensure_policy("glm-5.3-flashx")
             with lock:
                 results.append(pid)
 
@@ -467,11 +467,11 @@ class OnDemandPricingTests(PricingTestCase):
     def test_an_on_demand_row_keeps_the_other_models_in_force(self):
         # A single-model registration must not shrink the timeline's view of
         # what is in force: it merges into the previous assignment.
-        wb_pricing.record_policies(wb_pricing.build_snapshot(OR)[0])
-        at, before = wb_pricing.current_assignment()
+        ca_pricing.record_policies(ca_pricing.build_snapshot(OR)[0])
+        at, before = ca_pricing.current_assignment()
         self.assertGreater(len(before), 3)
-        wb_pricing.ensure_policy("glm-5.3-flashx")
-        _at, after = wb_pricing.current_assignment()
+        ca_pricing.ensure_policy("glm-5.3-flashx")
+        _at, after = ca_pricing.current_assignment()
         for model in before:
             self.assertEqual(after.get(model), before[model], model)
         self.assertIn("glm-5.3-flashx", after)
@@ -482,7 +482,7 @@ class VariantInheritanceTests(PricingTestCase):
 
     def setUp(self):
         super().setUp()
-        self.by_norm = wb_pricing.index_openrouter(OR)
+        self.by_norm = ca_pricing.index_openrouter(OR)
 
     def test_the_three_suffix_names_inherit_from_their_bases(self):
         for mid, ref in (("deepseek-r1-0528-lkeap", "deepseek/deepseek-r1-0528"),
@@ -490,7 +490,7 @@ class VariantInheritanceTests(PricingTestCase):
                          ("deepseek-v3-0324-lkeap",
                           "deepseek/deepseek-chat-v3-0324")):
             self.assertEqual(
-                wb_pricing.resolve(mid, OR, self.by_norm, variants=True)[0],
+                ca_pricing.resolve(mid, OR, self.by_norm, variants=True)[0],
                 ref, mid)
 
     def test_the_two_names_without_a_counterpart_stay_unpriced(self):
@@ -498,52 +498,52 @@ class VariantInheritanceTests(PricingTestCase):
         # and kimi-k2.8-preview has no suffix to strip. Neither may be guessed.
         for mid in ("kimi-k2-instruct-taiji", "kimi-k2.8-preview"):
             self.assertIsNone(
-                wb_pricing.resolve(mid, OR, self.by_norm, variants=True)[0], mid)
+                ca_pricing.resolve(mid, OR, self.by_norm, variants=True)[0], mid)
 
     def test_a_base_that_is_not_unique_is_not_inherited(self):
         two_vendors = dict(OR)
         two_vendors["othervendor/deepseek-r1-0528"] = rate(0.1, 0.1)
-        by_norm = wb_pricing.index_openrouter(two_vendors)
-        self.assertIsNone(wb_pricing.resolve("deepseek-r1-0528-lkeap",
+        by_norm = ca_pricing.index_openrouter(two_vendors)
+        self.assertIsNone(ca_pricing.resolve("deepseek-r1-0528-lkeap",
                                             two_vendors, by_norm,
                                             variants=True)[0])
 
     def test_a_base_missing_from_the_list_is_not_inherited(self):
-        self.assertIsNone(wb_pricing.resolve(
+        self.assertIsNone(ca_pricing.resolve(
             "glm-5.3-flash-f", OR, self.by_norm, variants=True)[0])
 
     def test_the_uncertain_suffixes_are_not_peeled(self):
         # -f / -dev / -x never strip: hub uses them for its own tiers, and
         # peeling them would silently drop a per-tier price difference.
         for mid in ("hy3-x", "hy4-preview-f", "hy4-preview-dev"):
-            self.assertEqual(list(wb_pricing.variant_bases(mid)), [], mid)
-        self.assertEqual(list(wb_pricing.variant_bases("deepseek-r1-0528-lkeap")),
+            self.assertEqual(list(ca_pricing.variant_bases(mid)), [], mid)
+        self.assertEqual(list(ca_pricing.variant_bases("deepseek-r1-0528-lkeap")),
                          ["deepseek-r1-0528"])
 
     def test_the_switch_off_restores_the_old_behaviour(self):
-        self.assertIsNone(wb_pricing.resolve("deepseek-r1-0528-lkeap", OR,
+        self.assertIsNone(ca_pricing.resolve("deepseek-r1-0528-lkeap", OR,
                                             self.by_norm, variants=False)[0])
-        doc, unpriced, _ov = wb_pricing.build_snapshot(
+        doc, unpriced, _ov = ca_pricing.build_snapshot(
             OR, None, None, variants=False)
         self.assertNotIn("deepseek-r1-0528-lkeap", doc["models"])
         self.assertIn("deepseek-r1-0528-lkeap", unpriced)
-        doc_on, unpriced_on, _ov = wb_pricing.build_snapshot(
+        doc_on, unpriced_on, _ov = ca_pricing.build_snapshot(
             OR, None, None, variants=True)
         self.assertIn("deepseek-r1-0528-lkeap", doc_on["models"])
         self.assertNotIn("deepseek-r1-0528-lkeap", unpriced_on)
 
     def test_the_setting_defaults_to_on_and_is_persisted(self):
-        self.assertTrue(wb_settings.pricing_variant_inherit(self.accounts))
-        self.assertTrue(wb_pricing.variant_inherit_enabled(self.accounts))
-        self.assertFalse(wb_settings.set_pricing_variant_inherit(
+        self.assertTrue(ca_settings.pricing_variant_inherit(self.accounts))
+        self.assertTrue(ca_pricing.variant_inherit_enabled(self.accounts))
+        self.assertFalse(ca_settings.set_pricing_variant_inherit(
             self.accounts, False))
-        self.assertFalse(wb_settings.pricing_variant_inherit(self.accounts))
-        self.assertFalse(wb_pricing.variant_inherit_enabled(self.accounts))
+        self.assertFalse(ca_settings.pricing_variant_inherit(self.accounts))
+        self.assertFalse(ca_pricing.variant_inherit_enabled(self.accounts))
         with open(os.path.join(self.accounts, "settings.json"),
                   encoding="utf-8") as fh:
             self.assertIs(json.load(fh)["pricing_variant_inherit"], False)
-        wb_settings.set_pricing_variant_inherit(self.accounts, True)
-        self.assertTrue(wb_pricing.variant_inherit_enabled(self.accounts))
+        ca_settings.set_pricing_variant_inherit(self.accounts, True)
+        self.assertTrue(ca_pricing.variant_inherit_enabled(self.accounts))
 
     def test_a_settings_file_without_the_key_reads_as_on(self):
         # An install upgraded from a build that never wrote the key keeps the
@@ -551,20 +551,20 @@ class VariantInheritanceTests(PricingTestCase):
         with open(os.path.join(self.accounts, "settings.json"), "w",
                   encoding="utf-8") as fh:
             json.dump({"pricing_refresh_minutes": 5}, fh)
-        self.assertTrue(wb_pricing.variant_inherit_enabled(self.accounts))
+        self.assertTrue(ca_pricing.variant_inherit_enabled(self.accounts))
 
     def test_the_switch_read_is_cached_but_never_goes_stale(self):
         # ensure_policy reads this on every request for an unpriced model, so
         # the read is cached by (path, mtime, size) - an external rewrite (the
         # panel saving settings.json) must still be picked up.
         path = os.path.join(self.accounts, "settings.json")
-        self.assertTrue(wb_pricing.variant_inherit_enabled(self.accounts))
+        self.assertTrue(ca_pricing.variant_inherit_enabled(self.accounts))
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"pricing_variant_inherit": False}, fh)
-        self.assertFalse(wb_pricing.variant_inherit_enabled(self.accounts))
+        self.assertFalse(ca_pricing.variant_inherit_enabled(self.accounts))
         with open(path, "w", encoding="utf-8") as fh:
             json.dump({"pricing_variant_inherit": True}, fh)
-        self.assertTrue(wb_pricing.variant_inherit_enabled(self.accounts))
+        self.assertTrue(ca_pricing.variant_inherit_enabled(self.accounts))
 
 
 class GapReportTests(PricingTestCase):
@@ -573,7 +573,7 @@ class GapReportTests(PricingTestCase):
     def test_the_report_categorises_every_kind(self):
         # 别名不再来自内置目录（国内版目录里没有这些虚拟名），所以显式喂进去，
         # 继续钉住「别名单独归类、不计入缺口总数」这条口径。
-        items, summary = wb_pricing.gap_items(OR, None, list(ALIASES),
+        items, summary = ca_pricing.gap_items(OR, None, list(ALIASES),
                                               variants=True)
         by_model = {item["model"]: item for item in items}
         for alias in ALIASES:
@@ -591,14 +591,14 @@ class GapReportTests(PricingTestCase):
         self.assertEqual(summary["total"], len(items) - len(ALIASES))
 
     def test_a_variant_that_resolves_is_not_reported_at_all(self):
-        items, _summary = wb_pricing.gap_items(OR, None, None, variants=True)
+        items, _summary = ca_pricing.gap_items(OR, None, None, variants=True)
         reported = {item["model"] for item in items}
         for priced in ("deepseek-r1-0528-lkeap", "deepseek-v3-1-lkeap",
                        "deepseek-v3-0324-lkeap"):
             self.assertNotIn(priced, reported, priced)
 
     def test_with_the_switch_off_the_variant_names_are_reported(self):
-        items, _summary = wb_pricing.gap_items(OR, None, None, variants=False)
+        items, _summary = ca_pricing.gap_items(OR, None, None, variants=False)
         by_model = {item["model"]: item for item in items}
         self.assertEqual(by_model["deepseek-r1-0528-lkeap"]["reason"],
                          "variant_unmatched")
@@ -606,43 +606,43 @@ class GapReportTests(PricingTestCase):
         self.assertNotIn("deepseek-v4.1-flash", by_model)
 
     def test_candidates_are_suggestions_never_applied(self):
-        cands = wb_pricing.suggest_matches("glm-5.3-flash-20260101", OR)
+        cands = ca_pricing.suggest_matches("glm-5.3-flash-20260101", OR)
         self.assertEqual(cands[0], "z-ai/glm-5.3-flash")
         # Suggesting is all it does: no policy, no override, no price.
-        self.assertIsNone(wb_pricing.ensure_policy("glm-5.3-flash-20260101"))
-        self.assertEqual(wb_pricing.runtime_overrides(), {})
+        self.assertIsNone(ca_pricing.ensure_policy("glm-5.3-flash-20260101"))
+        self.assertEqual(ca_pricing.runtime_overrides(), {})
 
     def test_a_hand_entered_mapping_prices_a_model(self):
-        wb_pricing.remember_live_index(OR)
-        self.assertIsNone(wb_pricing.ensure_policy("kimi-k2.8-preview"))
-        wb_pricing.save_runtime_override("kimi-k2.8-preview",
+        ca_pricing.remember_live_index(OR)
+        self.assertIsNone(ca_pricing.ensure_policy("kimi-k2.8-preview"))
+        ca_pricing.save_runtime_override("kimi-k2.8-preview",
                                         "moonshotai/kimi-k2.6")
-        self.assertEqual(wb_pricing.overrides_path(),
+        self.assertEqual(ca_pricing.overrides_path(),
                          os.path.join(self.dir, "pricing-overrides.json"))
-        by_norm = wb_pricing.index_openrouter(OR)
+        by_norm = ca_pricing.index_openrouter(OR)
         self.assertEqual(
-            wb_pricing.resolve("kimi-k2.8-preview", OR, by_norm)[0],
+            ca_pricing.resolve("kimi-k2.8-preview", OR, by_norm)[0],
             "moonshotai/kimi-k2.6")
-        pid = wb_pricing.ensure_policy("kimi-k2.8-preview")
+        pid = ca_pricing.ensure_policy("kimi-k2.8-preview")
         self.assertIsNotNone(pid)
-        self.assertEqual(wb_pricing.load_policies()[pid]["or_id"],
+        self.assertEqual(ca_pricing.load_policies()[pid]["or_id"],
                          "moonshotai/kimi-k2.6")
 
     def test_a_hand_entered_mapping_that_matches_nothing_is_ignored(self):
-        wb_pricing.save_runtime_override("kimi-k2.8-preview",
+        ca_pricing.save_runtime_override("kimi-k2.8-preview",
                                         "moonshotai/not-in-this-list")
-        by_norm = wb_pricing.index_openrouter(OR)
+        by_norm = ca_pricing.index_openrouter(OR)
         self.assertIsNone(
-            wb_pricing.resolve("kimi-k2.8-preview", OR, by_norm)[0])
+            ca_pricing.resolve("kimi-k2.8-preview", OR, by_norm)[0])
 
     def test_a_mapping_can_be_cleared(self):
-        wb_pricing.save_runtime_override("kimi-k2.8-preview",
+        ca_pricing.save_runtime_override("kimi-k2.8-preview",
                                         "moonshotai/kimi-k2.6")
-        wb_pricing.save_runtime_override("kimi-k2.8-preview", "")
-        self.assertEqual(wb_pricing.runtime_overrides(), {})
-        by_norm = wb_pricing.index_openrouter(OR)
+        ca_pricing.save_runtime_override("kimi-k2.8-preview", "")
+        self.assertEqual(ca_pricing.runtime_overrides(), {})
+        by_norm = ca_pricing.index_openrouter(OR)
         self.assertIsNone(
-            wb_pricing.resolve("kimi-k2.8-preview", OR, by_norm)[0])
+            ca_pricing.resolve("kimi-k2.8-preview", OR, by_norm)[0])
 
     def test_the_report_covers_a_live_only_name_that_could_not_be_priced(self):
         original = P.curated_live_sources
@@ -666,10 +666,10 @@ class GapReportTests(PricingTestCase):
         # A live-only name that did resolve was priced by that very cycle, so
         # it is not a gap at all.
         self.assertNotIn("glm-5.3-flashx", by_model)
-        self.assertIsNotNone(wb_pricing.ensure_policy("glm-5.3-flashx"))
+        self.assertIsNotNone(ca_pricing.ensure_policy("glm-5.3-flashx"))
 
     def test_the_status_payload_carries_the_report(self):
-        wb_pricing.remember_live_index(OR)
+        ca_pricing.remember_live_index(OR)
         refresher = self._refresher()
         refresher.run_once()
         status = refresher.status()
@@ -677,16 +677,16 @@ class GapReportTests(PricingTestCase):
         self.assertIsInstance(status["gaps"], list)
         self.assertIn("variant_inherit", status)
         # The on-demand path is fed by the same fetch that just ran.
-        self.assertTrue(wb_pricing.ensure_policy("glm-5.3-flashx"))
+        self.assertTrue(ca_pricing.ensure_policy("glm-5.3-flashx"))
         models = {item["model"] for item in status["gaps"]}
         self.assertNotIn("glm-5.3-flashx", models)
 
     def test_the_report_never_counts_a_price_that_is_already_stored(self):
-        wb_pricing.remember_live_index(OR)
-        wb_pricing.ensure_policy("kimi-k2.8-preview")
-        wb_pricing.save_runtime_override("kimi-k2.8-preview",
+        ca_pricing.remember_live_index(OR)
+        ca_pricing.ensure_policy("kimi-k2.8-preview")
+        ca_pricing.save_runtime_override("kimi-k2.8-preview",
                                         "moonshotai/kimi-k2.6")
-        wb_pricing.ensure_policy("kimi-k2.8-preview")
+        ca_pricing.ensure_policy("kimi-k2.8-preview")
         refresher = self._refresher()
         items, _summary = refresher.gap_report(ttl=0)
         self.assertNotIn("kimi-k2.8-preview", {i["model"] for i in items})
@@ -737,7 +737,7 @@ class PricingEndpointTests(PricingTestCase):
         self.assertIs(data["pricing_variant_inherit"], False)
         self.assertTrue(data["pricing_refresh_started"])
         self.assertTrue(started.wait(5.0), "the switch must trigger a re-price")
-        self.assertFalse(wb_settings.pricing_variant_inherit(self.accounts))
+        self.assertFalse(ca_settings.pricing_variant_inherit(self.accounts))
 
     def test_the_variant_switch_rejects_a_string(self):
         with unittest.mock.patch.object(P, "ACCOUNTS_DIR", self.accounts):
@@ -746,10 +746,10 @@ class PricingEndpointTests(PricingTestCase):
         self.assertEqual(status, 400)
         # Strictly boolean: a string would read as true and keep the feature
         # on for the one operator trying to turn it off.
-        self.assertTrue(wb_settings.pricing_variant_inherit(self.accounts))
+        self.assertTrue(ca_settings.pricing_variant_inherit(self.accounts))
 
     def test_an_unchanged_switch_does_not_kick_a_refresh(self):
-        wb_settings.set_pricing_variant_inherit(self.accounts, False)
+        ca_settings.set_pricing_variant_inherit(self.accounts, False)
         with unittest.mock.patch.object(P, "ACCOUNTS_DIR", self.accounts), \
                 unittest.mock.patch.object(P, "PRICING", None):
             handler = self._handler({"pricing_variant_inherit": False})
@@ -779,7 +779,7 @@ class PricingEndpointTests(PricingTestCase):
             status, _data = handler._route_pricing_mapping(
                 {"model": "kimi-k2.8-preview", "or_id": ""})
             self.assertEqual(status, 200)
-        self.assertEqual(wb_pricing.runtime_overrides(), {})
+        self.assertEqual(ca_pricing.runtime_overrides(), {})
 
 
 class RouteRegistrationTests(PricingTestCase):
@@ -793,7 +793,7 @@ class RouteRegistrationTests(PricingTestCase):
 
     def test_do_post_routes_the_pricing_writes(self):
         path = os.path.join(os.path.dirname(os.path.dirname(
-            os.path.abspath(__file__))), "wb_proxy.py")
+            os.path.abspath(__file__))), "ca_proxy.py")
         with open(path, encoding="utf-8") as fh:
             source = fh.read()
         body = source.split("def do_POST(self):", 1)[1]

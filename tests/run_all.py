@@ -131,7 +131,7 @@ def kill_tree(proc):
     """Kill a suite and everything it started.
 
     Killing only the direct child leaves its grandchildren behind: the suites
-    that start wb_proxy.py would leave a gateway holding a port, and the next
+    that start ca_proxy.py would leave a gateway holding a port, and the next
     suite would inherit a machine that is not in the state the first one saw.
     """
     if proc.poll() is not None:

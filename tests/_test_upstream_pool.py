@@ -1,6 +1,6 @@
 """上游连接复用池（keep-alive pool）的行为套件。
 
-测的是 wb_upstream_pool 对 wb_accounts.urlopen 出站路径的接管：复用命中、容量与
+测的是 ca_upstream_pool 对 ca_accounts.urlopen 出站路径的接管：复用命中、容量与
 空闲回收、连接被对端掐掉时的探活与「安全重试一次」、Connection: close 与半截
 body 的丢弃、流式（chunked）读干净才归还、复用前重置读超时、按代理串分池、
 3xx 回退、TLS，以及 WB_UPSTREAM_KEEPALIVE=0 时与改动前逐项一致。
@@ -35,9 +35,9 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402
 
 _TMP = isolated_data_dirs("wb-upstream-pool-")
 
-import wb_accounts            # noqa: E402
-import wb_proxy               # noqa: E402  (_apply_stream_idle_timeout 的对齐)
-import wb_upstream_pool as pool  # noqa: E402
+import ca_accounts            # noqa: E402
+import ca_proxy               # noqa: E402  (_apply_stream_idle_timeout 的对齐)
+import ca_upstream_pool as pool  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -265,7 +265,7 @@ class FakeUpstream(object):
 
 def fetch(url, timeout=5, proxy="", data=None, headers=None, method=None):
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
-    return wb_accounts.urlopen(req, timeout=timeout, proxy=proxy)
+    return ca_accounts.urlopen(req, timeout=timeout, proxy=proxy)
 
 
 def sdelta(before):
@@ -370,8 +370,8 @@ try:
     resp = fetch(srv.base() + "/sse")
     for i, line in enumerate(resp):
         if i == 0:
-            # 与 wb_proxy 的流式路径同款调用：池化响应必须同样支持
-            applied.append(wb_proxy._apply_stream_idle_timeout(resp, 0.15))
+            # 与 ca_proxy 的流式路径同款调用：池化响应必须同样支持
+            applied.append(ca_proxy._apply_stream_idle_timeout(resp, 0.15))
     resp.close()
     check("池化响应支持 _apply_stream_idle_timeout（fp 透传）",
           applied == [True], applied)

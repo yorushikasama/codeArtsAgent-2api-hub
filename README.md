@@ -3,7 +3,7 @@
 把**华为云码道（CodeArts）**的推理能力封装成标准 OpenAI 兼容接口（Chat Completions / Responses），
 自带账号管理、额度领取与 Web 看板。
 
-- **开箱即用**：纯 Python 标准库，零第三方依赖；`start-wb-proxy.bat` / `.command` / `.sh` 双击即启；
+- **开箱即用**：纯 Python 标准库，零第三方依赖；`start-codearts-hub.bat` / `.command` / `.sh` 双击即启；
 - **单一上游**：只对接华为云码道（`snap-access.cn-north-4.myhuaweicloud.com`），账号、限额与用量都按这一个出口记账；
 - **协议**：Chat Completions、Responses API（Codex）；Anthropic Messages 经协议转换且缓存兼容性未验证，默认禁用；
 - **模型清单**：只列出**实测可推理**的模型，不拿服务端目录凑数；
@@ -21,8 +21,8 @@
 
 ### 1. 本机运行
 
-**Windows** 双击 **`start-wb-proxy.bat`**，保持窗口运行；**macOS** 双击 **`start-wb-proxy.command`**
-（首次被 Gatekeeper 拦截时右键 →「打开」确认一次），或在终端执行 `./start-wb-proxy.sh [端口]`（默认 8788）。
+**Windows** 双击 **`start-codearts-hub.bat`**，保持窗口运行；**macOS** 双击 **`start-codearts-hub.command`**
+（首次被 Gatekeeper 拦截时右键 →「打开」确认一次），或在终端执行 `./start-codearts-hub.sh [端口]`（默认 8788）。
 
 启动后：**API 地址** `http://127.0.0.1:8788/v1`，**Web 看板** `http://127.0.0.1:8788/`。
 首次启动还没有账号，打开看板点「码道账号」完成授权即自动入库。
@@ -41,9 +41,9 @@
 
 ```yaml
 services:
-  wb-proxy:
-    image: ghcr.io/ardeyouxipianyi/workbuddy2api-hub:latest
-    container_name: wb-proxy
+  codearts-hub:
+    image: ghcr.io/yorushikasama/codeartsagent-2api-hub:latest
+    container_name: codearts-hub
     restart: unless-stopped
     ports:
       - "8788:8788"
@@ -203,6 +203,13 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
 
 ### Unreleased
+
+**项目身份从 WorkBuddy 改为 CodeArts（码道）**
+
+- 运行模块 `wb_*.py` → `ca_*.py`（21 个），启动脚本 `start-/restart-wb-proxy*` → `*-codearts-hub*`；
+- 服务名、部署目录、`server_version`：`wb-proxy` / `wbhub` → `codearts-hub`；
+- OpenWrt 包名 `workbuddy2api` → `codearts2api`；Docker 镜像与 quick-deploy 改为指向本仓库自己的产物；
+- **保留不动**（属于上游协议标识，改名会打断线上部署）：桌面缓存目录 `~/.workbuddy`、`WB_*` 环境变量（含 `WB_PROXY_KEY`）、上游账号域名 `www.workbuddy.cn`、`owned_by=workbuddy`、微信成长任务 id `wb_wechat_oa_subscribe_task`，以及上游仓库链接与 `docs/CHANGELOG.md` 历史记录。
 
 已发布版本的完整记录见 **[docs/CHANGELOG.md](docs/CHANGELOG.md)**。
 

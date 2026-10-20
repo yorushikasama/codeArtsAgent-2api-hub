@@ -14,7 +14,7 @@ _TMP = tempfile.mkdtemp(prefix="wb-ui-language-")
 _ACCOUNTS = os.path.join(_TMP, "accounts")
 os.makedirs(_ACCOUNTS, exist_ok=True)
 
-import wb_settings as S
+import ca_settings as S
 
 PASS = FAIL = 0
 

@@ -15,8 +15,8 @@ os.environ["ACCOUNTS_DIR"] = _startup_dir.name
 os.environ["WB_PROXY_USAGE_DIR"] = _startup_dir.name
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts
-import wb_proxy
+import ca_accounts
+import ca_proxy
 
 
 class FakeResponse(object):
@@ -38,7 +38,7 @@ class FetchProfileTests(unittest.TestCase):
         # 国际版删除后只剩国内版出口；已删/未知区域（老代码还会传 intl、
         # global）一律回落到国内站，而不是拿到一个不存在的站点。
         for realm in ("cn", "intl", "global", "", None, "bogus"):
-            self.assertEqual(wb_accounts.web_origin_for(realm),
+            self.assertEqual(ca_accounts.web_origin_for(realm),
                              "https://www.workbuddy.cn", realm)
 
     def test_fetch_parses_only_uid_and_nickname(self):
@@ -51,14 +51,14 @@ class FetchProfileTests(unittest.TestCase):
                                  "phoneNumber": "+86-13800000000",
                                  "email": "secret@example.com"})
 
-        account = wb_accounts.Account(
+        account = ca_accounts.Account(
             {"uid": "uid-1", "accessToken": "tok", "realm": "cn"})
-        old = wb_accounts.urlopen
-        wb_accounts.urlopen = fake_urlopen
+        old = ca_accounts.urlopen
+        ca_accounts.urlopen = fake_urlopen
         try:
-            uid, nickname = wb_accounts.fetch_account_profile(account)
+            uid, nickname = ca_accounts.fetch_account_profile(account)
         finally:
-            wb_accounts.urlopen = old
+            ca_accounts.urlopen = old
         self.assertEqual((uid, nickname), ("uid-1", "New Nick"))
         self.assertNotIn("13800000000", str((uid, nickname)))
         self.assertEqual(captured["url"],
@@ -70,39 +70,39 @@ class FetchProfileTests(unittest.TestCase):
         def fake_urlopen(req, timeout=30, proxy=""):
             return FakeResponse({"uid": "uid-other", "nickname": "X"})
 
-        account = wb_accounts.Account(
+        account = ca_accounts.Account(
             {"uid": "uid-1", "accessToken": "tok", "realm": "intl"})
-        old = wb_accounts.urlopen
-        wb_accounts.urlopen = fake_urlopen
+        old = ca_accounts.urlopen
+        ca_accounts.urlopen = fake_urlopen
         try:
             with self.assertRaises(RuntimeError):
-                wb_accounts.fetch_account_profile(account)
+                ca_accounts.fetch_account_profile(account)
         finally:
-            wb_accounts.urlopen = old
+            ca_accounts.urlopen = old
 
     def test_non_object_response_is_rejected(self):
         def fake_urlopen(req, timeout=30, proxy=""):
             return FakeResponse(["not", "an", "object"])
 
-        account = wb_accounts.Account(
+        account = ca_accounts.Account(
             {"uid": "uid-1", "accessToken": "tok", "realm": "intl"})
-        old = wb_accounts.urlopen
-        wb_accounts.urlopen = fake_urlopen
+        old = ca_accounts.urlopen
+        ca_accounts.urlopen = fake_urlopen
         try:
             with self.assertRaises(RuntimeError):
-                wb_accounts.fetch_account_profile(account)
+                ca_accounts.fetch_account_profile(account)
         finally:
-            wb_accounts.urlopen = old
+            ca_accounts.urlopen = old
 
 
 class SyncNicknameTests(unittest.TestCase):
     def test_sync_updates_and_persists(self):
         with tempfile.TemporaryDirectory() as directory:
-            account = wb_accounts.Account(
+            account = ca_accounts.Account(
                 {"uid": "uid-1", "accessToken": "tok", "realm": "cn",
                  "nickname": "Old"},
                 os.path.join(directory, "uid-1.json"))
-            with mock.patch.object(wb_accounts, "fetch_account_profile",
+            with mock.patch.object(ca_accounts, "fetch_account_profile",
                                    return_value=("uid-1", "New Nick")):
                 nickname = account.sync_nickname()
             self.assertEqual(nickname, "New Nick")
@@ -114,7 +114,7 @@ class SyncNicknameTests(unittest.TestCase):
 
 class SyncProfileRouteTests(unittest.TestCase):
     def make_handler(self):
-        class Handler(wb_proxy.Handler):
+        class Handler(ca_proxy.Handler):
             def __init__(self):
                 self.captured = None
 
@@ -137,18 +137,18 @@ class SyncProfileRouteTests(unittest.TestCase):
 
     def test_route_reports_the_new_nickname(self):
         with tempfile.TemporaryDirectory() as directory:
-            account = wb_accounts.Account(
+            account = ca_accounts.Account(
                 {"uid": "uid-1", "accessToken": "tok", "realm": "cn"},
                 os.path.join(directory, "uid-1.json"))
-            old_pool = wb_proxy.POOL
-            wb_proxy.POOL = self.make_pool(account)
+            old_pool = ca_proxy.POOL
+            ca_proxy.POOL = self.make_pool(account)
             try:
-                with mock.patch.object(wb_accounts, "fetch_account_profile",
+                with mock.patch.object(ca_accounts, "fetch_account_profile",
                                        return_value=("uid-1", "Fresh")):
                     handler = self.make_handler()
                     handler._route_accounts_sync_profile({"uid": "uid-1"})
             finally:
-                wb_proxy.POOL = old_pool
+                ca_proxy.POOL = old_pool
             code, obj = handler.captured
             self.assertEqual(code, 200)
             self.assertEqual(obj["updated"][0]["nickname"], "Fresh")
@@ -156,18 +156,18 @@ class SyncProfileRouteTests(unittest.TestCase):
 
     def test_route_reports_failures_without_failing_the_batch(self):
         with tempfile.TemporaryDirectory() as directory:
-            account = wb_accounts.Account(
+            account = ca_accounts.Account(
                 {"uid": "uid-1", "accessToken": "tok", "realm": "cn"},
                 os.path.join(directory, "uid-1.json"))
-            old_pool = wb_proxy.POOL
-            wb_proxy.POOL = self.make_pool(account)
+            old_pool = ca_proxy.POOL
+            ca_proxy.POOL = self.make_pool(account)
             try:
-                with mock.patch.object(wb_accounts, "fetch_account_profile",
+                with mock.patch.object(ca_accounts, "fetch_account_profile",
                                        side_effect=RuntimeError("boom")):
                     handler = self.make_handler()
                     handler._route_accounts_sync_profile({"uid": "uid-1"})
             finally:
-                wb_proxy.POOL = old_pool
+                ca_proxy.POOL = old_pool
             code, obj = handler.captured
             self.assertEqual(code, 200)
             self.assertEqual(obj["updated"], [])

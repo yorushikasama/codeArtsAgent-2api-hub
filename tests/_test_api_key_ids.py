@@ -18,7 +18,7 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_settings as S
+import ca_settings as S
 
 PASS = FAIL = 0
 

@@ -25,9 +25,9 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts
-import wb_scheduler
-import wb_tasks
+import ca_accounts
+import ca_scheduler
+import ca_tasks
 
 
 def make_account(uid="u1", realm="cn", **extra):
@@ -39,7 +39,7 @@ def make_account(uid="u1", realm="cn", **extra):
         "expiresAt": int(time.time()) + 3600,
     }
     data.update(extra)
-    return wb_accounts.Account(data)
+    return ca_accounts.Account(data)
 
 
 class CanReportActivityTests(unittest.TestCase):
@@ -85,7 +85,7 @@ class ReportActivityTests(unittest.TestCase):
 
     def test_fails_when_report_events_rejected(self):
         acc = make_account(realm="cn")
-        with mock.patch.object(wb_tasks, "report_events", return_value=False):
+        with mock.patch.object(ca_tasks, "report_events", return_value=False):
             res = acc.report_activity()
             self.assertFalse(res.get("ok"))
             self.assertIn("拒绝", res.get("error", ""))
@@ -96,8 +96,8 @@ class ReportActivityTests(unittest.TestCase):
             acc = make_account(realm="cn")
             acc.path = acc.save(tmpdir)
 
-            with mock.patch.object(wb_tasks, "report_events", return_value=True), \
-                 mock.patch.object(wb_tasks, "fetch_streak_days", return_value=5):
+            with mock.patch.object(ca_tasks, "report_events", return_value=True), \
+                 mock.patch.object(ca_tasks, "fetch_streak_days", return_value=5):
                 res = acc.report_activity()
                 self.assertTrue(res.get("ok"))
                 self.assertEqual(res.get("streak_days"), 5)
@@ -106,21 +106,21 @@ class ReportActivityTests(unittest.TestCase):
 
                 # 确认持久化落盘
                 with open(acc.path, encoding="utf-8") as f:
-                    reloaded = wb_accounts.Account(json.load(f), acc.path)
+                    reloaded = ca_accounts.Account(json.load(f), acc.path)
                 self.assertEqual(reloaded.last_activity_report, acc.last_activity_report)
 
     def test_success_with_unknown_streak_days(self):
         acc = make_account(realm="cn")
-        with mock.patch.object(wb_tasks, "report_events", return_value=True), \
-             mock.patch.object(wb_tasks, "fetch_streak_days", return_value=None):
+        with mock.patch.object(ca_tasks, "report_events", return_value=True), \
+             mock.patch.object(ca_tasks, "fetch_streak_days", return_value=None):
             res = acc.report_activity()
             self.assertTrue(res.get("ok"))
             self.assertIn("连登天数未知", res.get("msg", ""))
 
     def test_success_with_zero_streak_days_warns(self):
         acc = make_account(realm="cn")
-        with mock.patch.object(wb_tasks, "report_events", return_value=True), \
-             mock.patch.object(wb_tasks, "fetch_streak_days", return_value=0):
+        with mock.patch.object(ca_tasks, "report_events", return_value=True), \
+             mock.patch.object(ca_tasks, "fetch_streak_days", return_value=0):
             res = acc.report_activity()
             self.assertTrue(res.get("ok"))
             self.assertEqual(res.get("streak_days"), 0)
@@ -133,7 +133,7 @@ class SchedulerActivityReportTests(unittest.TestCase):
         cn_acc = make_account(uid="cn-due", realm="cn")
 
         pool = type("Pool", (), {"accounts": [cn_acc]})()
-        scheduler = wb_scheduler.Scheduler(pool)
+        scheduler = ca_scheduler.Scheduler(pool)
         scheduler.cat_hours = []
 
         report_calls = []
@@ -143,9 +143,9 @@ class SchedulerActivityReportTests(unittest.TestCase):
             self.last_activity_report = time.strftime("%Y-%m-%d %H:%M:%S")
             return {"ok": True, "streak_days": 2, "msg": "对话活跃上报成功（连续打卡 2 天）"}
 
-        with mock.patch.object(wb_accounts.Account, "report_activity", fake_report), \
-             mock.patch.object(wb_scheduler, "do_cat_travel", lambda acc: {"action": None}), \
-             mock.patch.object(wb_scheduler.time, "sleep", lambda *_: None):
+        with mock.patch.object(ca_accounts.Account, "report_activity", fake_report), \
+             mock.patch.object(ca_scheduler, "do_cat_travel", lambda acc: {"action": None}), \
+             mock.patch.object(ca_scheduler.time, "sleep", lambda *_: None):
             scheduler._run_cycle("测试第一轮")
             self.assertEqual(report_calls, ["cn-due"])
             self.assertTrue(any("活跃上报 1 个" in log for log in scheduler.logs))
@@ -167,25 +167,25 @@ class StreakBonusTests(unittest.TestCase):
         """
         acc = make_account(uid="intl-bonus", realm="cn")
         acc.realm = "intl"
-        res = wb_tasks.run_streak_bonus(acc)
+        res = ca_tasks.run_streak_bonus(acc)
         self.assertFalse(res.get("ok"))
         self.assertIn("仅限国内版", res.get("msg"))
 
     def test_skips_enterprise_account(self):
         acc = make_account(uid="ent-bonus", realm="cn", enterpriseId="ent-123")
-        res = wb_tasks.run_streak_bonus(acc)
+        res = ca_tasks.run_streak_bonus(acc)
         self.assertTrue(res.get("ok"))
         self.assertIn("企业版", res.get("msg"))
 
     def test_streak_bonus_executes_safely(self):
         acc = make_account(uid="cn-bonus", realm="cn")
-        with mock.patch.object(wb_tasks._accounts, "urlopen") as mock_url:
+        with mock.patch.object(ca_tasks._accounts, "urlopen") as mock_url:
             mock_resp = mock.MagicMock()
             mock_resp.read.return_value = json.dumps({"code": 0, "data": {}}).encode("utf-8")
             mock_resp.__enter__.return_value = mock_resp
             mock_url.return_value = mock_resp
 
-            res = wb_tasks.run_streak_bonus(acc)
+            res = ca_tasks.run_streak_bonus(acc)
             self.assertTrue(res.get("ok"))
 
 

@@ -4,7 +4,7 @@
 「当前为通过 API 获取的最新数据」+ 刷新时间；不是 API 拿的（本地配置
 文件/内置快照）→ 黄色警示「当前为项目默认模型信息（未经 API 刷新）：
 模型、倍率数据可能不一致」。数据来自 /v1/models 响应的 catalog 字段
-（见 wb_proxy.catalog_meta），由 renderModelsSourceLine() 渲染。模型表
+（见 ca_proxy.catalog_meta），由 renderModelsSourceLine() 渲染。模型表
 本身也要带上名称、默认采样参数与思考细节（默认档位、能否关闭思考），
 而不是只有 id 和倍率。
 

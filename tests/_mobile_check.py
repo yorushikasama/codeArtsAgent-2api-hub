@@ -151,9 +151,9 @@ def build_fixtures():
 def set_password():
     # Reuse the project's own hashing so the fixture matches production format.
     sys.path.insert(0, ROOT)
-    import wb_settings
+    import ca_settings
 
-    wb_settings.set_panel_password(os.path.join(FIX, "accounts"), PASSWORD)
+    ca_settings.set_panel_password(os.path.join(FIX, "accounts"), PASSWORD)
 
 
 def wait_port(timeout=20):
@@ -197,7 +197,7 @@ def start_server():
         proc = subprocess.Popen(
             [
                 sys.executable,
-                "wb_proxy.py",
+                "ca_proxy.py",
                 "--host",
                 host,
                 "--port",

@@ -9,7 +9,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # directories in the repo after a run.
 _TMP = isolated_data_dirs("wb-fingerprint-")
 
-import wb_proxy as P
+import ca_proxy as P
 
 class FingerprintSanitizationTests(unittest.TestCase):
     def test_omo_junior_fingerprint_neutralized(self):

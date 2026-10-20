@@ -58,12 +58,12 @@ os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 import time as _time
 _time.time = lambda: FROZEN
 
-import wb_proxy as P
-import wb_pricing
+import ca_proxy as P
+import ca_pricing
 
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-wb_pricing.set_data_dir(USAGE_DIR)
-wb_pricing.set_settings_dir(ACCOUNTS_DIR)
+ca_pricing.set_data_dir(USAGE_DIR)
+ca_pricing.set_settings_dir(ACCOUNTS_DIR)
 
 USAGE_LOG = P.USAGE_LOG
 # checkpoint 在 v4 里一类一份文件（T8 的拆分）：这里给出合并视图与按类读写，
@@ -310,10 +310,10 @@ import time as _t
 FROZEN = __FROZEN__
 _t.time = lambda: FROZEN
 sys.path.insert(0, __ROOT__)
-import wb_proxy as P
-import wb_pricing
-wb_pricing.set_data_dir(P.USAGE_DIR)
-wb_pricing.set_settings_dir(P.ACCOUNTS_DIR)
+import ca_proxy as P
+import ca_pricing
+ca_pricing.set_data_dir(P.USAGE_DIR)
+ca_pricing.set_settings_dir(P.ACCOUNTS_DIR)
 
 TODAY0 = P._local_midnight(FROZEN)
 DAY1 = TODAY0 - 86400
@@ -420,7 +420,7 @@ def newest_hour(data, realm=None):
 # 计数桩：证明「走层」时窗口回答不再付计价/扫描
 # --------------------------------------------------------------------------
 COST_CALLS = {"n": 0}
-_REAL_COST_FOR_ROW = wb_pricing.cost_for_row
+_REAL_COST_FOR_ROW = ca_pricing.cost_for_row
 
 
 def counting_cost_for_row(*args, **kwargs):
@@ -428,7 +428,7 @@ def counting_cost_for_row(*args, **kwargs):
     return _REAL_COST_FOR_ROW(*args, **kwargs)
 
 
-wb_pricing.cost_for_row = counting_cost_for_row
+ca_pricing.cost_for_row = counting_cost_for_row
 
 
 def cost_calls(fn):
@@ -585,7 +585,7 @@ print()
 print("[3] 逐字节：同一窗口「走层」vs「强制整段扫（现折小时桶）」+ 计数桩")
 cache_env_nowrite()
 restart()
-pricing_on = P.wb_pricing.pricing_enabled()
+pricing_on = P.ca_pricing.pricing_enabled()
 # 先折一次（走层），再从状态里现折一份小时桶，两份必须逐字节一致。
 _, calls_cold = cost_calls(lambda: win(NOON1, None))
 layer = P._analytics_window_from_hours(None, NOON1, None, pricing_on)
@@ -827,7 +827,7 @@ cache_env_nowrite()
 restart()
 got = win(NOON1, None)
 layer = P._analytics_window_from_hours(None, NOON1, None,
-                                       P.wb_pricing.pricing_enabled())
+                                       P.ca_pricing.pricing_enabled())
 cold = P._scan_usage_analytics_window_hours(None, NOON1, None)
 check("层与现折小时桶逐字节一致（非精确价）",
       canon(layer) == canon(cold), first_diff(canon(cold), canon(layer)))
@@ -870,7 +870,7 @@ clean_checkpoint()
 cache_env_nowrite()
 restart()
 live()
-pricing_on = P.wb_pricing.pricing_enabled()
+pricing_on = P.ca_pricing.pricing_enabled()
 state = P._analytics_state[None]
 check("对齐窗口本来就走小时层（不是退回）",
       P._analytics_window_from_hours(None, NOON1, None, pricing_on) is not None)
@@ -942,7 +942,7 @@ if hasattr(time, "tzset"):
             cache_env_nowrite()
             restart()
             P._compute_usage_analytics_uncached(since=lo, until=None)
-            pricing_on = P.wb_pricing.pricing_enabled()
+            pricing_on = P.ca_pricing.pricing_enabled()
             layer = P._analytics_window_from_hours(None, lo, None, pricing_on)
             cold = P._scan_usage_analytics_window_hours(None, lo, None)
             check("夏令时时区：层确实接住了这个窗口（没有退回扫描）",

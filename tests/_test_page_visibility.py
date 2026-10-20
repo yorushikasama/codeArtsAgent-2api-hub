@@ -28,11 +28,11 @@ sys.path.insert(0, ROOT)
 
 from _isolated_dirs import isolated_data_dirs  # noqa: E402
 
-# Its own accounts/ + usage/ before wb_proxy reads ACCOUNTS_DIR at import.
+# Its own accounts/ + usage/ before ca_proxy reads ACCOUNTS_DIR at import.
 _TMP = isolated_data_dirs("wb-page-visibility-")
 
-import wb_proxy as proxy  # noqa: E402
-import wb_settings as S  # noqa: E402
+import ca_proxy as proxy  # noqa: E402
+import ca_settings as S  # noqa: E402
 
 
 class FakeRequest(object):
@@ -106,7 +106,7 @@ class HiddenPagesTests(unittest.TestCase):
     def test_unknown_page_keys_are_kept_not_rejected(self):
         # This module has no page registry on purpose: a key it has never heard
         # of is the panel's business to ignore, and rejecting it here would mean
-        # touching wb_settings.py every time a page is added upstream.
+        # touching ca_settings.py every time a page is added upstream.
         S.set_hidden_pages(self.dir, ["a-page-added-later"])
         self.assertEqual(S.hidden_pages(self.dir), ["a-page-added-later"])
 
@@ -154,7 +154,7 @@ class HiddenPagesTests(unittest.TestCase):
     def test_a_new_process_sees_the_persisted_list(self):
         """A restart re-reads the file, so the choice is not process-local."""
         S.set_hidden_pages(self.dir, ["tasks", "logs"])
-        code = ("import sys; sys.path.insert(0, %r); import wb_settings as S; "
+        code = ("import sys; sys.path.insert(0, %r); import ca_settings as S; "
                 "print(S.hidden_pages(%r))" % (ROOT, self.dir))
         done = subprocess.run([sys.executable, "-c", code], cwd=ROOT,
                               capture_output=True, text=True, timeout=60)

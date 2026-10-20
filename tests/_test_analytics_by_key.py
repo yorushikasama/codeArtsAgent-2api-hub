@@ -35,14 +35,14 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _TMP = tempfile.mkdtemp(prefix="wb-bykey-")
 # WB_PROXY_USAGE_DIR is read at import, but ACCOUNTS_DIR is not configurable
-# that way - wb_proxy hard-codes it next to the script - so setting the
+# that way - ca_proxy hard-codes it next to the script - so setting the
 # environment variable for it does nothing and it has to be rebound below.
 # This test writes settings, so getting that wrong would drop its fixtures
 # into the real accounts/settings.json, where the panel would show them.
 os.environ["WB_PROXY_USAGE_DIR"] = _TMP
 
-import wb_proxy as P
-import wb_settings as S
+import ca_proxy as P
+import ca_settings as S
 
 P.ACCOUNTS_DIR = os.path.join(_TMP, "accounts")
 os.makedirs(P.ACCOUNTS_DIR, exist_ok=True)

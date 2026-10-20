@@ -21,7 +21,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import wb_atrest as A  # noqa: E402
+import ca_atrest as A  # noqa: E402
 import _lifecycle as life  # noqa: E402  (shared stop for the target process)
 
 #: 靶子进程：密钥放在模块全局（等价于客户端把它留在常驻内存里），再分配一大块

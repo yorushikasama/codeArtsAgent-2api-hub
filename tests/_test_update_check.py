@@ -33,9 +33,9 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 
 _TMP = isolated_data_dirs("wb-update-check-")
 
-import wb_proxy as proxy  # noqa: E402
-import wb_settings  # noqa: E402
-import wb_updates  # noqa: E402
+import ca_proxy as proxy  # noqa: E402
+import ca_settings  # noqa: E402
+import ca_updates  # noqa: E402
 
 CURRENT = "1.6.17"
 
@@ -45,7 +45,7 @@ def release(tag, **overrides):
         "tag_name": tag,
         "draft": False,
         "prerelease": False,
-        "html_url": "https://github.com/ardeyouxipianyi/workbuddy2api-hub/releases/tag/" + tag,
+        "html_url": "https://github.com/yorushikasama/codeArtsAgent-2api-hub/releases/tag/" + tag,
         "published_at": "2026-10-08T00:00:00Z",
     }
     entry.update(overrides)
@@ -70,7 +70,7 @@ class FakeFetcher(object):
 
 
 def tag_url(tag):
-    return ("https://github.com/ardeyouxipianyi/workbuddy2api-hub"
+    return ("https://github.com/yorushikasama/codeArtsAgent-2api-hub"
             "/releases/tag/" + tag)
 
 
@@ -93,7 +93,7 @@ class Redirected(object):
 def checker(directory, fetcher, **kwargs):
     kwargs.setdefault("first_delay", 0)
     kwargs.setdefault("poll_seconds", 0.01)
-    return wb_updates.UpdateChecker(current_version=CURRENT,
+    return ca_updates.UpdateChecker(current_version=CURRENT,
                                     settings_dir=directory,
                                     fetcher=fetcher, **kwargs)
 
@@ -101,18 +101,18 @@ def checker(directory, fetcher, **kwargs):
 class SettingsContractTests(unittest.TestCase):
     def test_missing_key_reads_as_off(self):
         with tempfile.TemporaryDirectory(prefix="upd-set-") as d:
-            self.assertFalse(wb_settings.update_check_enabled(d))
+            self.assertFalse(ca_settings.update_check_enabled(d))
             with mock.patch.object(proxy, "ACCOUNTS_DIR", d):
                 self.assertFalse(proxy.runtime_settings_view()["update_check_enabled"])
 
     def test_enable_and_disable_round_trip(self):
         with tempfile.TemporaryDirectory(prefix="upd-set-") as d:
-            self.assertTrue(wb_settings.set_update_check_enabled(d, True))
-            self.assertTrue(wb_settings.update_check_enabled(d))
-            with open(wb_settings.settings_path(d), encoding="utf-8") as fh:
+            self.assertTrue(ca_settings.set_update_check_enabled(d, True))
+            self.assertTrue(ca_settings.update_check_enabled(d))
+            with open(ca_settings.settings_path(d), encoding="utf-8") as fh:
                 self.assertIs(json.load(fh)["update_check_enabled"], True)
-            self.assertFalse(wb_settings.set_update_check_enabled(d, False))
-            self.assertFalse(wb_settings.update_check_enabled(d))
+            self.assertFalse(ca_settings.set_update_check_enabled(d, False))
+            self.assertFalse(ca_settings.update_check_enabled(d))
             with mock.patch.object(proxy, "ACCOUNTS_DIR", d):
                 self.assertFalse(proxy.runtime_settings_view()["update_check_enabled"])
 
@@ -120,39 +120,39 @@ class SettingsContractTests(unittest.TestCase):
         # A hand-edited "yes" or 1 must not start a daily outbound request.
         for value in ("yes", 1, "true", [1], {"on": True}):
             with tempfile.TemporaryDirectory(prefix="upd-set-") as d:
-                wb_settings.save(d, {"update_check_enabled": value})
-                self.assertFalse(wb_settings.update_check_enabled(d), value)
+                ca_settings.save(d, {"update_check_enabled": value})
+                self.assertFalse(ca_settings.update_check_enabled(d), value)
 
 
 class VersionComparisonTests(unittest.TestCase):
     def test_plain_semver_parses_with_or_without_the_v(self):
-        self.assertEqual(wb_updates.parse_version("v1.2.3"), (1, 2, 3))
-        self.assertEqual(wb_updates.parse_version("1.2.3"), (1, 2, 3))
-        self.assertEqual(wb_updates.parse_version(" v10.0.4 "), (10, 0, 4))
+        self.assertEqual(ca_updates.parse_version("v1.2.3"), (1, 2, 3))
+        self.assertEqual(ca_updates.parse_version("1.2.3"), (1, 2, 3))
+        self.assertEqual(ca_updates.parse_version(" v10.0.4 "), (10, 0, 4))
 
     def test_unorderable_tags_are_rejected(self):
         for tag in ("v1.2", "v1.2.3.4", "v1.2.3-rc1", "nightly", "", None, "v1.x.3"):
-            self.assertIsNone(wb_updates.parse_version(tag), tag)
+            self.assertIsNone(ca_updates.parse_version(tag), tag)
 
     def test_is_newer_orders_three_parts(self):
-        self.assertTrue(wb_updates.is_newer("1.6.18", "1.6.17"))
-        self.assertTrue(wb_updates.is_newer("v1.7.0", "1.6.99"))
-        self.assertTrue(wb_updates.is_newer("2.0.0", "1.99.99"))
-        self.assertFalse(wb_updates.is_newer("1.6.17", "1.6.17"))
-        self.assertFalse(wb_updates.is_newer("1.6.16", "1.6.17"))
-        self.assertFalse(wb_updates.is_newer("garbage", "1.6.17"))
+        self.assertTrue(ca_updates.is_newer("1.6.18", "1.6.17"))
+        self.assertTrue(ca_updates.is_newer("v1.7.0", "1.6.99"))
+        self.assertTrue(ca_updates.is_newer("2.0.0", "1.99.99"))
+        self.assertFalse(ca_updates.is_newer("1.6.17", "1.6.17"))
+        self.assertFalse(ca_updates.is_newer("1.6.16", "1.6.17"))
+        self.assertFalse(ca_updates.is_newer("garbage", "1.6.17"))
 
 
 class ReleasePickingTests(unittest.TestCase):
     def test_newer_stable_release_wins(self):
-        picked = wb_updates.pick_latest([release("v1.6.18")], CURRENT)
+        picked = ca_updates.pick_latest([release("v1.6.18")], CURRENT)
         self.assertEqual(picked["version"], "1.6.18")
         self.assertTrue(picked["newer"])
         self.assertTrue(picked["url"].startswith("https://github.com/"))
 
     def test_same_and_older_releases_are_not_an_update(self):
         for tag in ("v1.6.17", "v1.6.16", "v1.0.0"):
-            self.assertFalse(wb_updates.pick_latest([release(tag)], CURRENT)["newer"], tag)
+            self.assertFalse(ca_updates.pick_latest([release(tag)], CURRENT)["newer"], tag)
 
     def test_drafts_and_prereleases_are_ignored(self):
         document = [
@@ -160,11 +160,11 @@ class ReleasePickingTests(unittest.TestCase):
             release("v8.8.8", prerelease=True),
             release("v1.6.18"),
         ]
-        self.assertEqual(wb_updates.pick_latest(document, CURRENT)["version"], "1.6.18")
+        self.assertEqual(ca_updates.pick_latest(document, CURRENT)["version"], "1.6.18")
 
     def test_only_drafts_and_prereleases_means_no_known_latest(self):
         document = [release("v9.9.9", draft=True), release("v8.8.8", prerelease=True)]
-        self.assertIsNone(wb_updates.pick_latest(document, CURRENT))
+        self.assertIsNone(ca_updates.pick_latest(document, CURRENT))
 
     def test_malformed_entries_are_skipped_not_fatal(self):
         document = [
@@ -177,20 +177,20 @@ class ReleasePickingTests(unittest.TestCase):
             {"tag_name": "v1.6.18", "draft": "yes-please"},
             release("v1.6.19"),
         ]
-        self.assertEqual(wb_updates.pick_latest(document, CURRENT)["version"], "1.6.19")
+        self.assertEqual(ca_updates.pick_latest(document, CURRENT)["version"], "1.6.19")
 
     def test_the_highest_version_wins_not_the_first(self):
         document = [release("v1.6.18"), release("v1.9.0"), release("v1.7.5")]
-        self.assertEqual(wb_updates.pick_latest(document, CURRENT)["version"], "1.9.0")
+        self.assertEqual(ca_updates.pick_latest(document, CURRENT)["version"], "1.9.0")
 
     def test_a_non_list_document_picks_nothing(self):
         for document in ({}, {"releases": []}, "text", None):
-            self.assertIsNone(wb_updates.pick_latest(document, CURRENT), document)
+            self.assertIsNone(ca_updates.pick_latest(document, CURRENT), document)
 
     def test_release_url_is_restricted_to_github_https(self):
         for bad in ("javascript:alert(1)", "http://github.com/x", "data:text/html,x", ""):
-            self.assertEqual(wb_updates.safe_url(bad), "", bad)
-        self.assertEqual(wb_updates.safe_url("https://github.com/a/b"),
+            self.assertEqual(ca_updates.safe_url(bad), "", bad)
+        self.assertEqual(ca_updates.safe_url("https://github.com/a/b"),
                          "https://github.com/a/b")
 
 
@@ -207,7 +207,7 @@ class CheckBehaviourTests(unittest.TestCase):
 
     def test_enabled_mode_respects_the_24h_gate(self):
         with tempfile.TemporaryDirectory(prefix="upd-run-") as d:
-            wb_settings.set_update_check_enabled(d, True)
+            ca_settings.set_update_check_enabled(d, True)
             fetcher = FakeFetcher([release("v1.6.18")])
             checker_ = checker(d, fetcher)
             first = checker_.check()
@@ -220,11 +220,11 @@ class CheckBehaviourTests(unittest.TestCase):
 
     def test_the_window_opens_after_a_day(self):
         with tempfile.TemporaryDirectory(prefix="upd-run-") as d:
-            wb_settings.set_update_check_enabled(d, True)
+            ca_settings.set_update_check_enabled(d, True)
             fetcher = FakeFetcher([release("v1.6.18")])
             checker_ = checker(d, fetcher)
             checker_.check()
-            checker_._last_attempt = time.time() - wb_updates.SCHEDULED_INTERVAL_SECONDS - 1
+            checker_._last_attempt = time.time() - ca_updates.SCHEDULED_INTERVAL_SECONDS - 1
             self.assertTrue(checker_.due())
             checker_.check()
             self.assertEqual(len(fetcher.calls), 2)
@@ -243,7 +243,7 @@ class CheckBehaviourTests(unittest.TestCase):
 
     def test_scheduled_pass_with_nothing_newer_reports_false(self):
         with tempfile.TemporaryDirectory(prefix="upd-run-") as d:
-            wb_settings.set_update_check_enabled(d, True)
+            ca_settings.set_update_check_enabled(d, True)
             fetcher = FakeFetcher([release("v1.6.17"), release("v1.6.10")])
             status = checker(d, fetcher).check()
             self.assertEqual(len(fetcher.calls), 1)
@@ -253,7 +253,7 @@ class CheckBehaviourTests(unittest.TestCase):
 
     def test_cadence_survives_a_restart(self):
         with tempfile.TemporaryDirectory(prefix="upd-run-") as d:
-            wb_settings.set_update_check_enabled(d, True)
+            ca_settings.set_update_check_enabled(d, True)
             fetcher = FakeFetcher([release("v1.6.18")])
             checker(d, fetcher).check()
             # A new process reads the stored attempt time, so a restart is not
@@ -273,7 +273,7 @@ class FailureHandlingTests(unittest.TestCase):
     def test_http_error_is_reported_without_the_body(self):
         with tempfile.TemporaryDirectory(prefix="upd-fail-") as d:
             error = urllib.error.HTTPError(
-                wb_updates.RELEASES_URL, 403, "rate limited",
+                ca_updates.RELEASES_URL, 403, "rate limited",
                 {"X-Secret-Header": "leak-me"}, None)
             _fetcher, status = self._failing(d, error)
             self.assertEqual(status["last_error"], "HTTP 403")
@@ -301,7 +301,7 @@ class FailureHandlingTests(unittest.TestCase):
 
     def test_a_failed_check_keeps_the_last_known_answer(self):
         with tempfile.TemporaryDirectory(prefix="upd-fail-") as d:
-            wb_settings.set_update_check_enabled(d, True)
+            ca_settings.set_update_check_enabled(d, True)
             checker_ = checker(d, FakeFetcher([release("v1.6.18")]))
             checker_.check()
             checker_._fetch = FakeFetcher(error=urllib.error.URLError("down"))
@@ -316,7 +316,7 @@ class FailureHandlingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="upd-fail-") as d:
             error = urllib.error.URLError("failed for https://api.github.com/x?token=" + marker)
             checker(d, FakeFetcher(error=error)).check(manual=True)
-            with open(wb_settings.settings_path(d), encoding="utf-8") as fh:
+            with open(ca_settings.settings_path(d), encoding="utf-8") as fh:
                 raw = fh.read()
         self.assertNotIn(marker, raw)
         self.assertNotIn("api.github.com", raw)
@@ -324,9 +324,9 @@ class FailureHandlingTests(unittest.TestCase):
 
     def test_only_operational_fields_are_persisted(self):
         with tempfile.TemporaryDirectory(prefix="upd-fail-") as d:
-            wb_settings.set_update_check_enabled(d, True)
+            ca_settings.set_update_check_enabled(d, True)
             checker(d, FakeFetcher([release("v1.6.18")])).check()
-            with open(wb_settings.settings_path(d), encoding="utf-8") as fh:
+            with open(ca_settings.settings_path(d), encoding="utf-8") as fh:
                 stored = json.load(fh)
         self.assertEqual(sorted(stored["update_check"]),
                          ["last_attempt", "last_success", "latest_version"])
@@ -335,7 +335,7 @@ class FailureHandlingTests(unittest.TestCase):
     def test_a_failed_attempt_is_not_recorded_as_a_success(self):
         with tempfile.TemporaryDirectory(prefix="upd-fail-") as d:
             checker(d, FakeFetcher(error=urllib.error.URLError("down"))).check(manual=True)
-            state = wb_settings.update_check_state(d)
+            state = ca_settings.update_check_state(d)
         self.assertGreater(state["last_attempt"], 0)
         self.assertEqual(state["last_success"], 0.0)
         self.assertEqual(state["latest_version"], "")
@@ -353,7 +353,7 @@ class QuotaFallbackTests(unittest.TestCase):
 
         def urlopen(request, timeout=None):
             calls.append(request)
-            if request.full_url == wb_updates.RELEASES_URL:
+            if request.full_url == ca_updates.RELEASES_URL:
                 raise api_error or urllib.error.HTTPError(
                     request.full_url, 403, "rate limited", {}, None)
             if isinstance(web, Exception):
@@ -365,8 +365,8 @@ class QuotaFallbackTests(unittest.TestCase):
     def test_an_api_quota_error_falls_back_to_the_web_endpoint(self):
         with tempfile.TemporaryDirectory(prefix="upd-quota-") as d:
             urlopen, calls = self._stub(Redirected(tag_url("v1.6.20")))
-            with mock.patch.object(wb_updates.urllib.request, "urlopen", urlopen):
-                status = checker(d, wb_updates.fetch_releases).check(manual=True)
+            with mock.patch.object(ca_updates.urllib.request, "urlopen", urlopen):
+                status = checker(d, ca_updates.fetch_releases).check(manual=True)
             self.assertEqual(len(calls), 2, "the API goes first, the web endpoint second")
             self.assertEqual(status["last_error"], "")
             self.assertEqual(status["latest_version"], "1.6.20")
@@ -379,16 +379,16 @@ class QuotaFallbackTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="upd-quota-") as d:
             urlopen, _calls = self._stub(Redirected(tag_url("v1.6.20")),
                                          api_error=urllib.error.URLError("reset"))
-            with mock.patch.object(wb_updates.urllib.request, "urlopen", urlopen):
-                status = checker(d, wb_updates.fetch_releases).check(manual=True)
+            with mock.patch.object(ca_updates.urllib.request, "urlopen", urlopen):
+                status = checker(d, ca_updates.fetch_releases).check(manual=True)
             self.assertEqual(status["last_error"], "")
             self.assertEqual(status["latest_version"], "1.6.20")
 
     def test_a_failing_fallback_still_reports_the_api_cause(self):
         with tempfile.TemporaryDirectory(prefix="upd-quota-") as d:
             urlopen, _calls = self._stub(urllib.error.URLError("no route"))
-            with mock.patch.object(wb_updates.urllib.request, "urlopen", urlopen):
-                status = checker(d, wb_updates.fetch_releases).check(manual=True)
+            with mock.patch.object(ca_updates.urllib.request, "urlopen", urlopen):
+                status = checker(d, ca_updates.fetch_releases).check(manual=True)
             self.assertEqual(status["last_error"], "HTTP 403")
             self.assertIsNone(status["latest_version"])
 
@@ -401,12 +401,12 @@ class QuotaFallbackTests(unittest.TestCase):
             return io.BytesIO(json.dumps([release("v1.6.20")]).encode("utf-8"))
 
         with tempfile.TemporaryDirectory(prefix="upd-quota-") as d:
-            with mock.patch.dict(os.environ, {wb_updates.TOKEN_ENV: token}):
-                with mock.patch.object(wb_updates.urllib.request, "urlopen", urlopen):
-                    status = checker(d, wb_updates.fetch_releases).check(manual=True)
+            with mock.patch.dict(os.environ, {ca_updates.TOKEN_ENV: token}):
+                with mock.patch.object(ca_updates.urllib.request, "urlopen", urlopen):
+                    status = checker(d, ca_updates.fetch_releases).check(manual=True)
             self.assertEqual(sent[0], "Bearer " + token)
             self.assertEqual(status["latest_version"], "1.6.20")
-            with open(wb_settings.settings_path(d), encoding="utf-8") as fh:
+            with open(ca_settings.settings_path(d), encoding="utf-8") as fh:
                 raw = fh.read()
         self.assertNotIn(token, raw)
 
@@ -434,7 +434,7 @@ class BackgroundWorkerTests(unittest.TestCase):
 
     def test_an_enabled_worker_checks_on_its_own(self):
         with tempfile.TemporaryDirectory(prefix="upd-bg-") as d:
-            wb_settings.set_update_check_enabled(d, True)
+            ca_settings.set_update_check_enabled(d, True)
             fetcher = FakeFetcher([release("v1.6.18")])
             worker = checker(d, fetcher)
             worker.start()
@@ -488,16 +488,16 @@ class RouteTests(unittest.TestCase):
             request = self._save(d, {"update_check_enabled": True})
             self.assertEqual(request.status, 200)
             self.assertIs(request.reply["update_check_enabled"], True)
-            self.assertTrue(wb_settings.update_check_enabled(d))
+            self.assertTrue(ca_settings.update_check_enabled(d))
             request = self._save(d, {"update_check_enabled": False})
-            self.assertFalse(wb_settings.update_check_enabled(d))
+            self.assertFalse(ca_settings.update_check_enabled(d))
 
     def test_settings_save_refuses_a_non_boolean(self):
         with tempfile.TemporaryDirectory(prefix="upd-route-") as d:
             for value in ("false", 0, 1, None, "yes"):
                 request = self._save(d, {"update_check_enabled": value})
                 self.assertEqual(request.status, 400, value)
-            self.assertFalse(wb_settings.update_check_enabled(d))
+            self.assertFalse(ca_settings.update_check_enabled(d))
 
     def test_turning_it_on_wakes_a_parked_worker(self):
         with tempfile.TemporaryDirectory(prefix="upd-route-") as d:
@@ -596,7 +596,7 @@ class UpdateRouteAccessTests(unittest.TestCase):
 
     def _accounts(self, directory, with_key):
         if with_key:
-            wb_settings.set_api_keys(directory, [
+            ca_settings.set_api_keys(directory, [
                 {"id": "k1", "name": "k", "key": self.KEY, "enabled": True}])
 
     def _dispatch(self, directory, path, headers=None, command="GET",

@@ -1191,7 +1191,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   var pick = null;
   try {
     var q = new URLSearchParams(location.search).get('tab');
-    var s = localStorage.getItem('wb-proxy-main-tab');
+    var s = localStorage.getItem('codearts-hub-main-tab');
     pick = [q, s].find(function(t){ return TABS.indexOf(t) !== -1; }) || 'gateway';
   } catch(e) { pick = 'gateway'; }
   window.__MAIN_TAB__ = pick;
@@ -3308,7 +3308,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         运行日志
       </button>
     </nav>
-    <a class="gh-link" href="https://github.com/ardeyouxipianyi/workbuddy2api-hub" target="_blank" rel="noopener noreferrer"
+    <a class="gh-link" href="https://github.com/yorushikasama/codeArtsAgent-2api-hub" target="_blank" rel="noopener noreferrer"
        title="查看 GitHub 项目仓库" aria-label="GitHub 项目仓库">
       <svg viewBox="0 0 16 16" aria-hidden="true">
         <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
@@ -4281,7 +4281,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
           <span style="width:10px;height:10px;border-radius:50%;background:#c05a48;display:inline-block"></span>
           <span style="width:10px;height:10px;border-radius:50%;background:#d3aa61;display:inline-block"></span>
           <span style="width:10px;height:10px;border-radius:50%;background:#7fa98a;display:inline-block"></span>
-          <span style="font-size:11px;color:#a49e90;font-family:monospace;margin-left:8px">wb-proxy-console.log</span>
+          <span style="font-size:11px;color:#a49e90;font-family:monospace;margin-left:8px">codearts-hub-console.log</span>
         </div>
         <div id="logTerminalStatus" style="font-size:11px;color:#8a8375;font-family:monospace">就绪</div>
       </div>
@@ -4814,7 +4814,7 @@ async function loadModels(){
 // 清单来源横幅：把「通过 API 获取的最新数据」和「项目默认/缓存文件数据」在
 // 视觉上分清楚——非 API 来源给黄色警示（模型、倍率数据可能不一致），API 来源
 // 给绿色状态条并附刷新时间。数据由 /v1/models 响应的 catalog 字段驱动（见
-// wb_proxy.catalog_meta）；旧版服务端没有该字段时如实提示。
+// ca_proxy.catalog_meta）；旧版服务端没有该字段时如实提示。
 const CATALOG_SOURCE_ORIGIN = {
   remote:   '上游 API · /v3/config',
   endpoint: '上游 API · /v1/models 端点',
@@ -5720,8 +5720,8 @@ function card(k, v, sub, cls){
 }
 
 /* ---- api key handling ---- */
-const KEY_STORE = 'wb-proxy-api-key';
-const PANEL_STORE = 'wb-proxy-panel-token';
+const KEY_STORE = 'codearts-hub-api-key';
+const PANEL_STORE = 'codearts-hub-panel-token';
 let API_KEY = '';
 let PANEL_TOKEN = '';
 try { PANEL_TOKEN = sessionStorage.getItem(PANEL_STORE) || ''; } catch(e) { PANEL_TOKEN = ''; }
@@ -6070,7 +6070,7 @@ function openActivityHistory(uid){
 
 
 
-// 账号的手动调度权重提示：与 wb_accounts._pick_weighted_first 的行为一一对应。
+// 账号的手动调度权重提示：与 ca_accounts._pick_weighted_first 的行为一一对应。
 const WEIGHT_TIP = '权重 >1 的账号优先接单，多个高权重账号按权重比分流量；它们都接不了单时其他账号照常顶上。已开始的会话保持粘性不换号，权重对新会话生效。1 = 不干预，临期积分优先等自动规则照旧。';
 
 
@@ -6246,7 +6246,7 @@ function renderDisabled(){
 }
 
 /* ---- 签到与活跃记录（GET /activity/history，issue #176）----
-   国内版签到的每一次真实尝试，都由 wb_activity.py 落成一行：
+   国内版签到的每一次真实尝试，都由 ca_activity.py 落成一行：
    时间 / uid / 昵称 / 区域 / 任务 / 触发来源 / 结果 / 说明。筛选全部交给服务端
    （range/task/result/uid/limit），它还会校验认不出来的值并回 400——前端不再
    自己过滤一遍，两处各写一份筛选规则迟早会跑偏。
@@ -7321,7 +7321,7 @@ function generatePageList(current, total){
 // Tab ids in nav order. One list so the restore path and the nav cannot
 // drift apart.
 const MAIN_TABS = ['gateway', 'accounts', 'analytics', 'settings', 'logs'];
-const MAIN_TAB_STORE = 'wb-proxy-main-tab';
+const MAIN_TAB_STORE = 'codearts-hub-main-tab';
 let currentMainTab = 'gateway';
 let analyticsRange = 'today';
 let cachedMatrixData = null;
@@ -7838,7 +7838,7 @@ const PAGE_KEEP_VISIBLE = 'settings';
 /* 页签 key 由按钮 id 推出（btnNavGateway → gateway），与 switchMainTab() 和启动
    脚本用的是同一套命名；id 不是这个形状的按钮直接跳过，不猜。 */
 const NAV_BUTTON_PREFIX = 'btnNav';
-/* 页面 key 的合法形状，与 wb_settings.PAGE_KEY_RE 一致 */
+/* 页面 key 的合法形状，与 ca_settings.PAGE_KEY_RE 一致 */
 const PAGE_KEY_SHAPE = /^[a-z][a-z0-9_-]{0,31}$/;
 
 let _hiddenPages = [];
@@ -7897,7 +7897,7 @@ function pageHidden(key){
 /* 服务端下发的清单照单收下，但仍过一遍归一化：手改过的文件、将来的客户端或上游
    新增的页面都可能带来这里不认识的 key，不认识的忽略即可。「设置」无论从哪个来源
    来都不收起——不这样兜底，手改 settings.json 就能把面板唯一的入口关掉。
-   归一化口径与 wb_settings._clean_page_keys 对齐（形状、去重、丢掉「设置」），
+   归一化口径与 ca_settings._clean_page_keys 对齐（形状、去重、丢掉「设置」），
    免得两边记的清单不是一回事；条数上限只在服务端，面板一次最多提交自己那几个页签。 */
 function normaliseHiddenPages(hidden){
   if(!Array.isArray(hidden)) return [];
@@ -8185,7 +8185,7 @@ async function loadSettings(showToast){
 
     // 面板窗口限高：字段缺失（后端旧一点）或存坏了都按默认 640px 算，0 = 不限。
     // 坏值回落默认状态这条口径与「顶部页签显示」「账号区折叠」一致，见
-    // wb_settings.section_max_height 与 applyWinMaxHeight。
+    // ca_settings.section_max_height 与 applyWinMaxHeight。
     const rawWinMax = data.section_max_height;
     const winMax = (typeof rawWinMax === 'number' && Number.isFinite(rawWinMax) && rawWinMax >= 0)
       ? rawWinMax : 640;
@@ -9479,7 +9479,7 @@ function markSlotsDirty(){
   renderSlotState();
 }
 
-/* 出口信息的展示口径，与服务端 wb_ipintel 保持一致：hosting 地址算机房，
+/* 出口信息的展示口径，与服务端 ca_ipintel 保持一致：hosting 地址算机房，
    其余算住宅；国家名由查询服务直接给中文。 */
 const IP_TYPE_LABELS = {residential: '住宅', datacenter: '机房'};
 
@@ -10097,7 +10097,7 @@ async function exportLogsFile(){
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    a.download = 'wb-proxy-' + ts + '.log';
+    a.download = 'codearts-hub-' + ts + '.log';
     a.click();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
     toast('已导出 ' + data.logs.length + ' 行日志', 'ok');

@@ -49,16 +49,16 @@ os.makedirs(ACCOUNTS_DIR, exist_ok=True)
 os.environ["WB_PROXY_USAGE_DIR"] = USAGE_DIR
 os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 
-import wb_pricing                                                   # noqa: E402
-import wb_proxy as P                                                # noqa: E402
-import wb_settings                                                  # noqa: E402
+import ca_pricing                                                   # noqa: E402
+import ca_proxy as P                                                # noqa: E402
+import ca_settings                                                  # noqa: E402
 
-wb_pricing.set_data_dir(USAGE_DIR)
-wb_pricing.set_settings_dir(ACCOUNTS_DIR)
+ca_pricing.set_data_dir(USAGE_DIR)
+ca_pricing.set_settings_dir(ACCOUNTS_DIR)
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
 USAGE_LOG = P.USAGE_LOG
-POLICIES_FILE = wb_pricing.policies_path()
-TIMELINE_FILE = wb_pricing.timeline_path()
+POLICIES_FILE = ca_pricing.policies_path()
+TIMELINE_FILE = ca_pricing.timeline_path()
 PRICING_FILE = os.path.join(_TMP, "pricing.json")
 os.environ["WB_PRICING_FILE"] = PRICING_FILE
 # 快照载荷里带着进程自己的 _usage["started"]：冻结它让各次折叠可比。
@@ -109,8 +109,8 @@ def forget_file_keys():
     _file_key 有 1 秒 TTL（本进程之外写下的变更最迟 1 秒内可见），测试不等
     这一秒，直接清掉缓存——语义与「等过了 TTL」一致。
     """
-    wb_pricing._file_key_cache.clear()
-    wb_pricing._file_cache.update({"key": None, "data": None})
+    ca_pricing._file_key_cache.clear()
+    ca_pricing._file_cache.update({"key": None, "data": None})
 
 
 def write_text(path, text):
@@ -133,7 +133,7 @@ def write_log(rows):
 
 def register(doc, at):
     """把一份价目表登记进策略表与时间线（与定价刷新器同一条路）。"""
-    _fresh, _changed, assignment = wb_pricing.record_policies(doc, at=at)
+    _fresh, _changed, assignment = ca_pricing.record_policies(doc, at=at)
     forget_file_keys()
     return assignment
 
@@ -314,7 +314,7 @@ class Counters(object):
     def __enter__(self):
         real_snap = P._fold_usage_snapshot
         real_an = P._fold_usage_analytics
-        real_cost = wb_pricing.cost_for_row
+        real_cost = ca_pricing.cost_for_row
         counts = self.counts
 
         def fold_snap(*args, **kwargs):
@@ -332,11 +332,11 @@ class Counters(object):
         self._saved = (real_snap, real_an, real_cost)
         P._fold_usage_snapshot = fold_snap
         P._fold_usage_analytics = fold_an
-        wb_pricing.cost_for_row = cost
+        ca_pricing.cost_for_row = cost
         return self
 
     def __exit__(self, *exc):
-        P._fold_usage_snapshot, P._fold_usage_analytics, wb_pricing.cost_for_row = self._saved
+        P._fold_usage_snapshot, P._fold_usage_analytics, ca_pricing.cost_for_row = self._saved
         return False
 
     def reset(self):
@@ -506,11 +506,11 @@ write_log(base_log(PID_REF))
 with Counters() as counters:
     base = canon(payload())
     counters.reset()
-    wb_settings.set_pricing_enabled(ACCOUNTS_DIR, False)
+    ca_settings.set_pricing_enabled(ACCOUNTS_DIR, False)
     off = canon(payload())
     off_counts = dict(counters.counts)
     counters.reset()
-    wb_settings.set_pricing_enabled(ACCOUNTS_DIR, True)
+    ca_settings.set_pricing_enabled(ACCOUNTS_DIR, True)
     back = canon(payload())
     on_counts = dict(counters.counts)
 check("总开关关掉：判废重折（成本全部停摆）",

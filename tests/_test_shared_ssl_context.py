@@ -26,7 +26,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # Its own directories, removed when this process exits.
 _TMP = isolated_data_dirs("wb-shared-ssl-")
 
-import wb_upstream_pool as U  # noqa: E402
+import ca_upstream_pool as U  # noqa: E402
 
 PASS = 0
 FAIL = 0

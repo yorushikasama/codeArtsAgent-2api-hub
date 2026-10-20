@@ -16,7 +16,7 @@ os.environ["ACCOUNTS_DIR"] = _startup_dir.name
 os.environ["WB_PROXY_USAGE_DIR"] = _startup_dir.name
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts
+import ca_accounts
 
 
 def fake_jwt(uid="uid-cockpit", issuer="https://www.workbuddy.ai"):
@@ -47,7 +47,7 @@ def cockpit_row(**extra):
 
 class CockpitRowTests(unittest.TestCase):
     def test_snake_case_row_maps_to_account_kwargs(self):
-        kwargs = wb_accounts.normalise_import_row(cockpit_row())
+        kwargs = ca_accounts.normalise_import_row(cockpit_row())
         self.assertEqual(kwargs["uid"], "uid-cockpit")
         self.assertEqual(kwargs["accessToken"], fake_jwt())
         self.assertEqual(kwargs["refreshToken"], "refresh-token")
@@ -58,28 +58,28 @@ class CockpitRowTests(unittest.TestCase):
         self.assertLess(abs(kwargs["expiresAt"] - (time.time() + 3600)), 120)
 
     def test_nickname_falls_back_to_email(self):
-        kwargs = wb_accounts.normalise_import_row(cockpit_row(nickname=""))
+        kwargs = ca_accounts.normalise_import_row(cockpit_row(nickname=""))
         self.assertEqual(kwargs["nickname"], "user@example.com")
-        named = wb_accounts.normalise_import_row(cockpit_row(nickname="Named"))
+        named = ca_accounts.normalise_import_row(cockpit_row(nickname="Named"))
         self.assertEqual(named["nickname"], "Named")
 
     def test_cn_domain_stays_cn(self):
         row = cockpit_row(domain="copilot.tencent.com",
                           access_token=fake_jwt(issuer="https://copilot.tencent.com"))
-        kwargs = wb_accounts.normalise_import_row(row)
+        kwargs = ca_accounts.normalise_import_row(row)
         self.assertEqual(kwargs["realm"], "cn")
 
     def test_missing_token_is_rejected(self):
         row = cockpit_row()
         row["access_token"] = ""
         with self.assertRaises(ValueError):
-            wb_accounts.normalise_import_row(row)
+            ca_accounts.normalise_import_row(row)
 
 
 class CockpitPoolImportTests(unittest.TestCase):
     def test_import_rows_adds_cockpit_accounts(self):
         with tempfile.TemporaryDirectory() as directory:
-            pool = wb_accounts.AccountPool(directory)
+            pool = ca_accounts.AccountPool(directory)
             report = pool.import_rows([
                 cockpit_row(uid="uid-a", access_token=fake_jwt("uid-a")),
                 cockpit_row(uid="uid-b", access_token=fake_jwt("uid-b")),
@@ -95,7 +95,7 @@ class CockpitPoolImportTests(unittest.TestCase):
 
     def test_duplicate_is_skipped_without_overwrite(self):
         with tempfile.TemporaryDirectory() as directory:
-            pool = wb_accounts.AccountPool(directory)
+            pool = ca_accounts.AccountPool(directory)
             pool.import_rows([cockpit_row(uid="uid-a",
                                           access_token=fake_jwt("uid-a"))])
             report = pool.import_rows([cockpit_row(uid="uid-a",

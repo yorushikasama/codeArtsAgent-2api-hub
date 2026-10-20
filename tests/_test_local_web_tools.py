@@ -31,8 +31,8 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_proxy as proxy
-import wb_webtools as W
+import ca_proxy as proxy
+import ca_webtools as W
 
 PASS = FAIL = 0
 
@@ -443,7 +443,7 @@ with mock.patch.multiple(proxy,
                          record_usage=lambda *a, **k: None,
                          record_error=lambda *a, **k: None), \
         mock.patch.object(W, "execute", lambda name, args: ran.append(name) or "no"), \
-        mock.patch.object(proxy.wb_settings, "local_web_tools", lambda accounts_dir: False):
+        mock.patch.object(proxy.ca_settings, "local_web_tools", lambda accounts_dir: False):
     handler3._responses_stream_response(
         FakeUpstream(sse(TOOL_CHUNKS)), "deepseek-v4.1-flash", set(), {}, "fp",
         FakeAccount(), 0.0, None,
@@ -462,14 +462,14 @@ print("[11] the switch: settings, injection, and no private marker upstream")
 
 _tmpdir = tempfile.mkdtemp(prefix="wb-webtools-")
 check("the switch is off on a fresh install",
-      proxy.wb_settings.local_web_tools(_tmpdir) is False)
+      proxy.ca_settings.local_web_tools(_tmpdir) is False)
 check("the setting round-trips",
-      proxy.wb_settings.set_local_web_tools(_tmpdir, True) is True
-      and proxy.wb_settings.local_web_tools(_tmpdir) is True
-      and proxy.wb_settings.set_local_web_tools(_tmpdir, False) is False
-      and proxy.wb_settings.local_web_tools(_tmpdir) is False)
+      proxy.ca_settings.set_local_web_tools(_tmpdir, True) is True
+      and proxy.ca_settings.local_web_tools(_tmpdir) is True
+      and proxy.ca_settings.set_local_web_tools(_tmpdir, False) is False
+      and proxy.ca_settings.local_web_tools(_tmpdir) is False)
 
-with mock.patch.object(proxy.wb_settings, "local_web_tools", lambda accounts_dir: False):
+with mock.patch.object(proxy.ca_settings, "local_web_tools", lambda accounts_dir: False):
     chat_off = proxy.responses_to_chat({"model": "m", "input": "hi",
                                         "tools": [{"type": "web_search"}]})
 check("with the switch off nothing is injected",
@@ -479,7 +479,7 @@ check("with the switch off nothing is injected",
 check("and a client's own call is not collected",
       proxy.internal_calls_from_chat(CHAT_CALL) == [])
 
-with mock.patch.object(proxy.wb_settings, "local_web_tools", lambda accounts_dir: True):
+with mock.patch.object(proxy.ca_settings, "local_web_tools", lambda accounts_dir: True):
     chat_on = proxy.responses_to_chat({"model": "m", "input": "hi",
                                        "tools": [{"type": "web_search"}]})
 check("with the switch on the declaration is replaced and marked",

@@ -18,7 +18,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # directory and every run left those directories behind in the checkout.
 _TMP = isolated_data_dirs("wb-account-proxy-")
 
-import wb_accounts as A
+import ca_accounts as A
 
 PASS = FAIL = 0
 

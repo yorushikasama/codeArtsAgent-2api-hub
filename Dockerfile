@@ -1,4 +1,4 @@
-# WorkBuddy Multi-Account Reverse Proxy Gateway
+# CodeArts Agent Multi-Account Reverse Proxy Gateway
 FROM python:3.11-alpine
 
 # Set environment
@@ -10,7 +10,7 @@ WORKDIR /app
 RUN apk add --no-cache tzdata ca-certificates &&     cp /usr/share/zoneinfo/${TZ} /etc/localtime &&     echo "${TZ}" > /etc/timezone
 
 # Copy application files (Zero external pip dependencies needed)
-COPY wb_*.py dashboard.html ./
+COPY ca_*.py dashboard.html ./
 
 # Create data directories
 RUN mkdir -p /app/accounts /app/usage
@@ -33,4 +33,4 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # No --port on purpose: the gateway already reads PORT from the environment
 # (default 8788), and the exec form cannot expand a variable. Keeping the exec
 # form leaves python as PID 1, so `docker stop` still delivers SIGTERM.
-CMD ["python", "wb_proxy.py", "--host", "0.0.0.0", "--lan"]
+CMD ["python", "ca_proxy.py", "--host", "0.0.0.0", "--lan"]

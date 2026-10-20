@@ -198,7 +198,7 @@ const saves = () => calls.filter(c => c.url === '/settings/save');
   // 逐项清洗：合法的留下，「设置」无论如何都丢掉，重复项并成一项。
   // 归一化本身：只留形状合法的 key，去重，「设置」无论如何都不收。
   assert.deepStrictEqual(api.normaliseHiddenPages(['logs', 'logs', 'settings', 'bad key', 7, 'ok_page']),
-    ['logs', 'ok_page'], '归一化没按 wb_settings 的口径来');
+    ['logs', 'ok_page'], '归一化没按 ca_settings 的口径来');
   SETTINGS = {hidden_pages: ['settings', 'logs', 'logs']};
   await api.loadSettings(true);
   check('「设置」被丢掉、重复项并成一项',

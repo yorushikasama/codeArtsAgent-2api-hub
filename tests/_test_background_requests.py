@@ -23,7 +23,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_proxy as proxy
+import ca_proxy as proxy
 
 PASS = FAIL = 0
 

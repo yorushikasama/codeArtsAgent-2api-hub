@@ -16,12 +16,12 @@ sys.path.insert(0, ROOT)
 
 from _isolated_dirs import isolated_data_dirs  # noqa: E402
 
-# Its own accounts/ before wb_proxy reads ACCOUNTS_DIR at import.
+# Its own accounts/ before ca_proxy reads ACCOUNTS_DIR at import.
 _TMP = isolated_data_dirs("wb-product-switch-")
 
-import wb_accounts as A  # noqa: E402
-import wb_identity  # noqa: E402
-import wb_proxy as proxy  # noqa: E402
+import ca_accounts as A  # noqa: E402
+import ca_identity  # noqa: E402
+import ca_proxy as proxy  # noqa: E402
 
 UIDS = ("intl-aaa-1", "intl-bbb-2", "cn-ccc-3")
 
@@ -133,7 +133,7 @@ class ProductSwitchTests(unittest.TestCase):
         self.assertEqual(payload["changed"], [])
 
     def test_every_valid_product_is_accepted(self):
-        for product in wb_identity.VALID_PRODUCTS:
+        for product in ca_identity.VALID_PRODUCTS:
             status, payload = FakeRequest({"product": product}).call()
             self.assertEqual(status, 200, product)
             self.assertEqual(payload["product"], product)

@@ -61,12 +61,12 @@ os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 import time as _time
 _time.time = lambda: FROZEN
 
-import wb_proxy as P
-import wb_pricing
+import ca_proxy as P
+import ca_pricing
 
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-wb_pricing.set_data_dir(USAGE_DIR)
-wb_pricing.set_settings_dir(ACCOUNTS_DIR)
+ca_pricing.set_data_dir(USAGE_DIR)
+ca_pricing.set_settings_dir(ACCOUNTS_DIR)
 
 USAGE_LOG = P.USAGE_LOG
 # checkpoint 在 v4 里一类一份文件（T8 的拆分）：这里给出合并视图与按类读写，
@@ -388,10 +388,10 @@ import time as _t
 FROZEN = __FROZEN__
 _t.time = lambda: FROZEN
 sys.path.insert(0, __ROOT__)
-import wb_proxy as P
-import wb_pricing
-wb_pricing.set_data_dir(P.USAGE_DIR)
-wb_pricing.set_settings_dir(P.ACCOUNTS_DIR)
+import ca_proxy as P
+import ca_pricing
+ca_pricing.set_data_dir(P.USAGE_DIR)
+ca_pricing.set_settings_dir(P.ACCOUNTS_DIR)
 
 
 def local_midnight(ts=None):

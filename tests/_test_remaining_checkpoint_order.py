@@ -44,8 +44,8 @@ ACCOUNTS_DIR = os.environ["ACCOUNTS_DIR"] = os.path.join(_TMP, "accounts")
 os.environ["WB_PROXY_USAGE_DIR"] = _TMP
 os.makedirs(os.environ["ACCOUNTS_DIR"], exist_ok=True)
 
-import wb_accounts
-import wb_proxy as P
+import ca_accounts
+import ca_proxy as P
 
 MODEL = "deepseek-v4.1-flash"
 MODEL_B = "hy4"
@@ -173,7 +173,7 @@ def cache_env(min_bytes=None, min_seconds=None):
 
 
 def account(uid, nickname="", realm="intl"):
-    return wb_accounts.Account({"uid": uid, "nickname": nickname,
+    return ca_accounts.Account({"uid": uid, "nickname": nickname,
                                 "accessToken": "t", "realm": realm})
 
 
@@ -572,12 +572,12 @@ import io, json, os, sys, time as _t
 FROZEN = __FROZEN__
 _t.time = lambda: FROZEN
 sys.path.insert(0, __ROOT__)
-import wb_accounts
-import wb_proxy as P
+import ca_accounts
+import ca_proxy as P
 
 class _Pool(object):
     accounts = [
-        wb_accounts.Account({"uid": uid, "accessToken": "t", "realm": realm})
+        ca_accounts.Account({"uid": uid, "accessToken": "t", "realm": realm})
         for uid, realm in json.load(
             io.open(os.environ["WB_CHILD_ACCOUNTS"], encoding="utf-8"))]
 

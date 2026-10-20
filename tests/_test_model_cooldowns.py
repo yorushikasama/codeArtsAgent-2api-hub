@@ -25,9 +25,9 @@ os.environ["ACCOUNTS_DIR"] = _startup_dir.name
 os.environ["WB_PROXY_USAGE_DIR"] = _startup_dir.name
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts as accounts
-import wb_proxy as proxy
-import wb_settings as settings
+import ca_accounts as accounts
+import ca_proxy as proxy
+import ca_settings as settings
 
 # The real 429 shapes from the incident environment (issue #70, sanitized).
 # S1 is 229 of the 263 recorded 429s and carries no reset information at all;

@@ -2,7 +2,7 @@
 
 面板「最近请求」最后一列悬停时要能回答「这个数怎么来的」：哪条策略、那一档的
 三档单价、按什么汇率折算、这条价是直接同名命中 / 人工映射 / 剥后缀继承、落在
-哪个条件档、是不是补算。这份明细由 cost_for_row 组装，wb_proxy 原样挂到
+哪个条件档、是不是补算。这份明细由 cost_for_row 组装，ca_proxy 原样挂到
 /usage/recent 每一行上，前端一个价都不重算。
 
 更要紧的是反面：policy_id 是内容哈希，历史 usage 行的 cost_policy 直接引用
@@ -31,7 +31,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_pricing
+import ca_pricing
 
 FIX = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                    "fixtures", "pricing_tooltip")
@@ -54,15 +54,15 @@ def read_json(path):
 class PricingFixtureMixin(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="wb-tooltip-")
-        wb_pricing.set_data_dir(self.tmp)
+        ca_pricing.set_data_dir(self.tmp)
         self.reload()
 
     def tearDown(self):
-        wb_pricing.set_data_dir(None)
+        ca_pricing.set_data_dir(None)
 
     def reload(self):
-        wb_pricing._policies_cache.update({"key": None, "data": None})
-        wb_pricing._timeline_cache.update({"key": None, "data": None})
+        ca_pricing._policies_cache.update({"key": None, "data": None})
+        ca_pricing._timeline_cache.update({"key": None, "data": None})
 
     def install(self, policies, timeline=None):
         """把一份策略表（与时间线）放进数据目录，模拟现场。"""
@@ -82,9 +82,9 @@ class HashCompatibilityTests(PricingFixtureMixin):
     def test_regenerated_table_has_the_same_ids(self):
         """改动后重新生成一遍策略表，id 集合与改动前逐条一致。"""
         or_models = read_json(fixture("or_models.json"))
-        doc, _unpriced, _overridden = wb_pricing.build_snapshot(or_models,
+        doc, _unpriced, _overridden = ca_pricing.build_snapshot(or_models,
                                                                 variants=True)
-        _added, _changed, assignment = wb_pricing.record_policies(
+        _added, _changed, assignment = ca_pricing.record_policies(
             doc, at=1759360000)
         before = {row["model"]: row["id"]
                   for row in read_jsonl(fixture("policies_before.jsonl"))}
@@ -100,7 +100,7 @@ class HashCompatibilityTests(PricingFixtureMixin):
                              "策略 %s 的 id 变了" % model)
         dropped = set(before) - set(assignment)
         if dropped:
-            catalog_ids = set(wb_pricing.hub_model_ids())
+            catalog_ids = set(ca_pricing.hub_model_ids())
             self.assertTrue(dropped <= (set(before) - catalog_ids),
                             "有仍在内置目录里的模型丢了策略：%s"
                             % sorted(dropped & catalog_ids))
@@ -112,7 +112,7 @@ class HashCompatibilityTests(PricingFixtureMixin):
         for row in rows:
             self.assertEqual(
                 row["id"],
-                wb_pricing.policy_id(row["model"], row.get("flat"),
+                ca_pricing.policy_id(row["model"], row.get("flat"),
                                      row.get("bands"), row.get("usd_cny")),
                 "策略 %s（%s）的 id 重算后变了" % (row["id"], row["model"]))
 
@@ -129,7 +129,7 @@ class HashCompatibilityTests(PricingFixtureMixin):
                 merged = dict(row, **extra)
                 self.assertEqual(
                     row["id"],
-                    wb_pricing.policy_id(merged["model"], merged.get("flat"),
+                    ca_pricing.policy_id(merged["model"], merged.get("flat"),
                                          merged.get("bands"),
                                          merged.get("usd_cny")),
                     "%s 的 id 被展示字段带偏了" % row["model"])
@@ -137,23 +137,23 @@ class HashCompatibilityTests(PricingFixtureMixin):
     def test_entry_for_keeps_the_display_fields_out_of_the_hash(self):
         """entry_for 写出来的快照条目，带上展示字段后 id 也不变。"""
         or_models = read_json(fixture("or_models.json"))
-        by_norm = wb_pricing.index_openrouter(or_models)
+        by_norm = ca_pricing.index_openrouter(or_models)
         for hub_id, expect_via in (("deepseek-v3-1-volc", "override"),
                                    ("deepseek-r1-0528-lkeap", "variant"),
                                    ("deepseek-v4.1-flash", "direct")):
-            ref, via = wb_pricing.resolve(hub_id, or_models, by_norm, variants=True)
+            ref, via = ca_pricing.resolve(hub_id, or_models, by_norm, variants=True)
             self.assertTrue(ref, hub_id)
-            inherited = wb_pricing.inherited_from(hub_id, or_models, by_norm)
-            entry = wb_pricing.entry_for(hub_id, ref, or_models,
+            inherited = ca_pricing.inherited_from(hub_id, or_models, by_norm)
+            entry = ca_pricing.entry_for(hub_id, ref, or_models,
                                          inherited=inherited, overridden=via)
             self.assertEqual(entry.get("via", "direct"), expect_via, hub_id)
             stripped = {k: v for k, v in entry.items()
                         if k not in ("via", "inherited_from", "override_from",
                                      "display", "source")}
             self.assertEqual(
-                wb_pricing.policy_id(hub_id, entry.get("flat"),
+                ca_pricing.policy_id(hub_id, entry.get("flat"),
                                      entry.get("bands"), 7.1),
-                wb_pricing.policy_id(hub_id, stripped.get("flat"),
+                ca_pricing.policy_id(hub_id, stripped.get("flat"),
                                      stripped.get("bands"), 7.1),
                 "%s 的 id 被展示字段带偏了" % hub_id)
 
@@ -165,7 +165,7 @@ class HashCompatibilityTests(PricingFixtureMixin):
         self.assertEqual(len(rows), len(before), "采样规模与基线不一致")
         bad = []
         for i, row in enumerate(rows):
-            got = wb_pricing.cost_for_row(row)["source"]
+            got = ca_pricing.cost_for_row(row)["source"]
             if got != before[str(i)]:
                 bad.append((i, row.get("model"), before[str(i)], got))
         self.assertEqual(bad, [], "%d 条 source 失配：%r" % (len(bad), bad[:5]))
@@ -185,7 +185,7 @@ class FullUsageSweepTests(PricingFixtureMixin):
                          "需要现场 usage.jsonl 与改动前基线（见类文档）")
     def test_full_file_has_no_source_drift(self):
         usage = os.environ["WB_PRICING_SWEEP_USAGE"]
-        wb_pricing.set_data_dir(os.path.dirname(os.path.abspath(usage)))
+        ca_pricing.set_data_dir(os.path.dirname(os.path.abspath(usage)))
         self.reload()
         baseline = read_json(os.environ["WB_PRICING_SWEEP_BASELINE"])
         rows = read_jsonl(usage)
@@ -193,7 +193,7 @@ class FullUsageSweepTests(PricingFixtureMixin):
                          "行数与基线不一致，基线不是这一版数据生成的")
         bad = []
         for i, row in enumerate(rows):
-            got = wb_pricing.cost_for_row(row)["source"]
+            got = ca_pricing.cost_for_row(row)["source"]
             if got != baseline[i]:
                 bad.append((i, row.get("model"), baseline[i], got))
         self.assertEqual(bad, [], "%d 条 source 失配：%r" % (len(bad), bad[:5]))
@@ -226,9 +226,9 @@ class RowDetailTests(PricingFixtureMixin):
 
     def test_direct_match_carries_the_whole_picture(self):
         row = self.sample_row("deepseek-v4.1-flash", needs_policy=True)
-        cost = wb_pricing.cost_for_row(row)
+        cost = ca_pricing.cost_for_row(row)
         # 一个模型可以有多条历史策略（改过价），这条行引用的是哪条就按哪条。
-        policy = wb_pricing.load_policies()[row["cost_policy"]]
+        policy = ca_pricing.load_policies()[row["cost_policy"]]
         self.assertTrue(cost["known"])
         self.assertEqual(cost["source"], policy["id"])
         self.assertEqual(cost["via"], "direct")
@@ -242,7 +242,7 @@ class RowDetailTests(PricingFixtureMixin):
         self.assertFalse(cost["via_derived"])
 
     def test_override_match_names_the_source_mapping(self):
-        cost = wb_pricing.cost_for_row(self.sample_row("hy4-preview-f"))
+        cost = ca_pricing.cost_for_row(self.sample_row("hy4-preview-f"))
         self.assertEqual(cost["via"], "override")
         self.assertEqual(cost["override_from"], "hy4-preview-f")
         self.assertEqual(cost["or_id"], "tencent/hy4-preview")
@@ -251,7 +251,7 @@ class RowDetailTests(PricingFixtureMixin):
 
     def test_variant_match_names_the_base_and_the_suffix(self):
         policy = self.policies["deepseek-r1-0528-lkeap"]
-        cost = wb_pricing.cost_for_row(
+        cost = ca_pricing.cost_for_row(
             self.row("deepseek-r1-0528-lkeap", cost_policy=policy["id"]))
         self.assertEqual(cost["via"], "variant")
         self.assertEqual(cost["inherited_from"], "deepseek-r1-0528")
@@ -264,7 +264,7 @@ class RowDetailTests(PricingFixtureMixin):
         band = policy["bands"][0]
         row = self.row("gpt-5.5", cost_policy=policy["id"],
                        prompt_tokens=band["min_prompt_tokens"] + 1)
-        cost = wb_pricing.cost_for_row(row)
+        cost = ca_pricing.cost_for_row(row)
         self.assertEqual(cost["band"], 0)
         self.assertEqual(cost["rates"], band["flat"])
         self.assertNotEqual(cost["rates"], policy["flat"])
@@ -275,22 +275,22 @@ class RowDetailTests(PricingFixtureMixin):
         policy = self.policies["hy3"]
         # hy3 的两档是 UTC 时段：0–1600 与 1600–2400。取一档明确的时刻。
         row = self.row("hy3", cost_policy=policy["id"], at=1790908275.0)
-        cost = wb_pricing.cost_for_row(row)
+        cost = ca_pricing.cost_for_row(row)
         self.assertIsNotNone(cost["band"])
         self.assertIn("UTC", cost["band_note"])
         self.assertEqual(cost["rates"], policy["bands"][cost["band"]]["flat"])
 
     def test_unpriced_row_says_so_instead_of_zero(self):
-        cost = wb_pricing.cost_for_row(self.row("no-such-model-at-all"))
+        cost = ca_pricing.cost_for_row(self.row("no-such-model-at-all"))
         self.assertFalse(cost["known"])
         self.assertEqual(cost["cny"], 0.0)
         self.assertEqual(cost["source"], "builtin")
-        for key in wb_pricing._DETAIL_KEYS:
+        for key in ca_pricing._DETAIL_KEYS:
             self.assertIsNone(cost[key], "%s 该是 None 而不是编出来的值" % key)
 
     def test_builtin_fallback_still_explains_itself(self):
         """出厂快照兜底的行也要给全明细，via 按直接匹配记。"""
-        shipped = wb_pricing.load_pricing().get("models") or {}
+        shipped = ca_pricing.load_pricing().get("models") or {}
         pick = None
         for model, entry in shipped.items():
             if entry.get("flat"):
@@ -299,9 +299,9 @@ class RowDetailTests(PricingFixtureMixin):
         self.assertIsNotNone(pick, "出厂快照里没有带价的模型")
         # 一个还没有任何策略与时间线的数据目录 = 出厂快照兜底那条路径。
         empty = tempfile.mkdtemp(prefix="wb-tooltip-empty-")
-        wb_pricing.set_data_dir(empty)
+        ca_pricing.set_data_dir(empty)
         self.reload()
-        cost = wb_pricing.cost_for_row(self.row(pick))
+        cost = ca_pricing.cost_for_row(self.row(pick))
         self.assertTrue(cost["known"], pick)
         self.assertEqual(cost["source"], "builtin")
         self.assertEqual(cost["via"], "direct")
@@ -311,62 +311,62 @@ class RowDetailTests(PricingFixtureMixin):
         self.assertFalse(cost["backfilled"])
 
     def test_band_note_formats_both_kinds_of_condition(self):
-        self.assertIsNone(wb_pricing.band_note({}, 0))
-        self.assertIsNone(wb_pricing.band_note({"bands": []}, 0))
-        self.assertIsNone(wb_pricing.band_note({"bands": [{}]}, 3))
+        self.assertIsNone(ca_pricing.band_note({}, 0))
+        self.assertIsNone(ca_pricing.band_note({"bands": []}, 0))
+        self.assertIsNone(ca_pricing.band_note({"bands": [{}]}, 3))
         self.assertEqual(
-            wb_pricing.band_note({"bands": [{"min_prompt_tokens": 128000}]}, 0),
+            ca_pricing.band_note({"bands": [{"min_prompt_tokens": 128000}]}, 0),
             "输入长度 ≥ 128,000 tokens")
         self.assertEqual(
-            wb_pricing.band_note({"bands": [{"days": ["mon", "tue"],
+            ca_pricing.band_note({"bands": [{"days": ["mon", "tue"],
                                              "start": 1600, "end": 2400}]}, 0),
             "每周 周一/周二 16:00–24:00 UTC")
         self.assertEqual(
-            wb_pricing.band_note({"bands": [{"days": None, "start": 0,
+            ca_pricing.band_note({"bands": [{"days": None, "start": 0,
                                              "end": 1600}]}, 0),
             "每天 00:00–16:00 UTC")
 
     def test_ensure_policy_records_the_same_match_source(self):
         """按需补价（新模型首见即定价）走同一个 entry_for，来源也要写对。"""
         or_models = read_json(fixture("or_models.json"))
-        by_norm = wb_pricing.index_openrouter(or_models)
+        by_norm = ca_pricing.index_openrouter(or_models)
         empty = tempfile.mkdtemp(prefix="wb-tooltip-fresh-")
-        wb_pricing.set_data_dir(empty)
+        ca_pricing.set_data_dir(empty)
         self.reload()
-        original = wb_pricing.live_index
-        wb_pricing.live_index = lambda: (or_models, by_norm)
+        original = ca_pricing.live_index
+        ca_pricing.live_index = lambda: (or_models, by_norm)
         try:
             cases = (("deepseek-v3-1-volc", "override", "deepseek-v3-1-volc", None),
                      ("deepseek-r1-0528-lkeap", "variant", None, "deepseek-r1-0528"),
                      ("deepseek-v4.1-flash", "direct", None, None))
             for hub_id, via, override_from, inherited in cases:
-                pid = wb_pricing.ensure_policy(hub_id)
+                pid = ca_pricing.ensure_policy(hub_id)
                 self.assertIsNotNone(pid, hub_id)
-                policy = wb_pricing.load_policies()[pid]
+                policy = ca_pricing.load_policies()[pid]
                 self.assertEqual(policy["via"], via, hub_id)
                 self.assertEqual(policy.get("override_from"), override_from, hub_id)
                 self.assertEqual(policy.get("inherited_from"), inherited, hub_id)
         finally:
-            wb_pricing.live_index = original
+            ca_pricing.live_index = original
 
     def test_match_source_prefers_the_recorded_field(self):
         """策略行里记着 via 就照它说，不去猜。"""
         self.assertEqual(
-            wb_pricing.match_source({"via": "variant",
+            ca_pricing.match_source({"via": "variant",
                                      "inherited_from": "base"}, "x"),
             ("variant", "base", None, False))
         self.assertEqual(
-            wb_pricing.match_source({"via": "override",
+            ca_pricing.match_source({"via": "override",
                                      "override_from": "x"}, "x"),
             ("override", None, "x", False))
         # 没有 via 的老行：映射表能解释才认，解释不了就按直接匹配。
         self.assertEqual(
-            wb_pricing.match_source(
-                {"or_id": wb_pricing.OVERRIDES["deepseek-v3-1-volc"]},
+            ca_pricing.match_source(
+                {"or_id": ca_pricing.OVERRIDES["deepseek-v3-1-volc"]},
                 "deepseek-v3-1-volc"),
             ("override", None, "deepseek-v3-1-volc", True))
         self.assertEqual(
-            wb_pricing.match_source({"or_id": "some/other"}, "deepseek-v3-1-volc"),
+            ca_pricing.match_source({"or_id": "some/other"}, "deepseek-v3-1-volc"),
             ("direct", None, None, False))
 
 

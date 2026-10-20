@@ -16,16 +16,16 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_settings
+import ca_settings
 
 
 class SettingsPreservationTests(unittest.TestCase):
     def _write(self, directory, data):
-        with open(wb_settings.settings_path(directory), "w", encoding="utf-8") as fh:
+        with open(ca_settings.settings_path(directory), "w", encoding="utf-8") as fh:
             json.dump(data, fh)
 
     def _read(self, directory):
-        with open(wb_settings.settings_path(directory), "r", encoding="utf-8") as fh:
+        with open(ca_settings.settings_path(directory), "r", encoding="utf-8") as fh:
             return json.load(fh)
 
     def test_upstream_group_keeps_unknown_keys(self):
@@ -38,7 +38,7 @@ class SettingsPreservationTests(unittest.TestCase):
                     "nested": {"deep": 7},
                 },
             })
-            wb_settings.set_upstream_config(directory, {"idle_timeout_seconds": 600})
+            ca_settings.set_upstream_config(directory, {"idle_timeout_seconds": 600})
             stored = self._read(directory)
         self.assertEqual(stored["upstream"]["unknown_upstream_key"], 42)
         self.assertEqual(stored["upstream"]["nested"], {"deep": 7})
@@ -49,8 +49,8 @@ class SettingsPreservationTests(unittest.TestCase):
     def test_known_values_still_round_trip(self):
         with tempfile.TemporaryDirectory() as directory:
             self._write(directory, {"upstream": {}})
-            wb_settings.set_upstream_config(directory, {"header_timeout_seconds": 45})
-            view = wb_settings.upstream_config(directory)
+            ca_settings.set_upstream_config(directory, {"header_timeout_seconds": 45})
+            view = ca_settings.upstream_config(directory)
             stored = self._read(directory)
         self.assertEqual(view["header_timeout_seconds"], 45)
         self.assertEqual(stored["upstream"]["header_timeout_seconds"], 45)
@@ -58,13 +58,13 @@ class SettingsPreservationTests(unittest.TestCase):
     def test_deep_merge_is_recursive_and_pure(self):
         base = {"a": 1, "nested": {"x": 1, "keep": True}}
         patch = {"nested": {"x": 2}, "b": 3}
-        merged = wb_settings.deep_merge(base, patch)
+        merged = ca_settings.deep_merge(base, patch)
         self.assertEqual(merged, {"a": 1, "nested": {"x": 2, "keep": True}, "b": 3})
         self.assertEqual(base, {"a": 1, "nested": {"x": 1, "keep": True}})
         self.assertEqual(patch, {"nested": {"x": 2}, "b": 3})
         # A non-dict patch replaces the slot, matching a plain assignment.
-        self.assertEqual(wb_settings.deep_merge({"a": 1}, None), None)
-        self.assertEqual(wb_settings.deep_merge(None, {"a": 1}), {"a": 1})
+        self.assertEqual(ca_settings.deep_merge({"a": 1}, None), None)
+        self.assertEqual(ca_settings.deep_merge(None, {"a": 1}), {"a": 1})
 
 
 class UsageRetentionTests(unittest.TestCase):
@@ -76,13 +76,13 @@ class UsageRetentionTests(unittest.TestCase):
     """
 
     def _write(self, directory, data):
-        with open(wb_settings.settings_path(directory), "w", encoding="utf-8") as fh:
+        with open(ca_settings.settings_path(directory), "w", encoding="utf-8") as fh:
             json.dump(data, fh)
 
     def test_defaults_when_unset(self):
         with tempfile.TemporaryDirectory() as directory:
             self._write(directory, {})
-            self.assertEqual(wb_settings.usage_config(directory),
+            self.assertEqual(ca_settings.usage_config(directory),
                              {"hour_keep_hours": 48, "day_keep_days": 32})
 
     def test_round_trip_and_preservation(self):
@@ -90,10 +90,10 @@ class UsageRetentionTests(unittest.TestCase):
             self._write(directory, {
                 "usage": {"unknown_usage_key": 9, "nested": {"deep": 1}},
             })
-            wb_settings.set_usage_config(directory, {"hour_keep_hours": 120})
-            with open(wb_settings.settings_path(directory), encoding="utf-8") as fh:
+            ca_settings.set_usage_config(directory, {"hour_keep_hours": 120})
+            with open(ca_settings.settings_path(directory), encoding="utf-8") as fh:
                 stored = json.load(fh)
-            view = wb_settings.usage_config(directory)
+            view = ca_settings.usage_config(directory)
         self.assertEqual(view["hour_keep_hours"], 120)
         self.assertEqual(view["day_keep_days"], 32)          # 未设的一侧仍是默认
         self.assertEqual(stored["usage"]["unknown_usage_key"], 9)
@@ -104,26 +104,26 @@ class UsageRetentionTests(unittest.TestCase):
                     {"day_keep_days": "32"}, {"day_keep_days": True},
                     {"day_keep_days": 1.5}, {"nope": 1}):
             with self.assertRaises(ValueError):
-                wb_settings.validate_usage_patch(bad)
+                ca_settings.validate_usage_patch(bad)
 
     def test_validation_rejects_absurd_values(self):
         # 上限防手滑：贴错位数会把 checkpoint 撑到几百 MB 且每轮写盘重写。
         with self.assertRaises(ValueError):
-            wb_settings.validate_usage_patch(
-                {"hour_keep_hours": wb_settings.USAGE_LIMITS["hour_keep_hours"] + 1})
+            ca_settings.validate_usage_patch(
+                {"hour_keep_hours": ca_settings.USAGE_LIMITS["hour_keep_hours"] + 1})
         with self.assertRaises(ValueError):
-            wb_settings.validate_usage_patch(
-                {"day_keep_days": wb_settings.USAGE_LIMITS["day_keep_days"] + 1})
+            ca_settings.validate_usage_patch(
+                {"day_keep_days": ca_settings.USAGE_LIMITS["day_keep_days"] + 1})
 
     def test_corrupt_stored_value_falls_back_to_default(self):
         with tempfile.TemporaryDirectory() as directory:
             self._write(directory, {"usage": {"hour_keep_hours": "many",
                                               "day_keep_days": 99999}})
-            view = wb_settings.usage_config(directory)
+            view = ca_settings.usage_config(directory)
         self.assertEqual(view, {"hour_keep_hours": 48, "day_keep_days": 32})
 
     def test_readers_prefer_env_then_setting_then_default(self):
-        import wb_proxy as P
+        import ca_proxy as P
         with tempfile.TemporaryDirectory() as directory:
             self._write(directory, {"usage": {"hour_keep_hours": 72,
                                               "day_keep_days": 8}})

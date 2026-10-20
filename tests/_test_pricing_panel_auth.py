@@ -24,8 +24,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 
-import wb_proxy as proxy          # noqa: E402
-import wb_settings as settings    # noqa: E402
+import ca_proxy as proxy          # noqa: E402
+import ca_settings as settings    # noqa: E402
 
 API_KEY = {"name": "client key", "key": "sk-client-abc", "enabled": True}
 
@@ -99,7 +99,7 @@ class PanelRouteBoundaryTests(unittest.TestCase):
             mock.patch.object(proxy, "PRICING", FakePricing()),
             mock.patch.object(proxy, "fetch_models",
                               lambda realm=None: [("gpt-4o", {})]),
-            mock.patch.object(proxy.wb_modelsdev, "refresh_async",
+            mock.patch.object(proxy.ca_modelsdev, "refresh_async",
                               lambda *a, **k: None),
         ]
         for patch in patches:

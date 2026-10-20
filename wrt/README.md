@@ -1,6 +1,6 @@
 # wrt/ — OpenWrt 打包配方
 
-这里放 WorkBuddy2API-Hub 的 OpenWrt 安装包配方。配方本身来自
+这里放 CodeArts2API-Hub 的 OpenWrt 安装包配方。配方本身来自
 [#190](https://github.com/ardeyouxipianyi/workbuddy2api-hub/issues/190) 引用的
 `aodianjun/workbuddy2api-hub/wrt/`，逐项审计后并入本仓库，**只保留打包与运行
 需要的东西**（审计结论见文末）。
@@ -13,18 +13,18 @@ wrt/
 └── openwrt/
     ├── build-ipk.sh               # 打包 .ipk（opkg 系，OpenWrt <= 24.10），不需要 SDK
     ├── build-apk.sh               # 打包 .apk（apk-tools 3，OpenWrt 25.x），需要 OpenWrt SDK
-    └── workbuddy2api/
+    └── codearts2api/
         ├── Makefile               # 包定义（PKG_VERSION / PKG_RELEASE / 依赖 / postinst ...）
         └── files/                 # init.d、uci 配置、面板缓存预热脚本
 ```
 
-两种包的内容一致：`wb_*.py` + `dashboard.html`（纯 Python 标准库）+
-`/etc/init.d/workbuddy2api` + `/etc/config/workbuddy2api` + `/usr/bin/workbuddy2api-warm`。
+两种包的内容一致：`ca_*.py` + `dashboard.html`（纯 Python 标准库）+
+`/etc/init.d/codearts2api` + `/etc/config/codearts2api` + `/usr/bin/codearts2api-warm`。
 
 | 产物 | 适用系统 | 安装方式 |
 | --- | --- | --- |
-| `workbuddy2api_<版本>-<发布号>_all.ipk` | opkg 系（OpenWrt 24.10 及更早） | `opkg install <文件>` |
-| `workbuddy2api-<版本>-r<发布号>.apk` | apk-tools 3（OpenWrt 25.x） | `apk add --allow-untrusted <文件>`（未签名时） |
+| `codearts2api_<版本>-<发布号>_all.ipk` | opkg 系（OpenWrt 24.10 及更早） | `opkg install <文件>` |
+| `codearts2api-<版本>-r<发布号>.apk` | apk-tools 3（OpenWrt 25.x） | `apk add --allow-untrusted <文件>`（未签名时） |
 
 依赖（两套系统同名）：`python3-light`、`python3-urllib`、`python3-uuid`。
 
@@ -50,21 +50,21 @@ sh wrt/openwrt/build-apk.sh <SDK 目录> "$PWD"     # 产物在 wrt/apk/
 
 ## 升级版本
 
-只改一处：`wrt/openwrt/workbuddy2api/Makefile` 的 `PKG_VERSION`（需要时
-`PKG_RELEASE`）。两个脚本都会把源码 `wb_proxy.py` 的 `server_version` 与
+只改一处：`wrt/openwrt/codearts2api/Makefile` 的 `PKG_VERSION`（需要时
+`PKG_RELEASE`）。两个脚本都会把源码 `ca_proxy.py` 的 `server_version` 与
 `PKG_VERSION` 比对，`release.yml` 的 version job 还会把 tag 一起比对，
 三者任一不一致就拒绝出包——宁可不发，也不发一个版本号对不上的包。
 
 ## 数据目录与持久化
 
-- 程序文件在 `/usr/lib/workbuddy2api`，升级时整体替换；
-- 账号凭据与用量在 `/etc/workbuddy2api/`（`postinst` 会把它加进
+- 程序文件在 `/usr/lib/codearts2api`，升级时整体替换；
+- 账号凭据与用量在 `/etc/codearts2api/`（`postinst` 会把它加进
   `/etc/sysupgrade.conf`，系统升级不丢）；
-- 配置在 `/etc/config/workbuddy2api`（`conffiles`，权限 600）；
-- 首次安装不自动启用服务：`uci set workbuddy2api.main.panel_password='...'`、
+- 配置在 `/etc/config/codearts2api`（`conffiles`，权限 600）；
+- 首次安装不自动启用服务：`uci set codearts2api.main.panel_password='...'`、
   `uci commit`，再 `enable` + `start`。
 
-`postinst` 只装一条 cron：`workbuddy2api-warm` 每 2 分钟预热面板的统计缓存
+`postinst` 只装一条 cron：`codearts2api-warm` 每 2 分钟预热面板的统计缓存
 （`uci main.warm=0` 可关），服务每次启动后也会在后台先预热一轮。init.d 把
 `WB_STATS_TTL` 默认调到 900 秒，配合预热器让面板点开即出数；这两个默认值是
 配套的，改一个要一起看。
@@ -76,12 +76,12 @@ sh wrt/openwrt/build-apk.sh <SDK 目录> "$PWD"     # 产物在 wrt/apk/
 
 去掉：
 
-- **`files/usr/bin/workbuddy2api-update` 及其 cron / `auto_update` 选项**：那是
+- **`files/usr/bin/codearts2api-update` 及其 cron / `auto_update` 选项**：那是
   fork 自带的 GitHub 自更新器，属于 #190 里的 fork 专属自动化，本 issue 明确
   不引入；OpenWrt 安装本来就走包管理器升级（#29 也把包管理器安装排除在自更新
-  之外）。去掉后 `postrm` 只清 `workbuddy2api-warm`。
+  之外）。去掉后 `postrm` 只清 `codearts2api-warm`。
 - **`wrt/ci/activate-workflows.py` 与 `wrt-sync-upstream.yml`**：fork 用来把
   工作流塞进 `.github/workflows/` 和每天 merge 上游的机制，与本仓库无关。
 - **`PIN_SHA` / `PIN_VER` 钉死上游 commit**：配方进入上游仓库后，"从 GitHub 拉
-  另一个 commit 的上游源码"没有意义，版本改为直接取自当前检出的 `wb_proxy.py`。
+  另一个 commit 的上游源码"没有意义，版本改为直接取自当前检出的 `ca_proxy.py`。
 - `PKG_MAINTAINER` 由 `aodianjun` 改回仓库维护者。

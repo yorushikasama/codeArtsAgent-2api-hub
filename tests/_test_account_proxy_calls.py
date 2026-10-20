@@ -21,7 +21,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # instead of at the repo's own usage/ directory.
 _TMP = isolated_data_dirs("wb-account-proxy-calls-")
 
-import wb_accounts
+import ca_accounts
 
 PASS = 0
 FAIL = 0
@@ -53,11 +53,11 @@ def fake_http_json(url, **kwargs):
     raise RuntimeError("stop-after-recording")
 
 
-real_http_json = wb_accounts.http_json
-wb_accounts.http_json = fake_http_json
+real_http_json = ca_accounts.http_json
+ca_accounts.http_json = fake_http_json
 
 try:
-    acct = wb_accounts.Account(dict(DATA))
+    acct = ca_accounts.Account(dict(DATA))
     acct.proxy = PROXY
 
     print("[1] refresh()")
@@ -81,29 +81,29 @@ try:
           repr(seen[:1]))
 
     print("[3] report_activity() (cn realm only)")
-    # report_activity 先经 wb_tasks.report_events 发写请求、再回读连登天数，
-    # 后者走的是 wb_accounts.urlopen 而不是 http_json，所以两条路都得打桩 ——
+    # report_activity 先经 ca_tasks.report_events 发写请求、再回读连登天数，
+    # 后者走的是 ca_accounts.urlopen 而不是 http_json，所以两条路都得打桩 ——
     # 只挂一条会漏掉另一半的代理传递。
     cn_proxy = "http://10.0.0.2:17902"
-    cn = wb_accounts.Account(dict(DATA, realm="cn", domain="www.codebuddy.cn"))
+    cn = ca_accounts.Account(dict(DATA, realm="cn", domain="www.codebuddy.cn"))
     cn.proxy = cn_proxy
     del seen[:]
-    import wb_tasks
-    _real_report = wb_tasks.report_events
-    wb_tasks.report_events = lambda acc, events, base=None: (
+    import ca_tasks
+    _real_report = ca_tasks.report_events
+    ca_tasks.report_events = lambda acc, events, base=None: (
         seen.append(acc.proxy) or True)
     try:
         cn.report_activity()
     except Exception:
         pass
     finally:
-        wb_tasks.report_events = _real_report
+        ca_tasks.report_events = _real_report
     check("report_activity() issued a request", bool(seen))
     check("report_activity() passes the account proxy", seen and seen[0] == cn_proxy,
           repr(seen[:1]))
 
     print("[4] an unproxied account passes empty, not a stale value")
-    plain = wb_accounts.Account(dict(DATA, uid="acct-2"))
+    plain = ca_accounts.Account(dict(DATA, uid="acct-2"))
     plain.proxy = ""
     del seen[:]
     try:
@@ -112,7 +112,7 @@ try:
         pass
     check("direct account sends proxy=''", seen and seen[0] == "", repr(seen[:1]))
 finally:
-    wb_accounts.http_json = real_http_json
+    ca_accounts.http_json = real_http_json
 
 print()
 print("SUMMARY: PASS=%d FAIL=%d" % (PASS, FAIL))

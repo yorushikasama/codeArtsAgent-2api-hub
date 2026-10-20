@@ -14,8 +14,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import wb_accounts
-import wb_settings
+import ca_accounts
+import ca_settings
 
 PASS = 0
 FAIL = 0
@@ -36,7 +36,7 @@ def make_store():
 
 
 def account(uid, slot):
-    return wb_accounts.Account({
+    return ca_accounts.Account({
         "uid": uid, "nickname": uid, "domain": "www.workbuddy.ai",
         "realm": "intl", "accessToken": "a.b.c", "refreshToken": "r",
         "expiresAt": 4102444800, "enabled": True, "proxySlot": slot,
@@ -46,21 +46,21 @@ def account(uid, slot):
 # ---- [1] deleting a slot releases the accounts bound to it --------------
 print("[1] deleting a slot unbinds its accounts")
 work = make_store()
-slots = wb_settings.set_proxy_slots(work, [
+slots = ca_settings.set_proxy_slots(work, [
     {"id": "", "name": "A", "url": "http://10.0.0.1:17901", "enabled": True},
     {"id": "", "name": "B", "url": "http://10.0.0.2:17902", "enabled": True},
 ])
 ids = [s["id"] for s in slots]
 check("ids were assigned", ids == ["slot-1", "slot-2"], repr(ids))
 
-pool = wb_accounts.AccountPool(work)
+pool = ca_accounts.AccountPool(work)
 pool.add(account("u1", "slot-2"))
 pool.apply_proxy_slots(slots)
 check("account bound to slot-2 uses its url",
       pool.accounts[0].proxy == "http://10.0.0.2:17902", pool.accounts[0].proxy)
 
-remaining = wb_settings.set_proxy_slots(work, [slots[0]])
-dropped = wb_settings.drop_missing_bindings(pool, remaining)
+remaining = ca_settings.set_proxy_slots(work, [slots[0]])
+dropped = ca_settings.drop_missing_bindings(pool, remaining)
 pool.apply_proxy_slots(remaining)
 check("the stale binding was dropped", dropped == 1, str(dropped))
 check("account fell back to direct", pool.accounts[0].proxy == "", pool.accounts[0].proxy)
@@ -70,23 +70,23 @@ shutil.rmtree(work, ignore_errors=True)
 # ---- [2] a removed id is never reused, even within one save -------------
 print("[2] a freed id is not reused by a newly added slot")
 work = make_store()
-wb_settings.set_proxy_slots(work, [
+ca_settings.set_proxy_slots(work, [
     {"id": "", "name": "A", "url": "http://10.0.0.1:17901", "enabled": True},
     {"id": "", "name": "B", "url": "http://10.0.0.2:17902", "enabled": True},
 ])
-pool = wb_accounts.AccountPool(work)
+pool = ca_accounts.AccountPool(work)
 pool.add(account("u1", "slot-2"))
 
 # Drop slot-2 and add a replacement in the same save - the case where
 # "highest surviving + 1" handed slot-2 back out.
-new_list = wb_settings.set_proxy_slots(work, [
+new_list = ca_settings.set_proxy_slots(work, [
     {"id": "slot-1", "name": "A", "url": "http://10.0.0.1:17901", "enabled": True},
     {"id": "", "name": "C", "url": "http://10.0.0.9:17909", "enabled": True},
 ])
 new_ids = [s["id"] for s in new_list]
 check("new slot did not take the freed id", "slot-2" not in new_ids, repr(new_ids))
 
-dropped = wb_settings.drop_missing_bindings(pool, new_list)
+dropped = ca_settings.drop_missing_bindings(pool, new_list)
 pool.apply_proxy_slots(new_list)
 check("the stale binding was dropped", dropped == 1, str(dropped))
 check("account did not adopt the new slot",
@@ -97,13 +97,13 @@ shutil.rmtree(work, ignore_errors=True)
 # ---- [3] the counter survives a reload and keeps growing ----------------
 print("[3] the counter is persisted and only grows")
 work = make_store()
-first = wb_settings.set_proxy_slots(work, [
+first = ca_settings.set_proxy_slots(work, [
     {"id": "", "name": "A", "url": "http://10.0.0.1:17901", "enabled": True},
 ])
 check("first id is slot-1", first[0]["id"] == "slot-1", first[0]["id"])
 seen = {first[0]["id"]}
 for n in range(3):
-    again = wb_settings.set_proxy_slots(work, [
+    again = ca_settings.set_proxy_slots(work, [
         {"id": "", "name": "N%d" % n,
          "url": "http://10.0.0.%d:17999" % (n + 5), "enabled": True},
     ])
@@ -114,10 +114,10 @@ shutil.rmtree(work, ignore_errors=True)
 # ---- [4] bulk disable keeps every binding (issue #89) --------------------
 print("[4] set-all-disabled keeps the bindings")
 work = make_store()
-slots = wb_settings.set_proxy_slots(work, [
+slots = ca_settings.set_proxy_slots(work, [
     {"id": "", "name": "A", "url": "http://10.0.0.1:17901", "enabled": True},
 ])
-pool = wb_accounts.AccountPool(work)
+pool = ca_accounts.AccountPool(work)
 pool.add(account("u1", slots[0]["id"]))
 pool.add(account("u2", slots[0]["id"]))
 pool.apply_proxy_slots(slots)
