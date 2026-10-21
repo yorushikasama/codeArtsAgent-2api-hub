@@ -3388,6 +3388,15 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       </div>
     </div>
     <div class="mono" style="font-size:11px;color:var(--dim)">snap-access.cn-north-4.myhuaweicloud.com</div>
+    <!-- 汇总行：可用 / 总积分 · 账号数。旧版网关卡片上就有这一行，删掉 WorkBuddy
+         那套之后跟着没了；积分接口找到后补回来（数字来自 /accounts/codearts）。 -->
+    <div id="caCardSummary" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--fg)">
+      <span>可用 <b id="caCardRemain" class="mono">—</b> / <b id="caCardTotal" class="mono">—</b> 总积分</span>
+      <span style="color:var(--dim)">·</span>
+      <span><b id="caCardAccounts" class="mono">—</b> 个账号</span>
+      <span style="color:var(--dim)">·</span>
+      <span style="color:var(--dim)" id="caCardUsed">已用 —</span>
+    </div>
   </div>
 
   <!-- 顶部统计条：三张统计卡（JS 每轮重画 #cards 内部）+ 调度器状态行，合成
@@ -4555,6 +4564,49 @@ async function pollCodeartsLogin(){
   }
 }
 
+/* 网关卡片上的汇总行：可用 / 总积分 · 账号数。
+   多个账号时把各自的积分加起来 —— 每个账号是独立套餐，汇总只作总览。 */
+function caUpdateCardSummary(list){
+  const remainEl = document.getElementById("caCardRemain");
+  const totalEl = document.getElementById("caCardTotal");
+  const usedEl = document.getElementById("caCardUsed");
+  const acctEl = document.getElementById("caCardAccounts");
+  if(!acctEl) return;
+  if(!list){
+    acctEl.textContent = "—";
+    if(remainEl) remainEl.textContent = "—";
+    if(totalEl) totalEl.textContent = "—";
+    if(usedEl){ usedEl.textContent = "账号读取失败"; usedEl.style.color = "var(--warn)"; }
+    return;
+  }
+  const rows = list;
+  const alive = rows.filter(function(a){ return !a.sts_expired; }).length;
+  acctEl.textContent = alive + "/" + rows.length;
+
+  let remain = 0, total = 0, used = 0, got = false;
+  rows.forEach(function(a){
+    const c = a && a.credit;
+    if(!c || c.total == null) return;
+    got = true;
+    total += Number(c.total) || 0;
+    remain += Number(c.remaining) || 0;
+    used += Number(c.used) || 0;
+  });
+  if(!got){
+    if(remainEl) remainEl.textContent = "—";
+    if(totalEl) totalEl.textContent = "—";
+    if(usedEl) usedEl.textContent = "积分读取失败";
+    return;
+  }
+  if(remainEl) remainEl.textContent = fmt(remain);
+  if(totalEl) totalEl.textContent = fmt(total);
+  if(usedEl){
+    const pct = total ? (used / total * 100) : 0;
+    usedEl.textContent = "已用 " + fmt(used) + "（" + pct.toFixed(1) + "%）";
+    usedEl.style.color = pct >= 90 ? "var(--warn)" : "var(--dim)";
+  }
+}
+
 async function loadCodeartsAccounts(){
   // 账号列表要同时出现在「账号」页和账号弹窗里，所以按标记取全部容器，
   // 而不是只认弹窗里那个 —— 之前只渲染弹窗，页面上就看不到已添加的账号。
@@ -4563,8 +4615,9 @@ async function loadCodeartsAccounts(){
   const set = function(html){ boxes.forEach(function(b){ b.innerHTML = html; }); };
   let r;
   try{ r = await getJSON("/accounts/codearts"); }
-  catch(e){ set('<p class="hint">读取失败：' + esc(e.message) + '</p>'); return; }
+  catch(e){ caUpdateCardSummary(null); set('<p class="hint">读取失败：' + esc(e.message) + '</p>'); return; }
   const list = (r && r.accounts) || [];
+  caUpdateCardSummary(list);
   if(!list.length){
     set('<p class="hint">还没有码道账号。走完一次授权就能添加一个。</p>');
     return;
