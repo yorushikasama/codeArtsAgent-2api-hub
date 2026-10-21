@@ -869,6 +869,8 @@ BUILTIN_MODEL_LIMITS = {
     "openpangu-2.0-pro": (524288, 131072),
     "openpangu-2.0-flash": (524288, 131072),
     "Qwen3-VL-235B": (1048576, 131072),
+    # 2026-10-21 从本机客户端配置里取到的真值（原先没有这一条，显示成 1M 占位）
+    "deepseek-v4.1-flash": (1048576, 65536),
 }
 
 BUILTIN_UNROUTABLE = set()
@@ -975,6 +977,205 @@ def _credit_tier(raw):
             tier.get("output_price") or None)
 
 
+def _credit_tier_raw(raw):
+    """完整计费档：ratio / ratio_display / 三档单价，外加**按输入长度分段**的原始列表。
+
+    这些是算积分要用的原始字段。2026-10-21 从本机 CodeArts Agent 的
+    extension.js 里逆向出计费公式（``pj.calculateTurnCredits``）：
+
+        credits = (input_price*(input-cache) + cache_price*cache
+                   + output_price*output) / 1e6 / ratio
+
+    注意是**除以** ratio（倍率），不是乘以 —— ratio 越小，同样 token 扣得越多。
+    同一个方法里的 ``matchCreditInterval`` 才是选档逻辑：``credit`` 是**按输入
+    token 数分段**的列表，服务端拿实际 input 落在哪一段就用哪一段的三个单价。
+    实测 openpangu-2.0-pro 就有 0–32000 与 32001–∞ 两段（3.2/4.8 元每百万输入），
+    所以这里必须把整段列表带出去，只在展示时取第一段。
+
+    拿不到档位（免费 / 未定价，如 Qwen3-VL、kimi-k2.6-vl 的 ``credit`` 为空）
+    返回 None —— 不编倍率，也不假装免费。
+    """
+    tiers = raw.get("credit") or []
+    if not isinstance(tiers, list) or not tiers:
+        return None
+
+    def num(value):
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    rows = []
+    for item in tiers:
+        item = item or {}
+        ratio = num(item.get("ratio"))
+        if ratio <= 0:
+            continue
+        rows.append({
+            "input_from": int(num(item.get("input_from"))),
+            # -1 是「无上限」的哨兵值，原样留着，判档时再翻译
+            "input_to": int(num(item.get("input_to"))),
+            "ratio": ratio,
+            "ratio_display": item.get("ratio_display") or "",
+            "input_price": num(item.get("input_price")),
+            "cache_price": num(item.get("cache_price")),
+            "output_price": num(item.get("output_price")),
+        })
+    if not rows:
+        return None
+    head = rows[0]
+    return {
+        "ratio": head["ratio"],
+        "ratio_display": head["ratio_display"],
+        "input_price": head["input_price"],
+        "cache_price": head["cache_price"],
+        "output_price": head["output_price"],
+        # 完整分段（判档用）
+        "tiers": rows,
+    }
+
+
+#: 模型 → 计费档。模型目录每次刷新时填，record_usage 算积分时查。
+CREDIT_TIERS = {}
+
+#: 模型 → 可选的思考档位（逆向后确认：值直接当 reasoning_effort 用）。
+#: 2026-10-21 实测：GLM-5.2 / glm-5.2-sft-harmony 给 ["high","max"]，
+#: 其余内置模型返回空数组（没有可调档位）。
+THINKING_STRENGTHS = {}
+
+THINKING_VARIANTS_PATH = "/v1/model/thinking-variants"
+
+
+def thinking_variants(access_key, secret_key, security_token, model_names,
+                      timeout=DEFAULT_TIMEOUT):
+    """每个模型能选哪些思考档位。
+
+    逆向自本机客户端 kernel 的 fetchThinkingVariants：
+      POST {xcenter}/v1/model/thinking-variants  body {"model_names": [...]}
+      → data.variants[model].strengths / default_strength
+    strengths 里的字符串就是请求里的 ``reasoning_effort``（客户端 mB() 直接
+    拼成 {reasoningEffort: 值}）。必须带 Agent-Type: PromptCenter。
+    """
+    url = SNAP_HOST + THINKING_VARIANTS_PATH
+    headers = {
+        "Content-Type": "application/json",
+        "Agent-Type": "PromptCenter",
+        "User-Agent": GATEWAY_USER_AGENT,
+        "x-snap-traceid": secrets.token_hex(16),
+    }
+    if security_token:
+        headers["X-Security-Token"] = security_token
+    body = json.dumps({"model_names": list(model_names)[:50]},
+                      ensure_ascii=False).encode("utf-8")
+    headers = aksk_sign(access_key, secret_key, "POST", url, {}, headers,
+                        payload_hash=hashlib.sha256(body).hexdigest())
+    payload = _http("POST", url, headers=headers, body=body, timeout=timeout)
+    variants = payload.get("variants") or {}
+    out = {}
+    for name, info in variants.items():
+        if not isinstance(info, dict):
+            continue
+        strengths = [str(x) for x in (info.get("strengths") or []) if x]
+        out[name] = {"strengths": strengths,
+                     "default": info.get("default_strength") or ""}
+    return out
+
+
+def _pick_credit_tier(tier, prompt_tokens):
+    """按输入 token 数挑计费段（客户端 matchCreditInterval 的等价实现）。
+
+    ``input_to`` 为 -1 表示该段无上限。落在任何段之外（理论上不会发生）时
+    退回第一段，而不是返回 0 —— 返回 0 会让这条请求在面板上看起来免费。
+    """
+    rows = (tier or {}).get("tiers") or []
+    if not rows:
+        return tier or {}
+    n = max(0, int(prompt_tokens or 0))
+    for row in rows:
+        low = row.get("input_from") or 0
+        high = row.get("input_to")
+        if high is None or high < 0:
+            if n >= low:
+                return row
+        elif low <= n <= high:
+            return row
+    return rows[0]
+
+
+def credit_for_usage(model, prompt_tokens, cached_tokens, completion_tokens):
+    """按逆向出来的公式算一条请求的积分。拿不到该模型的档位时返回 None。
+
+    公式与取整口径都照抄客户端：``calculateTurnCredits`` 内部
+    ``Math.round(d*100)/100``，也就是**面板上看到的两位小数**。这里保留 4 位
+    （累加多条时不丢精度），显示时再按两位取整，与客户端逐条对得上。
+
+    实测校准（2026-10-21，GLM-5.2，ratio 0.05 / 8·2·28 元每百万）：
+    短请求 ≈ 0.02、中 ≈ 0.15、长 ≈ 0.51 积分 —— 与客户端「总已用积分」的
+    增量一致，说明公式与 ratio 方向（除以，不是乘以）都取对了。
+    """
+    tier = CREDIT_TIERS.get(model)
+    if not tier:
+        return None
+    prompt = max(0, int(prompt_tokens or 0))
+    cached = min(max(0, int(cached_tokens or 0)), prompt)
+    output = max(0, int(completion_tokens or 0))
+    row = _pick_credit_tier(tier, prompt)
+    ratio = float(row.get("ratio") or 0)
+    if ratio <= 0:
+        return None
+    cost = (float(row.get("input_price") or 0) * (prompt - cached)
+            + float(row.get("cache_price") or 0) * cached
+            + float(row.get("output_price") or 0) * output)
+    return round(cost / 1e6 / ratio, 4)
+
+
+def credit_pricing_view(tier):
+    """计费档 → 对外可读的计费规则（每 100 万 token 扣多少积分）。
+
+    面板/API 里光有「0.7x」说明不了花多少积分：真正要乘的是三个单价再除了
+    ratio。这里把换算结果直接算出来，谁都能一眼对上账：
+
+        credits_per_mtok_input = input_price / ratio
+        credits_per_mtok_output = output_price / ratio
+    """
+    if not tier:
+        return None
+    ratio = float(tier.get("ratio") or 0)
+    if ratio <= 0:
+        return None
+
+    def per_mtok(price):
+        return round(float(price or 0) / ratio, 4)
+
+    view = {
+        "ratio": ratio,
+        "ratio_display": tier.get("ratio_display") or "",
+        "input_price": tier.get("input_price"),
+        "cache_price": tier.get("cache_price"),
+        "output_price": tier.get("output_price"),
+        "currency": "CNY",
+        "price_unit_tokens": 1000000,
+        "credits_per_mtok_input": per_mtok(tier.get("input_price")),
+        "credits_per_mtok_cache": per_mtok(tier.get("cache_price")),
+        "credits_per_mtok_output": per_mtok(tier.get("output_price")),
+        "formula": ("credits = (input_price*(input-cache) + cache_price*cache"
+                    " + output_price*output) / 1e6 / ratio"),
+        "source": "CodeArts Agent 客户端 calculateTurnCredits（逆向）",
+    }
+    rows = tier.get("tiers") or []
+    if len(rows) > 1:
+        # 只有真的分段计价的模型（如 openpangu-2.0-pro 的 32K 分界）才带，
+        # 单段的模型多给一份数组只是噪音。
+        view["tiers"] = [{
+            "input_from": row.get("input_from"),
+            "input_to": row.get("input_to"),
+            "credits_per_mtok_input": per_mtok(row.get("input_price")),
+            "credits_per_mtok_cache": per_mtok(row.get("cache_price")),
+            "credits_per_mtok_output": per_mtok(row.get("output_price")),
+        } for row in rows]
+    return view
+
+
 def normalize_builtin(raw_list):
     """内置模型 → 网关内部统一的模型对象形状。
 
@@ -988,6 +1189,9 @@ def normalize_builtin(raw_list):
         if not mid:
             continue
         ratio, in_price, out_price = _credit_tier(raw)
+        raw_tier = _credit_tier_raw(raw)
+        if raw_tier:
+            CREDIT_TIERS[mid] = raw_tier
         out.append({
             "id": mid,
             # 界面展示用 model_name：它和 model_id 常常不一样
@@ -1002,6 +1206,10 @@ def normalize_builtin(raw_list):
             "creditRatio": ratio,
             "inputPrice": in_price,
             "outputPrice": out_price,
+            # 计费档原值（含 ratio 与 cache_price），算积分用
+            "creditTier": raw_tier,
+            # 人话版计费规则：每 100 万 token 扣多少积分
+            "creditPricing": credit_pricing_view(raw_tier),
             # 服务端不返回上下文窗口；用实测表兜底，查不到的留 0（不编数字）。
             "maxInputTokens": BUILTIN_MODEL_LIMITS.get(mid, (0, 0))[0],
             "maxOutputTokens": BUILTIN_MODEL_LIMITS.get(mid, (0, 0))[1],
@@ -1034,6 +1242,24 @@ def model_catalog(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOU
             builtin_models(access_key, secret_key, security_token, timeout=timeout))
     except Exception as exc:
         errors[GROUP_BUILTIN] = str(exc)
+
+    # 思考档位：另开一个接口问「每个模型能选哪几档」，拿到了就贴到模型上。
+    # 失败不影响清单本身（档位是可选功能），但要记进 errors —— 否则面板上
+    # 所有模型都显示「原生」，看不出是「本来没有档位」还是「这次没问到」。
+    if groups[GROUP_BUILTIN]:
+        try:
+            variants = thinking_variants(
+                access_key, secret_key, security_token,
+                [item["id"] for item in groups[GROUP_BUILTIN]],
+                timeout=timeout)
+            THINKING_STRENGTHS.clear()
+            THINKING_STRENGTHS.update(variants)
+            for item in groups[GROUP_BUILTIN]:
+                info = variants.get(item["id"]) or {}
+                item["thinkingStrengths"] = info.get("strengths") or []
+                item["thinkingDefault"] = info.get("default") or ""
+        except Exception as exc:
+            errors["thinking"] = str(exc)
 
     return {"models": groups[GROUP_BENEFIT] + groups[GROUP_BUILTIN],
             "groups": groups, "errors": errors}

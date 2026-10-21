@@ -919,21 +919,50 @@ BENEFIT_RAW = [{"model_id": "deepseek-v4.1-flash", "context_window": 1000000,
                 "max_tokens": 384000, "sort": 40}]
 
 
-def with_groups(benefit_exc=None, builtin_exc=None):
-    saved = (C.gateway_config, C.builtin_models)
+def with_groups(benefit_exc=None, builtin_exc=None, variants=None,
+                variants_exc=None):
+    """跑一次 model_catalog，两组取数与思考档位全部打桩。
+
+    思考档位也必须打桩：它是清单构建里唯一一个「顺手多问一次」的接口，
+    忘了桩就会真的发出网络请求 —— 这个测试文件的前提是**不联网**，
+    真发出去的结果只是随机失败（实测 APIG.0613 IAM unavailable）。
+    """
+    saved = (C.gateway_config, C.builtin_models, C.thinking_variants)
     C.gateway_config = (lambda *a, **k: (_ for _ in ()).throw(benefit_exc)) \
         if benefit_exc else (lambda *a, **k: {"models": list(BENEFIT_RAW)})
     C.builtin_models = (lambda *a, **k: (_ for _ in ()).throw(builtin_exc)) \
         if builtin_exc else (lambda *a, **k: list(BUILTIN_SAMPLE))
+    C.thinking_variants = (lambda *a, **k: (_ for _ in ()).throw(variants_exc)) \
+        if variants_exc else (lambda *a, **k: dict(variants or {}))
     try:
         return C.model_catalog("AK", "SK", "TOK")
     finally:
-        C.gateway_config, C.builtin_models = saved
+        C.gateway_config, C.builtin_models, C.thinking_variants = saved
 
 
-cat = with_groups()
+THINK_VARIANTS = {"glm-5.2-sft-harmony": {"strengths": ["high", "max"],
+                                          "default": "high"}}
+
+cat = with_groups(variants=THINK_VARIANTS)
 check("两组都取到", len(cat["models"]) == 4, len(cat["models"]))
 check("取数无错时 errors 为空", cat["errors"] == {}, cat["errors"])
+_think = [m for m in cat["groups"][C.GROUP_BUILTIN]
+          if m["id"] == "glm-5.2-sft-harmony"][0]
+check("思考档位贴到模型上", _think.get("thinkingStrengths") == ["high", "max"],
+      _think.get("thinkingStrengths"))
+check("思考默认档位带出", _think.get("thinkingDefault") == "high", _think)
+check("THINKING_STRENGTHS 被填上",
+      C.THINKING_STRENGTHS.get("glm-5.2-sft-harmony", {}).get("strengths")
+      == ["high", "max"], C.THINKING_STRENGTHS)
+check("没有档位的模型是空数组而不是缺字段",
+      [m for m in cat["groups"][C.GROUP_BUILTIN]
+       if m["id"] == "Qwen3-VL-235B"][0]["thinkingStrengths"] == [])
+
+# 档位接口挂了：清单照旧返回，但要记一笔 —— 否则面板上全显示「原生」，
+# 分不清是「本来没有档位」还是「这次没问到」。
+cat_t = with_groups(variants_exc=RuntimeError("APIG.0613"))
+check("档位失败不影响清单", len(cat_t["models"]) == 4, len(cat_t["models"]))
+check("档位失败记进 errors", "thinking" in cat_t["errors"], cat_t["errors"])
 check("限时福利排在内置之前（与 UI 一致）",
       cat["models"][0]["group"] == C.GROUP_BENEFIT
       and cat["models"][-1]["group"] == C.GROUP_BUILTIN,
@@ -1529,6 +1558,105 @@ try:
 finally:
     C._http = _saved_http
 check("remain 缺失时按 total-used 兜底", fb["remaining"] == 70.0, fb)
+
+# ---------------------------------------------------------------------------
+# 8. 积分计费：倍率 × 单价（逆向自客户端 calculateTurnCredits）
+# ---------------------------------------------------------------------------
+#
+# 下面这两条 ``credit`` 原样抄自 2026-10-21 抓的 /v1/model/builtin 快照
+# （.workbuddy/tmp/codearts_builtin_models.json），不是编的：
+#   GLM-5.2          ratio 0.05   8 / 2 / 28 元每百万，ratio_display 0.7x
+#   openpangu-2.0-pro 两段：0-32000 用 3.2/0.8/14.5，32001+ 用 4.8/1.2/17.6
+# 第二段的存在正是必须按 input 取档、不能只取第一段的理由。
+
+section("8. 积分计费规则")
+
+GLM52_RAW = {"model_id": "GLM-5.2", "model_name": "GLM-5.2",
+             "model_category": "文本生成", "provider": "internal",
+             "supports_images": False,
+             "credit": [{"input_from": 0, "input_to": -1,
+                         "output_from": 0, "output_to": -1,
+                         "ratio": "0.05", "input_price": "8",
+                         "cache_price": "2", "output_price": "28",
+                         "status": "0", "ratio_display": "0.7x"}]}
+
+PRO_RAW = {"model_id": "openpangu-2.0-pro", "model_name": "OpenPangu-2.0-Pro",
+           "credit": [{"input_from": 0, "input_to": 32000,
+                       "ratio": "0.028", "input_price": "3.2",
+                       "cache_price": "0.8", "output_price": "14.5",
+                       "ratio_display": "0.7x"},
+                      {"input_from": 32001, "input_to": -1,
+                       "ratio": "0.028", "input_price": "4.8",
+                       "cache_price": "1.2", "output_price": "17.6",
+                       "ratio_display": "0.7x"}]}
+
+FREE_RAW = {"model_id": "Qwen3-VL-235B", "credit": []}
+
+tier = C._credit_tier_raw(GLM52_RAW)
+check("GLM-5.2 倍率 = 0.05", tier and tier["ratio"] == 0.05, tier)
+check("GLM-5.2 三档单价 8/2/28",
+      tier and (tier["input_price"], tier["cache_price"],
+                tier["output_price"]) == (8.0, 2.0, 28.0), tier)
+check("GLM-5.2 只有一段", len(tier["tiers"]) == 1, tier["tiers"])
+check("空 credit 返回 None（不假装免费）", C._credit_tier_raw(FREE_RAW) is None)
+check("ratio 为 0 返回 None", C._credit_tier_raw(
+    {"credit": [{"ratio": "0", "input_price": "1"}]}) is None)
+
+# 公式：(8*(1000-0) + 2*0 + 28*200) / 1e6 / 0.05 = 0.272
+C.CREDIT_TIERS.clear()
+C.normalize_builtin([GLM52_RAW, PRO_RAW, FREE_RAW])
+check("normalize_builtin 填了 CREDIT_TIERS",
+      set(C.CREDIT_TIERS) == {"GLM-5.2", "openpangu-2.0-pro"}, list(C.CREDIT_TIERS))
+
+check("GLM-5.2 1000 入 / 200 出 = 0.272 积分",
+      C.credit_for_usage("GLM-5.2", 1000, 0, 200) == 0.272,
+      C.credit_for_usage("GLM-5.2", 1000, 0, 200))
+# (8*200 + 2*800 + 28*200) / 1e6 / 0.05 = 0.176 —— 缓存命中走 cache_price
+check("缓存命中按 cache_price 计（800/1000 命中 = 0.176）",
+      C.credit_for_usage("GLM-5.2", 1000, 800, 200) == 0.176,
+      C.credit_for_usage("GLM-5.2", 1000, 800, 200))
+check("未定价模型返回 None", C.credit_for_usage("Qwen3-VL-235B", 1000, 0, 100) is None)
+check("未知模型返回 None", C.credit_for_usage("no-such-model", 1000, 0, 100) is None)
+check("cached > prompt 时被夹到 prompt（不产生负价）",
+      C.credit_for_usage("GLM-5.2", 100, 500, 0) == round(2.0 * 100 / 1e6 / 0.05, 4),
+      C.credit_for_usage("GLM-5.2", 100, 500, 0))
+
+# 分段计价：32K 是分界，越过它单价从 3.2 跳到 4.8
+pro = C.CREDIT_TIERS["openpangu-2.0-pro"]
+check("32000 输入落在第一段", C._pick_credit_tier(pro, 32000)["input_price"] == 3.2)
+check("32001 输入落在第二段", C._pick_credit_tier(pro, 32001)["input_price"] == 4.8)
+check("1 输入落在第一段", C._pick_credit_tier(pro, 1)["input_price"] == 3.2)
+check("无上限段吃住超大输入",
+      C._pick_credit_tier(pro, 10 ** 7)["input_price"] == 4.8)
+check("两段单价确实不同（不是重复档）",
+      C.credit_for_usage("openpangu-2.0-pro", 40000, 0, 0)
+      != C.credit_for_usage("openpangu-2.0-pro", 10000, 0, 0))
+
+# 人话版规则：每百万 token 扣多少积分 = 单价 / ratio
+pv = C.credit_pricing_view(C.CREDIT_TIERS["GLM-5.2"])
+check("百万输入 = 160 积分", pv["credits_per_mtok_input"] == 160.0, pv)
+check("百万输出 = 560 积分", pv["credits_per_mtok_output"] == 560.0, pv)
+check("百万缓存 = 40 积分", pv["credits_per_mtok_cache"] == 40.0, pv)
+check("单段模型不带 tiers 数组", "tiers" not in pv, list(pv))
+pv_pro = C.credit_pricing_view(C.CREDIT_TIERS["openpangu-2.0-pro"])
+check("多段模型带出 tiers（2 段）", len(pv_pro.get("tiers") or []) == 2, pv_pro)
+check("公式写明是除以 ratio", "/ 1e6 / ratio" in pv["formula"], pv["formula"])
+
+# 模型对象上要带出可读规则，面板才有东西显示
+objs = C.normalize_builtin([GLM52_RAW])
+check("模型对象带 creditPricing",
+      objs[0]["creditPricing"]["credits_per_mtok_output"] == 560.0, objs[0])
+check("模型对象带 creditRatio 原文（0.7x）",
+      objs[0]["creditRatio"] == "0.7x", objs[0]["creditRatio"])
+
+# 反向校准：0.02 / 0.15 / 0.51 是客户端「总已用积分」上实测到的三次增量
+# （短/中/长各一次提问）。用公式反推需要的 token 量级，确认数量级没有差 10 倍。
+for want, (pin, pout) in ((0.02, (100, 10)), (0.15, (300, 180)),
+                          (0.51, (1000, 625))):
+    got = C.credit_for_usage("GLM-5.2", pin, 0, pout)
+    check("反推 %s 积分（%d 入 / %d 出）→ %.2f" % (want, pin, pout, got),
+          abs(got - want) < 0.005, got)
+
 
 print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))

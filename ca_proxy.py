@@ -675,6 +675,15 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
     """
     fields = _extract_usage(usage) or {}
     usage_missing = not fields
+    # 积分：上游不按请求返回扣了多少，用码道自己的计费档按公式算
+    #（公式来自本机客户端的 calculateTurnCredits：价×token/1e6/倍率）。
+    # 拿不到该模型档位（免费/未定价）就不写，保持 0 而不是编一个数。
+    if not fields.get("credit"):
+        estimated = ca_codearts.credit_for_usage(
+            model, fields.get("prompt_tokens"), fields.get("cached_tokens"),
+            fields.get("completion_tokens"))
+        if estimated:
+            fields["credit"] = estimated
     row = {
         "at": time.time(),
         "iso": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -10466,8 +10475,30 @@ def codearts_model_meta(m):
     out = int(m.get("maxOutputTokens") or 0)
     if out:
         meta["maxOutputTokens"] = out
-    if m.get("creditRatio"):
-        meta["credits"] = {"ratio": m["creditRatio"]}
+    # ---- 倍率 / 计费 ----
+    # model_entry 的 ``credits`` 是**字符串**（WorkBuddy 那批给的是 "0.79"），
+    # 面板会自己在后面拼一个 "x"。码道这边原始字段里 ratio_display 已经带
+    # 单位（"0.7x"），直接把 dict 塞进去会渲染成 "[object Object]" —— 2026-10-21
+    # 就是这样在榜单上漏了一个坏值，所以这里统一裁成纯数字。
+    tier = m.get("creditTier") or {}
+    display = str(m.get("creditRatio") or tier.get("ratio_display") or "").strip()
+    display = display.rstrip("xX").strip()
+    if display:
+        meta["credits"] = display
+    pricing = m.get("creditPricing")
+    if pricing:
+        meta["creditPricing"] = pricing
+    # ---- 思考档位 ----
+    # 逆向后确认：strengths 里的字符串直接就是请求里的 reasoning_effort
+    # （客户端 mB() 拼成 {reasoningEffort: 值}）。上游**不接受关闭思考**，
+    # thinking.type=disabled 会回 81001，所以 canDisableThinking 恒为 false。
+    strengths = m.get("thinkingStrengths") or []
+    if strengths:
+        meta["reasoning"] = {
+            "supportedEfforts": list(strengths),
+            "defaultEffort": m.get("thinkingDefault") or strengths[0],
+            "canDisableThinking": False,
+        }
     return meta
 
 
@@ -10478,6 +10509,10 @@ def codearts_model_entry(m):
     entry["group"] = m.get("group") or ""
     if m.get("creditRatio"):
         entry["credit_ratio"] = m["creditRatio"]
+    # 计费规则原样带出：光有倍率算不出花多少积分，调用方需要三个单价与 ratio。
+    pricing = m.get("creditPricing")
+    if pricing:
+        entry["credit_pricing"] = pricing
     return entry
 
 
@@ -10625,6 +10660,9 @@ def model_entry(mid, meta):
         directory=ACCOUNTS_DIR)
     item["context_length"] = ctx_value
     item["max_input_tokens"] = ctx_value
+    # 这个数字从哪来的：remote / table / cache / default。面板要靠它区分
+    # 「上游真的说了」和「谁都不知道，按 1M 兜底」—— 后者不能当事实展示。
+    item["context_source"] = _limit_source.get("context")
     if out_value:
         item["max_output_tokens"] = out_value
         item["max_completion_tokens"] = out_value
@@ -16795,6 +16833,20 @@ class Handler(BaseHTTPRequestHandler):
                     existing["routed_via"] = "codearts"
                     if item.get("creditRatio"):
                         existing["credit_ratio"] = item["creditRatio"]
+                    # 重名条目也补上码道的计费规则与思考档位：请求实际是拐去
+                    # 码道的，窗口/单价必须以码道为准，否则面板展示的是另一套账。
+                    pricing = item.get("creditPricing")
+                    if pricing:
+                        existing["credit_pricing"] = pricing
+                        existing["credits"] = str(
+                            item.get("creditRatio") or pricing.get("ratio") or ""
+                        ).rstrip("xX").strip() or existing.get("credits")
+                    strengths = item.get("thinkingStrengths") or []
+                    if strengths:
+                        existing["reasoning_efforts"] = list(strengths)
+                        existing["reasoning_default_effort"] = (
+                            item.get("thinkingDefault") or strengths[0])
+                        existing["reasoning_can_disable"] = False
                 known.add(item["id"])
             # 始终带出码道这一段的诊断信息：清单里没出现码道模型时，
             # 调用方/面板要能一眼看出是「没账号」还是「取数失败」。
