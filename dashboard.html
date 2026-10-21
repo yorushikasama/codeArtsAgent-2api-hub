@@ -4596,8 +4596,19 @@ async function loadCodeartsAccounts(){
 
 // 额度是「今天领没领」的唯一可信依据：领取接口幂等、查不到自己的履历，只有
 // 余额能反推。满额且未消耗 = 今天的已经在手上，零消耗 = 额度没用过。
+/* 上游的报错文案要翻成人话：额度接口在上游「渠道/分组」被收回时回的是
+   `invalid channel, group not found`，直接甩给用户等于没说。 */
+function caBalanceErrText(err){
+  const s = String(err || "");
+  if(/group not found|invalid channel/i.test(s))
+    return "上游已无可用渠道（限时福利可能已到期），额度暂时查不到；对话仍可走内置模型。重新授权一次也许能恢复。";
+  if(/benefit not found/i.test(s)) return "该账号的福利额度已失效（benefit not found）。";
+  if(/unauthorized|401|403/i.test(s)) return "凭证失效，需要重新授权。";
+  return "额度读取失败：" + s;
+}
+
 function caBalanceHtml(b, err){
-  if(err) return '<span class="ca-sub">额度读取失败：' + esc(err) + '</span>';
+  if(err) return '<span class="ca-sub">' + esc(caBalanceErrText(err)) + '</span>';
   if(!b) return '';
   const left = fmt(b.remaining) + " / " + fmt(b.daily_limit) + " token";
   let state = "今日已领";
@@ -4626,7 +4637,7 @@ async function claimCodeartsBenefit(btn){
     }
     await loadCodeartsAccounts();
   }catch(e){
-    toast("领取失败：" + e.message, "bad");
+    toast("领取失败：" + caBalanceErrText(e.message), "bad");
     btn.disabled = false; btn.textContent = old;
   }
 }
