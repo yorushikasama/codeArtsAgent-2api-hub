@@ -614,6 +614,41 @@ finally:
     C.claim_benefit, C.balance_summary = saved_claim, saved_bal
 
 
+# 余额这一步就失败时（上游收回渠道 → "invalid channel, group not found"），
+# 也必须写一行历史，否则调度器每小时都在失败而签到记录里一片空白。
+saved_claim = C.claim_benefit
+saved_bal = C.balance_summary
+saved_record = C.record_claim
+_recorded = []
+
+
+def _fake_record(session, result, trigger="unknown"):
+    _recorded.append((trigger, dict(result)))
+    return True
+
+
+C.balance_summary = lambda *a, **k: (_ for _ in ()).throw(
+    RuntimeError("invalid channel, group not found"))
+C.record_claim = _fake_record
+try:
+    raised = False
+    try:
+        C.claim_and_verify("AK", "SK", "TOK", session={"account": {"id": "a"}},
+                           trigger="scheduler")
+    except RuntimeError:
+        raised = True
+    check("余额读取失败也向上抛", raised)
+    check("余额读取失败时留下历史记录", len(_recorded) == 1, _recorded)
+    if _recorded:
+        trig, res = _recorded[0]
+        check("历史记录标为失败", res.get("ok") is False, res)
+        check("历史记录说明是额度不可用", "额度不可用" in (res.get("msg") or ""), res)
+        check("历史记录保留触发来源", trig == "scheduler", trig)
+finally:
+    C.claim_benefit, C.balance_summary = saved_claim, saved_bal
+    C.record_claim = saved_record
+
+
 # 调度器能独立跑领取
 import ca_scheduler  # noqa: E402
 

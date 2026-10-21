@@ -1259,8 +1259,18 @@ def claim_and_verify(access_key, secret_key, security_token, timeout=DEFAULT_TIM
     给了 session 就顺手写一行活动历史（trigger 沿用旧的 scheduler / manual
     口径），没给就不写 —— 这样纯单元测试不必准备历史目录。
     """
-    before = balance_summary(access_key, secret_key, security_token,
-                             timeout=timeout)
+    try:
+        before = balance_summary(access_key, secret_key, security_token,
+                                 timeout=timeout)
+    except Exception as exc:
+        # 余额读不到时也要落一行：2026-10-21 上游把福利渠道收回，调度器每小时
+        # 都在失败，但历史里一条记录都没有（异常在余额这一步就抛了，走不到
+        # 下面那两个 record_claim），事后完全看不出「从 22:00 起就没成功过」。
+        result = {"ok": False, "skipped": False,
+                  "msg": "额度不可用: %s" % exc}
+        if session is not None:
+            record_claim(session, result, trigger=trigger)
+        raise
     if _is_full(before):
         result = {"ok": True, "skipped": True,
                   "msg": "今日已领取（余额 %s / %s，未消耗）" % (

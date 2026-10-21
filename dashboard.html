@@ -4575,6 +4575,9 @@ async function loadCodeartsAccounts(){
       }
       const renew = a.renewable ? "可续期" : "不可续期（需重新登录）";
       const id = esc(a.account_id || "");
+      // 渠道被上游收回时「领取今日额度」必然失败，换成「重新授权」——那是唯一
+      // 可能把渠道要回来的动作（走一遍码道 OAuth）。
+      const dead = caBalanceErrDead(a.balanceError);
       return '<div class="ca-row"><div class="ca-main">'
         + '<span class="ca-name">' + esc(a.account || "(未命名)") + badge + '</span>'
         + '<span class="ca-sub">' + esc(when) + " · " + esc(renew)
@@ -4582,7 +4585,9 @@ async function loadCodeartsAccounts(){
         + '</span>'
         + caBalanceHtml(a.balance, a.balanceError)
         + '</div><div class="ca-actions">'
-        + '<button class="sec mini" data-ca-id="' + id + '" onclick="claimCodeartsBenefit(this)">领取今日额度</button>'
+        + (dead
+            ? '<button class="sec mini" onclick="openCodeartsLogin()">重新授权</button>'
+            : '<button class="sec mini" data-ca-id="' + id + '" onclick="claimCodeartsBenefit(this)">领取今日额度</button>')
         + (a.renewable ? '<button class="sec mini" data-ca-id="' + id + '" onclick="refreshCodeartsAccount(this)">续期</button>' : "")
         + '<button class="sec mini" data-ca-id="' + id + '" onclick="deleteCodeartsAccount(this)">删除</button>'
         + '</div></div>';
@@ -4598,12 +4603,14 @@ async function loadCodeartsAccounts(){
 // 余额能反推。满额且未消耗 = 今天的已经在手上，零消耗 = 额度没用过。
 /* 上游的报错文案要翻成人话：额度接口在上游「渠道/分组」被收回时回的是
    `invalid channel, group not found`，直接甩给用户等于没说。 */
+function caBalanceErrDead(err){
+  return /group not found|invalid channel|benefit not found/i.test(String(err || ""));
+}
+
 function caBalanceErrText(err){
   const s = String(err || "");
-  if(/group not found|invalid channel/i.test(s))
-    return "上游已无可用渠道（限时福利可能已到期），额度暂时查不到；对话仍可走内置模型。重新授权一次也许能恢复。";
-  if(/benefit not found/i.test(s)) return "该账号的福利额度已失效（benefit not found）。";
-  if(/unauthorized|401|403/i.test(s)) return "凭证失效，需要重新授权。";
+  if(caBalanceErrDead(s)) return "额度不可用 · 上游已收回福利渠道，需要重新授权";
+  if(/unauthorized|401|403/i.test(s)) return "凭证失效，需要重新授权";
   return "额度读取失败：" + s;
 }
 
