@@ -819,6 +819,15 @@ CHAT_TIMEOUT = float(os.environ.get("CODEARTS_CHAT_TIMEOUT") or 180.0)
 
 BUILTIN_MODELS_PATH = "/v1/model/builtin"
 
+#: 体验版积分的真实来源（客户端「总已用积分 4,817 / 11,500」那一栏）。
+#:
+#: 2026-10-21 从本机 CodeArts Agent 逆向取得：扩展里的 getTstatisticsPluginUrl()
+#: 拼的是 {chatDomain}/snap-manager/v1/statistics/plugin，chatDomain 在公有云是
+#: https://snap-access.cn-north-4.myhuaweicloud.com。它**不在** opengw 的
+#: benefit 接口上 —— 那边只有每日 token 额度（benefit/claim/balance）。
+#: 鉴权仍是 AK/SK 签名 + X-Security-Token，与其它 snap-access 接口一致。
+CREDIT_PACKAGE_PATH = "/snap-manager/v1/statistics/plugin"
+
 #: PromptCenter 所在的主机，与推理入口同一台（agentChatDomain 在 prod 下就是它）
 SNAP_HOST = CHAT_HOST
 
@@ -890,6 +899,64 @@ def builtin_models(access_key, secret_key, security_token, timeout=DEFAULT_TIMEO
     headers = aksk_sign(access_key, secret_key, "GET", url, {}, headers)
     payload = _http("GET", url, headers=headers, timeout=timeout)
     return payload.get("builtinModels") or []
+
+
+def credit_package(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
+    """体验版积分配额：已用 / 总量 / 剩余 / 各分项。
+
+    就是客户端「总已用积分 x / y」那一栏的同一个接口（见 CREDIT_PACKAGE_PATH）。
+    服务端返回 ``metrics`` 列表，其中 ``usageTotalPackageCredit`` 是总量那一条，
+    另外还有 basic（基础包）/ bonus（赠送包）/ on-demand 三个分项。
+    """
+    url = SNAP_HOST + CREDIT_PACKAGE_PATH
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": GATEWAY_USER_AGENT,
+        "x-snap-traceid": secrets.token_hex(16),
+    }
+    if security_token:
+        headers["X-Security-Token"] = security_token
+    headers = aksk_sign(access_key, secret_key, "GET", url, {}, headers)
+    payload = _http("GET", url, headers=headers, timeout=timeout)
+
+    metrics = {}
+    for item in payload.get("metrics") or []:
+        if isinstance(item, dict) and item.get("name"):
+            metrics[item["name"]] = item
+    total = metrics.get("usageTotalPackageCredit") or {}
+    amount = total.get("package_credit_amount")
+    if amount is None:
+        return None
+    used = total.get("package_credit_used") or 0
+    remain = total.get("package_credit_remain")
+    if remain is None:
+        remain = amount - used
+    package = payload.get("package") or {}
+
+    def part(name):
+        m = metrics.get(name) or {}
+        if m.get("package_credit_amount") is None:
+            return None
+        return {"used": m.get("package_credit_used"),
+                "total": m.get("package_credit_amount"),
+                "remaining": m.get("package_credit_remain")}
+
+    return {
+        "used": used,
+        "total": amount,
+        "remaining": remain,
+        "percent": round(used / amount * 100, 2) if amount else None,
+        "package_name": (package.get("package_name_cn")
+                         or package.get("package_name_en") or ""),
+        "package_type": package.get("spec_code") or "",
+        "status": package.get("status") or "",
+        "start_date": payload.get("start_date"),
+        "end_date": payload.get("end_date"),
+        "basic": part("usageBasicPackageCredit"),
+        "bonus": part("usageBonusPackageCredit"),
+        "ondemand": part("usageOnDemandPackageCredit"),
+    }
 
 
 def _credit_tier(raw):

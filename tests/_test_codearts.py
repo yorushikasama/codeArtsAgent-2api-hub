@@ -1473,6 +1473,63 @@ P.ACCOUNTS_DIR = _saved_acc_dir
 shutil.rmtree(_ROUTE_DIR, ignore_errors=True)
 shutil.rmtree(_NO_CS_DIR, ignore_errors=True)
 
+# ---------------------------------------------------------------------------
+# 体验版积分：credit_package 的解析口径
+# （接口是 snap-access /snap-manager/v1/statistics/plugin，客户端「总已用积分」
+#   那一栏用的同一个；2026-10-21 实测响应结构如下）
+print()
+print("== 体验版积分解析 ==")
+
+_CREDIT_PAYLOAD = {
+    "metrics": [
+        {"name": "usageTotalPackageCredit", "package_credit_amount": 11500.0,
+         "package_credit_used": 4817.0, "package_credit_remain": 6683.0},
+        {"name": "usageBasicPackageCredit", "package_credit_amount": 500.0,
+         "package_credit_used": 0.0, "package_credit_remain": 500.0},
+        {"name": "usageBonusPackageCredit", "package_credit_amount": 11000.0,
+         "package_credit_used": 4817.0, "package_credit_remain": 6183.0},
+    ],
+    "package": {"package_name_cn": "体验版",
+                "spec_code": "codearts.agent.individual.trial", "status": "normal"},
+    "start_date": "2026-10-15", "end_date": "2026-11-16",
+}
+
+_saved_http = C._http
+C._http = lambda *a, **k: dict(_CREDIT_PAYLOAD)
+try:
+    cp = C.credit_package("AK", "SK", "TOK")
+finally:
+    C._http = _saved_http
+
+check("积分总量", cp["total"] == 11500.0, cp)
+check("积分已用", cp["used"] == 4817.0, cp)
+check("积分剩余", cp["remaining"] == 6683.0, cp)
+check("积分百分比", cp["percent"] == 41.89, cp)
+check("积分套餐名", cp["package_name"] == "体验版", cp)
+check("积分到期日", cp["end_date"] == "2026-11-16", cp)
+check("基础包分项", cp["basic"]["total"] == 500.0, cp["basic"])
+check("赠送包分项", cp["bonus"]["used"] == 4817.0, cp["bonus"])
+
+# 没有 usageTotalPackageCredit 时返回 None（不是造一堆 0 出来）
+C._http = lambda *a, **k: {"metrics": [], "package": {}}
+try:
+    none_cp = C.credit_package("AK", "SK", "TOK")
+finally:
+    C._http = _saved_http
+check("没有总量指标时返回 None", none_cp is None, none_cp)
+
+# remain 缺失时用 total - used 兜底
+C._http = lambda *a, **k: {
+    "metrics": [{"name": "usageTotalPackageCredit",
+                 "package_credit_amount": 100.0, "package_credit_used": 30.0}],
+    "package": {},
+}
+try:
+    fb = C.credit_package("AK", "SK", "TOK")
+finally:
+    C._http = _saved_http
+check("remain 缺失时按 total-used 兜底", fb["remaining"] == 70.0, fb)
+
 print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

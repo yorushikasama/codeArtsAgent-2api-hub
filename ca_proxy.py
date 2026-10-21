@@ -17070,6 +17070,15 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 info["balance"] = None
                 info["balanceError"] = str(exc)
+            # 体验版积分（客户端「总已用积分 x / y」那一条）。与上面的 token 额度
+            # 是两个体系：benefit 渠道被上游收回后 token 额度读不到，但积分还在。
+            try:
+                info["credit"] = ca_codearts.credit_package(
+                    session.get("accessKey"), session.get("secretKey"),
+                    session.get("securitytoken"))
+            except Exception as exc:
+                info["credit"] = None
+                info["creditError"] = str(exc)
             items.append(info)
         try:
             port = self.server.server_address[1]

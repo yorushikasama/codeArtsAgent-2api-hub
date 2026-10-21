@@ -4574,7 +4574,7 @@ async function loadCodeartsAccounts(){
   // 上游额度读不到时，用 /usage/by-account 的本网关累计数补一个可看的数字。
   // 只在真出错时才拉，正常路径不多一次请求。
   let localUsage = null;
-  if(list.some(function(a){ return !!a.balanceError; })){
+  if(list.some(function(a){ return !a.credit && !!a.balanceError; })){
     localUsage = await caLocalUsageByAccount();
   }
   let html;
@@ -4590,15 +4590,20 @@ async function loadCodeartsAccounts(){
       }
       const renew = a.renewable ? "可续期" : "不可续期（需重新登录）";
       const id = esc(a.account_id || "");
-      // 渠道被上游收回时「领取今日额度」必然失败，换成「重新授权」——那是唯一
-      // 可能把渠道要回来的动作（走一遍码道 OAuth）。
-      const dead = caBalanceErrDead(a.balanceError);
+      // 积分（snap-manager 统计插件）才是客户端里真正在扣的额度；token 额度
+      // （opengw benefit）是另一套，上游收回后读不到。有积分就显示积分，
+      // 没有才退回原来的额度行。
+      const quotaHtml = a.credit
+        ? caCreditHtml(a.credit)
+        : caBalanceHtml(a.balance, a.balanceError, localUsage && localUsage[a.account]);
+      // 连积分都拿不到、且额度报的是「渠道没了」，领取必然失败，换「重新授权」。
+      const dead = !a.credit && caBalanceErrDead(a.balanceError);
       return '<div class="ca-row"><div class="ca-main">'
         + '<span class="ca-name">' + esc(a.account || "(未命名)") + badge + '</span>'
         + '<span class="ca-sub">' + esc(when) + " · " + esc(renew)
         + (a.domain_id ? " · 账号域 " + esc(String(a.domain_id).slice(0, 8)) + "…" : "")
         + '</span>'
-        + caBalanceHtml(a.balance, a.balanceError, localUsage && localUsage[a.account])
+        + quotaHtml
         + '</div><div class="ca-actions">'
         + (dead
             ? '<button class="sec mini" onclick="openCodeartsLogin()">重新授权</button>'
@@ -4642,6 +4647,19 @@ async function caLocalUsageByAccount(){
   }catch(e){ map = {}; }
   caUsageCache = {at: Date.now(), map: map};
   return map;
+}
+
+/* 体验版积分：客户端「总已用积分 4,817 / 11,500 · 6,683 剩余」那一栏，
+   来自 snap-access 的 snap-manager 统计插件。它和下面的 token 额度是两套，
+   积分才是客户端里真正在扣的那个数。 */
+function caCreditHtml(c){
+  if(!c) return '';
+  const bits = ['积分 ' + fmt(c.used) + ' / ' + fmt(c.total)
+    + ' · 剩余 ' + fmt(c.remaining)];
+  if(c.percent != null) bits.push('已用 ' + c.percent + '%');
+  if(c.package_name) bits.push(c.package_name);
+  if(c.end_date) bits.push(String(c.end_date).slice(0, 10) + ' 到期');
+  return '<span class="ca-sub">' + esc(bits.join(' · ')) + '</span>';
 }
 
 function caBalanceHtml(b, err, localUsage){
@@ -7533,6 +7551,10 @@ async function startDashboard(){
   updateRecentLimitButtons();
   // The head script already resolved this before first paint; re-apply it
   // here so the data loaders for the active page actually run.
+  // 账号区块默认是「合并到网关页」。以前只有 /settings 成功返回后才搬一次，
+  // 那个请求一失败/超时，区块就留在隐藏的 pageAccounts 里 —— 页面上看起来
+  // 就是「账号与积分汇总整块消失」。先按默认摆一遍，设置回来再按真实值调整。
+  applyAccountsTabLayout(false);
   switchMainTab(MAIN_TABS.includes(window.__MAIN_TAB__) ? window.__MAIN_TAB__ : 'gateway');
   // 首屏把数据表接上排序：静态标记里就有的表不会被任何 loader 触发 render，
   // 轮询那条兜底要等 5 秒才轮到它。
