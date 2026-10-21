@@ -4562,6 +4562,12 @@ async function loadCodeartsAccounts(){
   }
   // 渲染放进 try：一旦某一项抛错，之前的表现是 set() 永远不执行、页面就一直
   // 停在「正在读取…」，看不出任何线索（fmtTime 那次就是这么被藏住的）。
+  // 上游额度读不到时，用 /usage/by-account 的本网关累计数补一个可看的数字。
+  // 只在真出错时才拉，正常路径不多一次请求。
+  let localUsage = null;
+  if(list.some(function(a){ return !!a.balanceError; })){
+    localUsage = await caLocalUsageByAccount();
+  }
   let html;
   try{
     html = list.map(function(a){
@@ -4583,7 +4589,7 @@ async function loadCodeartsAccounts(){
         + '<span class="ca-sub">' + esc(when) + " · " + esc(renew)
         + (a.domain_id ? " · 账号域 " + esc(String(a.domain_id).slice(0, 8)) + "…" : "")
         + '</span>'
-        + caBalanceHtml(a.balance, a.balanceError)
+        + caBalanceHtml(a.balance, a.balanceError, localUsage && localUsage[a.account])
         + '</div><div class="ca-actions">'
         + (dead
             ? '<button class="sec mini" onclick="openCodeartsLogin()">重新授权</button>'
@@ -4614,8 +4620,31 @@ function caBalanceErrText(err){
   return "额度读取失败：" + s;
 }
 
-function caBalanceHtml(b, err){
-  if(err) return '<span class="ca-sub">' + esc(caBalanceErrText(err)) + '</span>';
+/* 上游额度读不到时，退一步用本网关自己的累计量顶一格 —— 有数字总比空着强，
+   但必须标明来源，不能让人误以为是上游余额。结果缓存 30 秒，失败也缓存，
+   免得额度接口坏掉时每 5 秒轮询都多打一次 /usage/by-account。 */
+let caUsageCache = null;
+async function caLocalUsageByAccount(){
+  if(caUsageCache && (Date.now() - caUsageCache.at) < 30000) return caUsageCache.map;
+  let map = {};
+  try{
+    const r = await getJSON("/usage/by-account", POLL_READ);
+    ((r && r.accounts) || []).forEach(function(x){ if(x && x.account) map[x.account] = x; });
+  }catch(e){ map = {}; }
+  caUsageCache = {at: Date.now(), map: map};
+  return map;
+}
+
+function caBalanceHtml(b, err, localUsage){
+  if(err){
+    // 上游额度读不到时，至少给一个本地能证明的数字：本网关累计的调用与 token。
+    // 明确标注「本地统计」——它不是上游余额，不能拿来当额度看。
+    const u = localUsage || {};
+    let extra = "";
+    if(u.total_tokens != null)
+      extra = " · 本网关累计 " + fmt(u.requests || 0) + " 次 / " + fmt(u.total_tokens) + " token（本地统计）";
+    return '<span class="ca-sub">' + esc(caBalanceErrText(err)) + esc(extra) + '</span>';
+  }
   if(!b) return '';
   const left = fmt(b.remaining) + " / " + fmt(b.daily_limit) + " token";
   let state = "今日已领";
