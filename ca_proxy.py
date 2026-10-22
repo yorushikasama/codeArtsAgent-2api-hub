@@ -9818,6 +9818,7 @@ def runtime_settings_view():
         "hidden_pages": ca_settings.hidden_pages(ACCOUNTS_DIR),
         "update_check_enabled": ca_settings.update_check_enabled(ACCOUNTS_DIR),
         "upstream": ca_settings.upstream_config(ACCOUNTS_DIR),
+        "codearts": ca_settings.codearts_config(ACCOUNTS_DIR),
         "usage": ca_settings.usage_config(ACCOUNTS_DIR),
         "prompt": ca_settings.prompt_config(ACCOUNTS_DIR),
         "accounts_dir": ACCOUNTS_DIR,
@@ -10380,6 +10381,35 @@ CODEARTS_AFFINITY_FILE = "codearts_affinity.json"
 CODEARTS_AFFINITY_SAVE_EVERY = float(
     os.environ.get("CODEARTS_AFFINITY_SAVE_EVERY") or 10.0)
 
+#: 面板可调的码道参数（并发 / 续期 / 冷却），见 ca_settings.codearts_config。
+#: 读一次缓存 5 秒：acquire、续期、惩罚都在热路径上，每请求读一遍 settings
+#: 没必要；5 秒足够让「保存后下一个请求」生效。
+_CODEARTS_TUNING = {"at": 0.0, "cfg": None}
+CODEARTS_TUNING_TTL = 5.0
+
+
+def codearts_tuning():
+    now = time.time()
+    cached = _CODEARTS_TUNING
+    if cached["cfg"] is not None and now - cached["at"] < CODEARTS_TUNING_TTL:
+        return cached["cfg"]
+    try:
+        cfg = ca_settings.codearts_config(ACCOUNTS_DIR)
+    except Exception:
+        cfg = dict(ca_settings.CODEARTS_DEFAULTS)
+    cached["at"] = now
+    cached["cfg"] = cfg
+    return cfg
+
+
+def _codearts_seconds(name, fallback):
+    """取一个秒数型调参；坏值退回内置默认。"""
+    try:
+        value = int(codearts_tuning().get(name) or fallback)
+    except Exception:
+        return float(fallback)
+    return float(max(1, value))
+
 #: 用首条用户消息当会话指纹时要求的最短长度。太短（"hi"、"继续"）会撞车，
 #: 撞了只是"两个无关对话被排到同一个号"，无害但没必要。
 CODEARTS_AFFINITY_MIN_CHARS = 24
@@ -10467,7 +10497,9 @@ class _CodeartsAccountPool:
         with self._lock:
             sem = self._semaphores.get(key)
             if sem is None:
-                sem = threading.Semaphore(max(1, CODEARTS_CONCURRENCY))
+                want = int(codearts_tuning().get("concurrency")
+                           or CODEARTS_CONCURRENCY)
+                sem = threading.Semaphore(max(1, min(8, want)))
                 self._semaphores[key] = sem
             return sem
 
@@ -10785,7 +10817,8 @@ class _CodeartsLease:
         if not self.session_id or not self._session_cred:
             return False
         now = time.time()
-        if (now - self._last_ping) < CODEARTS_SESSION_PING:
+        interval = _codearts_seconds("session_ping", CODEARTS_SESSION_PING)
+        if (now - self._last_ping) < interval:
             return False
         self._last_ping = now
         ok, detail = ca_codearts.heartbeat(
@@ -17492,10 +17525,11 @@ class Handler(BaseHTTPRequestHandler):
         if label:
             msg += " (account %s)" % label
         if st == 429:
-            wait = (CODEARTS_BUSY_COOLDOWN
+            wait = (_codearts_seconds("busy_cooldown", CODEARTS_BUSY_COOLDOWN)
                     if ("tm.00001041" in text.lower()
                         or "并发会话数已达上限" in text)
-                    else CODEARTS_TPM_COOLDOWN)
+                    else _codearts_seconds("tpm_cooldown",
+                                           CODEARTS_TPM_COOLDOWN))
             exc = _CodeartsRateLimit(msg, wait)
             return (self._anthropic_rate_limited(exc) if anthropic
                     else self._rate_limited(exc))
@@ -19121,6 +19155,18 @@ class Handler(BaseHTTPRequestHandler):
             if UPDATES and raw:
                 # Turning it on should not wait out the rest of the poll sleep.
                 UPDATES.wake()
+        if "codearts" in payload:
+            raw = payload.get("codearts")
+            if not isinstance(raw, dict):
+                return self._error(400, "codearts must be an object",
+                                   "invalid_request_error")
+            try:
+                patch = ca_settings.validate_codearts_patch(raw)
+            except ValueError as exc:
+                return self._error(400, str(exc), "invalid_request_error")
+            ca_settings.set_codearts_config(ACCOUNTS_DIR, patch)
+            _CODEARTS_TUNING.update({"at": 0.0, "cfg": None})
+            reply["codearts"] = ca_settings.codearts_config(ACCOUNTS_DIR)
         if "upstream" in payload:
             raw = payload.get("upstream")
             if not isinstance(raw, dict):
@@ -20679,11 +20725,16 @@ class Handler(BaseHTTPRequestHandler):
             if retryable and last_exc is None:
                 if _codearts_concurrency_full(status, text):
                     # 这个号的名额满了：晾几秒，下一轮换号
-                    _CODEARTS_POOL.penalize(account_key, CODEARTS_BUSY_COOLDOWN)
+                    _CODEARTS_POOL.penalize(
+                        account_key,
+                        _codearts_seconds("busy_cooldown",
+                                          CODEARTS_BUSY_COOLDOWN))
                     delays = CODEARTS_BUSY_DELAYS
                 elif status == 429 or "ModelArts.811" in (text or ""):
-                    _CODEARTS_POOL.penalize(account_key, CODEARTS_TPM_COOLDOWN,
-                                        model=model)
+                    _CODEARTS_POOL.penalize(
+                        account_key,
+                        _codearts_seconds("tpm_cooldown",
+                                          CODEARTS_TPM_COOLDOWN), model=model)
                     delays = CODEARTS_RETRY_DELAYS
                 elif status in (401, 403):
                     _CODEARTS_POOL.penalize(account_key, CODEARTS_AUTH_COOLDOWN)
@@ -20874,11 +20925,15 @@ class Handler(BaseHTTPRequestHandler):
             retryable = last_exc is not None or _codearts_retryable(status, text)
             if retryable and last_exc is None:
                 if _codearts_concurrency_full(status, text):
-                    _CODEARTS_POOL.penalize(key, CODEARTS_BUSY_COOLDOWN)
+                    _CODEARTS_POOL.penalize(
+                        key, _codearts_seconds("busy_cooldown",
+                                               CODEARTS_BUSY_COOLDOWN))
                     delays = CODEARTS_BUSY_DELAYS
                 elif status == 429 or "ModelArts.811" in (text or ""):
-                    _CODEARTS_POOL.penalize(key, CODEARTS_TPM_COOLDOWN,
-                                    model=model)
+                    _CODEARTS_POOL.penalize(
+                        key, _codearts_seconds("tpm_cooldown",
+                                               CODEARTS_TPM_COOLDOWN),
+                        model=model)
                     delays = CODEARTS_RETRY_DELAYS
                 elif status in (401, 403):
                     _CODEARTS_POOL.penalize(key, CODEARTS_AUTH_COOLDOWN)
@@ -21092,7 +21147,10 @@ class Handler(BaseHTTPRequestHandler):
                 # 与 Go 版 CodeArts2API 的 withAccountRetry 同口径 —— 首帧前的
                 # 失败算「这个号这次不行」，不该让同一个号连撞。
                 if account_key:
-                    _CODEARTS_POOL.penalize(account_key, CODEARTS_BUSY_COOLDOWN)
+                    _CODEARTS_POOL.penalize(
+                        account_key,
+                        _codearts_seconds("busy_cooldown",
+                                          CODEARTS_BUSY_COOLDOWN))
                 log("codearts stream restart %d/%d: model=%s reason=%s"
                     % (restarts, CODEARTS_STREAM_RESTARTS, model, truncated))
                 truncated = ""

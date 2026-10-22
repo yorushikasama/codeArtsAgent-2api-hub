@@ -26,6 +26,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ca_codearts as C  # noqa: E402
+import ca_settings as S   # noqa: E402
 import ca_proxy as P     # noqa: E402
 
 PASS = FAIL = 0
@@ -827,6 +828,69 @@ try:
 finally:
     import shutil as _shutil2
     _shutil2.rmtree(_d1, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# 12. 面板可调的码道参数（并发 / 续期 / 冷却）
+# ---------------------------------------------------------------------------
+
+section("12. 码道调参")
+
+_tmp12 = tempfile.mkdtemp(prefix="tuning-")
+try:
+    _defaults = S.codearts_config(_tmp12)
+    check("没有配置时用内置默认", _defaults == S.CODEARTS_DEFAULTS, _defaults)
+
+    _ok = S.validate_codearts_patch({"concurrency": 3, "tpm_cooldown": 45})
+    check("合法补丁原样收下", _ok == {"concurrency": 3, "tpm_cooldown": 45}, _ok)
+
+    for _bad, _why in (({"concurrency": 0}, "下限"),
+                       ({"concurrency": 9}, "上限"),
+                       ({"concurrency": True}, "布尔"),
+                       ({"concurrency": 2.5}, "小数"),
+                       ({"nope": 1}, "未知键")):
+        try:
+            S.validate_codearts_patch(_bad)
+            _rejected = False
+        except ValueError:
+            _rejected = True
+        check("拒绝非法值（%s）" % _why, _rejected, _bad)
+
+    S.set_codearts_config(_tmp12, {"concurrency": 3, "session_ping": 45})
+    _stored = S.codearts_config(_tmp12)
+    check("保存后读回", _stored["concurrency"] == 3
+          and _stored["session_ping"] == 45, _stored)
+    check("没动的项保持默认", _stored["tpm_cooldown"]
+          == S.CODEARTS_DEFAULTS["tpm_cooldown"], _stored)
+
+    # 手改坏了 settings.json 也不能把网关配成不可用：坏值退回默认
+    _path = os.path.join(_tmp12, "settings.json")
+    with open(_path, "w", encoding="utf-8") as _fh:
+        json.dump({"codearts": {"concurrency": 99, "session_ping": "x"}}, _fh)
+    _broken = S.codearts_config(_tmp12)
+    check("落盘的坏值退回默认",
+          _broken["concurrency"] == S.CODEARTS_DEFAULTS["concurrency"]
+          and _broken["session_ping"] == S.CODEARTS_DEFAULTS["session_ping"],
+          _broken)
+
+    # 运行时读取：改完清缓存就生效
+    P._CODEARTS_TUNING.update({"at": 0.0, "cfg": None})
+    _saved_dir = P.ACCOUNTS_DIR
+    P.ACCOUNTS_DIR = _tmp12
+    try:
+        S.set_codearts_config(_tmp12, {"tpm_cooldown": 77})
+        P._CODEARTS_TUNING.update({"at": 0.0, "cfg": None})
+        check("运行时读到新值", P._codearts_seconds("tpm_cooldown", 20) == 77.0,
+              P._codearts_seconds("tpm_cooldown", 20))
+        check("未知键退回内置默认",
+              P._codearts_seconds("nope", 12) == 12.0,
+              P._codearts_seconds("nope", 12))
+    finally:
+        P.ACCOUNTS_DIR = _saved_dir
+        P._CODEARTS_TUNING.update({"at": 0.0, "cfg": None})
+finally:
+    import shutil as _shutil3
+    _shutil3.rmtree(_tmp12, ignore_errors=True)
 
 
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))

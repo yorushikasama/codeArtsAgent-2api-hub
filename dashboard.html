@@ -4084,6 +4084,35 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <section>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
+            <h2 style="margin:0">码道并发与冷却</h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              每账号并发（上游给 3 个会话名额，默认 2 留余量）、流式期间的会话续期间隔、以及两种失败后的冷却时长。冷却只是「换个号试试」的偏好，不会拒绝请求。
+            </div>
+            <div style="font-size:12px;color:var(--warn);margin-top:4px">
+              并发上限对**已经取过号**的账号要重启后生效；其余三项保存后下一个请求即生效。
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              并发 <input id="setCodeartsConcurrency" type="number" min="1" max="8" step="1" style="width:70px">
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              续期 <input id="setCodeartsPing" type="number" min="5" max="600" step="1" style="width:70px"> 秒
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              并发满冷却 <input id="setCodeartsBusy" type="number" min="1" max="300" step="1" style="width:70px"> 秒
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              TPM 冷却 <input id="setCodeartsTpm" type="number" min="5" max="3600" step="1" style="width:70px"> 秒
+            </label>
+            <button onclick="saveCodeartsTuning(this)">保存</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
             <h2 style="margin:0">日志落库 <em id="setLogDbState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
               默认关闭：日志只留在内存（最新 2000 条，重启即失），与上游一致。开启后每条日志追加写入
@@ -8483,6 +8512,18 @@ async function loadSettings(showToast){
         headerTimeoutState.textContent = headerTimeoutDefault ? '(默认 120 秒)' : '(' + headerTimeout + ' 秒)';
         headerTimeoutState.style.color = headerTimeoutDefault ? 'var(--dim)' : 'var(--accent2)';
       }
+      // 码道可调项：后端总是给全四个值，所以直接填。
+      const codeartsCfg = data.codearts || {};
+      const codeartsInputs = {
+        setCodeartsConcurrency: codeartsCfg.concurrency,
+        setCodeartsPing: codeartsCfg.session_ping,
+        setCodeartsBusy: codeartsCfg.busy_cooldown,
+        setCodeartsTpm: codeartsCfg.tpm_cooldown,
+      };
+      Object.keys(codeartsInputs).forEach(function(id){
+        const el = document.getElementById(id);
+        if(el && typeof codeartsInputs[id] === 'number') el.value = codeartsInputs[id];
+      });
       const logDbEnabled = data.log_db_enabled === true;
       const logDbEnabledInput = document.getElementById('setLogDbEnabled');
       if(logDbEnabledInput) logDbEnabledInput.checked = logDbEnabled;
@@ -9129,6 +9170,36 @@ async function saveUsageKeep(btn){
 }
 /* 上游响应头超时。后端只接受 >=1 的整数秒，所以先把输入收成整数再发：空值、
    小数、非数字就地拦下，而不是送上去换一个 400 回来。 */
+/* 码道并发 / 续期 / 冷却。四项一起提交：后端按区间校验，越界会回 400。 */
+async function saveCodeartsTuning(btn){
+  const fields = [
+    ['setCodeartsConcurrency', 'concurrency', '并发', 1, 8],
+    ['setCodeartsPing', 'session_ping', '续期间隔', 5, 600],
+    ['setCodeartsBusy', 'busy_cooldown', '并发满冷却', 1, 300],
+    ['setCodeartsTpm', 'tpm_cooldown', 'TPM 冷却', 5, 3600],
+  ];
+  const payload = {};
+  for(const [id, key, label, low, high] of fields){
+    const el = document.getElementById(id);
+    const value = Math.floor(Number(el && el.value));
+    if(!isFinite(value) || value < low || value > high){
+      toast(label + ' 需要 ' + low + '~' + high + ' 之间的整数', 'bad');
+      return;
+    }
+    payload[key] = value;
+  }
+  if(btn) btn.disabled = true;
+  try {
+    await postJSON('/settings/save', {codearts: payload});
+    toast('已保存：码道并发与冷却', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'bad');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
 async function saveHeaderTimeout(btn){
   const el = document.getElementById('setHeaderTimeout');
   const value = Math.floor(Number(el && el.value));

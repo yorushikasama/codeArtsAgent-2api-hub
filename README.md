@@ -205,6 +205,12 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+**码道并发与冷却可在面板调**
+
+- 设置页新增「码道并发与冷却」四项：每账号并发（1~8，默认 2；上游给 3 个会话名额，留一个余量）、流式会话续期间隔、并发满（1041）冷却、TPM 限流冷却。
+- 续期与两种冷却保存后**下一个请求即生效**（5 秒缓存）；每账号并发只在新账号首次取号时生效，已有账号需重启。
+- 后端按区间校验，越界回 400；`settings.json` 被手改坏的值退回默认，不会把网关配成不可用。
+
 **码道协议补齐：采样参数、多模态错误、`n` / `response_format`**
 
 - **采样参数以前被白名单挡掉**：码道路径只转发 `model/messages/max_tokens/stream/thinking/tools/tool_choice`，`temperature` / `top_p` / `stop` / `seed` / `presence_penalty` / `frequency_penalty` 全部丢弃。上游实测（用非法值验证）是真解析这些字段的，现在原样转发；`stop` 字符串会包成数组（上游只收数组），超过 4 条按 OpenAI 语义裁掉。Anthropic 的 `stop_sequences` 因此也真正生效了。

@@ -1233,6 +1233,64 @@ def upstream_config(accounts_dir):
     return out
 
 
+CODEARTS_DEFAULTS = {
+    "concurrency": 2,       # 每个账号同时在跑的请求数（上游给 3 个会话名额，留 1 个余量）
+    "session_ping": 30,     # 流式期间 busy 续期间隔（秒）
+    "busy_cooldown": 5,     # 撞 TM.00001041（并发会话满）后晾多久
+    "tpm_cooldown": 20,     # 撞 ModelArts.811（TPM 限流）后晾多久
+}
+
+#: 每个键的合法区间。面板可以调，但别让一次手滑把网关配成不可用。
+CODEARTS_RANGES = {
+    "concurrency": (1, 8),
+    "session_ping": (5, 600),
+    "busy_cooldown": (1, 300),
+    "tpm_cooldown": (5, 3600),
+}
+
+
+def validate_codearts_patch(raw):
+    """Strict validation for a panel-saved codearts tuning patch."""
+    out = {}
+    for key, value in (raw or {}).items():
+        if key not in CODEARTS_DEFAULTS:
+            raise ValueError("unknown codearts setting %r" % key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("%s must be a whole number" % key)
+        low, high = CODEARTS_RANGES[key]
+        if not low <= value <= high:
+            raise ValueError("%s must be between %d and %d" % (key, low, high))
+        out[key] = value
+    return out
+
+
+def codearts_config(accounts_dir):
+    """码道并发 / 续期 / 冷却的可调项（坏值退回默认）。"""
+    stored = load(accounts_dir).get("codearts")
+    stored = stored if isinstance(stored, dict) else {}
+    out = {}
+    for key, default in CODEARTS_DEFAULTS.items():
+        value = stored.get(key, default)
+        low, high = CODEARTS_RANGES[key]
+        ok = (isinstance(value, int) and not isinstance(value, bool)
+              and low <= value <= high)
+        out[key] = value if ok else default
+    return out
+
+
+def set_codearts_config(accounts_dir, cfg):
+    """Persist the codearts tuning. Returns the stored config."""
+    current = codearts_config(accounts_dir)
+    if isinstance(cfg, dict):
+        current.update({k: v for k, v in cfg.items() if k in CODEARTS_DEFAULTS})
+    clean = validate_codearts_patch(current)
+    with _lock:
+        data = load(accounts_dir)
+        data["codearts"] = deep_merge(data.get("codearts"), clean)
+        save(accounts_dir, data)
+    return clean
+
+
 def set_upstream_config(accounts_dir, cfg):
     """Persist the upstream settings. Returns the stored config."""
     current = upstream_config(accounts_dir)
