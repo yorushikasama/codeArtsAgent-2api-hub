@@ -394,6 +394,9 @@ if chunk.get("error_code") or chunk.get("error_msg"):
 | P1 | **模型名大小写归一** | ✅ 已上线（线上实测：小写 glm-5.2 曾掉进空池回 503） |
 | P1 | 未知模型回 404（而不是空池的 503） | ✅ 已上线 |
 | P2 | 福利模型无权益（4004.200）→ 404 且从清单剔除 | ✅ 已上线 |
+| P1 | **模型别名**（客户端自带模型名 → 码道真名） | ✅ 已上线（`accounts/model_aliases.json`） |
+| P2 | 双 `/v1` 前缀兼容（OpenAI SDK 含 /v1、Anthropic SDK 不含） | ✅ 已上线 |
+| P2 | 失败时记录请求形状（诊断 001001005 参数错） | ✅ 已上线 |
 | P2 | `_sanitize_tool_calls`（悬空 tool_calls 清洗） | ⬜ 待做 |
 | P1 | 错误语义映射（429+Retry-After / credentials_error / 400 / 404） | ✅ 已上线 |
 | P2 | 模型级冷却 `(account, model)` | ⬜ 待做 |
