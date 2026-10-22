@@ -872,8 +872,14 @@ BENEFIT_MODELS = frozenset({
 
 
 def model_group(model_id):
-    """按模型名判分组。限时福利那 4 个来自权益网关清单，其余都算内置。"""
-    return GROUP_BENEFIT if model_id in BENEFIT_MODELS else GROUP_BUILTIN
+    """按模型名判分组。限时福利那 4 个来自权益网关清单，其余都算内置。
+
+    走 ``resolve_model`` 而不是直接比字符串：分组决定要不要带
+    ``maas_type: benefit``，而这是个**没有兜底的分组开关** —— 判错就是
+    ``InferHub.002002009 model is not registered``，客户端只会看到「模型不存在」。
+    """
+    return (GROUP_BENEFIT if resolve_model(model_id) in BENEFIT_MODELS
+            else GROUP_BUILTIN)
 
 #: 推理入口实测不可路由的内置模型。目前是空的 —— 清单里 7 个内置模型全部可用。
 #: 留着这个集合是为了以后真出现不通的模型时有地方标；「routable」字段的语义
@@ -931,6 +937,54 @@ BUILTIN_MODEL_SAMPLING = {
 BUILTIN_UNROUTABLE = set()
 
 
+def _model_index():
+    """大小写无关的模型名索引：``lower()`` → 上游真名。
+
+    三张表都收：可推理名单（CHAT_MODELS）、实测上限表、福利分组表。真实名字
+    以先出现的为准 —— 三张表的键本来就一致，``setdefault`` 只是防以后有人只改
+    一张表时把名字改出两个写法。
+    """
+    index = {}
+    for name in CHAT_MODELS:
+        index.setdefault(str(name).lower(), name)
+    for table in (BUILTIN_MODEL_LIMITS, BENEFIT_MODELS):
+        for name in table:
+            index.setdefault(str(name).lower(), name)
+    return index
+
+
+_MODEL_INDEX = None
+
+
+def resolve_model(model_id):
+    """把客户端写的模型名解析成**上游真名**（大小写无关）。
+
+    为什么必须做（2026-10-22 线上实测）：上游的模型 id 大小写是混的 ——
+    ``GLM-5.2`` 全大写、``glm-5.3`` 全小写、``Qwen3-VL-235B`` 混合，而客户端
+    习惯一律写小写。原样接收会在三个地方同时出错，且**都不报「模型名不对」**：
+
+      1. 分流判错（最严重）：``is_codearts_model("glm-5.2")`` 为假，请求掉进
+         WorkBuddy 账号池；那个池在这个部署里是空的，于是回
+         ``503 no usable account for realm 'cn'`` —— 一个和模型名毫无关系的
+         报错，用户根本看不出是自己把大写写成了小写。
+      2. ``max_tokens`` 夹不住：``BUILTIN_MODEL_LIMITS`` 查不到 → 客户端发
+         128000 原样上去 → ``InferHub.001001005.400``，这条路还会被当成
+         不可重试的参数错。
+      3. 分组判错：``DeepSeek-V4.1-Flash`` 判成 builtin → 不带
+         ``maas_type: benefit`` → ``InferHub.002002009 model is not registered``。
+
+    认不出来的名字原样返回：宁可交给上游拒绝（它会给准确错误），也不在这里
+    编一个近似名把请求打到别的模型上。
+    """
+    text = str(model_id or "").strip()
+    if not text:
+        return text
+    global _MODEL_INDEX
+    if _MODEL_INDEX is None:
+        _MODEL_INDEX = _model_index()
+    return _MODEL_INDEX.get(text.lower(), text)
+
+
 def clamp_max_tokens(model_id, max_tokens):
     """把 max_tokens 夹到模型真实输出上限，返回 (值, 是否被夹过)。
 
@@ -948,7 +1002,8 @@ def clamp_max_tokens(model_id, max_tokens):
     表里没有的模型不夹 —— 宁可原样发过去让上游自己判断，也不要用一个
     猜的数把本来能过的请求改坏。
     """
-    limit = (BUILTIN_MODEL_LIMITS.get(model_id) or (None, None))[1]
+    limit = (BUILTIN_MODEL_LIMITS.get(resolve_model(model_id))
+             or (None, None))[1]
     if not limit:
         return max_tokens, False
     try:
@@ -1816,9 +1871,37 @@ class UpstreamBroken(Exception):
         self.received = received
 
 
+def apply_stream_idle_timeout(response, seconds):
+    """把已建连的响应 socket 切到「两次读取之间」的空闲上限。
+
+    ``urllib`` 的 timeout 只覆盖建连/首包；拿到响应头之后同一条 socket 会被
+    整条 SSE 流继续读。这里把它的读超时改成 idle 值，避免上游中途静默时一直
+    挂着。拿不到 socket（假对象、老版本 http.client）或值非法时返回 False，
+    保持原来的 header 超时，绝不让调参把请求弄失败。
+    """
+    try:
+        seconds = float(seconds)
+    except (TypeError, ValueError):
+        return False
+    if seconds <= 0:
+        return False
+    sock = _stream_socket(response)
+    if sock is None:
+        fp = getattr(response, "fp", None)
+        sock = getattr(fp, "_sock", None)
+    if sock is None:
+        return False
+    try:
+        sock.settimeout(seconds)
+        return True
+    except Exception:
+        return False
+
+
 def open_chat(access_key, secret_key, security_token, model, messages,
               max_tokens=256, stream=True, timeout=None, extra=None,
-              tools=None, tool_choice=None, session_id=None):
+              tools=None, tool_choice=None, session_id=None,
+              idle_timeout=None):
     """建立一次推理连接，**不读响应体**。返回 (status, resp, text)。
 
     - 200：resp 是未读的响应句柄，**调用方负责 close()**；text 为空串。
@@ -1829,6 +1912,9 @@ def open_chat(access_key, secret_key, security_token, model, messages,
     客户端在这期间一个字都收不到 —— 长回答（几千 token）时它就干转几分钟，
     最后一次性刷出全文，还容易触发客户端自己的空闲超时（ZCode 是 4 分钟）后
     重试，叠出多个上游会话把账号的并发名额吃干净（2026-10-22 实测事故）。
+
+    ``timeout`` 管到响应头为止；``idle_timeout``（可选）在拿到响应头后把
+    socket 读超时切到该值，供整条流使用。
     """
     timeout = CHAT_TIMEOUT if timeout is None else timeout
     maas = MAAS_BENEFIT if model_group(model) == GROUP_BENEFIT else None
@@ -1846,10 +1932,42 @@ def open_chat(access_key, secret_key, security_token, model, messages,
         resp = urllib.request.urlopen(req, timeout=timeout)
     except urllib.error.HTTPError as exc:
         return exc.code, None, exc.read().decode("utf-8", "replace")
+    if idle_timeout is not None:
+        apply_stream_idle_timeout(resp, idle_timeout)
     return getattr(resp, "status", 200), resp, ""
 
 
-def iter_sse(resp, abort_check=None, read_size=8192, stats=None):
+#: ``iter_sse`` 的空闲哨兵：上游 ``idle_timeout`` 秒没吐字节时 yield 它。
+#:
+#: 为什么要往**客户端**发心跳：上游思考时是一段真的静默（GLM-5.2 的 reasoning
+#: 有时 20~40 秒不出一个字），而中间层对这种静默有自己的耐心 —— nginx 默认
+#: 60s、Cloudflare 免费版约 100s 无数据就掐连接。掐掉时客户端看到的是「回答
+#: 到一半没了」，而我们这边还在老老实实读上游。
+#: SSE 的注释行（以 ``:`` 开头）是协议允许的噪声，任何合规的解析器都会忽略
+#: 它 —— 用它当心跳不会污染正文。
+KEEPALIVE = object()
+
+#: 一次空闲等待的默认秒数。15s 足够小于常见中间层的 60s，又不会太碎。
+STREAM_IDLE_TIMEOUT = float(os.environ.get("CODEARTS_STREAM_IDLE") or 15.0)
+
+#: 连续静默多少次之后认定上游卡死（次数 × STREAM_IDLE_TIMEOUT = 总静默上限）。
+STREAM_MAX_IDLE = int(os.environ.get("CODEARTS_STREAM_MAX_IDLE") or 40)
+
+
+def _stream_socket(resp):
+    """挖出 HTTPResponse 底下的 socket；拿不到就返回 None（老版本/假对象）。
+
+    ``resp.fp`` 是 ``sock.makefile('rb')`` 给的 BufferedReader，``.raw`` 是
+    SocketIO，``._sock`` 才是真正的 socket。整条链任何一跳缺失都只是「不能
+    发心跳」，不该让请求失败 —— 所以一路 getattr。
+    """
+    fp = getattr(resp, "fp", None)
+    raw = getattr(fp, "raw", None)
+    return getattr(raw, "_sock", None)
+
+
+def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
+             idle_timeout=None, max_idle=None):
     """逐行吐出上游 SSE 文本（含行尾换行）。resp 的生命周期由调用方管。
 
     ``abort_check`` 每读一块前问一次，为真就抛 ``ChatAborted`` —— 客户端走了
@@ -1861,6 +1979,11 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None):
     读侧的网络异常一律收敛成 ``UpstreamBroken``（正常 EOF 不抛）。``stats``
     是可选的可变字典，回填 ``bytes``（已收字节数）与 ``truncated``（是否
     异常中断），供上层区分「上游没给内容就断」和「吐到一半断」。
+
+    给了 ``idle_timeout`` 就把底层 socket 的读超时压到这个秒数：**超时不是
+    失败**，而是 yield 一次 ``KEEPALIVE`` 让调用方去给客户端发心跳，然后接着
+    读同一根连接。``max_idle`` 次连续空等之后才认定为上游卡死（抛
+    ``UpstreamBroken``），避免一条死连接把账号名额挂到天荒地老。
     """
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     buf = ""
@@ -1868,38 +1991,73 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None):
     if stats is None:
         stats = {}
     stats.setdefault("bytes", 0)
-    while True:
-        if abort_check is not None and abort_check():
-            raise ChatAborted("client gone")
-        failed = None
+
+    sock = _stream_socket(resp) if idle_timeout else None
+    saved_timeout = None
+    if sock is not None:
         try:
+            saved_timeout = sock.gettimeout()
+            sock.settimeout(float(idle_timeout))
+        except OSError:
+            sock = None
+    idle_streak = 0
+    limit = max_idle if max_idle is not None else STREAM_MAX_IDLE
+
+    try:
+        while True:
+            if abort_check is not None and abort_check():
+                raise ChatAborted("client gone")
+            failed = None
             try:
-                piece = resp.read1(read_size)
-            except AttributeError:      # 老版本 http.client 没有 read1
-                piece = resp.read(read_size)
-        except (http.client.HTTPException, OSError) as exc:
-            # IncompleteRead 带着已读到的 partial；其余（ConnectionResetError、
-            # socket.timeout…）没有，按 0 处理。注意 IncompleteRead 是
-            # HTTPException 但不是 OSError，两个都要接。
-            piece = getattr(exc, "partial", b"") or b""
-            failed = exc
-        if piece:
-            total += len(piece)
-            stats["bytes"] = total
-            buf += decoder.decode(piece)
-            while True:
-                cut = buf.find("\n")
-                if cut < 0:
-                    break
-                line, buf = buf[:cut + 1], buf[cut + 1:]
-                yield line
-        if failed is not None:
-            stats["truncated"] = True
-            raise UpstreamBroken(
-                "upstream closed early: %s" % (str(failed) or type(failed).__name__),
-                total)
-        if not piece:
-            break
+                try:
+                    piece = resp.read1(read_size)
+                except AttributeError:      # 老版本 http.client 没有 read1
+                    piece = resp.read(read_size)
+            except TimeoutError:
+                # 我们自己压短的读超时到期，不是上游断流。把控制权交回去发
+                # 一条心跳，然后从同一根连接继续读。
+                if sock is None:
+                    failed = TimeoutError("upstream stalled")
+                    piece = b""
+                else:
+                    idle_streak += 1
+                    if limit and idle_streak > limit:
+                        stats["truncated"] = True
+                        raise UpstreamBroken(
+                            "upstream silent for %ss (%d idle reads)"
+                            % (idle_timeout, idle_streak), total)
+                    yield KEEPALIVE
+                    continue
+            except (http.client.HTTPException, OSError) as exc:
+                # IncompleteRead 带着已读到的 partial；其余（ConnectionResetError、
+                # socket.timeout…）没有，按 0 处理。注意 IncompleteRead 是
+                # HTTPException 但不是 OSError，两个都要接。
+                piece = getattr(exc, "partial", b"") or b""
+                failed = exc
+            if piece:
+                idle_streak = 0
+                total += len(piece)
+                stats["bytes"] = total
+                buf += decoder.decode(piece)
+                while True:
+                    cut = buf.find("\n")
+                    if cut < 0:
+                        break
+                    line, buf = buf[:cut + 1], buf[cut + 1:]
+                    yield line
+            if failed is not None:
+                stats["truncated"] = True
+                raise UpstreamBroken(
+                    "upstream closed early: %s" % (str(failed) or type(failed).__name__),
+                    total)
+            if not piece:
+                break
+    finally:
+        if sock is not None and saved_timeout is not None:
+            try:
+                sock.settimeout(saved_timeout)
+            except OSError:
+                pass
     buf += decoder.decode(b"", True)
     if buf:
         yield buf
@@ -1908,7 +2066,7 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None):
 def chat_for_model(access_key, secret_key, security_token, model, messages,
                    max_tokens=256, stream=True, timeout=None, extra=None,
                    tools=None, tool_choice=None, abort_check=None,
-                   session_id=None):
+                   session_id=None, idle_timeout=None):
     """按模型所属分组自动选对请求头，发一次真实推理。
 
     分组 → maas_type 的映射在这里集中维护（见 chat_headers 的注释）：
@@ -1925,7 +2083,8 @@ def chat_for_model(access_key, secret_key, security_token, model, messages,
     status, resp, text = open_chat(
         access_key, secret_key, security_token, model, messages,
         max_tokens=max_tokens, stream=stream, timeout=timeout, extra=extra,
-        tools=tools, tool_choice=tool_choice, session_id=session_id)
+        tools=tools, tool_choice=tool_choice, session_id=session_id,
+        idle_timeout=idle_timeout)
     if resp is None:
         return status, text
     try:

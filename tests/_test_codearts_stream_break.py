@@ -324,6 +324,14 @@ check("STS 续期票被用过（STS5.1806）→ credentials_error",
       _spec(400, "STS5.1806", "the refresh token has been used")[1]
       == "credentials_error")
 check("上游 5xx → 502 upstream_error", _spec(503, "", "") == (502, "upstream_error"))
+check("福利渠道没权益（4004.200 benefit not found）→ 404（重试无用）",
+      _spec(502, "InferHub.4004.200", "benefit not found")[0] == 404,
+      _spec(502, "InferHub.4004.200", "benefit not found"))
+
+# 没有权益的模型要在一段时间内从清单里消失（否则广告一个必错的模型）
+P.mark_benefit_missing("gemini-x")
+check("记下无权益模型", P.benefit_missing("gemini-x") is True, None)
+check("没记过的模型不受影响", P.benefit_missing("other") is False, None)
 
 # 429 必须带 Retry-After，否则客户端只能盲猜
 _h = _Handler()
@@ -333,6 +341,208 @@ check("限流响应返回「已响应」哨兵（二元组才不会继续往下�
       _ret is P.RESPONDED, _ret)
 check("限流响应状态是 429", _h.status == 429, _h.status)
 print("    (Retry-After 由 send_header 发出，_Handler 桩不记录)")
+
+
+# ---------------------------------------------------------------------------
+# 6. 上游静默 → 给客户端发心跳（而不是让中间层把连接掐了）
+# ---------------------------------------------------------------------------
+
+section("6. 上游静默的空关心跳")
+
+
+class _Sock:
+    def __init__(self, timeout=None):
+        self.timeout = timeout
+
+    def gettimeout(self):
+        return self.timeout
+
+    def settimeout(self, value):
+        self.timeout = value
+
+
+class _Raw:
+    def __init__(self, sock):
+        self._sock = sock
+
+
+class _FP:
+    def __init__(self, sock):
+        self.raw = _Raw(sock)
+
+
+class _IdleResp:
+    """read1 按剧本演：抛 TimeoutError 就是「上游静默」，b"" 是正常结束。"""
+
+    def __init__(self, script, sock=True):
+        self.script = list(script)
+        self.closed = False
+        self.fp = _FP(_Sock(180.0)) if sock else None
+
+    def read1(self, _n):
+        item = self.script.pop(0) if self.script else b""
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def close(self):
+        self.closed = True
+
+
+_script = [TimeoutError("timed out"), b'data: {"choices":[{"delta":{"content":"a"}}]}\n\n', b""]
+_seen = list(C.iter_sse(_IdleResp(_script), idle_timeout=15))
+check("静默时吐 KEEPALIVE 哨兵", any(x is C.KEEPALIVE for x in _seen), _seen)
+check("静默之后照常读出后续行",
+      any(isinstance(x, str) and x.startswith("data:") for x in _seen), _seen)
+check("KEEPALIVE 不是字符串（不能混进 SSE 正文）",
+      all(not isinstance(x, str) for x in _seen if x is C.KEEPALIVE), _seen)
+
+# 心跳期间 socket 超时被压短，读完恢复原值（不然下一次读又变成 180s）
+_probe = _IdleResp([TimeoutError("t"), b"", b""])
+_sock = _probe.fp.raw._sock
+list(C.iter_sse(_probe, idle_timeout=15))
+check("读完恢复原来的 socket 超时", _sock.timeout == 180.0, _sock.timeout)
+
+# 连续静默到上限：判上游卡死，抛 UpstreamBroken 而不是永远挂着
+_stuck = _IdleResp([TimeoutError("t")] * 10)
+_broken = None
+try:
+    list(C.iter_sse(_stuck, idle_timeout=15, max_idle=3))
+except C.UpstreamBroken as exc:
+    _broken = exc
+check("连续静默超过上限 → UpstreamBroken", _broken is not None, _broken)
+
+# 拿不到 socket（假对象 / 老版本）时不能误发心跳：超时按真断流处理
+_nosock = _IdleResp([TimeoutError("t")] * 3, sock=False)
+_broken2 = None
+try:
+    list(C.iter_sse(_nosock, idle_timeout=15))
+except C.UpstreamBroken:
+    _broken2 = True
+check("拿不到 socket 时不假装心跳", _broken2 is True, _broken2)
+
+# 哨兵在 _tap_codearts_sse 里翻成 SSE 注释行
+_tapped = list(P._tap_codearts_sse([C.KEEPALIVE, b'data: {"usage":{"total_tokens":7}}\n\n'], {}))
+check("哨兵翻成 SSE 注释行", _tapped[0] == b": keepalive\n\n", _tapped[:1])
+
+
+# ---------------------------------------------------------------------------
+# 7. 模型名归一（大小写无关）—— 上游 id 大小写是混的，客户端习惯小写
+# ---------------------------------------------------------------------------
+
+section("7. 模型名归一")
+
+check("小写 glm-5.2 解析成上游真名 GLM-5.2", C.resolve_model("glm-5.2") == "GLM-5.2",
+      C.resolve_model("glm-5.2"))
+check("大写 GLM-5.3 解析成小写真名 glm-5.3", C.resolve_model("GLM-5.3") == "glm-5.3",
+      C.resolve_model("GLM-5.3"))
+check("混合大小写 Qwen3-VL-235B 也认",
+      C.resolve_model("qwen3-vl-235b") == "Qwen3-VL-235B",
+      C.resolve_model("qwen3-vl-235b"))
+check("认不出的名字原样返回（不编近似名）", C.resolve_model("gpt-4o") == "gpt-4o",
+      C.resolve_model("gpt-4o"))
+check("空值不炸", C.resolve_model(None) == "" and C.resolve_model("") == "",
+      (C.resolve_model(None), C.resolve_model("")))
+
+check("小写的福利模型判对分组（否则不带 maas_type → 002002009）",
+      C.model_group("DeepSeek-V4.1-Flash") == C.GROUP_BENEFIT,
+      C.model_group("DeepSeek-V4.1-Flash"))
+check("小写的内置模型仍是内置", C.model_group("GLM-5.3") == C.GROUP_BUILTIN,
+      C.model_group("GLM-5.3"))
+
+check("小写模型名也夹得住 max_tokens（否则 128000 原样上去 → 001001005）",
+      C.clamp_max_tokens("glm-5.2", 128000) == (65536, True),
+      C.clamp_max_tokens("glm-5.2", 128000))
+check("表里没有的模型不夹", C.clamp_max_tokens("gpt-4o", 128000) == (128000, False),
+      C.clamp_max_tokens("gpt-4o", 128000))
+
+check("小写模型名判为码道模型（否则掉进 WorkBuddy 空池 → 503）",
+      P.is_codearts_model("glm-5.2") is True, P.is_codearts_model("glm-5.2"))
+check("真·外部模型不算码道", P.is_codearts_model("gpt-4o") is False,
+      P.is_codearts_model("gpt-4o"))
+
+_norm = {"model": "glm-5.2", "messages": []}
+P.canonicalize_model(_norm)
+check("canonicalize_model 就地改成真名", _norm["model"] == "GLM-5.2", _norm["model"])
+_norm2 = {"model": "gpt-4o"}
+P.canonicalize_model(_norm2)
+check("canonicalize_model 不动认不出的名字", _norm2["model"] == "gpt-4o", _norm2["model"])
+
+
+# ---------------------------------------------------------------------------
+# 8. 会话粘性：同一条对话的多轮落在同一个账号上
+# ---------------------------------------------------------------------------
+
+section("8. 会话粘性")
+
+_k = P.codearts_session_key({"X-Conversation-Id": "conv-1"},
+                            {"messages": [{"role": "user", "content": "x" * 60}]})
+check("显式会话头优先于消息指纹", _k == "k:conv-1", _k)
+
+_k2 = P.codearts_session_key({}, {"metadata": {"conversation_id": "conv-2"},
+                                  "messages": [{"role": "user", "content": "x" * 60}]})
+check("metadata.conversation_id 也算显式", _k2 == "k:conv-2", _k2)
+
+_k3 = P.codearts_session_key({}, {"user": "alice",
+                                  "messages": [{"role": "user", "content": "x" * 60}]})
+check("user 字段次之", _k3 == "u:alice", _k3)
+
+_long = "帮我修一下这个 Python 脚本里读文件的编码问题，它总是报 UnicodeDecodeError"
+_k4 = P.codearts_session_key({}, {"messages": [
+    {"role": "system", "content": "sys"},
+    {"role": "user", "content": _long},
+    {"role": "assistant", "content": "好的"},
+    {"role": "user", "content": "继续"}]})
+_k5 = P.codearts_session_key({}, {"messages": [
+    {"role": "system", "content": "sys"},
+    {"role": "user", "content": _long},
+    {"role": "assistant", "content": "好的"},
+    {"role": "user", "content": "再改一处"},
+    {"role": "assistant", "content": "ok"},
+    {"role": "user", "content": "谢谢"}]})
+check("同一对话的后续轮次指纹不变（首条 user 消息稳定）", _k4 == _k5, (_k4, _k5))
+check("指纹是 p: 前缀 + 16 位", _k4.startswith("p:") and len(_k4) == 18, _k4)
+
+_short = P.codearts_session_key({}, {"messages": [{"role": "user", "content": "hi"}]})
+check("太短的消息不当指纹（'hi' 会撞车）", _short is None, _short)
+check("什么都没有就返回 None（不猜）", P.codearts_session_key(None, {}) is None,
+      P.codearts_session_key(None, {}))
+
+# 池子：remember 之后，同一条对话优先回到那个号
+class _StubPool(P._CodeartsAccountPool):
+    def __init__(self, keys):
+        P._CodeartsAccountPool.__init__(self)
+        self._keys = keys
+
+    def _usable(self):
+        return [{"account": {"id": k}} for k in self._keys]
+
+
+_pool = _StubPool(["acct-a", "acct-b"])
+_session, _key = _pool.acquire(0, session_key="k:conv-9")
+_pool.remember("k:conv-9", "acct-b")
+_seen = []
+for _i in range(6):
+    _sess, _k = _pool.acquire(0, session_key="k:conv-9")
+    _seen.append(_k)
+    _pool.release(_k)
+check("绑定后每一轮都落回同一个号", set(_seen) == {"acct-b"}, _seen)
+_rot = []
+for _i in range(6):
+    _sess_r, _key_r = _pool.acquire(0)
+    _rot.append(_key_r)
+    _pool.release(_key_r)
+check("不粘的对话仍会轮转（粘性不冻结负载）", set(_rot) == {"acct-a", "acct-b"},
+      _rot)
+
+# 绑定过期：不该再钉住
+_pool.remember("k:old", "acct-a", now=time.time() - P.CODEARTS_AFFINITY_TTL - 5)
+check("粘性过期后不再生效", _pool._sticky("k:old") is None, _pool._sticky("k:old"))
+
+# 绑定的号不可用（不在池里）时不能卡住
+_pool.remember("k:gone", "acct-z")
+_sess2, _key2 = _pool.acquire(0, session_key="k:gone")
+check("绑定的号不在池里时正常换号", _key2 in ("acct-a", "acct-b"), _key2)
 
 
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))

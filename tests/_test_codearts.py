@@ -1678,8 +1678,12 @@ class _FakePool:
         self.released = 0
         self.penalties = []
 
-    def acquire(self, timeout=None):
+    def acquire(self, timeout=None, session_key=None):
+        self.last_session_key = session_key
         return self.sess, "a"
+
+    def remember(self, session_key, key, now=None):
+        self.last_remember = (session_key, key)
 
     def release(self, key):
         self.released += 1

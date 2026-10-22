@@ -10366,6 +10366,65 @@ CODEARTS_STREAM_RESTART_BUDGET = float(
 #: 比请求本身更频繁没有意义，而且每次续期都是一次签名请求。
 CODEARTS_SESSION_PING = float(os.environ.get("CODEARTS_SESSION_PING") or 30.0)
 
+#: 会话粘性的记忆时长（秒）。同一条对话的多轮落在同一个账号上，上游的
+#: prompt cache 才可能命中（换号 = 换一台机器，前缀缓存全丢）。
+#: 30 分钟：比一轮对话的实际间隔长，又不至于让绑定表一直涨。
+CODEARTS_AFFINITY_TTL = float(os.environ.get("CODEARTS_AFFINITY_TTL") or 1800.0)
+
+#: 粘性表上限。超了按最久未用淘汰 —— 它只是「选号偏好」，丢了最多退化成轮询。
+CODEARTS_AFFINITY_MAX = int(os.environ.get("CODEARTS_AFFINITY_MAX") or 4096)
+
+#: 用首条用户消息当会话指纹时要求的最短长度。太短（"hi"、"继续"）会撞车，
+#: 撞了只是"两个无关对话被排到同一个号"，无害但没必要。
+CODEARTS_AFFINITY_MIN_CHARS = 24
+
+
+def codearts_session_key(headers, payload):
+    """同一条对话的稳定标识，用来把多轮固定到同一个账号。
+
+    三层，从最可信到最兜底：
+
+      1. **显式会话键** —— 客户端真的发了 ``conversation_id`` /
+         ``X-Conversation-Id`` / ``prompt_cache_key`` 就用它，零歧义；
+      2. **会话头**（``X-Session-Id`` 之类）；
+      3. **首条用户消息的指纹** —— Codex CLI / Claude Code 每一轮都会把完整
+         历史重发一遍，而**第一条 user 消息在整个对话里不变**，正好当指纹。
+         coding2api 的 affinity 也是这个思路（它还把 username 掺进键里防串）。
+
+    都没有就返回 None：不猜。宁可退化成轮询，也不要靠一个不稳的东西
+    把两条无关对话绑到同一个号上。
+    """
+    try:
+        explicit = extract_session_key(headers or {}, payload)
+    except Exception:
+        explicit = None
+    if explicit:
+        return "k:" + explicit
+    try:
+        user = str(payload.get("user") or "").strip()
+        if user:
+            return "u:" + user
+        messages = payload.get("messages") or []
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            if message.get("role") != "user":
+                continue
+            content = message.get("content")
+            if isinstance(content, list):
+                content = "".join(
+                    str(part.get("text") or "") for part in content
+                    if isinstance(part, dict))
+            text = str(content or "").strip()
+            if len(text) < CODEARTS_AFFINITY_MIN_CHARS:
+                return None
+            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+            return "p:" + digest
+    except Exception:
+        return None
+    return None
+
+
 
 class _CodeartsAccountPool:
     """按**账号**分配并发名额，并在账号之间做负载与故障转移。
@@ -10383,6 +10442,7 @@ class _CodeartsAccountPool:
         self._semaphores = {}     # 账号 id -> Semaphore（每号独立容量）
         self._cool_until = {}     # 账号 id -> 冷却到期时间戳
         self._inflight = {}       # 账号 id -> 正在跑的请求数（面板用）
+        self._affinity = {}       # 会话键 -> (账号 id, 最后使用时间)，见 acquire
         self._cursor = 0
 
     @staticmethod
@@ -10407,12 +10467,17 @@ class _CodeartsAccountPool:
                 usable.append(sess)
         return usable
 
-    def acquire(self, timeout=None):
+    def acquire(self, timeout=None, session_key=None):
         """要一个名额。返回 ``(session, key)``；拿不到时 ``(None, None)``。
 
         先试「不等待」的：谁有空位给谁。全都忙才在**第一个候选**上等一小会
         儿（最多 0.25s）然后重新评估 —— 这样别的号空出来的瞬间就能换过去，
         而不是死等某一个号。
+
+        ``session_key`` 给了就带上**粘性**：这条对话上次落在哪个号，这次优先
+        还给它（上游的 prompt cache 是按机器存的，换号等于前缀缓存全丢）。
+        但粘性只是排序偏好 —— 那个号满了/在冷却时**立刻换号**，绝不为了一条
+        偏好让用户多等。
         """
         timeout = CODEARTS_SLOT_WAIT if timeout is None else timeout
         deadline = time.time() + max(0.0, timeout)
@@ -10432,6 +10497,11 @@ class _CodeartsAccountPool:
             start = self._cursor % len(candidates)
             ordered = candidates[start:] + candidates[:start]
             self._cursor += 1
+            # 粘住的号提到最前。它是**偏好**不是约束：下面仍然非阻塞地要槽位，
+            # 拿不到就继续试后面的号。
+            sticky = self._sticky(session_key, now)
+            if sticky:
+                ordered.sort(key=lambda s: 0 if self.key_of(s) == sticky else 1)
             for sess in ordered:
                 key = self.key_of(sess)
                 if self._sem(key).acquire(blocking=False):
@@ -10443,6 +10513,35 @@ class _CodeartsAccountPool:
             if self._sem(key).acquire(timeout=min(0.25, remaining)):
                 return self._admit(ordered[0], key), key
             time.sleep(min(0.05, max(0.0, deadline - time.time())))
+
+    def _sticky(self, session_key, now=None):
+        """这条对话绑在哪个号上；没绑、已过期都返回 None。"""
+        if not session_key:
+            return None
+        now = time.time() if now is None else now
+        with self._lock:
+            item = self._affinity.get(session_key)
+            if not item:
+                return None
+            key, stamp = item
+            if now - stamp > CODEARTS_AFFINITY_TTL:
+                self._affinity.pop(session_key, None)
+                return None
+            return key
+
+    def remember(self, session_key, key, now=None):
+        """把这条对话绑定到刚服务它的号上（只记偏好，不影响可用性判定）。"""
+        if not session_key or not key:
+            return
+        now = time.time() if now is None else now
+        with self._lock:
+            self._affinity[session_key] = (key, now)
+            if len(self._affinity) > CODEARTS_AFFINITY_MAX:
+                # 超限按最久没碰过的淘汰。它是纯偏好，丢了只会退化成轮询。
+                dead = sorted(self._affinity.items(),
+                              key=lambda kv: kv[1][1])[:len(self._affinity) // 8 + 1]
+                for name, _item in dead:
+                    self._affinity.pop(name, None)
 
     def _admit(self, sess, key):
         """已经拿到槽位：记在跑数、顺手把 STS 续上。"""
@@ -10525,20 +10624,42 @@ class _CodeartsLease:
         return True
 
     def lines(self, abort_check=None, stats=None):
-        """逐行吐出上游 SSE（str），顺手按需续期会话。"""
+        """逐行吐出上游 SSE（str），顺手按需续期会话。
+
+        上游静默时会 yield 一次 ``ca_codearts.KEEPALIVE`` —— 调用方**必须**
+        判断哨兵，把它翻成给客户端的一条 SSE 注释（首帧前不要发，那时还没
+        承诺 200）。见 ca_codearts.iter_sse。
+        """
         if not self.session_id:
-            return ca_codearts.iter_sse(self.resp, abort_check, stats=stats)
+            return ca_codearts.iter_sse(
+                self.resp, abort_check, stats=stats,
+                idle_timeout=ca_codearts.STREAM_IDLE_TIMEOUT)
         return self._lines_with_ping(abort_check, stats)
 
     def _lines_with_ping(self, abort_check, stats):
-        for line in ca_codearts.iter_sse(self.resp, abort_check, stats=stats):
+        for line in ca_codearts.iter_sse(
+                self.resp, abort_check, stats=stats,
+                idle_timeout=ca_codearts.STREAM_IDLE_TIMEOUT):
+            if line is ca_codearts.KEEPALIVE:
+                # 空等一次也是「这条会话还活着」的证据，顺手续期，省一次
+                # 定时器；真正的续期仍由保持 keepalive() 自己的节流决定。
+                self.keepalive()
+                yield line
+                continue
             self.keepalive()
             yield line
 
     def byte_lines(self, abort_check=None, stats=None):
-        """逐行吐出（bytes）—— Responses / Messages 的事件翻译器吃这种。"""
+        """逐行吐出（bytes）—— Responses / Messages 的事件翻译器吃这种。
+
+        哨兵原样透传，由调用方决定怎么翻译成协议里的事件（Responses 是
+        ``response.in_progress``，Messages 是 ``ping``，Chat 是注释行）。
+        """
         for line in self.lines(abort_check, stats):
-            yield line.encode("utf-8")
+            if line is ca_codearts.KEEPALIVE:
+                yield line
+            else:
+                yield line.encode("utf-8")
 
     def close(self):
         if self._closed:
@@ -10570,8 +10691,15 @@ def _tap_codearts_sse(lines, sink):
     """把 usage / 帧内错误顺手记进 sink，再把行原样交给翻译器。
 
     事件翻译器只负责出事件、不管记账；流式路径没有聚合结果，用量只能在这里捞。
+
+    上游静默产生的 ``KEEPALIVE`` 哨兵在这里翻成一条 SSE 注释行：协议允许
+    以 ``:`` 开头的噪声，翻译器与客户端都该忽略它。放在这一层而不是每个
+    翻译器里，是为了让 Chat / Responses / Messages 三条路共用一个口径。
     """
     for line in lines:
+        if line is ca_codearts.KEEPALIVE:
+            yield b": keepalive\n\n"
+            continue
         text = line.decode("utf-8", "replace") if isinstance(line, bytes) else line
         stripped = text.strip()
         if stripped.startswith("data:"):
@@ -10592,6 +10720,33 @@ def _tap_codearts_sse(lines, sink):
 _CODEARTS_CATALOG = {"at": 0.0, "models": [], "errors": {}}
 _CODEARTS_CATALOG_TTL = 300.0
 _CODEARTS_RR = {"next": 0}
+
+#: 实测「这个账号没有该福利模型权益」的模型（``InferHub.4004.200``）。
+#:
+#: 福利渠道的 4 个模型是我们按名字写进 CHAT_MODELS 的，但账号**不一定领了**
+#: 权益。不领的话上游回 ``benefit not found``，而 /v1/models 还把它们广告
+#: 出去 —— 客户端选中一个，必错。这里记一笔，让清单在一段时间内不再列它；
+#: 到期后重新试探（用户可能刚去领了福利）。
+CODEARTS_BENEFIT_MISSING_TTL = float(
+    os.environ.get("CODEARTS_BENEFIT_MISSING_TTL") or 600.0)
+_CODEARTS_BENEFIT_MISSING = {}
+
+
+def mark_benefit_missing(model_id):
+    """记下「这个模型当前没有权益」。返回是否是新记的（不要重复写日志）。"""
+    name = str(model_id or "")
+    if not name:
+        return False
+    now = time.time()
+    fresh = _CODEARTS_BENEFIT_MISSING.get(name, 0.0) <= now
+    _CODEARTS_BENEFIT_MISSING[name] = now + CODEARTS_BENEFIT_MISSING_TTL
+    return fresh
+
+
+def benefit_missing(model_id):
+    """这个模型是否还在「没有权益」的观察期内。"""
+    until = _CODEARTS_BENEFIT_MISSING.get(str(model_id or ""), 0.0)
+    return until > time.time()
 
 
 def codearts_catalog(force=False):
@@ -10636,8 +10791,10 @@ def codearts_catalog(force=False):
     except Exception as exc:
         models, errors = [], {"catalog": str(exc)}
     # 只暴露实测可用的那些：服务端报了但打不通的模型进清单只会误导客户端。
+    # 「没有福利权益」（4004.200）也按不可用处理 —— 列出来必错。
     models = [m for m in models if m.get("id") in ca_codearts.CHAT_MODELS
-              and m.get("routable", True)]
+              and m.get("routable", True)
+              and not benefit_missing(m.get("id"))]
     _CODEARTS_CATALOG.update({"at": now, "models": models, "errors": errors})
     return _CODEARTS_CATALOG
 
@@ -10654,8 +10811,35 @@ def workbuddy_accounts_available():
     return bool(pool is not None and getattr(pool, "accounts", None))
 
 
+def canonicalize_model(payload):
+    """把请求体里的 ``model`` 换成上游真名（就地改，返回同一个 dict）。
+
+    三个协议入口都要过一遍，原因见 ``ca_codearts.resolve_model``：客户端的
+    小写写法和上游真名对不上时，**报错和模型名毫无关系**（503 没有可用账号 /
+    001001005 参数错 / 002002009 模型未注册），排查成本极高。
+
+    认不出来的名字原样留着 —— 是不是码道模型由 ``routes_to_codearts`` 决定，
+    不存在「本地改名」这回事。
+    """
+    if not isinstance(payload, dict):
+        return payload
+    given = payload.get("model")
+    real = ca_codearts.resolve_model(given)
+    if real != given:
+        payload["model"] = real
+    return payload
+
+
 def is_codearts_model(model_id):
-    return str(model_id or "") in ca_codearts.CHAT_MODELS
+    """这个模型名是不是码道的（**大小写无关**）。
+
+    上游模型 id 的大小写是混的（``GLM-5.2`` / ``glm-5.3`` / ``Qwen3-VL-235B``），
+    客户端却习惯一律小写。精确比较会让 ``glm-5.2`` 判成「不是码道模型」，请求
+    掉进 WorkBuddy 池，在只配了码道账号的部署里回一个
+    ``503 no usable account`` —— 报错和模型名毫无关系，用户根本猜不到原因。
+    见 ca_codearts.resolve_model。
+    """
+    return ca_codearts.resolve_model(model_id) in ca_codearts.CHAT_MODELS
 
 
 def codearts_deployed():
@@ -10679,6 +10863,25 @@ def routes_to_codearts(model_id):
     清单里列得出来的模型必然 503。
     """
     return is_codearts_model(model_id) and codearts_deployed()
+
+
+def workbuddy_pool_empty():
+    """这个部署压根没配 WorkBuddy 账号（只配了码道）。
+
+    只看「有没有账号」，不看「账号现在忙不忙」：全在冷却的池子仍然会在
+    几秒后恢复，那是 429/503 的语义；一个账号都没有则是**这个部署不服务
+    这个模型**，属于 404。两者混在一起会让人以为网关坏了。
+    """
+    try:
+        return POOL is None or not POOL.accounts
+    except Exception:
+        return False
+
+
+def unserved_model_message(model_id):
+    available = [m for m in ca_codearts.CHAT_MODELS] if codearts_deployed() else []
+    return ("model '%s' is not served by this gateway. Available: %s"
+            % (model_id, ", ".join(available) or "(none - no account configured)"))
 
 
 def mark_codearts_ownership(entries):
@@ -10859,22 +11062,21 @@ def _codearts_error_detail(text):
         return "", (text or "")[:200]
 
 
-def _codearts_frame_status(text):
+def _codearts_frame_status(text, anthropic=False):
     """帧内错误（HTTP 200 + error_code）→ 该回给客户端的 ``(状态码, type)``。
 
     上游把很多错误塞在 SSE 帧里而不是 HTTP 状态码上。首帧之前我们还来得及
     回一个真正的状态码，就别一律当 502 —— 客户端靠它决定「等一会儿重试」
     还是「这个请求本身就错了，改了再发」。
+
+    **不要再维护第二张表**：这里以前自己写了一份（只认 1041 和参数错），
+    于是「模型不存在」「没有福利权益」这类帧内错误全部落成 502，和
+    ``_codearts_fail_spec`` 的说法不一致。现在统一走那张表 —— 帧内错误拿不到
+    HTTP 状态码，就传 200 让 body 去匹配。
     """
-    body = text or ""
-    if ("TM.00001041" in body or "并发会话数已达上限" in body
-            or "ModelArts.811" in body or "rate limit" in body.lower()
-            or "too many requests" in body.lower()):
-        return 429, "rate_limit_error"
-    if ("001001005" in body or "param is invalid" in body
-            or "参数校验" in body):
-        return 400, "invalid_request_error"
-    return 502, "upstream_error"
+    body = str(text or "")
+    code, _sep, detail = body.partition(" ")
+    return _codearts_fail_spec(200, code or body, detail or body, anthropic)
 
 
 class _CodeartsRateLimit(Exception):
@@ -10918,6 +11120,11 @@ def _codearts_fail_spec(status, code, detail, anthropic=False):
         return 502, ("authentication_error" if anthropic else "credentials_error")
     if (status == 404 or "002002009" in low or "model is not registered" in low
             or "model not found" in low or "模型不存在" in text):
+        return 404, "invalid_request_error"
+    # InferHub.4004.200 benefit not found：这是**限时福利渠道**的回复 ——
+    # 账号没有该模型的权益（没领、领完了、或这个账号本来就不在白名单里）。
+    # 它不是网关故障，重试同一条请求也不会变；回 502 只会让客户端反复退避。
+    if "4004.200" in low or "benefit not found" in low:
         return 404, "invalid_request_error"
     if (status == 400 or "001001005" in low or "param is invalid" in low
             or "malformed_json" in low or "参数" in text):
@@ -19456,6 +19663,10 @@ class Handler(BaseHTTPRequestHandler):
             if routes_to_codearts(chat_req.get("model")):
                 return self._responses_codearts(
                     chat_req, want_stream, custom_names, request_meta, ns_map)
+            if workbuddy_pool_empty():
+                return self._error(404,
+                                   unserved_model_message(chat_req.get("model")),
+                                   "model_not_found")
             upstream, account, effort = open_upstream(
                 chat_req, session_key=session_key, target_realm=req_realm)
         except ContentRejected as exc:
@@ -19654,6 +19865,9 @@ class Handler(BaseHTTPRequestHandler):
             chat_req = messages_to_chat(payload)
         except ValueError as exc:
             return self._anthropic_error(400, str(exc), "invalid_request_error")
+        # Claude Code 发的模型名往往带日期后缀（claude-sonnet-4-5-20250929）
+        # 或大小写与上游不同；归一只对认得出的码道模型生效。
+        canonicalize_model(chat_req)
         model = chat_req.get("model") or "unknown"
         want_stream = bool(chat_req.get("stream"))
         session_key = extract_session_key(self.headers, chat_req)
@@ -19677,6 +19891,10 @@ class Handler(BaseHTTPRequestHandler):
             # 与 /v1/responses 同一个缺口：码道模型不能落进 WorkBuddy 空池。
             if routes_to_codearts(chat_req.get("model")):
                 return self._messages_codearts(chat_req, want_stream)
+            if workbuddy_pool_empty():
+                return self._anthropic_error(
+                    404, unserved_model_message(chat_req.get("model")),
+                    "not_found_error")
             upstream, account, effort = open_upstream(
                 chat_req, session_key=session_key, target_realm=req_realm)
         except ContentRejected as exc:
@@ -20004,6 +20222,8 @@ class Handler(BaseHTTPRequestHandler):
         t_start = time.time()
         status, text, last_exc = None, "", None
         account_label = None
+        # 与流式路径同一个粘性口径（见 codearts_session_key）。
+        sticky_key = codearts_session_key(getattr(self, "headers", None), payload)
         # 每轮都重新向池子要号：失败时给这个号打冷却，下一轮自然换号。
         delays = CODEARTS_BUSY_DELAYS
         attempt = 0
@@ -20016,7 +20236,8 @@ class Handler(BaseHTTPRequestHandler):
                               "aborted": True}
             wait = (CODEARTS_SLOT_WAIT if attempt == 0
                     else min(2.0, CODEARTS_SLOT_WAIT))
-            session, account_key = _CODEARTS_POOL.acquire(wait)
+            session, account_key = _CODEARTS_POOL.acquire(
+                wait, session_key=sticky_key)
             if session is None:
                 if not _CODEARTS_POOL._usable():
                     return fail(
@@ -20057,6 +20278,10 @@ class Handler(BaseHTTPRequestHandler):
                     abort_check=self._client_disconnected,
                     session_id=session_id)
                 last_exc = None
+                if status in (200, 201):
+                    # 真的服务成功了才绑定会话：失败的那一轮可能刚被上游拒绝，
+                    # 不该把这条对话钉在一个拒绝过它的号上。
+                    _CODEARTS_POOL.remember(sticky_key, account_key)
             except ca_codearts.ChatAborted:
                 # 客户端已经走了：不再重试、不再写错误记录（这不是上游故障）。
                 log("codearts aborted: client gone, upstream closed model=%s" % model)
@@ -20101,6 +20326,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if status not in (200, 201):
             code, detail = _codearts_error_detail(text)
+            if "4004.200" in (code or "") or "benefit not found" in (detail or ""):
+                if mark_benefit_missing(model):
+                    log("codearts model %s has no benefit entitlement; "
+                        "hiding it from /v1/models for %ds"
+                        % (model, int(CODEARTS_BENEFIT_MISSING_TTL)))
             st, _et = _codearts_fail_spec(status, code, detail, anthropic)
             record_error(model, st, ("%s %s" % (code, detail))[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
@@ -20112,11 +20342,13 @@ class Handler(BaseHTTPRequestHandler):
 
         content, reasoning, usage, frame_err, tool_calls = _collect_codearts_sse(text)
         if frame_err and not content and not reasoning and not tool_calls:
-            record_error(model, 502, frame_err[:200],
+            _st, _et = _codearts_frame_status(frame_err, anthropic)
+            if "4004.200" in frame_err or "benefit not found" in frame_err:
+                mark_benefit_missing(model)
+            record_error(model, _st, frame_err[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=account_label, key=self._key_id())
-            return fail(502, "codearts error: %s" % frame_err,
-                        "upstream_error"), None
+            return fail(_st, "codearts error: %s" % frame_err, _et), None
 
         elapsed_ms = int((time.time() - t_start) * 1000)
         try:
@@ -20162,6 +20394,9 @@ class Handler(BaseHTTPRequestHandler):
         t_start = time.time()
         status, text, last_exc = None, "", None
         account_label = None
+        # 这条对话的稳定标识：多账号时让同一对话的每一轮尽量落在同一个号上
+        # （上游 prompt cache 是按机器存的，换号等于前缀缓存全丢）。
+        sticky_key = codearts_session_key(getattr(self, "headers", None), payload)
         delays = CODEARTS_BUSY_DELAYS      # 先按「名额满」的短节奏
         attempt = 0
         while True:
@@ -20173,7 +20408,7 @@ class Handler(BaseHTTPRequestHandler):
             # 换个号试试」，不是继续占着排队位置。
             wait = CODEARTS_SLOT_WAIT if attempt == 0 else min(
                 2.0, CODEARTS_SLOT_WAIT)
-            session, key = _CODEARTS_POOL.acquire(wait)
+            session, key = _CODEARTS_POOL.acquire(wait, session_key=sticky_key)
             if session is None:
                 if not _CODEARTS_POOL._usable():
                     return fail(
@@ -20217,6 +20452,9 @@ class Handler(BaseHTTPRequestHandler):
                 status, resp, text, last_exc = None, None, "", exc
 
             if resp is not None:
+                # 建连成功才记粘性：失败的那一轮不该把这条对话绑到一个
+                # 刚刚拒绝过我们的号上。
+                _CODEARTS_POOL.remember(sticky_key, key)
                 return None, _CodeartsLease(resp, account_label, t_start, key,
                                             session_id=session_id,
                                             session_cred=cred)
@@ -20254,6 +20492,11 @@ class Handler(BaseHTTPRequestHandler):
                         "upstream_error"), None
 
         code, detail = _codearts_error_detail(text)
+        if "4004.200" in (code or "") or "benefit not found" in (detail or ""):
+            if mark_benefit_missing(model):
+                log("codearts model %s has no benefit entitlement; "
+                    "hiding it from /v1/models for %ds"
+                    % (model, int(CODEARTS_BENEFIT_MISSING_TTL)))
         record_error(model, 502, ("%s %s" % (code, detail))[:200],
                      elapsed_ms=elapsed_ms, account=account_label,
                      key=self._key_id())
@@ -20348,6 +20591,18 @@ class Handler(BaseHTTPRequestHandler):
             try:
                 try:
                     for line in lease.lines(self._client_disconnected):
+                        if line is ca_codearts.KEEPALIVE:
+                            # 上游在思考、一个字都没吐。首帧前不能发（还没承诺
+                            # 200，那时失败要能回错误码），首帧后发一条 SSE 注释
+                            # 让中间层看到连接还活着。
+                            if headers_sent:
+                                try:
+                                    self.wfile.write(b": keepalive\n\n")
+                                    self.wfile.flush()
+                                except (BrokenPipeError, ConnectionResetError,
+                                        ConnectionAbortedError):
+                                    return None
+                            continue
                         if not line.startswith("data:"):
                             continue
                         raw = line[5:].strip()
@@ -20433,6 +20688,8 @@ class Handler(BaseHTTPRequestHandler):
             # 比「200 + 半截流」诚实得多。
             reason = frame_err or truncated or "upstream returned no frames"
             code, err_type = _codearts_frame_status(reason)
+            if "4004.200" in reason or "benefit not found" in reason:
+                mark_benefit_missing(model)
             record_error(model, code, reason[:200], elapsed_ms=elapsed_ms,
                          account=account_label, key=self._key_id())
             return self._error(code, "codearts error: %s" % reason, err_type)
@@ -20877,6 +21134,9 @@ class Handler(BaseHTTPRequestHandler):
             lease.close()
 
     def _dispatch_chat_post(self, path, payload):
+        # 模型名先归一到上游真名（大小写无关）。必须排在封锁 / 限模型判定
+        # 之前：面板里配的是真名，客户端发小写时不能绕过封禁。
+        canonicalize_model(payload)
         # 先挡背景请求：Codex 自己发的（记忆整理／环境建议／自动复核）
         # 不算「使用者实际使用」，一律本地拒绝，不碰上游。
         if BLOCK_BACKGROUND_REQUESTS:
@@ -20904,6 +21164,12 @@ class Handler(BaseHTTPRequestHandler):
         # 别进 WorkBuddy 账号池的选路。
         if routes_to_codearts(payload.get("model")):
             return self._handle_codearts_chat(payload)
+        # 剩下的只有 WorkBuddy 路径。这个部署一个 WorkBuddy 账号都没有时，
+        # 任何非码道模型都必然打不通 —— 回 404 说清「这个网关不服务这个名字」，
+        # 别让它掉进空池回一句 503「没有可用账号」，那看起来像网关坏了。
+        if workbuddy_pool_empty():
+            return self._error(404, unserved_model_message(payload.get("model")),
+                               "model_not_found")
         # Diagnostics: what the client actually asked for, and what we forward.
         # Only the knobs that change behaviour are logged - never message text.
         forwarded = build_upstream_body(payload)
