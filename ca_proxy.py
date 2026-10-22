@@ -94,6 +94,23 @@ _anthropic_tool_choice = ca_protocol.anthropic_tool_choice
 anthropic_tools_to_chat = ca_protocol.anthropic_tools_to_chat
 anthropic_effort_from_messages = ca_protocol.anthropic_effort_from_messages
 _anthropic_blocks_to_messages = ca_protocol.anthropic_blocks_to_messages
+TAG_START = ca_protocol.TAG_START
+DSML_CALLS_RE = ca_protocol.DSML_CALLS_RE
+DSML_INVOKE_RE = ca_protocol.DSML_INVOKE_RE
+DSML_PARAM_RE = ca_protocol.DSML_PARAM_RE
+parse_dsml_tool_calls = ca_protocol.parse_dsml_tool_calls
+CJK_RE = ca_protocol.CJK_RE
+estimate_tokens = ca_protocol.estimate_tokens
+is_truncated_arguments = ca_protocol.is_truncated_arguments
+_NS_SEP = ca_protocol.NS_SEP
+resolve_namespaced_name = ca_protocol.resolve_namespaced_name
+stamp_namespace = ca_protocol.stamp_namespace
+apply_namespace_to_calls = ca_protocol.apply_namespace_to_calls
+_unwrap_custom_input = ca_protocol.unwrap_custom_input
+_CITATION_MD_RE = ca_protocol.CITATION_MD_RE
+build_citations = ca_protocol.build_citations
+web_tools_active = ca_protocol.web_tools_active
+_responses_usage = ca_protocol.responses_usage
 _best_cached_tokens = ca_protocol.best_cached_tokens
 import ca_upstream_pool
 import ca_webtools
@@ -12581,25 +12598,6 @@ def cleanup_orphan_tool_calls(messages):
     return out, True
 
 
-def is_truncated_arguments(raw):
-    """True when a non-empty tool-arguments string is not valid JSON.
-
-    A stream cut off by max_tokens or a dropped connection leaves the last
-    tool call with half-written JSON. An empty/whitespace string is a legal
-    no-argument tool, and any parseable JSON (including null/scalars/arrays)
-    is the model's own output for the client to validate - only non-empty
-    unparsable strings count as truncation.
-    """
-    if not isinstance(raw, str):
-        return False
-    trimmed = raw.strip()
-    if not trimmed:
-        return False
-    try:
-        json.loads(trimmed)
-        return False
-    except Exception:
-        return True
 
 
 def drop_truncated_tool_calls(calls):
@@ -12764,36 +12762,6 @@ def normalize_stop(obj):
         obj["stop"] = val
     else:
         obj.pop("stop", None)
-# ---------------------------------------------------------------------------
-# DeepSeek DSML Tool Calls Fallback Parser
-# ---------------------------------------------------------------------------
-TAG_START = r"<[^>]*DSML[^>]*"
-DSML_CALLS_RE = re.compile(TAG_START + r"calls>(.*?)</[^>]*DSML[^>]*calls>", re.DOTALL)
-DSML_INVOKE_RE = re.compile(TAG_START + r"invoke\s+name=[\x22\x27]([^\x22\x27]+)[\x22\x27]>(.*?)</[^>]*invoke>", re.DOTALL)
-DSML_PARAM_RE = re.compile(TAG_START + r"parameter\s+name=[\x22\x27]([^\x22\x27]+)[\x22\x27][^>]*>(.*?)</[^>]*parameter>", re.DOTALL)
-def parse_dsml_tool_calls(text):
-    if not text or "DSML" not in text:
-        return None, text
-    match = DSML_CALLS_RE.search(text)
-    if not match:
-        return None, text
-    calls_block = match.group(1)
-    tool_calls = []
-    for inv_match in DSML_INVOKE_RE.finditer(calls_block):
-        func_name = inv_match.group(1)
-        params_block = inv_match.group(2)
-        params = {}
-        for p_match in DSML_PARAM_RE.finditer(params_block):
-            p_name = p_match.group(1)
-            p_val = p_match.group(2).strip()
-            params[p_name] = p_val
-        tool_calls.append({
-            "id": _new_id("call_"),
-            "name": func_name,
-            "arguments": json.dumps(params, ensure_ascii=False),
-        })
-    clean = (text[:match.start()].strip() + " " + text[match.end():].strip()).strip()
-    return tool_calls, clean
 # ---------------------------------------------------------------------------
 # Printed tool calls on the Chat Completions path
 # ---------------------------------------------------------------------------
@@ -14610,24 +14578,6 @@ def extract_session_key(headers, payload):
         return str(key).strip()
     return None
 
-# CJK 计数走单遍 C 扫描：先 sub 掉 CJK 再按长度差计数，与原来的逐字符 Python
-# 循环逐值相等（64KB ASCII 实测 18.7ms -> 1.25ms）。别换 findall，实测更慢。
-# 调用点：aggregate_stream、_chat_stream_response 的 usage 兜底、
-# /v1/messages/count_tokens。
-CJK_RE = re.compile(r"[\u4e00-\u9fff\u3400-\u4dbf]")
-def estimate_tokens(text):
-    if not text:
-        return 0
-    if not isinstance(text, str):
-        text = str(text)
-    cjk = len(text) - len(CJK_RE.sub("", text))
-    other = len(text) - cjk
-    return cjk + max(1, int(other / 3.6)) if text else 0
-
-# 每次向流式响应要多少字节。64 KiB 远大于一条 SSE 事件（典型几百字节），
-# 又远小于 http.client 单次 read 的上限，按它切块能把「一行一次 syscall」
-# 摊成「一块一次」，同时不会让首字节延迟变差（见 iter_sse_lines）。
-
 def aggregate_stream(raw_iter, model, resp_id):
     """Fold an SSE stream into one non-streaming chat.completion object."""
     content, reasoning, finish = [], [], "stop"
@@ -14966,7 +14916,6 @@ def _downgrade_custom_tool(tool):
 # ---------------------------------------------------------------------------
 
 NAMESPACE_MAX_DEPTH = 4
-_NS_SEP = "__"
 
 
 def expand_namespace_tools(tools, _depth=0):
@@ -15038,65 +14987,6 @@ def expand_namespace_tools(tools, _depth=0):
     return flat, mapping
 
 
-def resolve_namespaced_name(name, mapping):
-    """把模型回传的名字解析回 (bare_name, namespace)。接受 js / ns__js / ns::js。"""
-    if not name:
-        return name, ""
-    name = str(name)
-    if name in mapping:
-        return name, mapping[name]
-    if "::" in name:
-        idx = name.find("::")
-        if idx > 0:
-            tail = name[idx + 2:]
-            head = name[:idx]
-            if tail in mapping:
-                return tail, mapping[tail]
-            return tail, head
-
-    # ns__tool 用精确比对，避免 namespace 内含 '__'（如 codex_apps__github）时切错
-    for tool, ns in mapping.items():
-        if name == ns + _NS_SEP + tool:
-            return tool, ns
-
-    return name, ""
-
-
-def stamp_namespace(item, mapping):
-    """把模型回传的扁平工具名还原成 (name, namespace)。
-
-    串流的 response.output_item.done 事件才是客户端派发工具呼叫的依据，
-    所以每个 function_call / custom_tool_call 项目都要在送出前补上 namespace。
-    """
-    if not mapping or not isinstance(item, dict):
-        return item
-    bare, ns = resolve_namespaced_name(item.get("name"), mapping)
-    if ns:
-        item["name"] = bare
-        item["namespace"] = ns
-    return item
-
-
-def apply_namespace_to_calls(output_items, mapping):
-    """替 Responses 的 function_call / custom_tool_call 补上 namespace。"""
-    if not mapping or not isinstance(output_items, list):
-        return output_items, 0
-    fixed = 0
-    for item in output_items:
-        if not isinstance(item, dict):
-            continue
-        if item.get("type") not in ("function_call", "custom_tool_call"):
-            continue
-        if item.get("namespace"):
-            continue
-        bare, ns = resolve_namespaced_name(item.get("name"), mapping)
-        if ns:
-            item["name"] = bare
-            item["namespace"] = ns
-            fixed += 1
-    return output_items, fixed
-
-
 def additional_tools_from_input(payload):
     """从 input 数组里收集 additional_tools 条目的 tools。
 
@@ -15132,24 +15022,6 @@ def _tools_for_chat(tools):
     return out
 
 
-def _unwrap_custom_input(args):
-    """Pull the freeform string back out of an {"input": "..."} argument blob."""
-    if not isinstance(args, str):
-        return json.dumps(args or "", ensure_ascii=False)
-    try:
-        parsed = json.loads(args)
-    except Exception:
-        return args
-    if isinstance(parsed, dict):
-        val = parsed.get("input")
-        if isinstance(val, str):
-            return val
-        if val is not None:
-            return json.dumps(val, ensure_ascii=False)
-    if isinstance(parsed, str):
-        return parsed
-    return args
-
 # The gateway can run web_search / web_fetch itself; the panel switch decides.
 #
 # Some clients (Codex App and similar harnesses) declare web_search as a
@@ -15163,6 +15035,8 @@ def _unwrap_custom_input(args):
 # declares its own search tool receives the call - the behaviour since v1.5.3.
 # Turning it on means the gateway itself fetches URLs a model asks for, so the
 # egress policy is the operator's call.
+#
+# web_tools_active()（本次请求的工具是不是网关换进去的）已搬到 ca_protocol。
 def local_web_tools_enabled():
     """Panel switch: does this gateway run web_search / web_fetch itself?
 
@@ -15173,16 +15047,6 @@ def local_web_tools_enabled():
         return ca_settings.local_web_tools(ACCOUNTS_DIR) is True
     except Exception:
         return False
-
-
-def web_tools_active(body):
-    """True when this request's tools were swapped for the gateway's own.
-
-    Interception only applies to a request whose definitions the gateway
-    injected: with the switch off, a client's own same-named function must be
-    forwarded instead of being swallowed here.
-    """
-    return isinstance(body, dict) and body.get("_web_tools") is True
 
 
 def sum_usage(total, part):
@@ -15203,65 +15067,6 @@ def sum_usage(total, part):
         elif key not in total:
             total[key] = value
     return total
-
-
-_CITATION_MD_RE = re.compile(r"\[([^\]\n]{1,200})\]\((https?://[^)\s]+)\)")
-
-
-def build_citations(text, sources):
-    """把模型实际引用到的来源转成 url_citation annotations。
-
-    只标注真的有出现在工具输出里的网址 —— 模型自己编的连结不会被当成引用。
-    """
-    text = str(text or "")
-    if not text or not sources:
-        return []
-    by_url = {}
-    for s in sources or []:
-        if not isinstance(s, dict):
-            continue
-        url = str(s.get("url") or "").strip()
-        if not url:
-            continue
-        by_url.setdefault(url, s)
-        by_url.setdefault(url.rstrip("/"), s)
-
-    anns = []
-    seen = set()
-
-    def add(url, title, start, end):
-        key = (url, start, end)
-        if key in seen or start < 0 or end <= start:
-            return
-        seen.add(key)
-        anns.append({
-            "type": "url_citation",
-            "url": url,
-            "title": title or url,
-            "start_index": start,
-            "end_index": end,
-        })
-
-    md_spans = []
-    for m in _CITATION_MD_RE.finditer(text):
-        url = m.group(2)
-        src = by_url.get(url) or by_url.get(url.rstrip("/"))
-        if not src:
-            continue
-        md_spans.append((m.start(0), m.end(0)))
-        add(url, src.get("title") or m.group(1), m.start(0), m.end(0))
-
-    for m in re.finditer(r"https?://[^\s<>()\[\]]+", text):
-        if any(m.start(0) >= s and m.end(0) <= e for s, e in md_spans):
-            continue
-        url = m.group(0).rstrip(".,;:!?")
-        src = by_url.get(url) or by_url.get(url.rstrip("/"))
-        if not src:
-            continue
-        add(url, src.get("title"), m.start(0), m.start(0) + len(url))
-
-    anns.sort(key=lambda a: (a["start_index"], a["end_index"]))
-    return anns
 
 
 def follow_up_with_tool_results(internal_calls, holder, model, session_key, t_start,
@@ -15707,21 +15512,6 @@ def _anthropic_estimate_chat_tokens(chat):
     return sum(estimate_tokens(value) for value in values if value)
 
 
-def _responses_usage(u):
-    if not u:
-        return None
-    det = u.get("completion_tokens_details") or {}
-    pdet = u.get("prompt_tokens_details") or {}
-    return {
-        "input_tokens": u.get("prompt_tokens") or 0,
-        "input_tokens_details": {
-            "cached_tokens": u.get("prompt_cache_hit_tokens")
-            or det.get("cached_tokens") or pdet.get("cached_tokens") or 0,
-        },
-        "output_tokens": u.get("completion_tokens") or 0,
-        "output_tokens_details": {"reasoning_tokens": det.get("reasoning_tokens") or 0},
-        "total_tokens": u.get("total_tokens") or 0,
-    }
 def chat_to_response(chat_obj, model, custom_names=None, request_meta=None, namespace_map=None, sources=None):
     """Fold a Chat Completions object into a Responses API response object.
 
@@ -15817,497 +15607,8 @@ def chat_to_response(chat_obj, model, custom_names=None, request_meta=None, name
         obj["incomplete_details"] = {"reason": "max_output_tokens"}
     return obj
 def stream_responses_events(upstream, model, holder):
-    """Yield Responses-API SSE frames translated from chat-completions chunks."""
-    resp_id, msg_id, rs_id = _new_id("resp_"), _new_id("msg_"), _new_id("rs_")
-    created = int(time.time())
-    seq = 0
-    text_parts, reason_parts = [], []
-    outputs = []
-    reason_index = None
-    msg_index = None
-    finish = "stop"
-    usage = None
-    tool_calls_map = {}
-    text_buffer = ""
-    dsml_tool_calls = []
-    saw_done = False
-    custom_names = set(holder.get("custom_names") or ())
-    ns_map = holder.get("namespace_map") or {}
-    # 由反代代跑的网路工具呼叫，收集起来不转发给客户端
-    _internal_calls = {}
-    # Only reach for same-named calls when this request's definitions were the
-    # gateway's own (see web_tools_active); otherwise they belong to the client.
-    _own_web_tools = web_tools_active(holder.get("base_body"))
-    # Echo the request capabilities the client actually sent, same as the
-    # non-streaming path; these were hardcoded before.
-    meta = holder.get("request_meta") or {}
-    def resp_obj(status):
-        obj = {
-            "id": resp_id,
-            "object": "response",
-            "created_at": created,
-            "status": status,
-            "model": model,
-            "output": [o for o in outputs if o],
-            "output_text": "".join(text_parts),
-            "parallel_tool_calls": meta.get("parallel_tool_calls", True),
-            "tool_choice": meta.get("tool_choice", "auto"),
-            "tools": meta.get("tools") or [],
-            "metadata": {},
-        }
-        u = _responses_usage(usage)
-        if u:
-            obj["usage"] = u
-        if ns_map:
-            obj["output"], _nsf = apply_namespace_to_calls(obj.get("output") or [], ns_map)
-        return obj
-    def ev(etype, payload):
-        nonlocal seq
-        seq += 1
-        data = {"type": etype, "sequence_number": seq}
-        data.update(payload)
-        body = json.dumps(data, ensure_ascii=False)
-        return ("event: " + etype + chr(10) + "data: " + body + chr(10) + chr(10)).encode("utf-8")
-    def reason_item(status):
-        return {
-            "id": rs_id,
-            "type": "reasoning",
-            "status": status,
-            "summary": [{"type": "summary_text", "text": "".join(reason_parts)}],
-        }
-    def _annotations():
-        """引用来源：只认工具真的回传过的网址。"""
-        try:
-            return build_citations("".join(text_parts), holder.get("web_sources") or [])
-        except Exception:
-            return []
-
-    def msg_item(status):
-        item = {"id": msg_id, "type": "message", "status": status,
-                "role": "assistant", "content": []}
-        if text_parts:
-            item["content"] = [{"type": "output_text", "text": "".join(text_parts),
-                              "annotations": _annotations()}]
-        return item
-    def _finalize():
-        # Close out the stream: reasoning item, structured tool calls,
-        # DSML fallback, the message item and response.completed.
-        nonlocal msg_index, text_buffer
-        if reason_index is not None and outputs[reason_index] is None:
-            full_r = "".join(reason_parts)
-            yield ev("response.reasoning_summary_text.done", {
-                "item_id": rs_id, "output_index": reason_index, "summary_index": 0, "text": full_r,
-            })
-            yield ev("response.reasoning_summary_part.done", {
-                "item_id": rs_id, "output_index": reason_index, "summary_index": 0,
-                "part": {"type": "summary_text", "text": full_r},
-            })
-            outputs[reason_index] = reason_item("completed")
-            yield ev("response.output_item.done",
-                     {"output_index": reason_index, "item": outputs[reason_index]})
-        # 1. Emit completed structured tool calls
-        for idx in sorted(tool_calls_map.keys()):
-            entry = tool_calls_map[idx]
-            if entry.get("custom"):
-                yield ev("response.custom_tool_call_input.done", {
-                    "output_index": entry["output_index"],
-                    "item_id": entry["item_id"],
-                    "call_id": entry["id"],
-                    "input": _unwrap_custom_input(entry["arguments"]),
-                })
-                fc_item = {
-                    "id": entry["item_id"],
-                    "type": "custom_tool_call",
-                    "status": "completed",
-                    "call_id": entry["id"],
-                    "name": entry["name"],
-                    "input": _unwrap_custom_input(entry["arguments"]),
-                }
-            else:
-                yield ev("response.function_call_arguments.done", {
-                    "output_index": entry["output_index"],
-                    "item_id": entry["item_id"],
-                    "call_id": entry["id"],
-                    "arguments": entry["arguments"],
-                })
-                fc_item = {
-                    "id": entry["item_id"],
-                    "type": "function_call",
-                    "status": "completed",
-                    "call_id": entry["id"],
-                    "name": entry["name"],
-                    "arguments": entry["arguments"],
-                }
-            stamp_namespace(fc_item, ns_map)
-            outputs[entry["output_index"]] = fc_item
-            yield ev("response.output_item.done", {
-                "output_index": entry["output_index"],
-                "item": fc_item,
-            })
-        # Flush remaining buffered text if any
-        if text_buffer:
-            calls_rem, clean_rem = parse_dsml_tool_calls(text_buffer)
-            if calls_rem:
-                dsml_tool_calls.extend(calls_rem)
-            if clean_rem:
-                text_parts.append(clean_rem)
-                if msg_index is not None:
-                    yield ev("response.output_text.delta", {
-                        "item_id": msg_id, "output_index": msg_index,
-                        "content_index": 0, "delta": clean_rem,
-                    })
-            text_buffer = ""
-        # 2. DSML fallback: emit buffered/parsed DSML tool calls if no structured tool_calls were emitted
-        full_text = "".join(text_parts)
-        dsml_calls = dsml_tool_calls
-        if not dsml_calls:
-            extra_calls, clean_text = parse_dsml_tool_calls(full_text)
-            if extra_calls:
-                dsml_calls = extra_calls
-                full_text = clean_text
-        if dsml_calls and not tool_calls_map:
-            for dc in dsml_calls:
-                # DSML 形状的网路工具呼叫一样由反代执行
-                if _own_web_tools and ca_webtools.is_internal_tool(dc.get("name")):
-                    entry = _internal_calls.setdefault(dc.get("id") or _new_id("call_"),
-                                                       {"name": dc.get("name"), "arguments": "{}"})
-                    entry["name"] = dc.get("name") or entry["name"]
-                    entry["arguments"] = dc.get("arguments") or entry.get("arguments") or "{}"
-                    continue
-                out_idx = len(outputs)
-                fc_item = {
-                    "id": _new_id("fc_"),
-                    "type": "function_call",
-                    "status": "completed",
-                    "call_id": dc.get("id") or _new_id("call_"),
-                    "name": dc.get("name") or "",
-                    "arguments": dc.get("arguments") or "{}",
-                }
-                stamp_namespace(fc_item, ns_map)
-                outputs.append(fc_item)
-                yield ev("response.output_item.added", {
-                    "output_index": out_idx,
-                    "item": dict(fc_item, status="in_progress", arguments=""),
-                })
-                yield ev("response.function_call_arguments.delta", {
-                    "output_index": out_idx,
-                    "item_id": fc_item["id"],
-                    "call_id": fc_item["call_id"],
-                    "delta": fc_item["arguments"],
-                })
-                yield ev("response.function_call_arguments.done", {
-                    "output_index": out_idx,
-                    "item_id": fc_item["id"],
-                    "call_id": fc_item["call_id"],
-                    "arguments": fc_item["arguments"],
-                })
-                yield ev("response.output_item.done", {
-                    "output_index": out_idx,
-                    "item": fc_item,
-                })
-        # 这一轮如果有代跑的网路工具呼叫，就把完成事件留给下一轮，
-        # 否则客户端会以为整个回合已经结束（旧版是在回合用尽时补一个合成的
-        # resp_wrapup，那才是 issue #43 真正的病灶）。
-        if _internal_calls:
-            holder.setdefault("internal_calls", []).extend(
-                {"name": v["name"], "arguments": v["arguments"]}
-                for v in _internal_calls.values()
-            )
-            holder["suppress_completion"] = True
-            # 让 App 画出原生的「已搜寻网路」卡片：对每个代跑的呼叫送出
-            # web_search_call 项目与生命周期事件。
-            for _v in _internal_calls.values():
-                _nm = str(_v.get("name") or "")
-                try:
-                    _a = json.loads(_v.get("arguments") or "{}")
-                except Exception:
-                    _a = {}
-                if not isinstance(_a, dict):
-                    _a = {}
-                if _nm == ca_webtools.WEB_FETCH_NAME:
-                    _action = {"type": "open_page", "url": ca_webtools.url_arg(_a)}
-                else:
-                    _action = {"type": "search", "query": ca_webtools.query_args(_a)}
-                _ws_id = _new_id("ws_")
-                _ws_idx = len(outputs)
-                outputs.append(None)
-                yield ev("response.output_item.added", {
-                    "output_index": _ws_idx,
-                    "item": {"id": _ws_id, "type": "web_search_call",
-                             "status": "in_progress"},
-                })
-                yield ev("response.web_search_call.in_progress", {
-                    "output_index": _ws_idx, "item_id": _ws_id,
-                })
-                yield ev("response.web_search_call.searching", {
-                    "output_index": _ws_idx, "item_id": _ws_id,
-                })
-                _ws_item = {"id": _ws_id, "type": "web_search_call", "status": "completed"}
-                if _action.get("query") or _action.get("url"):
-                    _ws_item["action"] = _action
-                outputs[_ws_idx] = _ws_item
-                yield ev("response.output_item.done", {
-                    "output_index": _ws_idx, "item": _ws_item,
-                })
-                yield ev("response.web_search_call.completed", {
-                    "output_index": _ws_idx, "item_id": _ws_id,
-                })
-        # 3. Emit message item only if text was emitted OR no other output item exists
-        has_other_items = any(o for o in outputs if o)
-        if msg_index is not None or full_text or not has_other_items:
-            if msg_index is None:
-                msg_index = len(outputs)
-                outputs.append(None)
-                yield ev("response.output_item.added", {
-                    "output_index": msg_index,
-                    "item": {"id": msg_id, "type": "message", "status": "in_progress",
-                             "role": "assistant", "content": []},
-                })
-                yield ev("response.content_part.added", {
-                    "item_id": msg_id, "output_index": msg_index, "content_index": 0,
-                    "part": {"type": "output_text", "text": "", "annotations": _annotations()},
-                })
-            yield ev("response.output_text.done", {
-                "item_id": msg_id, "output_index": msg_index, "content_index": 0, "text": full_text,
-            })
-            yield ev("response.content_part.done", {
-                "item_id": msg_id, "output_index": msg_index, "content_index": 0,
-                "part": {"type": "output_text", "text": full_text,
-                         "annotations": _annotations()},
-            })
-            outputs[msg_index] = msg_item("completed")
-            yield ev("response.output_item.done", {"output_index": msg_index, "item": outputs[msg_index]})
-        nonlocal usage
-        if usage is None or (usage.get("total_tokens") or 0) == 0:
-            out_txt = "".join(text_parts)
-            rs_txt = "".join(reason_parts)
-            if out_txt or rs_txt:
-                comp = estimate_tokens(out_txt) + estimate_tokens(rs_txt)
-                prompt_est = max(1, estimate_tokens(str(meta.get("input") or "")))
-                usage = {
-                    "prompt_tokens": prompt_est,
-                    "completion_tokens": comp,
-                    "total_tokens": prompt_est + comp,
-                    "completion_tokens_details": {"reasoning_tokens": estimate_tokens(rs_txt)},
-                    "prompt_tokens_details": {"cached_tokens": 0},
-                }
-                holder["usage"] = usage
-        status = ("completed" if (finish != "length" and not dropped_truncated)
-                  else "incomplete")
-        final = resp_obj(status)
-        if finish == "length":
-            final["incomplete_details"] = {"reason": "max_output_tokens"}
-        if not holder.get("suppress_completion"):
-            yield ev("response.completed", {"response": final})
-
-    # 只有第一轮开场。第二轮以后再送一次 response.created，客户端会
-    # 看到同一则回应被开了两次。
-    if not holder.get("suppress_lifecycle"):
-        yield ev("response.created", {"response": resp_obj("in_progress")})
-        yield ev("response.in_progress", {"response": resp_obj("in_progress")})
-    for raw in upstream:
-        data = strip_data_prefix(raw.decode("utf-8", "replace"))
-        if not data or data == "[DONE]":
-            if data == "[DONE]":
-                saw_done = True
-            continue
-        try:
-            chunk = json.loads(data)
-        except Exception:
-            continue
-        u = chunk.get("usage")
-        if u:
-            if usage is None or (u.get("total_tokens") or 0) >= (usage.get("total_tokens") or 0):
-                usage = u
-                holder["usage"] = usage
-        for choice in chunk.get("choices") or []:
-            delta = choice.get("delta") or {}
-            piece = delta.get("reasoning_content")
-            if piece:
-                if reason_index is None:
-                    reason_index = len(outputs)
-                    outputs.append(None)
-                    yield ev("response.output_item.added",
-                             {"output_index": reason_index, "item": reason_item("in_progress")})
-                    yield ev("response.reasoning_summary_part.added", {
-                        "item_id": rs_id, "output_index": reason_index, "summary_index": 0,
-                        "part": {"type": "summary_text", "text": ""},
-                    })
-                reason_parts.append(piece)
-                yield ev("response.reasoning_summary_text.delta", {
-                    "item_id": rs_id, "output_index": reason_index,
-                    "summary_index": 0, "delta": piece,
-                })
-            for tc in delta.get("tool_calls") or []:
-                idx = tc.get("index", 0)
-                fn = tc.get("function") or {}
-                fn_name = fn.get("name") or ""
-                fn_args = fn.get("arguments") or ""
-                call_id = tc.get("id") or ""
-                # web_search / web_fetch 由反代执行，不转发给客户端
-                if idx in _internal_calls or (
-                        _own_web_tools and fn_name
-                        and ca_webtools.is_internal_tool(fn_name)):
-                    entry = _internal_calls.setdefault(idx, {"name": fn_name, "arguments": ""})
-                    if fn_name:
-                        entry["name"] = fn_name
-                    if fn_args:
-                        entry["arguments"] += fn_args
-                    continue
-                if idx not in tool_calls_map:
-                    out_idx = len(outputs)
-                    outputs.append(None)
-                    c_id = call_id or _new_id("call_")
-                    is_custom = bool(fn_name) and fn_name in custom_names
-                    entry = {
-                        "output_index": out_idx,
-                        "id": c_id,
-                        "name": fn_name,
-                        "arguments": fn_args,
-                        "custom": is_custom,
-                        "item_id": _new_id("ctc_" if is_custom else "fc_"),
-                    }
-                    tool_calls_map[idx] = entry
-                    item = {
-                        "id": entry["item_id"],
-                        "status": "in_progress",
-                        "call_id": c_id,
-                        "name": fn_name,
-                    }
-                    if is_custom:
-                        item["type"] = "custom_tool_call"
-                        item["input"] = ""
-                    else:
-                        item["type"] = "function_call"
-                        item["arguments"] = ""
-                    # namespace 必须在 output_item.added 就带上（照 CiderCC-UwU
-                    # proxy.mjs openItem 的做法）。事后才补只会改到 done，
-                    # 客户端早就从 added 事件派发过了。
-                    stamp_namespace(item, ns_map)
-                    yield ev("response.output_item.added", {
-                        "output_index": out_idx,
-                        "item": item,
-                    })
-                else:
-                    entry = tool_calls_map[idx]
-                    if fn_name and not entry["name"]:
-                        entry["name"] = fn_name
-                        if fn_name in custom_names:
-                            entry["custom"] = True
-                    if fn_args:
-                        entry["arguments"] += fn_args
-                        if entry.get("custom"):
-                            yield ev("response.custom_tool_call_input.delta", {
-                                "output_index": entry["output_index"],
-                                "item_id": entry["item_id"],
-                                "call_id": entry["id"],
-                                "delta": fn_args,
-                            })
-                        else:
-                            yield ev("response.function_call_arguments.delta", {
-                                "output_index": entry["output_index"],
-                                "item_id": entry["item_id"],
-                                "call_id": entry["id"],
-                                "delta": fn_args,
-                            })
-            piece = delta.get("content")
-            if piece:
-                if msg_index is None:
-                    if reason_index is not None:
-                        full_r = "".join(reason_parts)
-                        yield ev("response.reasoning_summary_text.done", {
-                            "item_id": rs_id, "output_index": reason_index,
-                            "summary_index": 0, "text": full_r,
-                        })
-                        yield ev("response.reasoning_summary_part.done", {
-                            "item_id": rs_id, "output_index": reason_index, "summary_index": 0,
-                            "part": {"type": "summary_text", "text": full_r},
-                        })
-                        outputs[reason_index] = reason_item("completed")
-                        yield ev("response.output_item.done",
-                                 {"output_index": reason_index, "item": outputs[reason_index]})
-                    msg_index = len(outputs)
-                    outputs.append(None)
-                    yield ev("response.output_item.added", {
-                        "output_index": msg_index,
-                        "item": {"id": msg_id, "type": "message", "status": "in_progress",
-                                 "role": "assistant", "content": []},
-                    })
-                    yield ev("response.content_part.added", {
-                        "item_id": msg_id, "output_index": msg_index, "content_index": 0,
-                        "part": {"type": "output_text", "text": "", "annotations": _annotations()},
-                    })
-                # DSML tool call buffering: do not stream raw DSML tags to client
-                text_buffer += piece
-                while text_buffer:
-                    idx = text_buffer.find("<")
-                    if idx == -1:
-                        text_parts.append(text_buffer)
-                        yield ev("response.output_text.delta", {
-                            "item_id": msg_id, "output_index": msg_index,
-                            "content_index": 0, "delta": text_buffer,
-                        })
-                        text_buffer = ""
-                        break
-                    m = DSML_CALLS_RE.search(text_buffer)
-                    if m and m.start() == idx:
-                        if idx > 0:
-                            lead = text_buffer[:idx]
-                            text_parts.append(lead)
-                            yield ev("response.output_text.delta", {
-                                "item_id": msg_id, "output_index": msg_index,
-                                "content_index": 0, "delta": lead,
-                            })
-                        calls_found, _ = parse_dsml_tool_calls(m.group(0))
-                        if calls_found:
-                            dsml_tool_calls.extend(calls_found)
-                        text_buffer = text_buffer[m.end():]
-                        continue
-                    cand = text_buffer[idx:idx+30]
-                    is_cand = ("DSML" in cand) or (len(cand) < 10 and not any(c in cand for c in (" ", "\t", "\n", ">")))
-                    if is_cand:
-                        lead = text_buffer[:idx]
-                        text_parts.append(lead)
-                        yield ev("response.output_text.delta", {
-                            "item_id": msg_id, "output_index": msg_index,
-                            "content_index": 0, "delta": lead,
-                        })
-                        text_buffer = text_buffer[idx:]
-                        break
-                    else:
-                        next_lt = text_buffer[idx+1:].find("<")
-                        if next_lt != -1:
-                            flush_len = idx + 1 + next_lt
-                            lead = text_buffer[:flush_len]
-                            text_parts.append(lead)
-                            yield ev("response.output_text.delta", {
-                                "item_id": msg_id, "output_index": msg_index,
-                                "content_index": 0, "delta": lead,
-                            })
-                            text_buffer = text_buffer[flush_len:]
-                        else:
-                            text_parts.append(text_buffer)
-                            yield ev("response.output_text.delta", {
-                                "item_id": msg_id, "output_index": msg_index,
-                                "content_index": 0, "delta": text_buffer,
-                            })
-                            text_buffer = ""
-                            break
-            if choice.get("finish_reason"):
-                finish = choice["finish_reason"]
-    # Truncated streams (max_tokens, dropped connection) can leave tool-call
-    # arguments as half-written JSON. Do not close those calls out as
-    # completed: drop them before finalize so the client never receives a
-    # function_call_arguments.done / output_item.done with unparsable
-    # arguments. Complete calls in the same batch are kept.
-    dropped_truncated = 0
-    if tool_calls_map and (finish == "length" or not saw_done):
-        for idx in sorted(tool_calls_map.keys()):
-            entry = tool_calls_map[idx]
-            if is_truncated_arguments(entry.get("arguments")):
-                tool_calls_map.pop(idx, None)
-                dropped_truncated += 1
-    yield from _finalize()
+    yield from ca_protocol.stream_responses_events(
+        upstream, model, holder, ca_webtools)
 
 # ---------------------------------------------------------------------------
 # HTTP layer

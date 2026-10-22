@@ -1261,5 +1261,163 @@ _proto_code = re.sub(r'""".*?"""', "", _proto_src, flags=re.S)
 check("纯函数层里没有 open( / self.wfile（不许摸 I/O；文档字符串不算）",
       "open(" not in _proto_code and "self.wfile" not in _proto_code, None)
 
+
+# ---------------------------------------------------------------------------
+# 16. 第七刀：Responses 状态机 + 依赖闭包搬进 ca_protocol
+# ---------------------------------------------------------------------------
+
+section("16. Responses 事件流（stream_responses_events）")
+
+import ca_webtools as W  # noqa: E402
+
+_MOVED7 = {
+    "TAG_START": "TAG_START",
+    "DSML_CALLS_RE": "DSML_CALLS_RE",
+    "DSML_INVOKE_RE": "DSML_INVOKE_RE",
+    "DSML_PARAM_RE": "DSML_PARAM_RE",
+    "parse_dsml_tool_calls": "parse_dsml_tool_calls",
+    "CJK_RE": "CJK_RE",
+    "estimate_tokens": "estimate_tokens",
+    "is_truncated_arguments": "is_truncated_arguments",
+    "_NS_SEP": "NS_SEP",
+    "resolve_namespaced_name": "resolve_namespaced_name",
+    "stamp_namespace": "stamp_namespace",
+    "apply_namespace_to_calls": "apply_namespace_to_calls",
+    "_unwrap_custom_input": "unwrap_custom_input",
+    "_CITATION_MD_RE": "CITATION_MD_RE",
+    "build_citations": "build_citations",
+    "web_tools_active": "web_tools_active",
+    "_responses_usage": "responses_usage",
+}
+_bad7 = [old for old, new in _MOVED7.items()
+         if getattr(P, old, None) is not getattr(Q, new, None)]
+check("十七个依赖别名都指向 ca_protocol 的同一对象", not _bad7, _bad7)
+check("stream_responses_events 是包装（依赖 ca_webtools 注入）",
+      P.stream_responses_events is not Q.stream_responses_events, None)
+
+
+def _resp_events(chunks, holder, webtools=None, via_proxy=False):
+    raw = iter([b"data: " + json.dumps(c).encode() for c in chunks] + [b"data: [DONE]"])
+    gen = (P.stream_responses_events(raw, "m", holder) if via_proxy
+           else Q.stream_responses_events(raw, "m", holder, webtools))
+    out = []
+    for frame in gen:
+        typ = None
+        for line in frame.decode().splitlines():
+            if line.startswith("event: "):
+                typ = line[7:]
+        out.append(typ)
+    return out
+
+
+def _tc(index, cid, name, args):
+    return {"choices": [{"delta": {"tool_calls": [
+        {"index": index, "id": cid, "function": {"name": name, "arguments": args}}]}}]}
+
+
+_txt_seq = _resp_events([
+    {"choices": [{"delta": {"content": "你"}}]},
+    {"choices": [{"delta": {"content": "好"}}]},
+    {"choices": [{"delta": {}, "finish_reason": "stop"}],
+     "usage": {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}},
+], {"request_meta": {}})
+check("纯文本事件序列固定（created → 文本 → completed）",
+      _txt_seq == [
+          "response.created", "response.in_progress", "response.output_item.added",
+          "response.content_part.added", "response.output_text.delta",
+          "response.output_text.delta", "response.output_text.done",
+          "response.content_part.done", "response.output_item.done",
+          "response.completed"], _txt_seq)
+
+_tool_seq = _resp_events([
+    _tc(0, "call_a", "get_weather", "{\"c\""),
+    {"choices": [{"delta": {"tool_calls": [
+        {"index": 0, "function": {"arguments": ":1}"}}]}}]},
+    {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+], {})
+check("结构化工具调用：function_call_arguments.delta → done → output_item.done",
+      "response.function_call_arguments.delta" in _tool_seq
+      and _tool_seq[-2] == "response.output_item.done"
+      and _tool_seq[-1] == "response.completed", _tool_seq)
+
+_web_seq = _resp_events([
+    _tc(0, "call_w", "web_search", "{\"query\":\"x\"}"),
+    {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+], {"base_body": {"_web_tools": True}}, webtools=W)
+check("注入 webtools 时，网路工具被反代吞下并出 web_search_call 事件",
+      "response.web_search_call.completed" in _web_seq
+      and "response.function_call_arguments.done" not in _web_seq, _web_seq)
+_plain_seq = _resp_events([
+    _tc(0, "call_w", "web_search", "{\"query\":\"x\"}"),
+    {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+], {"base_body": {"_web_tools": True}})
+check("没注入 webtools 时不拦截（当成普通函数调用转发）",
+      _plain_seq != _web_seq
+      and "response.function_call_arguments.done" in _plain_seq, _plain_seq)
+check("包装层把 ca_webtools 传进去了（线上路径仍然拦截）",
+      "response.web_search_call.completed" in _resp_events([
+          _tc(0, "call_w", "web_search", "{\"query\":\"x\"}"),
+          {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+      ], {"base_body": {"_web_tools": True}}, via_proxy=True), None)
+
+_dsml_text = ('<|DSML|function_calls><|DSML|invoke name="get_time">'
+              '<|DSML|parameter name="tz">Asia/Shanghai</|DSML|parameter>'
+              '</|DSML|invoke></|DSML|function_calls>')
+_calls, _clean = Q.parse_dsml_tool_calls("前" + _dsml_text + "后")
+check("DSML 解析出调用且 id 带 call_ 前缀",
+      _calls and _calls[0]["name"] == "get_time"
+      and _calls[0]["id"].startswith("call_")
+      and json.loads(_calls[0]["arguments"])["tz"] == "Asia/Shanghai", _calls)
+check("DSML 解析把标签从正文里摘掉", _clean == "前 后", repr(_clean))
+
+_u = Q.responses_usage({"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14,
+                        "completion_tokens_details": {"reasoning_tokens": 3},
+                        "prompt_tokens_details": {"cached_tokens": 6}})
+check("responses_usage 字段映射（含 reasoning / cached）",
+      _u["input_tokens"] == 10 and _u["output_tokens"] == 4
+      and _u["output_tokens_details"]["reasoning_tokens"] == 3
+      and _u["input_tokens_details"]["cached_tokens"] == 6, _u)
+
+check("estimate_tokens 对中文按字计、对英文约 3.6 字/token（都至少 1）",
+      Q.estimate_tokens("中文") == 3
+      and Q.estimate_tokens("abcdefghij") == 2
+      and Q.estimate_tokens("") == 0,
+      (Q.estimate_tokens("中文"), Q.estimate_tokens("abcdefghij")))
+check("build_citations 只标注来源里真出现过的网址",
+      Q.build_citations("见 [文档](https://a/x) 与 https://b/y",
+                        [{"url": "https://a/x", "title": "A"}])
+      and len(Q.build_citations("https://nope", [{"url": "https://a/x"}])) == 0, None)
+
+# 第七刀最阴的坑：搬过去用了 time / re 却没 import，import ca_protocol 完全正常，
+# 只有真跑到那一行才 NameError（golden 脚本因为 patch 了 time 反而把它盖住了）。
+import builtins  # noqa: E402
+import symtable  # noqa: E402
+
+
+def _undefined_globals(path, allow=()):
+    st = symtable.symtable(open(path, encoding="utf-8").read(), path, "exec")
+    mod = {s.get_name() for s in st.get_symbols()
+           if s.is_assigned() or s.is_imported() or s.is_namespace()}
+    bad = []
+
+    def walk(table):
+        for sym in table.get_symbols():
+            name = sym.get_name()
+            if (sym.is_global() and name not in mod and name not in allow
+                    and not hasattr(builtins, name)):
+                bad.append((table.get_name(), name))
+        for child in table.get_children():
+            walk(child)
+
+    walk(st)
+    return bad
+
+
+_bad_names = _undefined_globals(Q.__file__)
+check("ca_protocol 里没有「用了但没定义/没 import」的全局名",
+      not _bad_names, _bad_names)
+_bad_proxy = _undefined_globals(P.__file__, allow=("__file__", "__name__"))
+check("ca_proxy 同样干净（这条能兜住所有搬家漏别名）", not _bad_proxy, _bad_proxy)
+
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
