@@ -10809,8 +10809,11 @@ class _CodeartsAccountPool:
                 self._cool_until[key] = until
 
     def snapshot(self):
-        """每号「在跑几条 / 还剩几秒冷却」，给面板与排障用。"""
+        """每号「在跑几条 / 容量几格 / 还剩几秒冷却」，给面板与排障用。"""
         now = time.time()
+        # 容量要在锁外读（可能触发一次 settings 读盘）；取号时 _sem 也会按
+        # 同一个值 retune，所以这里读到的是「下一条请求能用几格」。
+        want = codearts_concurrency()
         with self._lock:
             # 过期项顺手清掉，别让长期运行的表无限长（每个模型一条）。
             for mk in [k for k, until in self._model_cool.items() if until <= now]:
@@ -10821,8 +10824,10 @@ class _CodeartsAccountPool:
                 cooling = {str(model): round(until - now, 1)
                            for (acct, model), until in self._model_cool.items()
                            if acct == key and until > now}
+                sem = self._semaphores.get(key)
                 out[key] = {
                     "in_flight": self._inflight.get(key, 0),
+                    "capacity": sem.capacity if sem is not None else want,
                     "cooling_s": round(max(0.0,
                                            self._cool_until.get(key, 0.0) - now), 1),
                     "model_cooling_s": cooling,
@@ -16746,6 +16751,8 @@ class Handler(BaseHTTPRequestHandler):
         # 运行期状态（在跑几条 / 还剩几秒冷却）：多账号时面板要能看出「谁在
         # 干活、谁被晾着」，否则「为什么这个号不接活」只能靠猜日志。
         runtime = _CODEARTS_POOL.snapshot()
+        # 还没取过号的账号不会出现在 snapshot 里，但面板照样要显示它的容量。
+        capacity_now = codearts_concurrency()
         for session in ca_codearts.load_sessions(ACCOUNTS_DIR):
             info = ca_codearts.summarize(session)
             info["file"] = os.path.basename(
@@ -16781,7 +16788,7 @@ class Handler(BaseHTTPRequestHandler):
                 info["welfareError"] = str(exc)
             info["runtime"] = runtime.get(
                 str(info.get("account_id") or ""),
-                {"in_flight": 0, "cooling_s": 0.0})
+                {"in_flight": 0, "capacity": capacity_now, "cooling_s": 0.0})
             items.append(info)
         try:
             port = self.server.server_address[1]
@@ -20060,7 +20067,9 @@ class Handler(BaseHTTPRequestHandler):
                              "finish_reason": "stop"}],
                 "usage": result["usage"],
             }
-            return self._json(200, ca_protocol.chat_to_messages(chat_obj))
+            # stop 列表只用来回填 stop_sequence（上游通常不回显命中的串）。
+            return self._json(200, ca_protocol.chat_to_messages(
+                chat_obj, chat_req.get("stop")))
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -20069,7 +20078,7 @@ class Handler(BaseHTTPRequestHandler):
         if cors_origin_allowed(self.path):
             self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
-        holder = {"usage": None}
+        holder = {"usage": None, "stop_sequences": chat_req.get("stop")}
         try:
             for frame in ca_protocol.stream_messages_events(
                     _BufferedSSELines(result["raw"]), model, holder):
@@ -20110,7 +20119,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
 
-            holder = {"usage": None}
+            holder = {"usage": None, "stop_sequences": chat_req.get("stop")}
             tap = {"usage": None, "error": ""}
             try:
                 for frame in ca_protocol.stream_messages_events(

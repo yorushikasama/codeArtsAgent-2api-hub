@@ -174,6 +174,30 @@ check("build_citations 只认来源里出现过的 URL",
 check("namespace 还原", Q.resolve_namespaced_name("weather__get", {"get": "weather"})
       == ("get", "weather"), None)
 
+check("stop 串只认结尾命中的那条（多命中取最长）",
+      Q.matched_stop_sequence("abcEND", ["END", "D"]) == "END"
+      and Q.matched_stop_sequence("abcXYZ", ["END"]) is None
+      and Q.matched_stop_sequence("", ["END"]) is None
+      and Q.matched_stop_sequence("abcEND", None) is None, None)
+
+_ms_stop = Q.chat_to_messages({
+    "id": "chatcmpl-1", "model": "m",
+    "choices": [{"message": {"content": "结果：STOP"}, "finish_reason": "stop"}],
+}, stop_sequences=["STOP"])
+check("非流式回包回填 stop_sequence",
+      _ms_stop["stop_sequence"] == "STOP"
+      and _ms_stop["stop_reason"] == "end_turn", _ms_stop)
+_ms_tool = Q.chat_to_messages({
+    "choices": [{"message": {"content": "STOP", "tool_calls": [
+        {"id": "c1", "function": {"name": "f", "arguments": "{}"}}]},
+        "finish_reason": "tool_calls"}],
+}, stop_sequences=["STOP"])
+check("工具调用收尾不填 stop_sequence", _ms_tool["stop_sequence"] is None, _ms_tool)
+_ms_plain = Q.chat_to_messages({"choices": [{"message": {"content": "STOP"},
+                                            "finish_reason": "stop"}]})
+check("不给 stop 列表时保持 null（旧调用方零改动）",
+      _ms_plain["stop_sequence"] is None, _ms_plain)
+
 
 section("8. 静态卫生：没有「用了但没定义/没 import」的名字")
 _st = symtable.symtable(_src, Q.__file__, "exec")

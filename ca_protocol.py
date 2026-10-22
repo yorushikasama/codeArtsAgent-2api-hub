@@ -347,7 +347,14 @@ def stream_messages_events(raw_iter, model, holder=None):
         "tools": {},
         "tool_order": [],
         "usage": None,
+        # 结尾若干字符，只在给了 stop_sequences 时维护：用来判断最后一条
+        # 停止串有没有被上游吐出来（见 matched_stop_sequence）。
+        "tail": "",
     }
+    stops = holder.get("stop_sequences")
+    stops = [s for s in stops if isinstance(s, str) and s] \
+        if isinstance(stops, (list, tuple)) else []
+    tail_limit = max([len(s) for s in stops] or [0])
 
     def usage_payload():
         return anthropic_usage(state.get("usage"))
@@ -447,6 +454,8 @@ def stream_messages_events(raw_iter, model, holder=None):
             })
         text = delta.get("content")
         if isinstance(text, str) and text:
+            if tail_limit:
+                state["tail"] = (state["tail"] + text)[-tail_limit:]
             for frame in ensure_text():
                 yield frame
             yield anthropic_sse_frame("content_block_delta", {
@@ -523,7 +532,13 @@ def stream_messages_events(raw_iter, model, holder=None):
     # Messages request was logged as usage_missing.
     holder["usage"] = state.get("usage")
     yield anthropic_sse_frame("message_delta", {
-        "delta": {"stop_reason": state["stop"], "stop_sequence": None},
+        "delta": {
+            "stop_reason": state["stop"],
+            # 只有「自然结束」才可能有 stop_sequence；max_tokens / tool_use
+            # 一律 None（Anthropic 的枚举也是这个口径）。
+            "stop_sequence": (matched_stop_sequence(state.get("tail"), stops)
+                              if state["stop"] == "end_turn" else None),
+        },
         "usage": usage_payload(),
     })
     yield anthropic_sse_frame("message_stop", {})
@@ -1603,8 +1618,35 @@ def anthropic_parse_tool_input(value):
     return {"value": value}
 
 
-def chat_to_messages(obj):
-    """Fold one Chat Completions object into an Anthropic Messages object."""
+def matched_stop_sequence(text, stop_sequences):
+    """Best-effort：产出文本**结尾**命中的那条停止串；判断不了就 None。
+
+    为什么只能 best-effort：Anthropic 的语义是「生成到停止串前一刻就停」，
+    命中的串本身不该出现在输出里。码道上游正是这样 —— 2026-10-23 直连实测
+    （``stop=["六"]``）只回 ``finish_reason=stop``，正文/思考里都看不到「六」，
+    所以**没有任何信号**能反推是哪条命中。这里只在「上游把串吐出来了」时
+    回答（有些实现会包含），宁可为 None 也不猜；多串同时命中时取最长的。
+
+    调用方据此填 ``stop_sequence`` 字段：填不出来就保持 null，客户端本来也
+    允许它为 null。
+    """
+    if not isinstance(text, str) or not text or not isinstance(stop_sequences, (list, tuple)):
+        return None
+    candidates = [s for s in stop_sequences if isinstance(s, str) and s]
+    for seq in sorted(candidates, key=len, reverse=True):
+        if text.endswith(seq):
+            return seq
+    return None
+
+
+def chat_to_messages(obj, stop_sequences=None):
+    """Fold one Chat Completions object into an Anthropic Messages object.
+
+    ``stop_sequences`` 只用于回填 ``stop_sequence``：Anthropic 要求告诉客户端
+    「是哪条停止串命中的」。码道上游把命中的停止串**丢掉**（实测 2026-10-23：
+    文本停在串前，只回 ``finish_reason=stop``），所以只有上游真把串吐出来时
+    才填得上；填不上就保持 None，绝不猜。
+    """
     if not isinstance(obj, dict):
         obj = {}
     choices = obj.get("choices") if isinstance(obj.get("choices"), list) else []
@@ -1645,6 +1687,7 @@ def chat_to_messages(obj):
         "model": anthropic_text(obj.get("model")),
         "content": content,
         "stop_reason": anthropic_stop_reason(finish),
-        "stop_sequence": None,
+        "stop_sequence": (matched_stop_sequence(text, stop_sequences)
+                          if anthropic_stop_reason(finish) == "end_turn" else None),
         "usage": anthropic_usage(obj.get("usage")),
     }

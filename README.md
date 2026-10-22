@@ -164,6 +164,10 @@ WorkBuddy 账号池，不会因为「模型名在码道清单里」就拐去一�
 流式响应里偶尔出现的 `: keepalive` 是**注释行**（SSE 规范允许，标准客户端都会跳过）：
 上游静默超过续期间隔时网关发它，防止中间代理把空闲连接掐掉。它不属于任何帧。
 
+`stop_sequence` 为什么常常是 `null`：上游把命中的停止串从输出里**删掉了**，只回
+`finish_reason=stop`，网关无从知道是哪条命中；只有上游真把串吐出来时才会填。
+`stop_reason` 仍是准确的 `end_turn`。
+
 ---
 
 ## 三、账号管理
@@ -220,6 +224,12 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
 
 ### Unreleased
+
+**Messages 的 `stop_sequence` 回填（尽力而为）与面板并发可见**
+
+- Anthropic 的 `stop_sequence` 以前恒为 `null`。现在非流式回包与流式 `message_delta` 都会拿请求里的 `stop_sequences` 去匹配输出**结尾**，命中就填上（多串命中取最长）。**但码道上游实测会把命中的串丢掉**：2026-10-23 直连 `stop=["六"]`，正文/思考里都没有「六」，只有 `finish_reason=stop` —— 没有信号能反推是哪条命中，所以这种情况仍保持 `null`，绝不猜。
+- 面板账号卡片新增运行期一行：`并发 在跑/容量 · 冷却 Ns`。容量取自信号量的**实时值**，面板改并发后立刻反映，不用重启。
+- `/accounts/codearts` 与 `/codearts/pool` 的 `runtime` 增加 `capacity` 字段。
 
 **请求形状校验与 Responses 帧格式收口**
 

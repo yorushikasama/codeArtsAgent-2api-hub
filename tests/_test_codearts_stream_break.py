@@ -924,6 +924,22 @@ for _ in range(3):
 check("信号量：多还的不会把容量撑大",
       _sem.capacity == 1 and _sem.acquire(False), None)
 
+# 面板要显示「在跑几条 / 容量几格」，容量必须取信号量的实时值，
+# 不能是进程启动时的配置快照。
+_pool_snap = P._CodeartsAccountPool(tempfile.mkdtemp(prefix="snap-"))
+try:
+    _sem_snap = _pool_snap._sem("acct-x")
+    _snap = _pool_snap.snapshot()
+    check("snapshot 带每号实时容量",
+          _snap.get("acct-x", {}).get("capacity") == _sem_snap.capacity, _snap)
+    _sem_snap.retune(5)
+    check("容量调过之后 snapshot 跟着变",
+          _pool_snap.snapshot()["acct-x"]["capacity"] == 5,
+          _pool_snap.snapshot())
+finally:
+    import shutil as _shutil5
+    _shutil5.rmtree(_pool_snap._state_dir, ignore_errors=True)
+
 
 # ---------------------------------------------------------------------------
 # 13. 纯函数层（ca_protocol）：协议转换的第一刀
@@ -1146,6 +1162,32 @@ for _m in re.finditer(r"^def ([a-z][a-z0-9_]*)\(", _protocol_src, re.M):
         if re.search(r"(?<![\w.])%s\s*\(" % re.escape(_cand), _proxy_src):
             _dangling.append(_cand)
 check("搬走的函数在 ca_proxy 里没有悬空旧名", not _dangling, _dangling)
+
+# stop_sequence 回填：上游把命中的串丢掉时只能给 null；真吐出来时才填。
+_ev_stop = _messages([
+    {"choices": [{"delta": {"content": "结果：END"}}]},
+    {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+], holder={"stop_sequences": ["END", "STOP"]})
+_delta_stop = [d for n, d in _ev_stop if n == "message_delta"][0]
+check("流式：文本以停止串结尾时回填 stop_sequence",
+      _delta_stop["delta"]["stop_sequence"] == "END", _delta_stop)
+
+_ev_stop2 = _messages([
+    {"choices": [{"delta": {"content": "自然结束。"}}]},
+    {"choices": [{"delta": {}, "finish_reason": "stop"}]},
+], holder={"stop_sequences": ["END"]})
+_delta_stop2 = [d for n, d in _ev_stop2 if n == "message_delta"][0]
+check("流式：没回显停止串时保持 null（不猜）",
+      _delta_stop2["delta"]["stop_sequence"] is None, _delta_stop2)
+
+_ev_stop3 = _messages([
+    {"choices": [{"delta": {"content": "END"}}]},
+    {"choices": [{"delta": {}, "finish_reason": "length"}]},
+], holder={"stop_sequences": ["END"]})
+_delta_stop3 = [d for n, d in _ev_stop3 if n == "message_delta"][0]
+check("流式：max_tokens 收尾不填 stop_sequence",
+      _delta_stop3["delta"]["stop_reason"] == "max_tokens"
+      and _delta_stop3["delta"]["stop_sequence"] is None, _delta_stop3)
 
 
 # ---------------------------------------------------------------------------

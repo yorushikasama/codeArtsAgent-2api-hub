@@ -4625,6 +4625,13 @@ async function loadCodeartsAccounts(){
         if(a.sts_remaining_seconds < 1800) badge = '<span class="ca-badge warn">即将过期</span>';
       }
       const renew = a.renewable ? "可续期" : "不可续期（需重新登录）";
+      // 运行期：在跑几条 / 容量几格 + 账号级冷却。容量取自信号量的实时值
+      // （面板改并发后下一个请求就变），不是启动时的配置快照。
+      const rt = a.runtime || {};
+      const cap = Number(rt.capacity || (r && r.concurrency_per_account) || 0);
+      const flight = Number(rt.in_flight || 0);
+      const runtimeText = " · 并发 " + flight + (cap ? "/" + cap : "")
+        + (rt.cooling_s > 0 ? " · 冷却 " + Math.ceil(rt.cooling_s) + "s" : "");
       const id = esc(a.account_id || "");
       // 积分（snap-manager 统计插件）才是客户端里真正在扣的额度；token 额度
       // （opengw benefit）是另一套，上游收回后读不到。有积分就显示积分，
@@ -4643,6 +4650,7 @@ async function loadCodeartsAccounts(){
         + '<span class="ca-name">' + esc(a.account || "(未命名)") + badge + '</span>'
         + '<span class="ca-sub">' + esc(when) + " · " + esc(renew)
         + (a.domain_id ? " · 账号域 " + esc(String(a.domain_id).slice(0, 8)) + "…" : "")
+        + esc(runtimeText)
         + '</span>'
         + quotaHtml
         + caWelfareHtml(daily, a.welfareError)
