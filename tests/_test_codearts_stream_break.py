@@ -1419,5 +1419,49 @@ check("ca_protocol 里没有「用了但没定义/没 import」的全局名",
 _bad_proxy = _undefined_globals(P.__file__, allow=("__file__", "__name__"))
 check("ca_proxy 同样干净（这条能兜住所有搬家漏别名）", not _bad_proxy, _bad_proxy)
 
+
+# ---------------------------------------------------------------------------
+# 17. 第八刀：非流式回包 chat_to_messages
+# ---------------------------------------------------------------------------
+
+section("17. 非流式回包（chat_to_messages）")
+
+check("两个别名都指向 ca_protocol 的同一对象",
+      P.chat_to_messages is Q.chat_to_messages
+      and P._anthropic_parse_tool_input is Q.anthropic_parse_tool_input, None)
+
+_msg = Q.chat_to_messages({
+    "id": "cmpl-1", "model": "glm-5.3",
+    "choices": [{"finish_reason": "tool_calls", "message": {
+        "reasoning_content": "想一想", "content": "好的",
+        "tool_calls": [{"id": "call_1",
+                        "function": {"name": "get_time", "arguments": "{\"tz\":\"CST\"}"}}]}}],
+    "usage": {"prompt_tokens": 9, "completion_tokens": 4,
+              "prompt_cache_hit_tokens": 2},
+})
+check("thinking / text / tool_use 三类块按序产出",
+      [c["type"] for c in _msg["content"]] == ["thinking", "text", "tool_use"],
+      _msg["content"])
+check("tool_use 的 input 被解析成对象、id 原样保留",
+      _msg["content"][2]["input"] == {"tz": "CST"}
+      and _msg["content"][2]["id"] == "call_1", _msg["content"][2])
+check("stop_reason 与 usage 都映射到 Anthropic 口径",
+      _msg["stop_reason"] == "tool_use" and _msg["usage"]["input_tokens"] == 9
+      and _msg["usage"]["cache_read_input_tokens"] == 2, (_msg["stop_reason"], _msg["usage"]))
+check("id 补 msg_ 前缀、model 透传",
+      _msg["id"].startswith("msg_") and _msg["model"] == "glm-5.3", _msg["id"])
+
+_empty = Q.chat_to_messages({})
+check("空对象也给完整骨架（不抛异常）",
+      _empty["type"] == "message" and _empty["content"] == []
+      and _empty["stop_reason"] == "end_turn", _empty)
+
+check("工具参数解析：None→{}、dict 原样、非法 JSON→{raw}、标量→{value}",
+      Q.anthropic_parse_tool_input(None) == {}
+      and Q.anthropic_parse_tool_input({"a": 1}) == {"a": 1}
+      and Q.anthropic_parse_tool_input("{bad") == {"raw": "{bad"}
+      and Q.anthropic_parse_tool_input("[1,2]") == {"value": [1, 2]}
+      and Q.anthropic_parse_tool_input(7) == {"value": 7}, None)
+
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

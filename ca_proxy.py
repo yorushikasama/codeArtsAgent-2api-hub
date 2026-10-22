@@ -94,6 +94,8 @@ _anthropic_tool_choice = ca_protocol.anthropic_tool_choice
 anthropic_tools_to_chat = ca_protocol.anthropic_tools_to_chat
 anthropic_effort_from_messages = ca_protocol.anthropic_effort_from_messages
 _anthropic_blocks_to_messages = ca_protocol.anthropic_blocks_to_messages
+_anthropic_parse_tool_input = ca_protocol.anthropic_parse_tool_input
+chat_to_messages = ca_protocol.chat_to_messages
 TAG_START = ca_protocol.TAG_START
 DSML_CALLS_RE = ca_protocol.DSML_CALLS_RE
 DSML_INVOKE_RE = ca_protocol.DSML_INVOKE_RE
@@ -15428,74 +15430,9 @@ def anthropic_error_obj(status, message, error_type=None):
     }
 
 
-def _anthropic_parse_tool_input(value):
-    if value is None:
-        return {}
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        if not value:
-            return {}
-        try:
-            parsed = json.loads(value)
-        except Exception:
-            return {"raw": value}
-        if isinstance(parsed, dict):
-            return parsed
-        return {"value": parsed}
-    return {"value": value}
-
-
 def messages_to_chat(payload):
     """Anthropic → Chat；默认 max_tokens 由本地的模型表决定（纯函数层不查表）。"""
     return ca_protocol.messages_to_chat(payload, model_default_max_output_tokens)
-
-
-def chat_to_messages(obj):
-    """Fold one Chat Completions object into an Anthropic Messages object."""
-    if not isinstance(obj, dict):
-        obj = {}
-    choices = obj.get("choices") if isinstance(obj.get("choices"), list) else []
-    message = {}
-    finish = ""
-    if choices and isinstance(choices[0], dict):
-        message = choices[0].get("message") if isinstance(choices[0].get("message"), dict) else {}
-        finish = choices[0].get("finish_reason") or ""
-    content = []
-    # The upstream thinking trace becomes a native thinking block so clients
-    # such as Claude Code can render it; the request side drops incoming
-    # thinking blocks, so nothing unsigned ever reaches the upstream.
-    reasoning = _anthropic_text(message.get("reasoning_content"))
-    if reasoning:
-        content.append({"type": "thinking", "thinking": reasoning})
-    text = message.get("content")
-    if isinstance(text, list):
-        text = "".join(_anthropic_block_text(part) for part in text if isinstance(part, dict))
-    text = _anthropic_text(text)
-    if text:
-        content.append({"type": "text", "text": text})
-    tool_calls = message.get("tool_calls")
-    if isinstance(tool_calls, list):
-        for call in tool_calls:
-            if not isinstance(call, dict):
-                continue
-            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
-            content.append({
-                "type": "tool_use",
-                "id": _anthropic_text(call.get("id")) or _new_id("toolu_"),
-                "name": _anthropic_text(fn.get("name")),
-                "input": _anthropic_parse_tool_input(fn.get("arguments")),
-            })
-    return {
-        "id": _anthropic_message_id(obj.get("id")),
-        "type": "message",
-        "role": "assistant",
-        "model": _anthropic_text(obj.get("model")),
-        "content": content,
-        "stop_reason": _anthropic_stop_reason(finish),
-        "stop_sequence": None,
-        "usage": _anthropic_usage(obj.get("usage")),
-    }
 
 
 def _anthropic_estimate_chat_tokens(chat):

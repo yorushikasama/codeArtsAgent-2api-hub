@@ -1553,3 +1553,68 @@ def stream_responses_events(upstream, model, holder, webtools=None):
                 tool_calls_map.pop(idx, None)
                 dropped_truncated += 1
     yield from _finalize()
+
+
+def anthropic_parse_tool_input(value):
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        if not value:
+            return {}
+        try:
+            parsed = json.loads(value)
+        except Exception:
+            return {"raw": value}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"value": parsed}
+    return {"value": value}
+
+
+def chat_to_messages(obj):
+    """Fold one Chat Completions object into an Anthropic Messages object."""
+    if not isinstance(obj, dict):
+        obj = {}
+    choices = obj.get("choices") if isinstance(obj.get("choices"), list) else []
+    message = {}
+    finish = ""
+    if choices and isinstance(choices[0], dict):
+        message = choices[0].get("message") if isinstance(choices[0].get("message"), dict) else {}
+        finish = choices[0].get("finish_reason") or ""
+    content = []
+    # The upstream thinking trace becomes a native thinking block so clients
+    # such as Claude Code can render it; the request side drops incoming
+    # thinking blocks, so nothing unsigned ever reaches the upstream.
+    reasoning = anthropic_text(message.get("reasoning_content"))
+    if reasoning:
+        content.append({"type": "thinking", "thinking": reasoning})
+    text = message.get("content")
+    if isinstance(text, list):
+        text = "".join(anthropic_block_text(part) for part in text if isinstance(part, dict))
+    text = anthropic_text(text)
+    if text:
+        content.append({"type": "text", "text": text})
+    tool_calls = message.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for call in tool_calls:
+            if not isinstance(call, dict):
+                continue
+            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+            content.append({
+                "type": "tool_use",
+                "id": anthropic_text(call.get("id")) or new_id("toolu_"),
+                "name": anthropic_text(fn.get("name")),
+                "input": anthropic_parse_tool_input(fn.get("arguments")),
+            })
+    return {
+        "id": anthropic_message_id(obj.get("id")),
+        "type": "message",
+        "role": "assistant",
+        "model": anthropic_text(obj.get("model")),
+        "content": content,
+        "stop_reason": anthropic_stop_reason(finish),
+        "stop_sequence": None,
+        "usage": anthropic_usage(obj.get("usage")),
+    }
