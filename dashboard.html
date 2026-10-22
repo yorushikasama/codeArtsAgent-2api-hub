@@ -1724,6 +1724,15 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '上游响应头超时': 'Upstream response-header timeout',
     '单次尝试等上游返回响应头的上限（秒）。拿到响应头之前网关不会向客户端发出任何字节，所以这个值就是客户端要空等的时长：设得比客户端的首字节预算还大时，客户端会先断开（表现为 499 / 首字节迟迟不返回），而网关仍会按这个上限继续换账号重试。默认 120。': 'How long one attempt may wait for the upstream to send response headers (seconds). Nothing is sent to the client before those headers arrive, so this is exactly how long the client can end up waiting: set it above the client\'s first-byte budget and the client disconnects first (seen as a 499, or a first byte that never comes) while the gateway keeps retrying on the next account under the same limit. Default 120.',
     '调小的代价：上游偶尔确实算得慢的正常请求会被提前判失败、换账号重试，多消耗一次额度。建议不高于客户端的首字节预算。': 'The cost of lowering it: a normal request the upstream genuinely takes a long time to compute is failed early and retried on another account, spending one more unit of quota. Prefer a value no higher than the client\'s first-byte budget.',
+    '码道并发与冷却': 'CodeArts concurrency & cooldowns',
+    '每账号并发（上游给 3 个会话名额，默认 2 留余量）、流式期间的会话续期间隔、以及两种失败后的冷却时长。冷却只是「换个号试试」的偏好，不会拒绝请求。': 'Concurrency per account (the upstream grants 3 sessions; the default 2 leaves headroom), the session keep-alive interval while streaming, and how long an account is cooled down after each kind of failure. A cooldown only steers the next pick to another account; it never rejects a request.',
+    '四项都是保存后下一个请求即生效，不用重启；并发调小时已经在跑的请求不会被中断。': 'All four take effect on the next request, no restart needed; lowering concurrency never interrupts requests already running.',
+    '并发': 'Concurrency',
+    '续期': 'Keep-alive',
+    '续期间隔': 'Keep-alive interval',
+    '并发满冷却': 'Busy cooldown',
+    'TPM 冷却': 'TPM cooldown',
+    '已保存：码道并发与冷却': 'Saved: CodeArts concurrency & cooldowns',
     '请输入不小于 1 的整数秒': 'Enter a whole number of seconds, at least 1',
     '总剩余积分：全部账号（含停用）之和；「可用」只算启用且未触发限额护栏的账号': 'Total remaining credits: the sum over every account, disabled included; "available" counts only accounts that are enabled and not parked by a limit guard.',
     '总计（全部历史）': 'Total (all time)',
@@ -2660,6 +2669,15 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "上游响应头超时": "上游回應標頭逾時",
     "单次尝试等上游返回响应头的上限（秒）。拿到响应头之前网关不会向客户端发出任何字节，所以这个值就是客户端要空等的时长：设得比客户端的首字节预算还大时，客户端会先断开（表现为 499 / 首字节迟迟不返回），而网关仍会按这个上限继续换账号重试。默认 120。": "單次嘗試等上游回傳回應標頭的上限（秒）。拿到回應標頭之前閘道不會向客戶端發出任何位元組，所以這個值就是客戶端要空等的時長：設得比客戶端首位元組預算還大時，客戶端會先斷開（表現為 499 / 首位元組遲遲不返回），而閘道仍會按這個上限繼續換帳號重試。預設 120。",
     "调小的代价：上游偶尔确实算得慢的正常请求会被提前判失败、换账号重试，多消耗一次额度。建议不高于客户端的首字节预算。": "調小的代價：上游偶爾確實算得慢的正常請求會被提前判失敗、換帳號重試，多消耗一次額度。建議不高於客戶端的首位元組預算。",
+    "码道并发与冷却": "碼道併發與冷卻",
+    "每账号并发（上游给 3 个会话名额，默认 2 留余量）、流式期间的会话续期间隔、以及两种失败后的冷却时长。冷却只是「换个号试试」的偏好，不会拒绝请求。": "每帳號併發（上游給 3 個工作階段名額，預設 2 留餘量）、串流期間的工作階段續期間隔，以及兩種失敗後的冷卻時長。冷卻只是「換個帳號試試」的偏好，不會拒絕請求。",
+    "四项都是保存后下一个请求即生效，不用重启；并发调小时已经在跑的请求不会被中断。": "四項都是儲存後下一個請求即生效，不用重啟；併發調小時已經在跑的需求不會被中斷。",
+    "并发": "併發",
+    "续期": "續期",
+    "续期间隔": "續期間隔",
+    "并发满冷却": "併發滿冷卻",
+    "TPM 冷却": "TPM 冷卻",
+    "已保存：码道并发与冷却": "已儲存：碼道併發與冷卻",
     "请输入不小于 1 的整数秒": "請輸入不小於 1 的整數秒",
     "总剩余积分：全部账号（含停用）之和；「可用」只算启用且未触发限额护栏的账号": "總剩餘積分：全部帳號（含停用）之和；「可用」只算啟用且未觸發限額護欄的帳號",
     "总计（全部历史）": "總計（全部歷史）",
@@ -4089,7 +4107,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
               每账号并发（上游给 3 个会话名额，默认 2 留余量）、流式期间的会话续期间隔、以及两种失败后的冷却时长。冷却只是「换个号试试」的偏好，不会拒绝请求。
             </div>
             <div style="font-size:12px;color:var(--warn);margin-top:4px">
-              并发上限对**已经取过号**的账号要重启后生效；其余三项保存后下一个请求即生效。
+              四项都是保存后下一个请求即生效，不用重启；并发调小时已经在跑的请求不会被中断。
             </div>
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
