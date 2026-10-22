@@ -488,3 +488,320 @@ def stream_messages_events(raw_iter, model, holder=None):
     })
     yield anthropic_sse_frame("message_stop", {})
 
+
+def anthropic_json_text(value):
+    if value is None:
+        return "{}"
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return "{}"
+
+
+def anthropic_block_text(block):
+    if not isinstance(block, dict):
+        return ""
+    if "text" in block:
+        return anthropic_text(block.get("text"))
+    if "content" in block:
+        return anthropic_content_to_text(block.get("content"))
+    return ""
+
+
+def anthropic_image_part(block):
+    source = block.get("source") if isinstance(block, dict) else None
+    url = ""
+    if isinstance(source, dict):
+        stype = str(source.get("type") or "")
+        if stype == "base64":
+            media = anthropic_text(source.get("media_type") or "image/png")
+            data = anthropic_text(source.get("data"))
+            url = "data:%s;base64,%s" % (media, data)
+        elif stype == "url":
+            url = anthropic_text(source.get("url"))
+        elif stype == "file":
+            url = anthropic_text(source.get("file_id") or source.get("url"))
+    return {"type": "image_url", "image_url": {"url": url}}
+
+
+def anthropic_document_text(block):
+    if not isinstance(block, dict):
+        return ""
+    title = anthropic_text(block.get("title"))
+    source = block.get("source") if isinstance(block.get("source"), dict) else {}
+    stype = str(source.get("type") or "")
+    body = ""
+    if stype == "text":
+        body = anthropic_text(source.get("data"))
+    elif stype == "content":
+        body = anthropic_content_to_text(source.get("content"))
+    elif stype == "base64":
+        media = anthropic_text(source.get("media_type") or "application/octet-stream")
+        body = "[document %s omitted]" % media
+    elif stype == "url":
+        body = anthropic_text(source.get("url"))
+    elif stype == "file":
+        body = anthropic_text(source.get("file_id") or source.get("url"))
+    if title:
+        return title + "\n" + body
+    return body
+
+
+def anthropic_content_to_text(value, is_error=None):
+    if isinstance(value, str):
+        text = value
+    elif isinstance(value, list):
+        parts = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            typ = str(item.get("type") or "")
+            if typ == "image":
+                part = anthropic_image_part(item)
+                parts.append(anthropic_text((part.get("image_url") or {}).get("url")))
+            elif typ == "document":
+                parts.append(anthropic_document_text(item))
+            else:
+                parts.append(anthropic_block_text(item))
+        text = "".join(parts)
+    elif isinstance(value, dict):
+        text = anthropic_block_text(value)
+    else:
+        text = anthropic_text(value)
+    if is_error is True:
+        return "error: " + text
+    return text
+
+
+def anthropic_system_text(value):
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            text = anthropic_text(item.get("text"))
+            if text:
+                parts.append(text)
+        return "\n".join(parts)
+    return ""
+
+
+def anthropic_tool_choice(value):
+    if isinstance(value, str):
+        val = value.strip().lower()
+        return {"auto": "auto", "any": "required", "none": "none",
+                "required": "required"}.get(val, val)
+    if isinstance(value, dict):
+        typ = str(value.get("type") or "").strip().lower()
+        if typ == "auto":
+            return "auto"
+        if typ == "any":
+            return "required"
+        if typ == "none":
+            return "none"
+        if typ == "tool":
+            return {"type": "function",
+                    "function": {"name": anthropic_text(value.get("name"))}}
+    return None
+
+
+def anthropic_tools_to_chat(tools):
+    out = []
+    skipped = []
+    if not isinstance(tools, list):
+        return out, skipped
+    for item in tools:
+        if not isinstance(item, dict):
+            continue
+        if isinstance(item.get("function"), dict):
+            out.append(item)
+            continue
+        name = anthropic_text(item.get("name") or item.get("type"))
+        schema = item.get("input_schema")
+        if schema is None:
+            schema = item.get("parameters")
+        if schema is None:
+            if name:
+                skipped.append(name)
+            continue
+        fn = {"name": name}
+        if item.get("description") is not None:
+            fn["description"] = item.get("description")
+        fn["parameters"] = schema
+        out.append({"type": "function", "function": fn})
+    return out, skipped
+
+
+def anthropic_effort_from_messages(payload):
+    if not isinstance(payload, dict):
+        return None
+    output_config = payload.get("output_config")
+    if isinstance(output_config, dict):
+        effort = anthropic_text(output_config.get("effort")).strip()
+        if effort:
+            return effort
+    thinking = payload.get("thinking")
+    if not isinstance(thinking, dict):
+        return None
+    typ = anthropic_text(thinking.get("type")).strip().lower()
+    if typ == "disabled":
+        return "none"
+    if typ != "enabled":
+        return None
+    try:
+        budget = int(thinking.get("budget_tokens") or 0)
+    except (TypeError, ValueError):
+        return None
+    if budget <= 0:
+        return None
+    if budget >= 32000:
+        return "xhigh"
+    if budget >= 16000:
+        return "high"
+    if budget >= 8000:
+        return "medium"
+    return "low"
+
+
+def anthropic_blocks_to_messages(role, blocks):
+    tool_calls = []
+    tool_messages = []
+    content_parts = []
+    texts = []
+    has_non_text = False
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        typ = str(block.get("type") or "")
+        if typ in ("thinking", "redacted_thinking"):
+            continue
+        if typ in ("tool_use", "server_tool_use"):
+            tool_calls.append({
+                "id": anthropic_text(block.get("id")),
+                "type": "function",
+                "function": {
+                    "name": anthropic_text(block.get("name")),
+                    "arguments": anthropic_json_text(block.get("input")),
+                },
+            })
+            continue
+        if typ == "tool_result":
+            tool_messages.append({
+                "role": "tool",
+                "tool_call_id": anthropic_text(block.get("tool_use_id")),
+                "content": anthropic_content_to_text(block.get("content"),
+                                                      block.get("is_error")),
+            })
+            continue
+        if typ == "image":
+            part = anthropic_image_part(block)
+            if not (part.get("image_url") or {}).get("url"):
+                continue
+            has_non_text = True
+            content_parts.append(part)
+            continue
+        if typ == "document":
+            has_non_text = True
+            content_parts.append({"type": "text", "text": anthropic_document_text(block)})
+            continue
+        text = anthropic_block_text(block)
+        texts.append(text)
+        content_parts.append({"type": "text", "text": text})
+    out = list(tool_messages)
+    if not tool_calls and not texts and not has_non_text:
+        return out
+    msg = {"role": role or "user"}
+    if tool_calls:
+        msg["tool_calls"] = tool_calls
+    if has_non_text:
+        msg["content"] = content_parts
+    elif texts:
+        msg["content"] = "".join(texts)
+    else:
+        msg["content"] = ""
+    out.append(msg)
+    return out
+
+
+def messages_to_chat(payload, default_max_tokens=None):
+    """Translate an Anthropic Messages request into Chat Completions."""
+    if not isinstance(payload, dict):
+        raise ValueError("request body must be a JSON object")
+    model = anthropic_text(payload.get("model")).strip()
+    if not model:
+        raise ValueError("model is required")
+    messages_in = payload.get("messages")
+    if not isinstance(messages_in, list):
+        raise ValueError("messages must be a list")
+    if not messages_in:
+        raise ValueError("messages must not be empty")
+    chat = {"model": model, "messages": []}
+    for key in ("temperature", "top_p"):
+        if payload.get(key) is not None:
+            chat[key] = payload[key]
+    if payload.get("max_tokens") is not None:
+        chat["max_tokens"] = payload["max_tokens"]
+    else:
+        default_max = default_max_tokens(model) if default_max_tokens else None
+        if default_max:
+            chat["max_tokens"] = default_max
+    if payload.get("stream") is not None:
+        chat["stream"] = bool(payload.get("stream"))
+    stops = payload.get("stop_sequences")
+    if isinstance(stops, list) and stops:
+        chat["stop"] = stops
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("user_id") is not None:
+        chat["user"] = metadata.get("user_id")
+    tools, skipped = anthropic_tools_to_chat(payload.get("tools"))
+    if tools:
+        chat["tools"] = tools
+    choice = anthropic_tool_choice(payload.get("tool_choice"))
+    if choice is not None:
+        chat["tool_choice"] = choice
+    raw_choice = payload.get("tool_choice")
+    if isinstance(raw_choice, dict) and raw_choice.get("disable_parallel_tool_use") is True:
+        chat["parallel_tool_calls"] = False
+    effort = anthropic_effort_from_messages(payload)
+    if effort:
+        chat["reasoning_effort"] = effort
+    messages = []
+    system = anthropic_system_text(payload.get("system"))
+    if skipped:
+        note = ("These Anthropic server tools are not available here: "
+                + ", ".join(skipped) + ". Do not call them.")
+        system = (system + "\n" + note) if system else note
+    if system:
+        messages.append({"role": "system", "content": system})
+    for index, item in enumerate(messages_in):
+        if not isinstance(item, dict):
+            continue
+        role = anthropic_text(item.get("role")).strip() or "user"
+        content = item.get("content")
+        if role in ("system", "developer"):
+            # Claude Code >= 2.1.286 turns on Anthropic's mid-conversation
+            # system beta and carries system messages inside `messages`. The
+            # upstream knows the system role, so keep the message where the
+            # client put it rather than failing the whole request.
+            text = anthropic_system_text(content) or anthropic_content_to_text(content)
+            if text:
+                messages.append({"role": "system", "content": text})
+            continue
+        if role not in ("user", "assistant"):
+            raise ValueError(
+                "messages[%d].role %r must be user or assistant; "
+                "pass a system prompt in the top-level system field" % (index, role))
+        if isinstance(content, str):
+            messages.append({"role": role, "content": content})
+        elif isinstance(content, list):
+            messages.extend(anthropic_blocks_to_messages(role, content))
+        elif content is not None:
+            text = anthropic_text(content)
+            if text:
+                messages.append({"role": role, "content": text})
+    chat["messages"] = messages
+    return chat

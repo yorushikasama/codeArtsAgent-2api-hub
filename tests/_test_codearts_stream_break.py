@@ -1119,5 +1119,147 @@ for _m in re.finditer(r"^def ([a-z][a-z0-9_]*)\(", _protocol_src, re.M):
             _dangling.append(_cand)
 check("搬走的函数在 ca_proxy 里没有悬空旧名", not _dangling, _dangling)
 
+
+# ---------------------------------------------------------------------------
+# 15. 第六刀：Anthropic 请求层搬进 ca_protocol
+# ---------------------------------------------------------------------------
+
+section("15. Anthropic 请求层（messages_to_chat 一族）")
+
+_MOVED6 = {
+    "_anthropic_json_text": "anthropic_json_text",
+    "_anthropic_block_text": "anthropic_block_text",
+    "_anthropic_image_part": "anthropic_image_part",
+    "_anthropic_document_text": "anthropic_document_text",
+    "_anthropic_content_to_text": "anthropic_content_to_text",
+    "_anthropic_system_text": "anthropic_system_text",
+    "_anthropic_tool_choice": "anthropic_tool_choice",
+    "anthropic_tools_to_chat": "anthropic_tools_to_chat",
+    "anthropic_effort_from_messages": "anthropic_effort_from_messages",
+    "_anthropic_blocks_to_messages": "anthropic_blocks_to_messages",
+}
+_bad_alias = [old for old, new in _MOVED6.items()
+              if getattr(P, old, None) is not getattr(Q, new, None)]
+check("十个别名都指向 ca_protocol 的同一对象", not _bad_alias, _bad_alias)
+check("messages_to_chat 是 ca_proxy 的包装（不直接别名）",
+      P.messages_to_chat is not Q.messages_to_chat, None)
+
+
+def _chat(payload):
+    return Q.messages_to_chat(payload)
+
+
+_m = _chat({"model": "m", "max_tokens": 5,
+            "messages": [{"role": "user", "content": "hi"}]})
+check("纯函数层不查模型表：不传默认值就不补 max_tokens",
+      "max_tokens" in _m and _m["max_tokens"] == 5
+      and "max_tokens" not in Q.messages_to_chat(
+          {"model": "m", "messages": [{"role": "user", "content": "hi"}]}),
+      _m)
+_w = P.messages_to_chat({"model": "glm-5.3",
+                         "messages": [{"role": "user", "content": "hi"}]})
+check("包装层仍按模型表补默认 max_tokens（行为不变）",
+      _w.get("max_tokens") == P.model_default_max_output_tokens("glm-5.3") == 48000, _w)
+check("显式 max_tokens 优先于默认值",
+      P.messages_to_chat({"model": "glm-5.3", "max_tokens": 7,
+                          "messages": [{"role": "user", "content": "hi"}]})["max_tokens"] == 7,
+      None)
+
+_img = _chat({"model": "m", "max_tokens": 9, "messages": [{"role": "user", "content": [
+    {"type": "text", "text": "look"},
+    {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                 "data": "AAA"}}]}]})
+_parts = _img["messages"][0]["content"]
+check("base64 图片拼成 data URL 且整条转成多模态 parts",
+      isinstance(_parts, list) and _parts[1]["image_url"]["url"]
+      == "data:image/png;base64,AAA", _parts)
+
+_doc = _chat({"model": "m", "max_tokens": 9, "messages": [{"role": "user", "content": [
+    {"type": "document", "title": "T", "source": {"type": "text", "data": "body"}}]}]})
+check("文档块折成文本块（标题 + 正文）",
+      _doc["messages"][0]["content"] == [{"type": "text", "text": "T\nbody"}],
+      _doc["messages"][0])
+
+_hist = _chat({"model": "m", "max_tokens": 9, "messages": [
+    {"role": "user", "content": "t?"},
+    {"role": "assistant", "content": [
+        {"type": "thinking", "thinking": "x"},
+        {"type": "tool_use", "id": "tu_1", "name": "get", "input": {"z": 1}}]},
+    {"role": "user", "content": [
+        {"type": "tool_result", "tool_use_id": "tu_1",
+         "content": [{"type": "text", "text": "ok"}], "is_error": True}]}]})
+_roles = [m["role"] for m in _hist["messages"]]
+check("tool_result 落成紧随助手的 tool 消息",
+      _roles == ["user", "assistant", "tool"], _roles)
+check("tool_result 的 is_error 变成 error: 前缀",
+      _hist["messages"][2]["content"] == "error: ok", _hist["messages"][2])
+check("assistant 的 tool_use 变成 tool_calls、input 序列化成 JSON 串",
+      _hist["messages"][1]["tool_calls"][0]["function"]["arguments"] == '{"z":1}',
+      _hist["messages"][1])
+
+_choice = _chat({"model": "m", "max_tokens": 9,
+                 "tools": [{"name": "t", "input_schema": {"type": "object"}}],
+                 "tool_choice": {"type": "any", "disable_parallel_tool_use": True},
+                 "messages": [{"role": "user", "content": "go"}]})
+check("tool_choice any → required，且 disable_parallel 关掉并行",
+      _choice["tool_choice"] == "required" and _choice["parallel_tool_calls"] is False,
+      (_choice.get("tool_choice"), _choice.get("parallel_tool_calls")))
+_skip = _chat({"model": "m", "max_tokens": 9,
+               "tools": [{"type": "computer_20250124", "name": "computer"}],
+               "messages": [{"role": "user", "content": "go"}]})
+check("没有 input_schema 的服务端工具被跳过并写进 system 提示",
+      "tools" not in _skip
+      and "computer" in _skip["messages"][0]["content"]
+      and _skip["messages"][0]["role"] == "system", _skip.get("messages"))
+
+check("thinking budget 9000 → medium，32000 → xhigh，disabled → none",
+      Q.anthropic_effort_from_messages({"thinking": {"type": "enabled",
+                                                     "budget_tokens": 9000}}) == "medium"
+      and Q.anthropic_effort_from_messages({"thinking": {"type": "enabled",
+                                                         "budget_tokens": 32000}}) == "xhigh"
+      and Q.anthropic_effort_from_messages({"thinking": {"type": "disabled"}}) == "none",
+      None)
+
+_sys = _chat({"model": "m", "max_tokens": 9,
+              "system": [{"type": "text", "text": "a"},
+                         {"type": "text", "text": "b"}],
+              "messages": [{"role": "user", "content": "x"},
+                           {"role": "system", "content": "mid"},
+                           {"role": "user", "content": "y"}]})
+check("多段 system 用换行拼成一条、中途 system 保持原位",
+      _sys["messages"][0] == {"role": "system", "content": "a\nb"}
+      and _sys["messages"][2] == {"role": "system", "content": "mid"}
+      and [m["role"] for m in _sys["messages"]] == ["system", "user", "system", "user"],
+      _sys["messages"])
+
+try:
+    _chat({"model": "m", "max_tokens": 9,
+           "messages": [{"role": "robot", "content": "x"}]})
+    check("非法 role 抛 ValueError", False)
+except ValueError as _exc:
+    check("非法 role 抛 ValueError 且指明下标", "messages[0].role" in str(_exc), _exc)
+
+# 第六刀的坑与第五刀同源：被搬函数内部还在叫 _anthropic_text(...)。
+# 这次把守卫做双向：ca_protocol 里也不许出现「已改名函数的旧下划线名」。
+_proto_src = open(Q.__file__, encoding="utf-8").read()
+_defined = set(re.findall(r"^\s*def ([a-z][a-z0-9_]*)\(", _proto_src, re.M))
+_stale = []
+for _nm in _defined:
+    _old = "_" + _nm
+    if _old in _defined:
+        continue
+    if re.search(r"(?<![\w.])%s\s*\(" % re.escape(_old), _proto_src):
+        _stale.append(_old)
+check("ca_protocol 内部没有残留旧下划线名", not _stale, _stale)
+check("被搬函数内部的互相引用真的能跑（不是只 import 通过）",
+      Q.anthropic_content_to_text([{"type": "text", "text": "ok"}]) == "ok"
+      and Q.anthropic_block_text({"content": [{"type": "text", "text": "in"}]}) == "in"
+      and Q.anthropic_blocks_to_messages("user", [{"type": "text", "text": "z"}])[0]["content"] == "z",
+      None)
+
+_proto_code = re.sub(r'""".*?"""', "", _proto_src, flags=re.S)
+check("纯函数层里没有 open( / self.wfile（不许摸 I/O；文档字符串不算）",
+      "open(" not in _proto_code and "self.wfile" not in _proto_code, None)
+
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
