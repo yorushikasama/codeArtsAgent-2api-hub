@@ -925,5 +925,21 @@ check("ca_proxy 用的是同一函数对象（接线生效）",
       and P._anthropic_stop_reason is Q.anthropic_stop_reason, None)
 
 
+_obj = {"function_call": {}, "tool_calls": [], "keep": 1}
+check("空 function_call / 空 tool_calls 被剔掉",
+      Q.strip_empty_function_calls(_obj) is True
+      and _obj == {"keep": 1}, _obj)
+_obj2 = {"function_call": {"name": "f", "arguments": "{}"}}
+check("有内容的 function_call 保留",
+      Q.strip_empty_function_calls(_obj2) is False
+      and _obj2["function_call"]["name"] == "f", _obj2)
+
+_frame = b'event: x\ndata: {"function_call": {}}\n\n'
+_fixed = Q.clean_responses_frame(_frame)
+check("Responses 帧里的空占位被清掉", b'"function_call"' not in _fixed, _fixed)
+check("[DONE] 与坏 JSON 原样返回",
+      Q.clean_responses_frame(b"data: [DONE]\n\n") == b"data: [DONE]\n\n"
+      and Q.clean_responses_frame(b"data: {bad\n\n") == b"data: {bad\n\n", None)
+
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

@@ -72,6 +72,8 @@ import ca_settings
 # 纯函数层（见 ca_protocol）：保留旧名字，调用点一行都不用改。
 anthropic_sse_frame = ca_protocol.anthropic_sse_frame
 _anthropic_stop_reason = ca_protocol.anthropic_stop_reason
+_strip_empty_fc = ca_protocol.strip_empty_function_calls
+clean_responses_frame = ca_protocol.clean_responses_frame
 import ca_upstream_pool
 import ca_webtools
 import ca_identity
@@ -12244,52 +12246,6 @@ def clean_chunk(raw):
         if not delta and not choice.get("finish_reason"):
             return ""
     return json.dumps(obj, ensure_ascii=False) if changed else raw
-def _strip_empty_fc(obj):
-    """PATCHED-BY-OPS: 递归剔除空 function_call 占位（Responses/chat 通用）。"""
-    changed = False
-    if isinstance(obj, dict):
-        fc = obj.get("function_call")
-        if isinstance(fc, dict) and not fc.get("name"):
-            obj.pop("function_call", None)
-            changed = True
-        tc = obj.get("tool_calls")
-        if isinstance(tc, list) and not tc:
-            obj.pop("tool_calls", None)
-            changed = True
-        for v in list(obj.values()):
-            if _strip_empty_fc(v):
-                changed = True
-    elif isinstance(obj, list):
-        for v in obj:
-            if _strip_empty_fc(v):
-                changed = True
-    return changed
-def clean_responses_frame(frame):
-    """PATCHED-BY-OPS: 清洗 Responses SSE 帧（bytes）。
-    输入 b'event: x\ndata: {...}\n\n'；只改写 data: 行的 JSON，
-    event: 行原样保留。解析失败原样返回（不破坏未知格式）。
-    """
-    if not frame:
-        return frame
-    try:
-        text = frame.decode("utf-8")
-    except Exception:
-        return frame
-    out, changed = [], False
-    for line in text.splitlines():
-        st = line.strip()
-        if st.startswith("data:"):
-            payload = st[5:].strip()
-            if payload and payload != "[DONE]":
-                try:
-                    obj = json.loads(payload)
-                    if _strip_empty_fc(obj):
-                        line = "data: " + json.dumps(obj, ensure_ascii=False)
-                        changed = True
-                except Exception:
-                    pass
-        out.append(line)
-    return ("\n".join(out) + "\n\n").encode("utf-8") if changed else frame
 def normalize_roles(messages):
     """Map role names the upstream rejects onto ones it accepts.
     WorkBuddy only knows system / user / assistant / tool. OpenAI's newer

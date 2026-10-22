@@ -38,6 +38,54 @@ def anthropic_sse_frame(event, payload):
     return ("event: %s\ndata: %s\n\n" % (event, raw)).encode("utf-8")
 
 
+def strip_empty_function_calls(obj):
+    """PATCHED-BY-OPS: 递归剔除空 function_call 占位（Responses/chat 通用）。"""
+    changed = False
+    if isinstance(obj, dict):
+        fc = obj.get("function_call")
+        if isinstance(fc, dict) and not fc.get("name"):
+            obj.pop("function_call", None)
+            changed = True
+        tc = obj.get("tool_calls")
+        if isinstance(tc, list) and not tc:
+            obj.pop("tool_calls", None)
+            changed = True
+        for v in list(obj.values()):
+            if strip_empty_function_calls(v):
+                changed = True
+    elif isinstance(obj, list):
+        for v in obj:
+            if strip_empty_function_calls(v):
+                changed = True
+    return changed
+def clean_responses_frame(frame):
+    """PATCHED-BY-OPS: 清洗 Responses SSE 帧（bytes）。
+    输入 b'event: x\ndata: {...}\n\n'；只改写 data: 行的 JSON，
+    event: 行原样保留。解析失败原样返回（不破坏未知格式）。
+    """
+    if not frame:
+        return frame
+    try:
+        text = frame.decode("utf-8")
+    except Exception:
+        return frame
+    out, changed = [], False
+    for line in text.splitlines():
+        st = line.strip()
+        if st.startswith("data:"):
+            payload = st[5:].strip()
+            if payload and payload != "[DONE]":
+                try:
+                    obj = json.loads(payload)
+                    if strip_empty_function_calls(obj):
+                        line = "data: " + json.dumps(obj, ensure_ascii=False)
+                        changed = True
+                except Exception:
+                    pass
+        out.append(line)
+    return ("\n".join(out) + "\n\n").encode("utf-8") if changed else frame
+
+
 def anthropic_stop_reason(finish_reason):
     """chat 的 finish_reason → Anthropic 的 stop_reason。
 
