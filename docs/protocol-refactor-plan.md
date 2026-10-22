@@ -8,18 +8,19 @@
 
 ---
 
-## 0. 现状（2026-10-22 深夜，第六刀收工后）
+## 0. 现状（2026-10-23 凌晨，全部十刀收工）
 
 | 项 | 数字 |
 |---|---|
-| `ca_proxy.py` | 21 536 行 |
-| `ca_protocol.py` | 807 行，25 个函数 |
-| 测试套件 | 131 个（105 Python + 26 JS） |
-| `_test_codearts_stream_break.py` | 193 项 |
-| 线上 | `codearts-hub` active，跑的是 `5c10396` |
-| 远端 | `origin/main` = `5c10396` |
+| `ca_proxy.py` | 20 729 行（起点 22 119） |
+| `ca_protocol.py` | 1 620 行，38 个函数 |
+| 测试套件 | 132 个（106 Python + 26 JS） |
+| `_test_codearts_stream_break.py` | 214 项 |
+| `_test_protocol_pure.py` | 29 项（只 import ca_protocol） |
+| 线上 | `codearts-hub` active，跑的是 `d6da9d9` |
+| 远端 | `origin/main` = `d6da9d9` |
 
-已完成六刀（都遵循「别名桥接、调用点零改动」）：
+已完成十刀：
 
 | 刀 | 搬走的东西 | 测试增量 |
 |---|---|---|
@@ -28,45 +29,44 @@
 | 3 | `normalize_roles` | +3 |
 | 4 | `anthropic_text`、`anthropic_usage`、`best_cached_tokens` | +4 |
 | 5 | `iter_sse_lines`、`strip_data_prefix`、`SSE_READ_BLOCK`、`stream_messages_events`、`new_id`、`anthropic_message_id`、`anthropic_error_type` | +19 |
-| 6 | `messages_to_chat` 一族 11 个函数（含 `anthropic_json_text`、`anthropic_blocks_to_messages`） | +18 |
+| 6 | `messages_to_chat` 一族 11 个函数 | +18 |
+| 7 | `stream_responses_events` + 依赖闭包 18 个顶层定义（696 行） | +14 |
+| 8 | `chat_to_messages`、`anthropic_parse_tool_input` | +7 |
+| 9 | 传输原语（在第 5 刀顺手完成） | — |
+| 10 | 拆掉 44 条别名桥，57 处调用点改成 `ca_protocol.x` | — |
 
-`ca_protocol.py` 现有函数：`anthropic_text`、`best_cached_tokens`、
-`anthropic_usage`、`anthropic_sse_frame`、`normalize_roles`、
-`strip_empty_function_calls`、`clean_responses_frame`、`anthropic_stop_reason`、
-`new_id`、`anthropic_message_id`、`anthropic_error_type`、`strip_data_prefix`、
-`iter_sse_lines`、`stream_messages_events`、`anthropic_json_text`、
-`anthropic_block_text`、`anthropic_image_part`、`anthropic_document_text`、
-`anthropic_content_to_text`、`anthropic_system_text`、`anthropic_tool_choice`、
-`anthropic_tools_to_chat`、`anthropic_effort_from_messages`、
-`anthropic_blocks_to_messages`、`messages_to_chat`。
+`ca_proxy` 里只剩两个包装函数（它们要注入本地状态）：
+`messages_to_chat`（注入模型表）、`stream_responses_events`（注入 `ca_webtools`）。
 
-**第五、第六两刀踩的是同一个坑**：搬走的函数在 `ca_proxy` 少写别名（第五刀的
-`_new_id`），或搬进 `ca_protocol` 后内部还叫旧下划线名（第六刀的 `_anthropic_text`）。
-两者都不会在 import 时暴露：前者被 `_responses_codearts` 的 `try/except` 吞成
-「少一帧」，后者只在真调 `messages_to_chat` 时才 `NameError`。
-测试现在做**双向静态普查**：`ca_proxy` 不许悬空旧名、`ca_protocol` 内部不许残留
-旧名，两处都用「临时去掉别名 / 加回旧名」反向验证过会报红。
+**三个反复出现的坑，守卫都在 `_test_codearts_stream_break.py` 里**：
 
+1. 搬走的函数少写别名（第五刀 `_new_id`，20 处悬空）；
+2. 搬进 `ca_protocol` 的函数内部还在叫旧下划线名（第六刀 `_anthropic_text` 23 处、
+   第七刀 `time` 漏 import）；
+3. 前两种 import 都不报错，只在真跑时报 `NameError`，而且可能被调用方的
+   `try/except` 吞成「少一帧」。
 
+对应三道静态检查（都反向验证过会报红）：
+- `ca_proxy` 不许调用「ca_protocol 有、自己没有」的旧名；
+- `ca_protocol` 内部不许残留旧下划线名；
+- `symtable` 检查两个文件都没有「用了但没定义/没 import」的全局名。
 
-**关键结论：第 5 刀要用的依赖已经全部就位**，不需要再拖旁支。
+**完成标志全部达成**：`ca_proxy` ≤ 21 000 行、别名桥已拆、纯层可脱离服务器测试。
 
 ---
 
-## 1. 剩余目标物清单（行号取自 `dea939c`）
+## 1. 目标物清单（全部搬完）
 
-| 函数 | 行数 | 位置 | 依赖 |
-|---|---:|---|---|
-| ~~`stream_messages_events`~~ | ~~200~~ | 第 5 刀已搬 | — |
-| `stream_responses_events` | 496 | `ca_proxy.py:16402` | 同上 + `_responses_usage` 等 |
-| ~~`messages_to_chat` 一族（11 个）~~ | ~~296~~ | 第 6 刀已搬 | — |
-| `chat_to_messages` | 47 | `ca_proxy.py:16032` | `anthropic_usage`、`anthropic_stop_reason` |
-| ~~`iter_sse_lines`~~ | ~~45~~ | 第 5 刀已搬 | — |
-| ~~`strip_data_prefix`~~ | ~~11~~ | 第 5 刀已搬 | — |
+| 目标 | 计划行数 | 结果 |
+|---|---:|---|
+| `stream_messages_events` | 200 | ✅ 第 5 刀 |
+| `messages_to_chat` 一族 | 296 | ✅ 第 6 刀（实际 11 个函数） |
+| `stream_responses_events` | 496 | ✅ 第 7 刀（实际依赖闭包 696 行） |
+| `chat_to_messages` | 47 | ✅ 第 8 刀（+ 参数解析 15 行） |
+| `iter_sse_lines` / `strip_data_prefix` | 56 | ✅ 第 5 刀顺手 |
+| 别名桥 | 44 条 | ✅ 第 10 刀拆掉 |
 
-剩余约 543 行（Responses 状态机 496 + 非流式回包 47）；搬完 `ca_proxy.py`
-约降到 21 000 行、`ca_protocol.py` 约 1 300 行。
-（第六刀后实测：21 536 / 807 行。）
+最终：`ca_proxy.py` 20 729 行（-1 390），`ca_protocol.py` 1 620 行。
 
 **依赖顺序（必须按这个顺序，否则会拖出循环导入）**
 
@@ -157,7 +157,7 @@
   对拍用「`git archive HEAD` 到临时目录 + 同一份 25 条 payload 脚本跑两遍」，
   逐字节零差异（比只跑单测硬）。
 
-### 第 7 刀：`stream_responses_events`（496 行，最大）
+### 第 7 刀：`stream_responses_events`（496 行，最大）✅ 已完成（`d026512`）
 
 - 依赖 `_responses_usage`、`anthropic_error_type` 等；`clean_responses_frame` 已在
   纯函数层，但**调用点在 ca_proxy**，这刀一起看。
@@ -166,12 +166,19 @@
   任何顺序变化都会让 Codex CLI 解析失败。整块搬、不改顺序。
 - **前置**：先给现状录一份「事件序列 golden」（见 §4），搬完逐帧对比。
 - **验收**：golden 对拍 + `_test_codearts_stream_break` 里 responses 相关用例。
+- **实际**：用 AST 算依赖闭包得到 18 个顶层定义（不只是 7 个函数，还有 7 个正则
+  常量与 4 个工具函数），共 696 行。`ca_webtools` 是唯一外部依赖，用
+  `webtools=None` 参数注入。golden 覆盖 14 个场景（含 DSML、namespace、
+  截断参数、网路工具代跑），HEAD 与搬家后逐字节一致。
+  **新坑**：漏 `import time`，被 golden 脚本的 `time` patch 盖住了，最后靠
+  symtable 静态检查抓到。
 
-### 第 8 刀：`chat_to_messages`（47 行，非流式回包）
+### 第 8 刀：`chat_to_messages`（47 行，非流式回包）✅ 已完成（`4c4e306`）
 
 - 依赖 `anthropic_usage`、`anthropic_stop_reason`（已就位）。
 - 顺带处理 `stop_sequence` 字段：当前恒 `None`，如果接了 `stop` 参数，这里可以回填
   **命中的那一条**（属于改逻辑，单独提交）。
+- **实际**：连带 `anthropic_parse_tool_input`（15 行，唯一依赖）一起搬。
 
 ### 第 9 刀：传输原语（可选，45 + 11 行）✅ 已在第 5 刀顺手搬完
 
@@ -182,12 +189,17 @@
   `ca_proxy` 保留同名别名。若以后要恢复「纯函数层不含 I/O」的洁癖，再单开一刀
   拆到 `ca_stream.py`，不要混进协议刀。
 
-### 第 10 刀：拆桥（收尾）
+### 第 10 刀：拆桥（收尾）✅ 已完成（`d6da9d9`）
 
 - 删掉 `ca_proxy` 顶部所有 `x = ca_protocol.x` 别名，调用点改成
   `ca_protocol.x(...)`（一次性机械替换 + 全量回归）。
 - 目的：避免以后有人改 `ca_protocol` 却不知道 `ca_proxy` 还有一份名字指向它，
   也避免「到底用的是哪个」的困惑。
+- **实际**：44 条别名里 25 条早已无人调用（函数搬走后只剩别名），一并清掉；
+  实际只改 57 处调用点。7 个测试套件的引用同步改到 `ca_protocol`，
+  「别名指向同一对象」的断言改成「旧名字在 ca_proxy 里已消失」。
+  保留两个包装函数（`messages_to_chat` / `stream_responses_events`），
+  因为它们要注入 ca_proxy 的本地状态。
 
 ---
 
@@ -242,12 +254,12 @@
   别名指回本地实现（或恢复被删的 def）就能立刻回到旧路径；
 - 线上有 `ca_proxy.py.bak.*` / `ca_codearts.py.bak.*`，重启前可秒回。
 
-**完成标志**
+**完成标志（全部达成）**
 
-- `ca_proxy.py` ≤ 21 000 行，`ca_protocol.py` 覆盖全部协议转换；
-- 新增 `_test_protocol_pure.py` 全绿，且能脱离服务器运行；
-- `ca_proxy` 顶部不再有别名桥；
-- 三份协议文档（README / docs/codearts-projects-study.md / 本文件）状态一致。
+- ✅ `ca_proxy.py` 20 729 行（≤ 21 000），`ca_protocol.py` 覆盖全部协议转换；
+- ✅ `_test_protocol_pure.py`（29 项）全绿，只 import `ca_protocol`；
+- ✅ `ca_proxy` 顶部不再有别名桥（只剩两个注入包装）；
+- ✅ 套件数 132（README 已同步）。
 
 ---
 
@@ -257,8 +269,8 @@
 |---|---|
 | 1 | ~~第 5 刀 + golden 录制 + 全量回归~~ ✅ 2026-10-22 夜（golden 用「第 14 节真调」代替） |
 | 2 | ~~第 6 刀（5 个叶子 + blocks + messages_to_chat）~~ ✅ 2026-10-22 深夜（实际 11 个函数） |
-| 3 | 第 7 刀（最大，留足时间看事件顺序） |
-| 4 | 第 8 刀 + 第 10 刀拆桥（第 9 刀已在第 5 刀完成） |
-| 5 | `_test_protocol_pure.py` 补全、文档收尾、遗留项 1-4 |
+| 3 | ~~第 7 刀~~ ✅ 2026-10-23 凌晨（golden 14 场景逐字节对拍） |
+| 4 | ~~第 8 刀 + 第 10 刀拆桥~~ ✅ 2026-10-23 凌晨（第 9 刀已在第 5 刀完成） |
+| 5 | ~~`_test_protocol_pure.py` + 文档收尾~~ ✅ 遗留项 1-4 仍待处理（见 §5） |
 
 **不要在同一时段混做两刀**：每刀都要一次完整回归，混做会让失败定位成本翻倍。

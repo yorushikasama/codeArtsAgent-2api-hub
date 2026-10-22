@@ -65,7 +65,8 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 131 个套件：105 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 132 个套件：106 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- `tests/_test_protocol_pure.py` 只 import `ca_protocol`，用来钉住「协议层不依赖 ca_proxy、不碰 I/O」。
 - 仓库不含 CI：`.github/workflows/` 已整体移除，测试只在本地/服务器手工跑（`--jobs 4` 可并行）。
 
 ---
