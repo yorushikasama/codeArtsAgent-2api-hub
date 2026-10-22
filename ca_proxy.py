@@ -74,6 +74,7 @@ anthropic_sse_frame = ca_protocol.anthropic_sse_frame
 _anthropic_stop_reason = ca_protocol.anthropic_stop_reason
 _strip_empty_fc = ca_protocol.strip_empty_function_calls
 clean_responses_frame = ca_protocol.clean_responses_frame
+normalize_roles = ca_protocol.normalize_roles
 import ca_upstream_pool
 import ca_webtools
 import ca_identity
@@ -12246,23 +12247,6 @@ def clean_chunk(raw):
         if not delta and not choice.get("finish_reason"):
             return ""
     return json.dumps(obj, ensure_ascii=False) if changed else raw
-def normalize_roles(messages):
-    """Map role names the upstream rejects onto ones it accepts.
-    WorkBuddy only knows system / user / assistant / tool. OpenAI's newer
-    "developer" role (used by the Codex CLI and current SDKs) is the same thing
-    as "system", but sending it verbatim fails with code 11128.
-    """
-    out = []
-    for m in messages or []:
-        if not isinstance(m, dict):
-            out.append(m)
-            continue
-        item = m
-        if m.get("role") == "developer":
-            item = dict(m)
-            item["role"] = "system"
-        out.append(item)
-    return out
 # ---------------------------------------------------------------------------
 # Fingerprint Sanitization (immunizes against Codex / Claude Code WAF patterns)
 # ---------------------------------------------------------------------------

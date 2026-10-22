@@ -38,6 +38,25 @@ def anthropic_sse_frame(event, payload):
     return ("event: %s\ndata: %s\n\n" % (event, raw)).encode("utf-8")
 
 
+def normalize_roles(messages):
+    """Map role names the upstream rejects onto ones it accepts.
+    WorkBuddy only knows system / user / assistant / tool. OpenAI's newer
+    "developer" role (used by the Codex CLI and current SDKs) is the same thing
+    as "system", but sending it verbatim fails with code 11128.
+    """
+    out = []
+    for m in messages or []:
+        if not isinstance(m, dict):
+            out.append(m)
+            continue
+        item = m
+        if m.get("role") == "developer":
+            item = dict(m)
+            item["role"] = "system"
+        out.append(item)
+    return out
+
+
 def strip_empty_function_calls(obj):
     """PATCHED-BY-OPS: 递归剔除空 function_call 占位（Responses/chat 通用）。"""
     changed = False

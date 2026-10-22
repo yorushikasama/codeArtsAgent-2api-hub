@@ -941,5 +941,14 @@ check("[DONE] 与坏 JSON 原样返回",
       Q.clean_responses_frame(b"data: [DONE]\n\n") == b"data: [DONE]\n\n"
       and Q.clean_responses_frame(b"data: {bad\n\n") == b"data: {bad\n\n", None)
 
+check("developer → system（Codex/新 SDK 的写法）",
+      Q.normalize_roles([{"role": "developer", "content": "x"}])
+      == [{"role": "system", "content": "x"}], None)
+check("原有角色不动（连对象都是同一个）",
+      (lambda _m: Q.normalize_roles(_m)[0] is _m[0])(
+          [{"role": "user", "content": "y"}]), None)
+check("非 dict 条目原样保留",
+      Q.normalize_roles(["junk"]) == ["junk"], None)
+
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
