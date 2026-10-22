@@ -16,7 +16,7 @@
 | `ca_protocol.py` | 1 620 行，38 个函数 |
 | 测试套件 | 132 个（106 Python + 26 JS） |
 | `_test_codearts_stream_break.py` | 214 项 |
-| `_test_protocol_pure.py` | 29 项（只 import ca_protocol） |
+| `_test_protocol_pure.py` | 34 项（只 import ca_protocol） |
 | 线上 | `codearts-hub` active，跑的是 `d6da9d9` |
 | 远端 | `origin/main` = `d6da9d9` |
 
@@ -226,14 +226,18 @@
 
 ## 5. 与协议抽取无关、但待处理的事项
 
-| # | 事项 | 现状 | 建议 |
-|---|---|---|---|
-| 1 | 只有 system 消息时上游 400（`ModelArts.81001`） | 既有行为，未处理 | 产品决定：补一条 user 消息 or 原样透出错误。单独提交 |
-| 2 | `clean_responses_frame` 每帧多一个换行 | 既有行为，SSE 容忍 | 与第 7 刀一起归一（改逻辑，单独提交） |
-| 3 | `stop` 对 reasoning 也生效 | 上游行为 | 写进 README 排障段，避免被当成「流被吞」 |
-| 4 | `response_format` 已明确 400 | 已上线 | 文档补一句「要 schema 用 tools」 |
-| 5 | 面板「码道并发与冷却」英文/繁中词典 | 未补 | 若开英文界面，键缺失会回落中文；补 i18n |
-| 6 | 每账号并发的动态生效 | 需重启（已写明） | 可选：实现「空闲时重建信号量」 |
+七项都已处理完（2026-10-23 凌晨，`ca_protocol.empty_conversation_error` 与
+`_ResizableSemaphore` 是这轮的两个新东西）：
+
+| # | 事项 | 结果 |
+|---|---|---|
+| 1 | 只有 system 消息时上游 400（`ModelArts.81001`） | ✅ 三条协议入口统一在请求阶段回 400，文案点名 `81001` 并说明缺 user/assistant 回合（`ca_protocol.empty_conversation_error`） |
+| 2 | `clean_responses_frame` 每帧多一个换行 | ✅ 改成 `rstrip("\n") + "\n\n"`，只留一个空行；纯层套件加了「不能以 `\n\n\n` 结尾」的断言 |
+| 3 | `stop` 对 reasoning 也生效 | ✅ README「排障速查」写清症状（正文空 + finish=stop）与确认方式 |
+| 4 | `response_format` 已明确 400 | ✅ 同一节写明原因与替代方案（tools / function calling） |
+| 5 | 面板「码道并发与冷却」英文/繁中词典 | ✅ en / zh-Hant 各补 9 条；顺带修掉面板里漏出来的 markdown `**` |
+| 6 | 每账号并发的动态生效 | ✅ 信号量换成容量可调的 `_ResizableSemaphore`：按「在跑数不变」换算空闲数，改完下一个取号就生效；429 文案与 pool 快照也读实时值 |
+| 7 | `messages` 里 `developer` 角色在 Responses 侧 | ✅ 第 3 刀已归一，这里只留记录 |
 
 ---
 
@@ -257,7 +261,7 @@
 **完成标志（全部达成）**
 
 - ✅ `ca_proxy.py` 20 729 行（≤ 21 000），`ca_protocol.py` 覆盖全部协议转换；
-- ✅ `_test_protocol_pure.py`（29 项）全绿，只 import `ca_protocol`；
+- ✅ `_test_protocol_pure.py`（34 项）全绿，只 import `ca_protocol`；
 - ✅ `ca_proxy` 顶部不再有别名桥（只剩两个注入包装）；
 - ✅ 套件数 132（README 已同步）。
 
@@ -271,6 +275,6 @@
 | 2 | ~~第 6 刀（5 个叶子 + blocks + messages_to_chat）~~ ✅ 2026-10-22 深夜（实际 11 个函数） |
 | 3 | ~~第 7 刀~~ ✅ 2026-10-23 凌晨（golden 14 场景逐字节对拍） |
 | 4 | ~~第 8 刀 + 第 10 刀拆桥~~ ✅ 2026-10-23 凌晨（第 9 刀已在第 5 刀完成） |
-| 5 | ~~`_test_protocol_pure.py` + 文档收尾~~ ✅ 遗留项 1-4 仍待处理（见 §5） |
+| 5 | ~~`_test_protocol_pure.py` + 文档收尾~~ ✅ 2026-10-23 凌晨（遗留项 1-6 同批处理完，见 §5） |
 
 **不要在同一时段混做两刀**：每刀都要一次完整回归，混做会让失败定位成本翻倍。
