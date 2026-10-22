@@ -10467,7 +10467,79 @@ class _CodeartsAccountPool:
                 usable.append(sess)
         return usable
 
-    def acquire(self, timeout=None, session_key=None):
+    @staticmethod
+    def _usage_key(sess):
+        """The key daily_usage_stats() files this account's rows under.
+
+        record_usage() is called with the CodeArts account *label* (see
+        _codearts_chat_result), not the id key_of() prefers; using the id here
+        would read zero usage forever and silently disable every guard.
+        """
+        account = sess.get("account") or {}
+        return str(account.get("label") or "")
+
+    @staticmethod
+    def _limits_for_request():
+        """(limits, stats) for one acquire call, or (limits, None) fail-open.
+
+        One settings read and at most one usage fold per request: the fold is
+        incremental and TTL-cached, so this is a stat plus a cached dict unless
+        the log actually grew. A read failure means "unknown", never "blocked".
+        """
+        limits = ca_settings.limit_values_many(
+            ACCOUNTS_DIR,
+            ("daily_token_limit", "daily_credit_limit",
+             "model_daily_token_limit"))
+        if not any((entry.get("global") or 0) > 0
+                   for entry in limits.values()):
+            return limits, None
+        try:
+            stats = daily_usage_stats()
+        except Exception as exc:
+            log("codearts daily usage unavailable: %s" % exc)
+            stats = None
+        return limits, stats
+
+    @classmethod
+    def _limit_blocked(cls, sess, model, limits, stats):
+        """True when a daily guard parks this account (or just this model)."""
+        if not stats:
+            return False
+        uid = cls._usage_key(sess)
+        if not uid:
+            return False
+        token_limit = (limits.get("daily_token_limit") or {}).get("global") or 0
+        if token_limit > 0 and stats["tokens"].get(uid, 0) >= token_limit:
+            return True
+        credit_limit = (limits.get("daily_credit_limit") or {}).get("global") or 0
+        if credit_limit > 0 and stats["credits"].get(uid, 0) >= credit_limit:
+            return True
+        model_limit = (limits.get("model_daily_token_limit")
+                       or {}).get("global") or 0
+        if model_limit > 0 and model:
+            used = (stats["models"].get(uid) or {}).get(model, 0)
+            if used >= model_limit:
+                return True
+        return False
+
+    def limits_blocked(self, model=None):
+        """Whether sessions exist but every one is parked by a daily guard.
+
+        Used to answer 429 (quota) instead of 503 (no account) when the pool
+        looks empty only because of the panel's limits.
+        """
+        try:
+            limits, stats = self._limits_for_request()
+        except Exception:
+            return False
+        if not stats:
+            return False
+        sessions = self._usable()
+        return bool(sessions) and all(
+            self._limit_blocked(sess, model, limits, stats)
+            for sess in sessions)
+
+    def acquire(self, timeout=None, session_key=None, model=None):
         """要一个名额。返回 ``(session, key)``；拿不到时 ``(None, None)``。
 
         先试「不等待」的：谁有空位给谁。全都忙才在**第一个候选**上等一小会

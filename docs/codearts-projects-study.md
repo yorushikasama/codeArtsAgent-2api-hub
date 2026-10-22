@@ -358,6 +358,15 @@ if chunk.get("error_code") or chunk.get("error_msg"):
 所以 keepalive 仍是**待办**，优先级从 P1 降到 P2 —— 上游首 token 通常 1~3s，
 且 reasoning 一直在吐字节，触发概率低但不是零。
 
+**2026-10-22 已实现**（口径与上面「阻塞读」的设想不同）：`iter_sse` 在开始读
+之前把底层 socket 的读超时压到 15s，超时**不当作失败**，而是 yield 一个
+`KEEPALIVE` 哨兵、接着读同一根连接；调用方把它翻成 SSE 注释行 `: keepalive`。
+拿不到 socket（假对象、老版本 http.client）时退回原行为，绝不假装发过心跳。
+连续 40 次空等（10 分钟）才判上游卡死，抛 `UpstreamBroken`。
+
+这套做法的关键是**心跳不是往上游发，是往客户端发** —— 中间层掐的是我们到
+客户端那一段，而上游那条连接有自己的 180s 读超时。
+
 ---
 
 ## 七、签名细节（容易静默错的地方）
@@ -380,8 +389,11 @@ if chunk.get("error_code") or chunk.get("error_msg"):
 | P0 | 会话心跳 busy/idle + `user-session-id` 参签 | ✅ 已上线 |
 | P0 | 断流不再冒到 socketserver；首帧前不发头；断流发 error 帧 | ✅ 已上线 |
 | P1 | 零内容断流换号重开一次 | ✅ 已上线 |
-| P1 | SSE keepalive（防 nginx 60s 空闲断流） | ⬜ 待做 |
-| P1 | 会话粘性（多账号时） | ⬜ 待做 |
+| P1 | SSE keepalive（防 nginx 60s 空闲断流） | ✅ 已上线（`iter_sse` 空闲 15s yield 哨兵） |
+| P1 | 会话粘性（多账号时） | ✅ 已上线（首条 user 消息指纹兜底） |
+| P1 | **模型名大小写归一** | ✅ 已上线（线上实测：小写 glm-5.2 曾掉进空池回 503） |
+| P1 | 未知模型回 404（而不是空池的 503） | ✅ 已上线 |
+| P2 | 福利模型无权益（4004.200）→ 404 且从清单剔除 | ✅ 已上线 |
 | P2 | `_sanitize_tool_calls`（悬空 tool_calls 清洗） | ⬜ 待做 |
 | P1 | 错误语义映射（429+Retry-After / credentials_error / 400 / 404） | ✅ 已上线 |
 | P2 | 模型级冷却 `(account, model)` | ⬜ 待做 |
