@@ -63,10 +63,15 @@ import ca_activity
 import ca_atrest
 import ca_catalog
 import ca_codearts
+import ca_protocol
 import ca_egress
 import ca_ipintel
 import ca_logstore
 import ca_settings
+
+# 纯函数层（见 ca_protocol）：保留旧名字，调用点一行都不用改。
+anthropic_sse_frame = ca_protocol.anthropic_sse_frame
+_anthropic_stop_reason = ca_protocol.anthropic_stop_reason
 import ca_upstream_pool
 import ca_webtools
 import ca_identity
@@ -15768,13 +15773,6 @@ def anthropic_error_obj(status, message, error_type=None):
     }
 
 
-def anthropic_sse_frame(event, payload):
-    body = dict(payload or {})
-    body["type"] = event
-    raw = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
-    return ("event: %s\ndata: %s\n\n" % (event, raw)).encode("utf-8")
-
-
 def _anthropic_text(value):
     if value is None:
         return ""
@@ -16160,17 +16158,6 @@ def _anthropic_message_id(value):
     if not value:
         return _new_id("msg_")
     return value if value.startswith("msg_") else "msg_" + value
-
-
-def _anthropic_stop_reason(finish_reason):
-    value = str(finish_reason or "").strip().lower()
-    if value == "length":
-        return "max_tokens"
-    if value in ("tool_calls", "function_call"):
-        return "tool_use"
-    if value in ("content_filter", "refusal"):
-        return "refusal"
-    return "end_turn"
 
 
 def chat_to_messages(obj):

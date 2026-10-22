@@ -893,5 +893,37 @@ finally:
     _shutil3.rmtree(_tmp12, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# 13. 纯函数层（ca_protocol）：协议转换的第一刀
+# ---------------------------------------------------------------------------
+
+section("13. 纯函数层 ca_protocol")
+
+import ca_protocol as Q  # noqa: E402
+
+_f = Q.anthropic_sse_frame("content_block_delta",
+                           {"index": 0, "delta": {"type": "text_delta",
+                                                  "text": "你"}})
+check("帧形如 event: x + data: {...}",
+      _f.startswith(b"event: content_block_delta\ndata: {") and _f.endswith(b"}\n\n"),
+      _f[:40])
+check("payload 的 type 被 event 覆盖", b'"type":"content_block_delta"' in _f, _f)
+check("中文不转义（客户端直读）", "你".encode("utf-8") in _f, _f)
+check("空 payload 也能出帧",
+      Q.anthropic_sse_frame("ping", None) == b'event: ping\ndata: {"type":"ping"}\n\n',
+      Q.anthropic_sse_frame("ping", None))
+check("length → max_tokens", Q.anthropic_stop_reason("length") == "max_tokens", None)
+check("tool_calls → tool_use", Q.anthropic_stop_reason("tool_calls") == "tool_use", None)
+check("content_filter → refusal",
+      Q.anthropic_stop_reason("content_filter") == "refusal", None)
+check("未知值兜底 end_turn",
+      Q.anthropic_stop_reason("whatever") == "end_turn", None)
+check("这一层不 import socket（真的纯）",
+      "import socket" not in open(Q.__file__, encoding="utf-8").read(), None)
+check("ca_proxy 用的是同一函数对象（接线生效）",
+      P.anthropic_sse_frame is Q.anthropic_sse_frame
+      and P._anthropic_stop_reason is Q.anthropic_stop_reason, None)
+
+
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
