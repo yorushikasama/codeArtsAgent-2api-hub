@@ -62,12 +62,7 @@ import time as _time
 _time.time = lambda: FROZEN
 
 import ca_proxy as P
-import ca_pricing
-
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-ca_pricing.set_data_dir(USAGE_DIR)
-ca_pricing.set_settings_dir(ACCOUNTS_DIR)
-
 USAGE_LOG = P.USAGE_LOG
 # checkpoint 在 v4 里一类一份文件（T8 的拆分）：这里给出合并视图与按类读写，
 # 用例里 data["snapshot"] / data["series"] / data["analytics"] 的写法不用改。
@@ -389,11 +384,6 @@ FROZEN = __FROZEN__
 _t.time = lambda: FROZEN
 sys.path.insert(0, __ROOT__)
 import ca_proxy as P
-import ca_pricing
-ca_pricing.set_data_dir(P.USAGE_DIR)
-ca_pricing.set_settings_dir(P.ACCOUNTS_DIR)
-
-
 def local_midnight(ts=None):
     lt = _t.localtime(FROZEN if ts is None else ts)
     return _t.mktime((lt.tm_year, lt.tm_mon, lt.tm_mday, 0, 0, 0, 0, 0, -1))
@@ -562,13 +552,13 @@ cache_env_nowrite()
 restart()
 P._usage_snapshot_uncached()
 snap = window_raw(WINDOWS[3][1])
-check("整点窗口带成本字段：cost_cny / cost_missing / by_model_acct 都在",
-      snap["cost_cny"] > 0 and isinstance(snap["cost_missing"], dict)
+# 价格估算体系已移除（2026-10-22）：整点窗口不再带任何折算金额，也不再有
+# 「未定价模型」清单；by_model_acct 这层按账号的 token 归集与计价无关，必须
+# 照旧跟着小时桶走。
+check("整点窗口不含成本字段（价格体系已移除）",
+      snap["cost_cny"] == 0 and not snap.get("cost_missing")
       and snap["by_model_acct"],
       (snap["cost_cny"], list(snap["by_model_acct"].keys())))
-check("无价模型照常落进 cost_missing",
-      snap["cost_missing"].get("no-price-model") == 1,
-      snap["cost_missing"])
 # 午夜起点仍然走日桶（小时层不抢它的活），且结果与逐行一致。
 mid_since = TODAY0
 cache_env_nowrite()

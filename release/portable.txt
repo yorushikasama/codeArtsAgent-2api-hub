@@ -36,9 +36,6 @@ restart-codearts-hub.sh
 allow-firewall.bat
 allow-firewall.command
 
-# 随包价格快照：ca_pricing._candidate_file() 优先读它（存在即覆盖内置那份），
-# 少了它便携包只能退回 ca_pricing.py 里内嵌的旧价
-pricing/pricing.json
 
 ca_accounts.py
 ca_activity.py
@@ -51,7 +48,6 @@ ca_identity.py
 ca_ipintel.py
 ca_logstore.py
 ca_modelsdev.py
-ca_pricing.py
 ca_probes.py
 ca_prompt.py
 ca_proxy.py

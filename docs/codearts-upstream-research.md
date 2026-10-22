@@ -86,6 +86,9 @@ CodeArts Agent (Electron / VSCode fork)
 | `/v1/agent-center/agents/detail` | 60 | 智能体详情 |
 | `/v1/benefit-gateway-config` | 30 | 权益网关配置 |
 | `/v1/ops/credit/usage` | 16 | **积分/用量**（对应原项目的 billing） |
+| `/v1/ops/delivery?channel=IDE` | — | 活动清单（含「每日签到」是否已领） |
+| `/v1/ops/claim` | — | **每日签到领 1000 积分**（body：campaignId / idempotentKey / channel） |
+| `/v1/ops/confirm` | — | 签到确认到账（客户端 claim 成功后立刻调） |
 | `/v1/model/builtin` | 12 | **内置模型清单** |
 | `/v1/gateway-config` | 2 | **网关配置** |
 | `/v1/llm/vendors` | 2 | 模型厂商 |
@@ -318,7 +321,7 @@ class Authentication {
 | `ca_accounts.py:1259 refresh` | 改成 `POST {iamStsHost}/v1/oauth2/tokens` + `grant_type=refresh_token`；保留"按账号加锁"（refresh_token 单次有效） |
 | `ca_accounts.py:238 jwt_uid` | **失效**（码道凭证不是 JWT）→ 改用 `caller-identity` / `current/user` 的 `domainId`/`user_name` |
 | `ca_accounts.py:148 http_json` | 只能拿 body，**拿不到响应头**（STS 凭证可能在头里）→ 需加 header-aware 版本 |
-| `ca_accounts.py:1603 checkin` | 码道无签到概念 → 删除或改成"拉一次用量" |
+| `ca_accounts.py:1603 checkin` | 码道有签到（活动页「每日签到领 1000 积分」）→ `/v1/ops/delivery` + `/v1/ops/claim` + `/v1/ops/confirm`，见 `ca_codearts.welfare_claim_daily` |
 | `ca_identity.py:137 build_identity_headers` | 换成 `X-Auth-Token` / AK-SK 签名 + `X-Security-Token`，去掉 `X-IDE-Type` 族 |
 | `ca_fingerprint.py` | 可保留（设备指纹对 STS 无意义，但也不算错） |
 | `ca_atrest.py` | 可保留（若决定加密落盘） |
@@ -340,7 +343,8 @@ class Authentication {
 | 5 | 是否有 SSE 流式 | 决定 hub 能否做 stream 透传 | 抓一次对话 |
 | 6 | 排队机制的返回结构 | 影响可用性 | 打一次 `/api/v1/queue/status` |
 | 7 | 是否需要**已开通套餐**才能换到凭证 | 无套餐时登录能成功但拿不到模型 | `codearts models` 试一下 |
-| 8 | 合规 | 这是把商业服务的客户端协议用于自建网关，属灰色地带 | 需你自行判断 |
+| 8 | **`/v1/ops/*` 的鉴权口径**（客户端观察到的是 `x-auth-token`） | 决定「每日签到」能否在网关侧直接调用 | **已判定：AK/SK 可用。** 同主机 `/v1/model/builtin`、`/v1/model/thinking-variants` 一直用 AK/SK 签名投产，`/v1/ops/*` 同属 snap-access 的 `/v1` IAM 认证面；客户端带 `x-auth-token` 只是因为它手里有 toolkit 注入的令牌 |
+| 9 | 合规 | 这是把商业服务的客户端协议用于自建网关，属灰色地带 | 需你自行判断 |
 
 ---
 

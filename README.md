@@ -65,7 +65,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 136 个套件：110 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 132 个套件：106 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12，Windows 上 python 3.12。
 
 ---
@@ -164,6 +164,7 @@ WorkBuddy 账号池，不会因为「模型名在码道清单里」就拐去一�
 
 - **API 接口地址 (Base URL)**：`http://127.0.0.1:8788/v1`（局域网为 `http://<局域网IP>:8788/v1`）
 - **API Key**：本机单机模式可留空或填任意字符；已配置 Key 请用看板「设置」页里绑好出口的 Key；
+- **Key 优先级**：看板是唯一的凭据来源。只要看板配置过 Key（含已禁用、已删除的），`/v1` 就只认看板里启用中的 Key，`--api-key` / `.credentials` 里的 `API_KEY` 一律忽略；看板 Key 全部删除后接口继续要求 Key（返回 401），不会退回启动参数。仅当看板从未配置过 Key 时，`--api-key` 才作为无面板部署的入口生效。鉴权不会因为删光 Key 而自动关闭；确实需要关闭时，请显式设置 `auth_disabled`；
 - **模型名称**：填 `/v1/models` 里列出的任意模型 ID（如 `glm-5.3`、`deepseek-v4.1-flash`）。
 
 **Codex CLI / Claude Code（Responses API）**

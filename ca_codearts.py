@@ -47,8 +47,10 @@ WorkBuddy 那套是 `state + authUrl` 轮询、一次一个 state；码道这套
 """
 
 import base64
+import codecs
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import re
@@ -743,7 +745,7 @@ def normalize_models(models):
             out_tokens = int(raw.get("max_tokens") or 0)
         except (TypeError, ValueError):
             out_tokens = 0
-        out.append({
+        item = {
             "id": mid,
             "name": str(raw.get("model_name") or mid),
             "maxInputTokens": ctx,
@@ -753,7 +755,35 @@ def normalize_models(models):
             "supportsImages": False,
             "supportsReasoning": True,
             "supportsToolCall": True,
-        })
+        }
+        # 网关配置里的 max_tokens 是**请求参数上限**，不等于模型真实输出能力：
+        # deepseek-v4.1-flash 这里给 384000，客户端实测 65536，请求也确实按
+        # 65536 夹（clamp_max_tokens）。有实测值的以实测表为准，否则面板写
+        # 384K、请求只出 66K，两边对不上。
+        measured = BUILTIN_MODEL_LIMITS.get(mid)
+        if measured:
+            item["maxInputTokens"] = measured[0]
+            item["contextWindow"] = measured[0]
+            item["maxAllowedSize"] = measured[0]
+            item["maxOutputTokens"] = measured[1]
+        # deepseek-v4.1-flash 属于限时福利组，但采样默认值同样有 AgentCenter
+        # 实测数据。不在这里补的话，面板里同一张表只有它显示「—」。
+        sample = BUILTIN_MODEL_SAMPLING.get(mid)
+        if sample:
+            item["temperature"], item["top_p"] = sample
+        # 网关配置不带计费信息，但 deepseek-v4.1-flash 的档位已从上游实测
+        # 固化在静态表里。不补的话面板「消费倍率」一列只有它显示「—」，
+        # 与客户端（0.18x，错峰 0.09x）对不上。
+        tier = credit_tier_for(mid)
+        if tier:
+            item["creditRatio"] = tier.get("ratio_display") or ""
+            rows = tier.get("tiers") or []
+            first = rows[0] if rows else {}
+            item["inputPrice"] = first.get("input_price")
+            item["outputPrice"] = first.get("output_price")
+            item["creditTier"] = tier
+            item["creditPricing"] = credit_pricing_view(tier)
+        out.append(item)
     return out
 
 
@@ -852,20 +882,24 @@ def model_group(model_id):
 #: 别急着往里加：曾经把 glm-5.3 放进来过，理由是「连续两次 400 且响应体为空」。
 #: 那是误判 —— glm-5.3 只收 stream=true，非流式才回 400 空响应体（见
 #: chat_body）。**把某个模型加进来之前，先用流式形态复测一遍。**
-#: 内置模型的真实上下文/输出上限（2026-10-20 从 AgentCenter 实测取得）。
+#: 内置模型的真实上下文/输出上限（2026-10-21 从本机 CodeArts Agent 实测取得）。
 #:
 #: `/v1/model/builtin` 不返回这两个值，网关原来一律兜底成 1,000,000 —— 对
-#: GLM-5.2 这类 202,752 的模型等于**高估 5 倍**，客户端会以为塞得进更长的
-#: 上下文。这里存一份实测值，`normalize_builtin` 在上游没给值时用它。
+#: glm-5.2-sft-harmony 这类仍是 202,752 的模型等于**高估 5 倍**，客户端会
+#: 以为塞得进更长的上下文。这里存一份实测值，`normalize_builtin` 在上游
+#: 没给值时用它。
 #:
 #: 来源：GET /v1/agent-center/agents/useragents → agents[].agent_id →
 #:       GET /v1/agent-center/agents/detail?agent_id=… → gpts.models[].model_parameters
 #:       （需要 X-Security-Token 头，STS 凭证必须带）。
+#: 2026-10-21 15:46 本机客户端日志 `【AgentCore model-config update】` 复核：
+#: GLM-5.2 / glm-5.3 已从 202,752 提升到 1,048,576 上下文（输入 1,044,480），
+#: 输出均为 65,536；glm-5.2-sft-harmony 仍为 202,752 / 131,072。
 #: Qwen3-VL-235B 取自同行的公开缓存（AgentCenter 里没列出它）；kimi 暂无实测值。
 BUILTIN_MODEL_LIMITS = {
-    "GLM-5.2": (202752, 131072),
+    "GLM-5.2": (1048576, 65536),
     "glm-5.2-sft-harmony": (202752, 131072),
-    "glm-5.3": (202752, 65536),
+    "glm-5.3": (1048576, 65536),
     "openpangu-2.0-pro": (524288, 131072),
     "openpangu-2.0-flash": (524288, 131072),
     "Qwen3-VL-235B": (1048576, 131072),
@@ -873,7 +907,57 @@ BUILTIN_MODEL_LIMITS = {
     "deepseek-v4.1-flash": (1048576, 65536),
 }
 
+#: 内置模型的缺省采样参数 (temperature, top_p)。
+#:
+#: `/v1/model/builtin` 不返回这两个值，AgentCenter 的
+#: `gpts.models[].model_parameters` 才有。2026-10-22 用线上账号实测拉取：
+#:   · GLM-5.2 / glm-5.2-sft-harmony / glm-5.3 / deepseek-v4.1-flash
+#:     → temperature 0.5、top_p 0
+#:   · openpangu-2.0-flash / openpangu-2.0-pro → temperature 1.0、top_p 0
+#: 这些是**请求不带采样参数时上游生效的默认值**，只做展示，不改写客户端请求。
+#:
+#: Qwen3-VL-235B / kimi-k2.6-vl 不在 AgentCenter 清单里（上游
+#: display_enabled=false），没有实测值 —— 不填，面板显示「—」，
+#: 不拿同厂别的模型顶替。
+BUILTIN_MODEL_SAMPLING = {
+    "GLM-5.2": (0.5, 0.0),
+    "glm-5.2-sft-harmony": (0.5, 0.0),
+    "glm-5.3": (0.5, 0.0),
+    "deepseek-v4.1-flash": (0.5, 0.0),
+    "openpangu-2.0-flash": (1.0, 0.0),
+    "openpangu-2.0-pro": (1.0, 0.0),
+}
+
 BUILTIN_UNROUTABLE = set()
+
+
+def clamp_max_tokens(model_id, max_tokens):
+    """把 max_tokens 夹到模型真实输出上限，返回 (值, 是否被夹过)。
+
+    **为什么必须夹（2026-10-21 线上实测）**：客户端（ZCode / CodeArts IDE、
+    Codex CLI 等）习惯性发一个「模型族里最大的那个」值 —— ZCode 对所有模型
+    固定发 `max_tokens=128000`。上游对超限值不回「值太大」这种明白错误，而是
+    `InferHub.001001005.400 The request param is invalid`，一句话把整个请求
+    打死，且这个码**不在** `_codearts_retryable` 里，所以重试多少次都是同样的
+    502，用户侧表现为「这个模型一直失败」。
+
+    实测 glm-5.3：`65536`（正好等于输出上限）200 正常出字，`128000` 立刻
+    001001005.400。**65536 是模型能力，不该往下砍** —— 砍了等于替用户决定
+    「你不需要那么长的文档」，正常的长输出会被硬截断，比报错更糟。
+
+    表里没有的模型不夹 —— 宁可原样发过去让上游自己判断，也不要用一个
+    猜的数把本来能过的请求改坏。
+    """
+    limit = (BUILTIN_MODEL_LIMITS.get(model_id) or (None, None))[1]
+    if not limit:
+        return max_tokens, False
+    try:
+        value = int(max_tokens)
+    except (TypeError, ValueError):
+        return limit, False
+    if value > limit:
+        return limit, True
+    return value, False
 
 #: UI 的两分组，与客户端侧一致。
 GROUP_BENEFIT = "benefit"
@@ -1020,6 +1104,10 @@ def _credit_tier_raw(raw):
             "input_price": num(item.get("input_price")),
             "cache_price": num(item.get("cache_price")),
             "output_price": num(item.get("output_price")),
+            # 错峰档："off_peak"；普通档是 null 或 "default"。
+            # 同一 model 会同时给出 default 与 off_peak，两段 input 区间完全
+            # 相同 —— 只按 token 数选档永远命中第一段（deepseek 实测如此）。
+            "time_slot_id": item.get("time_slot_id") or "",
         })
     if not rows:
         return None
@@ -1032,11 +1120,104 @@ def _credit_tier_raw(raw):
         "output_price": head["output_price"],
         # 完整分段（判档用）
         "tiers": rows,
+        # 时段定义（timezone/schedule/duration/notice），错峰判档用
+        "time_slots": raw.get("time_slots") or {},
     }
 
 
 #: 模型 → 计费档。模型目录每次刷新时填，record_usage 算积分时查。
 CREDIT_TIERS = {}
+
+#: 计费档的**静态兜底**。`CREDIT_TIERS` 是进程内的运行时状态，只在有人请求
+#: 模型清单（`/v1/models` 或面板拉目录）时才被 `normalize_builtin` 填。
+#: 这带来一个隐蔽的时序依赖：**服务刚重启、还没人拉过模型目录时，所有请求的
+#: 积分都会算成 0**（`credit_for_usage` 查不到档位返回 None，记录里就留着 0）。
+#: 2026-10-22 实测复现：重启后 19:37 那批请求 credit 全是 0；手动打一次
+#: `/v1/models` 之后再发请求，credit 立刻变成 0.0428。
+#:
+#: 所以把 2026-10-21 从上游 `/v1/model/builtin` 实测到的几档固化在这里，
+#: 查不到运行时档位时回落到它 —— 计费不该取决于「有没有人先访问过目录」。
+#:
+#: 数值来源：`GET /v1/model/builtin` 的 `credit[]`（与客户端 UI 的倍率一致）。
+#: Qwen3-VL-235B / kimi-k2.6-vl 的 `credit` 是空数组（上游没定价），
+#: 刻意不放进表里 —— 编一个倍率比显示「未定价」更糟。
+CREDIT_TIERS_STATIC = {
+    "GLM-5.2": {
+        "ratio": 0.05, "ratio_display": "0.7x",
+        "tiers": [{"input_from": 0, "input_to": -1, "ratio": 0.05,
+                   "ratio_display": "0.7x",
+                   "input_price": 8.0, "cache_price": 2.0, "output_price": 28.0}],
+    },
+    "glm-5.2-sft-harmony": {
+        "ratio": 0.05, "ratio_display": "0.7x",
+        "tiers": [{"input_from": 0, "input_to": -1, "ratio": 0.05,
+                   "ratio_display": "0.7x",
+                   "input_price": 8.0, "cache_price": 2.0, "output_price": 28.0}],
+    },
+    "glm-5.3": {
+        "ratio": 0.0443, "ratio_display": "0.79x",
+        "tiers": [{"input_from": 0, "input_to": -1, "ratio": 0.0443,
+                   "ratio_display": "0.79x",
+                   "input_price": 8.0, "cache_price": 2.0, "output_price": 28.0}],
+    },
+    # deepseek 有两档**按时间**而不是按长度：default 0.18x，off_peak 0.09x。
+    # 上游把两段写成相同的 input 区间，只按 token 数选档会永远命中第一段 ——
+    # 夜间那 11 小时会被算成双倍积分。time_slots 的 schedule 是
+    # Quartz 六段式（秒 分 时 …），21:00 起持续 11 小时 → 21:00–07:59。
+    "deepseek-v4.1-flash": {
+        "ratio": 0.05, "ratio_display": "0.18x",
+        # 顶层的三个单价要与 tiers[0] 一致：credit_pricing_view 用它换算
+        # 「入 40 · 出 160 积分/M」，缺了会显示成 0。
+        "input_price": 2.0, "cache_price": 0.2, "output_price": 8.0,
+        "tiers": [
+            {"input_from": 0, "input_to": -1, "ratio": 0.05,
+             "ratio_display": "0.18x", "time_slot_id": "default",
+             "input_price": 2.0, "cache_price": 0.2, "output_price": 8.0},
+            {"input_from": 0, "input_to": -1, "ratio": 0.05,
+             "ratio_display": "0.09x", "time_slot_id": "off_peak",
+             "input_price": 1.0, "cache_price": 0.1, "output_price": 4.0},
+        ],
+        "time_slots": {"off_peak": {
+            "timezone": "Asia/Shanghai",
+            "schedule": "0 0 21 * * *",
+            "duration": 11,
+            "timeunit": "hour",
+            "notice": {"zh_cn": "错峰时段5折优惠，积分消耗速度从0.18x降至0.09x"
+                                "（每晚21:00-次日7:59）"},
+        }},
+    },
+    "openpangu-2.0-flash": {
+        "ratio": 0.011, "ratio_display": "0.32x",
+        "tiers": [{"input_from": 0, "input_to": -1, "ratio": 0.011,
+                   "ratio_display": "0.32x",
+                   "input_price": 0.8, "cache_price": 0.2, "output_price": 1.6}],
+    },
+    # 实测两段：32K 以内 3.2/0.8/14.5，以上 4.8/1.2/17.6。只取第一段会把
+    # 长输入的账少算 50%（客户端 matchCreditInterval 也是分段取的）。
+    "openpangu-2.0-pro": {
+        "ratio": 0.028, "ratio_display": "0.7x",
+        "tiers": [
+            {"input_from": 0, "input_to": 32000, "ratio": 0.028,
+             "ratio_display": "0.7x",
+             "input_price": 3.2, "cache_price": 0.8, "output_price": 14.5},
+            {"input_from": 32001, "input_to": -1, "ratio": 0.028,
+             "ratio_display": "0.7x",
+             "input_price": 4.8, "cache_price": 1.2, "output_price": 17.6},
+        ],
+    },
+}
+
+
+def credit_tier_for(model):
+    """取一个模型的计费档：先查运行时（上游最新值），再回落静态兜底。
+
+    运行时优先是刻意的 —— 上游调价时 `/v1/model/builtin` 会给出新倍率，
+    静态表只是「还没拉到目录时」的兜底，不应该盖过真值。
+    """
+    tier = CREDIT_TIERS.get(model)
+    if tier:
+        return tier
+    return CREDIT_TIERS_STATIC.get(model)
 
 #: 模型 → 可选的思考档位（逆向后确认：值直接当 reasoning_effort 用）。
 #: 2026-10-21 实测：GLM-5.2 / glm-5.2-sft-harmony 给 ["high","max"]，
@@ -1081,13 +1262,72 @@ def thinking_variants(access_key, secret_key, security_token, model_names,
     return out
 
 
-def _pick_credit_tier(tier, prompt_tokens):
-    """按输入 token 数挑计费段（客户端 matchCreditInterval 的等价实现）。
+def _time_slot_active(slot, when):
+    """``when``（epoch 秒）是否落在 slot 的 schedule + duration 窗口内。
+
+    schedule 是 Quartz 六段式（秒 分 时 日 月 周），只解析前三个字段；
+    日/月/周非 ``*`` 的规则判不准，宁可返回 False（按原价）也不要在错误的
+    时间段打折。时区只认 Asia/Shanghai（固定 UTC+8，无夏令时）——
+    上游当前只有这一种，遇到别的时区同样按不生效处理。
+    """
+    if not isinstance(slot, dict):
+        return False
+    fields = str(slot.get("schedule") or "").split()
+    if len(fields) < 3:
+        return False
+    try:
+        second, minute, hour = int(fields[0]), int(fields[1]), int(fields[2])
+        duration = float(slot.get("duration") or 0)
+    except (TypeError, ValueError):
+        return False
+    if duration <= 0:
+        return False
+    if str(slot.get("timezone") or "") not in ("", "Asia/Shanghai"):
+        return False
+    unit = str(slot.get("timeunit") or "hour").lower()
+    seconds = duration * (60 if unit == "minute" else 3600)
+    start = hour * 3600 + minute * 60 + second
+    end = start + int(seconds)
+    clock = time.gmtime(float(when) + 8 * 3600)
+    now = clock.tm_hour * 3600 + clock.tm_min * 60 + clock.tm_sec
+    if end <= 86400:
+        return start <= now < end
+    # 跨午夜：21:00 + 11h = 次日 08:00 → [21:00, 24:00) ∪ [00:00, 08:00)
+    return now >= start or now < (end - 86400)
+
+
+def _rows_for_time(tier, when):
+    """挑出 ``when`` 时刻适用的计费行。
+
+    有生效的错峰时段就只用该时段的行；否则用 default / 无时段标记的行。
+    时段行和默认行的 input 区间可能完全相同（deepseek），所以必须先按
+    时段过滤，再按 token 选段。
+    """
+    rows = (tier or {}).get("tiers") or []
+    slots = (tier or {}).get("time_slots") or {}
+    active = ""
+    for slot_id, slot in slots.items():
+        if slot_id == "default":
+            continue
+        if when is not None and _time_slot_active(slot, when):
+            active = slot_id
+            break
+    if active:
+        chosen = [r for r in rows if (r.get("time_slot_id") or "") == active]
+        if chosen:
+            return chosen
+    base = [r for r in rows if (r.get("time_slot_id") or "") in ("", "default")]
+    return base or rows
+
+
+def _pick_credit_tier(tier, prompt_tokens, when=None):
+    """按输入 token 数与时刻挑计费段。
 
     ``input_to`` 为 -1 表示该段无上限。落在任何段之外（理论上不会发生）时
     退回第一段，而不是返回 0 —— 返回 0 会让这条请求在面板上看起来免费。
+    ``when`` 为 epoch 秒；None 表示「不看时段，取默认档」，供纯分段测试用。
     """
-    rows = (tier or {}).get("tiers") or []
+    rows = _rows_for_time(tier, when)
     if not rows:
         return tier or {}
     n = max(0, int(prompt_tokens or 0))
@@ -1102,24 +1342,30 @@ def _pick_credit_tier(tier, prompt_tokens):
     return rows[0]
 
 
-def credit_for_usage(model, prompt_tokens, cached_tokens, completion_tokens):
+def credit_for_usage(model, prompt_tokens, cached_tokens, completion_tokens,
+                     when=None):
     """按逆向出来的公式算一条请求的积分。拿不到该模型的档位时返回 None。
 
     公式与取整口径都照抄客户端：``calculateTurnCredits`` 内部
     ``Math.round(d*100)/100``，也就是**面板上看到的两位小数**。这里保留 4 位
     （累加多条时不丢精度），显示时再按两位取整，与客户端逐条对得上。
 
+    ``when`` 是计费时刻（epoch 秒），默认取当前时间。deepseek 的错峰档
+    （21:00–07:59 Asia/Shanghai）价格减半，必须按请求完成时刻选档，
+    否则夜间账目会比上游实际扣费高一倍。
+
     实测校准（2026-10-21，GLM-5.2，ratio 0.05 / 8·2·28 元每百万）：
     短请求 ≈ 0.02、中 ≈ 0.15、长 ≈ 0.51 积分 —— 与客户端「总已用积分」的
     增量一致，说明公式与 ratio 方向（除以，不是乘以）都取对了。
     """
-    tier = CREDIT_TIERS.get(model)
+    tier = credit_tier_for(model)
     if not tier:
         return None
     prompt = max(0, int(prompt_tokens or 0))
     cached = min(max(0, int(cached_tokens or 0)), prompt)
     output = max(0, int(completion_tokens or 0))
-    row = _pick_credit_tier(tier, prompt)
+    row = _pick_credit_tier(tier, prompt,
+                            time.time() if when is None else when)
     ratio = float(row.get("ratio") or 0)
     if ratio <= 0:
         return None
@@ -1163,7 +1409,12 @@ def credit_pricing_view(tier):
         "source": "CodeArts Agent 客户端 calculateTurnCredits（逆向）",
     }
     rows = tier.get("tiers") or []
-    if len(rows) > 1:
+    # 分段数组只装「默认时段里按输入长度分的段」。错峰档的 input 区间和
+    # 默认档一模一样，混进来会变成两行完全相同的区间（2026-10-22 实测
+    # deepseek 就是这样），读的人只会以为数据重复了。
+    base_rows = [r for r in rows
+                 if (r.get("time_slot_id") or "") in ("", "default")]
+    if len(base_rows) > 1:
         # 只有真的分段计价的模型（如 openpangu-2.0-pro 的 32K 分界）才带，
         # 单段的模型多给一份数组只是噪音。
         view["tiers"] = [{
@@ -1172,7 +1423,32 @@ def credit_pricing_view(tier):
             "credits_per_mtok_input": per_mtok(row.get("input_price")),
             "credits_per_mtok_cache": per_mtok(row.get("cache_price")),
             "credits_per_mtok_output": per_mtok(row.get("output_price")),
-        } for row in rows]
+        } for row in base_rows]
+    slots = tier.get("time_slots") or {}
+    if slots:
+        view["time_slots"] = {}
+        for slot_id, slot in slots.items():
+            if slot_id == "default" or not isinstance(slot, dict):
+                continue
+            entry = {}
+            for key in ("timezone", "schedule", "duration", "timeunit"):
+                if slot.get(key) is not None:
+                    entry[key] = slot[key]
+            notice = slot.get("notice")
+            if isinstance(notice, dict) and notice.get("zh_cn"):
+                entry["notice"] = notice["zh_cn"]
+            match = next((r for r in rows
+                          if (r.get("time_slot_id") or "") == slot_id), None)
+            if match:
+                # 按时段自己的 ratio 换算：错峰档的 ratio 不一定和默认档一样，
+                # 用外层的 per_mtok 会把倍率串过去。
+                row_ratio = float(match.get("ratio") or 0) or ratio
+                entry["ratio_display"] = match.get("ratio_display") or ""
+                entry["credits_per_mtok_input"] = round(
+                    float(match.get("input_price") or 0) / row_ratio, 4)
+                entry["credits_per_mtok_output"] = round(
+                    float(match.get("output_price") or 0) / row_ratio, 4)
+            view["time_slots"][slot_id] = entry
     return view
 
 
@@ -1192,7 +1468,7 @@ def normalize_builtin(raw_list):
         raw_tier = _credit_tier_raw(raw)
         if raw_tier:
             CREDIT_TIERS[mid] = raw_tier
-        out.append({
+        item = {
             "id": mid,
             # 界面展示用 model_name：它和 model_id 常常不一样
             "name": str(raw.get("model_name") or mid),
@@ -1215,7 +1491,11 @@ def normalize_builtin(raw_list):
             "maxOutputTokens": BUILTIN_MODEL_LIMITS.get(mid, (0, 0))[1],
             "supportsReasoning": True,
             "supportsToolCall": True,
-        })
+        }
+        sample = BUILTIN_MODEL_SAMPLING.get(mid)
+        if sample:
+            item["temperature"], item["top_p"] = sample
+        out.append(item)
     return out
 
 
@@ -1250,12 +1530,25 @@ def model_catalog(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOU
         try:
             variants = thinking_variants(
                 access_key, secret_key, security_token,
-                [item["id"] for item in groups[GROUP_BUILTIN]],
+                # 这个接口认的是 model_name（客户端也是发展示名）。发 model_id
+                # 时上游对不上号，两者不同的模型连档位都问不到。
+                [item.get("name") or item["id"]
+                 for item in groups[GROUP_BUILTIN]],
                 timeout=timeout)
+            # 上游返回的键是 **model_name**（如 "GLM-5.2-ArkTS-SPARK"），不是
+            # model_id（glm-5.2-sft-harmony）。只按 id 查会让两者不一致的模型
+            # 丢掉真实档位 —— 面板上那个模型会错误地显示「原生」。
+            by_id = {item["id"]: item for item in groups[GROUP_BUILTIN]}
+            by_name = {item.get("name"): item for item in groups[GROUP_BUILTIN]}
+            matched = {}
+            for key, info in variants.items():
+                item = by_id.get(key) or by_name.get(key)
+                if item:
+                    matched[item["id"]] = info
             THINKING_STRENGTHS.clear()
-            THINKING_STRENGTHS.update(variants)
+            THINKING_STRENGTHS.update(matched)
             for item in groups[GROUP_BUILTIN]:
-                info = variants.get(item["id"]) or {}
+                info = matched.get(item["id"]) or {}
                 item["thinkingStrengths"] = info.get("strengths") or []
                 item["thinkingDefault"] = info.get("default") or ""
         except Exception as exc:
@@ -1266,7 +1559,7 @@ def model_catalog(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOU
 
 
 def chat_headers(access_key, secret_key, security_token, payload_hash,
-                 stream=False, maas_type=None, model=None):
+                 stream=False, maas_type=None, model=None, session_id=None):
     """推理请求头：与网关配置同一套签名，只是多一个 Accept。
 
     ``maas_type`` 是**分组开关，不是通用头** —— 这是从一次全套头对照实验里
@@ -1276,6 +1569,10 @@ def chat_headers(access_key, secret_key, security_token, payload_hash,
       · 内置 7 个模型带上它反而回 InferHub.4005.200「unsupported model」，
         不带才通。
     所以 benefit 组必须带、builtin 组必须不带，由调用方按模型所属分组传。
+
+    ``session_id``：会话名额的句柄（见 ``heartbeat``）。**必须参与签名** ——
+    上游按签名覆盖的头集合校验，改了头不重签会直接 401。带上它，这次推理才
+    会计入我们已 busy 的那条会话，收尾的 idle 才能真正归还名额。
 
     客户端还带一套 x-ot-* 观测头（trace/span/model-name 等），实测**不带也通**，
     这里就不复制了 —— 复制只会让签名串更长、排障更难。
@@ -1290,25 +1587,154 @@ def chat_headers(access_key, secret_key, security_token, payload_hash,
         headers["X-Security-Token"] = security_token
     if maas_type:
         headers["maas_type"] = maas_type
+    if session_id:
+        headers["user-session-id"] = session_id
     return aksk_sign(access_key, secret_key, "POST", CHAT_PATH, {}, headers,
                      payload_hash=payload_hash)
 
 
-def chat_body(model, messages, max_tokens=256, stream=True, extra=None):
+#: 会话名额心跳。上游的并发闸**不认「请求结束」**，只认这条心跳的 busy/idle：
+#: 每个账号 3 路并发，对话前 busy 登记一个自造的 32 位十六进制 user-session-id
+#: （对话请求带同一个头），对话结束 idle 注销。
+#:
+#: 不做这套的后果（2026-10-22 线上实测）：客户端连接早就关了，上游那边的会话
+#: 还挂着，连着快发两三个请求就把 3 个名额占满，之后一律
+#: `TM.00001041 并发会话数已达上限(3个)`，而我们的退避重试等的是「别人释放」，
+#: 上游只肯按超时回收。同一批日志里还夹着 21 次 `IncompleteRead` —— 会话被
+#: 服务端回收时直接掐 TCP，就是我们看到的「断流」。
+HEARTBEAT_PATH = "/snap-manager/v1/chat-session/heartbeat"
+
+
+def new_session_id():
+    """自造 32 位十六进制会话 id（对齐官方客户端 UUIDv4 去连字符的形状）。
+
+    绝不复用别人的 id：idle 是**注销**语义，拿官方 IDE 的 id 去 idle 会把用户
+    正在用的那条对话踢掉。
+    """
+    return secrets.token_hex(16)
+
+
+def heartbeat(access_key, secret_key, security_token, session_id, status,
+              timeout=10):
+    """登记 / 注销一条上游会话名额。返回 ``(ok, detail)``，**不抛**。
+
+    ``status`` 只能是 busy / idle，且必须走 **query**。实测三种摆法：
+      · ``PUT  ?status=busy`` + body ``{}``  → 200 ``{"status":"ok"}``（唯一可用）
+      · ``PUT`` 把 status 放 body            → 400 ``TM.00001001 参数校验失败:
+                                                wsf.validator.session.status``
+      · ``POST`` / ``GET`` 同一个路径        → 404 ``APIG.0101 method not found``
+
+    ok 的判定是 **200 且 body 里 status == "ok"**，只看状态码不够：网关层 200
+    可以包着业务失败，当真会让槽位从没登记过、我们却以为限流解除了。
+    """
+    if not (access_key and secret_key and session_id):
+        return False, "missing credentials"
+    status = "idle" if str(status).lower() == "idle" else "busy"
+    url = SNAP_HOST + HEARTBEAT_PATH
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "x-language": "zh-cn",
+        "x-client-type": "kernel",
+        "user-session-id": session_id,
+        "x-snap-traceid": secrets.token_hex(16),
+    }
+    if security_token:
+        headers["X-Security-Token"] = security_token
+    body = b"{}"
+    try:
+        signed = aksk_sign(access_key, secret_key, "PUT", url,
+                           {"status": status}, headers,
+                           payload_hash=hashlib.sha256(body).hexdigest())
+        req = urllib.request.Request(url + "?status=" + status, data=body,
+                                     headers=signed, method="PUT")
+        resp = urllib.request.urlopen(req, timeout=timeout)
+        raw = resp.read(2048)
+        resp.close()
+    except urllib.error.HTTPError as exc:
+        try:
+            detail = exc.read(512).decode("utf-8", "replace")
+        except Exception:                        # noqa: BLE001
+            detail = ""
+        return False, "HTTP %s %s" % (exc.code, detail[:200])
+    except Exception as exc:                     # noqa: BLE001
+        return False, "%s: %s" % (type(exc).__name__, exc)
+    try:
+        payload = json.loads(raw.decode("utf-8", "replace") or "{}")
+    except Exception:                            # noqa: BLE001
+        payload = {}
+    if isinstance(payload, dict) and payload.get("status") == "ok":
+        return True, "ok"
+    return False, "unconfirmed: %s" % raw[:160]
+
+
+def normalize_tools(tools):
+    """把工具声明统一成**码道上游认的 Chat 包裹形状**。
+
+    两套上游对 tools 的摆法不一样，这是实测出来的差异，别混：
+
+      WorkBuddy  收扁平的：{"type":"function","name":"x","description":…}
+                 原样透传即可（见 ca_proxy._tools_for_chat 的契约测试）
+      码道       只认包裹的：{"type":"function","function":{"name":"x",…}}
+                 少了这层包裹就回
+                 `InferHub.001001015.400 Tool function cannot empty` ——
+                 上游按 tool["function"] 取名字，取到空就直接拒掉整个请求，
+                 现象是「一挂工具就 502，不挂工具就正常」。
+
+    已经是包裹形状的原样放过：重复包一层会变成
+    {"function":{"function":{…}}}，上游同样认不出。
+    """
+    out = []
+    for tool in tools or []:
+        if not isinstance(tool, dict):
+            continue
+        if isinstance(tool.get("function"), dict):
+            out.append(tool)
+            continue
+        kind = str(tool.get("type") or "function").lower()
+        if kind == "function" and tool.get("name"):
+            fn = {}
+            for key in ("name", "description", "parameters", "strict"):
+                if tool.get(key) is not None:
+                    fn[key] = tool[key]
+            out.append({"type": "function", "function": fn})
+            continue
+        # custom / web_search 这类码道没有执行器的声明直接丢掉：
+        # 发过去只会换一个 400，不如让模型按「没有这个工具」去回答。
+        continue
+    return out
+
+
+def chat_body(model, messages, max_tokens=256, stream=True, extra=None,
+              tools=None, tool_choice=None):
     """推理请求体。
 
     **stream 默认 True，这不是随便定的。** `glm-5.3` 只收流式：传
     ``stream=false`` 服务端回 **400 且响应体为空**，看起来像「模型不存在」，
     实际上换 ``stream=true`` 立刻 200 并正常吐出内容。客户端一直走流式，
     所以人用着没问题；按 OpenAI 习惯默认非流式的探针会误判它已死。
+
+    **tools 必须透传（2026-10-21 实测）**：上游原生支持 function calling，
+    带 tools 时回标准 `delta.tool_calls` + `finish_reason="tool_calls"`。
+    早先这里只组 model/messages/max_tokens/stream，tools 整个被丢掉 ——
+    IDE 客户端（ZCode 一次就发 39 个工具）于是完全不知道有哪些工具可用，
+    只能自己把调用写成 `<tool_call>…</tool_call>` **纯文本**发回来，
+    客户端解析不了，用户看到的是「模型在胡言乱语地编工具调用」。
     """
     body = {"model": model, "messages": messages,
-            "max_tokens": max_tokens, "stream": stream}
+            "max_tokens": clamp_max_tokens(model, max_tokens)[0],
+            "stream": stream}
     # 思考开关（thinking / reasoning_effort）由调用方按客户端要求放进 extra。
     # 上游认这两个字段：实测 thinking.type=disabled 时 reasoning_tokens 恒为 0，
     # enabled + budget_tokens 能给出非零推理量（11 个模型全部如此）。
     if extra:
         body.update(extra)
+    if tools:
+        shaped = normalize_tools(tools)
+        if shaped:
+            body["tools"] = shaped
+            if tool_choice:
+                body["tool_choice"] = tool_choice
     return body
 
 
@@ -1351,8 +1777,138 @@ def thinking_extra_from(payload):
     return extra or None
 
 
+class ChatAborted(Exception):
+    """下游客户端已经不要这条结果了，主动掐掉上游连接。
+
+    码道账号的**并发会话上限只有 3 个**，而上游是靠「这条 HTTP 连接还在不在」
+    判断会话活着的（客户端点停止 = AbortController 断 TCP，见 CodeArts 客户端
+    的 fetch 用法；它没有单独的「中止生成」接口）。
+
+    网关如果一口气 `resp.read()` 读到底，那么客户端早就断开、重试、甚至换了
+    别的问题，网关这个线程还在替一个没人要的回答读上游 —— 会话一直挂在账号上。
+    连着三条就把 3 个名额吃干净，之后所有请求都撞
+    `TM.00001041 并发会话数已达上限`，整个网关看起来像死了（2026-10-22 实测
+    持续 25 分钟，因为那几条生成真的还在跑）。
+
+    所以读上游改成「分块读 + 每块问一次调用方还要不要」，一旦发现客户端断了
+    就抛这个异常，`with` 退出时 `HTTPResponse.close()` 会关掉 socket，上游随即
+    回收会话。
+    """
+
+
+class UpstreamBroken(Exception):
+    """上游连接在中途断掉 —— chunked 流没写终止块就把 socket 关了。
+
+    ``http.client`` 把它报成 ``IncompleteRead``。这**不是**网关的错：码道上游
+    （APIG 后面的推理服务）在会话被服务端回收、账号并发名额被抢占、或网关侧
+    空闲超时时，会直接把 TCP 关掉，连 ``0\\r\\n\\r\\n`` 都不写。
+
+    以前这个异常没人接，会一路冒到 ``socketserver.process_request_thread``：
+    客户端拿到的是一条「200 + 半截 delta，然后连接凭空消失」的响应，既没有
+    ``finish_reason`` 也没有 ``[DONE]`` —— 前端看到的就是**直接断流**
+    （2026-10-22 线上复现，日志里 21 次同样的 traceback）。
+
+    读侧统一把它翻译成这个类型并带上已收字节数，由各协议层决定怎么收尾。
+    """
+
+    def __init__(self, message, received=0):
+        Exception.__init__(self, message)
+        self.received = received
+
+
+def open_chat(access_key, secret_key, security_token, model, messages,
+              max_tokens=256, stream=True, timeout=None, extra=None,
+              tools=None, tool_choice=None, session_id=None):
+    """建立一次推理连接，**不读响应体**。返回 (status, resp, text)。
+
+    - 200：resp 是未读的响应句柄，**调用方负责 close()**；text 为空串。
+    - 其它：resp 为 None，text 是错误体（已读尽），可直接拿去判重试。
+
+    为什么要有这个「只建连不读」的入口：真流式转发必须在**拿到句柄的那一刻**
+    就把响应头回给客户端，然后边收边转。用 chat_for_model 只能等整条流读完，
+    客户端在这期间一个字都收不到 —— 长回答（几千 token）时它就干转几分钟，
+    最后一次性刷出全文，还容易触发客户端自己的空闲超时（ZCode 是 4 分钟）后
+    重试，叠出多个上游会话把账号的并发名额吃干净（2026-10-22 实测事故）。
+    """
+    timeout = CHAT_TIMEOUT if timeout is None else timeout
+    maas = MAAS_BENEFIT if model_group(model) == GROUP_BENEFIT else None
+    body = json.dumps(chat_body(model, messages, max_tokens=max_tokens,
+                                stream=stream, extra=extra, tools=tools,
+                                tool_choice=tool_choice),
+                      ensure_ascii=False).encode("utf-8")
+    headers = chat_headers(access_key, secret_key, security_token,
+                           hashlib.sha256(body).hexdigest(),
+                           stream=stream, maas_type=maas,
+                           session_id=session_id)
+    req = urllib.request.Request(CHAT_PATH, data=body, headers=headers,
+                                 method="POST")
+    try:
+        resp = urllib.request.urlopen(req, timeout=timeout)
+    except urllib.error.HTTPError as exc:
+        return exc.code, None, exc.read().decode("utf-8", "replace")
+    return getattr(resp, "status", 200), resp, ""
+
+
+def iter_sse(resp, abort_check=None, read_size=8192, stats=None):
+    """逐行吐出上游 SSE 文本（含行尾换行）。resp 的生命周期由调用方管。
+
+    ``abort_check`` 每读一块前问一次，为真就抛 ``ChatAborted`` —— 客户端走了
+    还继续读，会替一个没人要的回答占着账号的并发名额（见 ChatAborted）。
+
+    用增量解码器而不是逐块 ``decode``：一块 8192 字节很容易正好切在中文或
+    emoji 的三/四字节序列中间，逐块解会吐出替换字符，前端显示成「锟斤拷」。
+
+    读侧的网络异常一律收敛成 ``UpstreamBroken``（正常 EOF 不抛）。``stats``
+    是可选的可变字典，回填 ``bytes``（已收字节数）与 ``truncated``（是否
+    异常中断），供上层区分「上游没给内容就断」和「吐到一半断」。
+    """
+    decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    buf = ""
+    total = 0
+    if stats is None:
+        stats = {}
+    stats.setdefault("bytes", 0)
+    while True:
+        if abort_check is not None and abort_check():
+            raise ChatAborted("client gone")
+        failed = None
+        try:
+            try:
+                piece = resp.read1(read_size)
+            except AttributeError:      # 老版本 http.client 没有 read1
+                piece = resp.read(read_size)
+        except (http.client.HTTPException, OSError) as exc:
+            # IncompleteRead 带着已读到的 partial；其余（ConnectionResetError、
+            # socket.timeout…）没有，按 0 处理。注意 IncompleteRead 是
+            # HTTPException 但不是 OSError，两个都要接。
+            piece = getattr(exc, "partial", b"") or b""
+            failed = exc
+        if piece:
+            total += len(piece)
+            stats["bytes"] = total
+            buf += decoder.decode(piece)
+            while True:
+                cut = buf.find("\n")
+                if cut < 0:
+                    break
+                line, buf = buf[:cut + 1], buf[cut + 1:]
+                yield line
+        if failed is not None:
+            stats["truncated"] = True
+            raise UpstreamBroken(
+                "upstream closed early: %s" % (str(failed) or type(failed).__name__),
+                total)
+        if not piece:
+            break
+    buf += decoder.decode(b"", True)
+    if buf:
+        yield buf
+
+
 def chat_for_model(access_key, secret_key, security_token, model, messages,
-                   max_tokens=256, stream=True, timeout=None, extra=None):
+                   max_tokens=256, stream=True, timeout=None, extra=None,
+                   tools=None, tool_choice=None, abort_check=None,
+                   session_id=None):
     """按模型所属分组自动选对请求头，发一次真实推理。
 
     分组 → maas_type 的映射在这里集中维护（见 chat_headers 的注释）：
@@ -1361,33 +1917,37 @@ def chat_for_model(access_key, secret_key, security_token, model, messages,
     返回 (http 状态码, 原始响应体)。**不走 _http** —— 那个函数会把非 JSON 的
     SSE 流包成 {"_raw": ...}，还会把流式帧里的 error_code 当业务错误抛掉，
     推理这边需要的是原样字节，判定交给调用方。
+
+    ``abort_check``：可选的无参回调，每读完一块就问一次「下游还要吗」。返回
+    真值时抛 ``ChatAborted``，让上层立刻关掉上游连接。这**不是**优化，是正确性：
+    不这么做，一个被客户端放弃的长回答会把账号的并发名额占死（见 ChatAborted）。
     """
-    timeout = CHAT_TIMEOUT if timeout is None else timeout
-    maas = MAAS_BENEFIT if model_group(model) == GROUP_BENEFIT else None
-    body = json.dumps(chat_body(model, messages, max_tokens=max_tokens,
-                                stream=stream, extra=extra),
-                      ensure_ascii=False).encode("utf-8")
-    headers = chat_headers(access_key, secret_key, security_token,
-                           hashlib.sha256(body).hexdigest(),
-                           stream=stream, maas_type=maas)
-    req = urllib.request.Request(CHAT_PATH, data=body, headers=headers,
-                                 method="POST")
+    status, resp, text = open_chat(
+        access_key, secret_key, security_token, model, messages,
+        max_tokens=max_tokens, stream=stream, timeout=timeout, extra=extra,
+        tools=tools, tool_choice=tool_choice, session_id=session_id)
+    if resp is None:
+        return status, text
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, resp.read().decode("utf-8", "replace")
-    except urllib.error.HTTPError as exc:
-        return exc.code, exc.read().decode("utf-8", "replace")
+        return status, "".join(iter_sse(resp, abort_check))
+    finally:
+        resp.close()
 
 
 # ---------------------------------------------------------------------------
 # 每日福利领取
 # ---------------------------------------------------------------------------
 #
-# 这就是码道客户端「限时福利 → 每日领取」的落点，也是「签到」在码道这边
-# 的对应物：每个账号每天可以领一份当日有效的推理额度（实测 daily_token_limit
-# 为 1000 万 token，0 点清零、不累计）。领取接口本身**幂等** —— 同一天重复调
-# 都返回 error_code 0000，不会叠加额度，所以不需要客户端自己去重；「今天领没领」
-# 要靠余额接口的发放时间来判断，见 balance_summary。
+# 这是码道客户端「限时福利 → 每日额度」的落点：每个账号每天可以领一份当日
+# 有效的推理额度（实测 daily_token_limit 为 1000 万 token，0 点清零、不累计）。
+# 领取接口本身**幂等** —— 同一天重复调都返回 error_code 0000，不会叠加额度，
+# 所以不需要客户端自己去重；「今天领没领」要靠余额接口的发放时间来判断，见
+# balance_summary。
+#
+# 注意别把它和客户端活动页的「每日签到领 1000 积分」混为一谈：那个是积分体系
+# （snap-access /v1/ops/claim，campaignId=1），与这里的 token 额度是两套账，
+# 实现见下方「积分签到」一节。上游把福利渠道收回时，这里会报
+# `invalid channel, group not found`，而积分签到仍然可用。
 #
 # 端点取自 vscode-codebot/out/extension.js 的 Uce()：
 #   非 gamma 版（isGammaVersion=false，普通用户走这条）
@@ -1594,6 +2154,210 @@ def claim_and_verify(access_key, secret_key, security_token, timeout=DEFAULT_TIM
         }
     if session is not None:
         record_claim(session, result, trigger=trigger)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# 积分签到（客户端「活动与权益 → 每日签到领 1000 积分」）
+# ---------------------------------------------------------------------------
+#
+# 这与上面的 token 额度是两套账，别混：
+#   额度  opengw /api/v1/benefit/claim        每天 1000 万 token，随渠道收回会失效
+#   积分  snap-access /v1/ops/claim          每天 1000 积分，走活动系统
+#
+# 端点与请求形状逆自本机客户端（vscode-codebot/out/extension.js 的 s6i 对象）：
+#   GET  /v1/ops/delivery?channel=IDE        活动清单（含「今天签没签」的状态）
+#   POST /v1/ops/claim                       领取，body 见 welfare_claim
+#   POST /v1/ops/confirm                     确认到账；客户端领完立刻调一次
+#
+# 响应约定与 benefit 不同：业务成败看 ``code``（0 成功），不是 error_code。
+#
+# 鉴权：客户端带 x-auth-token，但 hub 用 AK/SK 签名即可 —— 同一台
+# snap-access 的 /v1/* 上，/v1/model/builtin 与 /v1/model/thinking-variants
+# 一直是 AK/SK 打通并投产的（见 builtin_models / thinking_variants）。
+# 客户端之所以用 token，只是它的 toolkit 手里有 IAM 令牌而已。
+
+WELFARE_DELIVERY_PATH = "/v1/ops/delivery"
+WELFARE_CLAIM_PATH = "/v1/ops/claim"
+WELFARE_CONFIRM_PATH = "/v1/ops/confirm"
+WELFARE_CHANNEL = "IDE"
+WELFARE_DAILY_TYPE = "USER_LOGIN"
+
+#: 活动清单变化不快，面板每几秒轮询一次账号列表，按账号缓存一会儿。
+#: 失败也缓存（更短），免得接口坏掉时每次轮询都多打一次上游。
+WELFARE_CACHE_TTL = 60.0
+WELFARE_ERROR_TTL = 30.0
+
+_welfare_cache = {}
+
+
+def _welfare_item(raw):
+    """把 delivery 的一条活动归一成面板能直接用的形状。"""
+    status = str(raw.get("status") or "").upper()
+    return {
+        "campaign_id": raw.get("campaignId"),
+        "title": raw.get("title") or "",
+        "type": raw.get("type") or "",
+        "status": status,
+        "amount": raw.get("benefitAmount"),
+        "unit": raw.get("benefitUnit") or "",
+        "claimable": bool(raw.get("claimable")),
+        "description": raw.get("description") or "",
+        "claimed_at": raw.get("claimedAt") or "",
+        "expire_at": raw.get("expireAt") or "",
+    }
+
+
+def _welfare_request(access_key, secret_key, security_token, method, path,
+                     query=None, body=None, timeout=DEFAULT_TIMEOUT):
+    """打一次 /v1/ops/*，返回 data 部分。
+
+    GET 的 query 必须同时进 URL 与签名串，否则 APIG 会报签名不匹配。
+    POST 的 payload hash 也要算进签名（与 credit_headers 同一个坑）。
+    """
+    url = SNAP_HOST + path
+    query = dict(query or {})
+    if query:
+        url += "?" + urllib.parse.urlencode(query)
+    raw_body = None if body is None else json.dumps(body).encode("utf-8")
+    headers = {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": GATEWAY_USER_AGENT,
+        "Agent-Type": "PromptCenter",
+        "X-Language": "zh-cn",
+        "x-snap-traceid": secrets.token_hex(16),
+    }
+    if security_token:
+        headers["X-Security-Token"] = security_token
+    headers = aksk_sign(
+        access_key, secret_key, method, url, query, headers,
+        payload_hash=hashlib.sha256(raw_body).hexdigest() if raw_body is not None else None)
+    payload = _http(method, url, headers=headers, body=raw_body, timeout=timeout)
+    if not isinstance(payload, dict):
+        raise CodeArtsError("积分签到接口返回了非 JSON 内容")
+    code = payload.get("code")
+    if code not in (None, 0, "0"):
+        raise CodeArtsError(str(payload.get("message") or ("code=%s" % code)))
+    data = payload.get("data")
+    return data if isinstance(data, dict) else {}
+
+
+def welfare_activities(access_key, secret_key, security_token,
+                       timeout=DEFAULT_TIMEOUT, use_cache=True):
+    """积分活动清单。返回 {"channel", "items", "daily"}。
+
+    ``daily`` 是「每日签到」那一条（type=USER_LOGIN），没有就是 None。
+    结果按 AK 缓存 WELFARE_CACHE_TTL 秒；失败缓存 WELFARE_ERROR_TTL 秒。
+    """
+    key = access_key or ""
+    now = time.time()
+    if use_cache:
+        hit = _welfare_cache.get(key)
+        if hit and hit[0] > now:
+            if hit[1] is None:
+                raise CodeArtsError(hit[2])
+            return hit[1]
+    try:
+        data = _welfare_request(access_key, secret_key, security_token, "GET",
+                                WELFARE_DELIVERY_PATH,
+                                query={"channel": WELFARE_CHANNEL},
+                                timeout=timeout)
+    except Exception as exc:
+        _welfare_cache[key] = (now + WELFARE_ERROR_TTL, None, str(exc))
+        raise
+    items = [_welfare_item(raw) for raw in (data.get("items") or [])
+             if isinstance(raw, dict)]
+    daily = next((it for it in items if it["type"] == WELFARE_DAILY_TYPE), None)
+    result = {
+        "channel": data.get("channel") or "",
+        "items": items,
+        "daily": daily,
+    }
+    _welfare_cache[key] = (now + WELFARE_CACHE_TTL, result, "")
+    return result
+
+
+def welfare_daily(access_key, secret_key, security_token,
+                  timeout=DEFAULT_TIMEOUT, use_cache=True):
+    """只看每日签到那一条；清单里没有返回 None。"""
+    return welfare_activities(access_key, secret_key, security_token,
+                              timeout=timeout, use_cache=use_cache)["daily"]
+
+
+def welfare_claim(access_key, secret_key, security_token, campaign_id,
+                  timeout=DEFAULT_TIMEOUT):
+    """领取一个活动，并按客户端的做法立刻 confirm。
+
+    客户端在 claim 成功且返回里带 campaignId 时自动调 confirm；只有
+    confirm 成功才算真正到账。判据同样看 status ∈ CLAIMED/CONFIRMED/CONSUMED。
+    """
+    try:
+        campaign_id = int(campaign_id)
+    except (TypeError, ValueError):
+        raise CodeArtsError("积分签到缺少有效的 campaignId")
+    claim_body = {
+        "campaignId": campaign_id,
+        "idempotentKey": "claim_%s_%d" % (campaign_id, int(time.time() * 1000)),
+        "channel": WELFARE_CHANNEL,
+    }
+    data = _welfare_request(access_key, secret_key, security_token, "POST",
+                            WELFARE_CLAIM_PATH, body=claim_body, timeout=timeout)
+    status = str(data.get("status") or "").upper()
+    if data.get("campaignId") is not None:
+        confirmed = _welfare_request(access_key, secret_key, security_token, "POST",
+                                     WELFARE_CONFIRM_PATH,
+                                     body={"campaignId": campaign_id},
+                                     timeout=timeout)
+        confirmed_status = str((confirmed or {}).get("status") or "").upper()
+        if confirmed_status in ("CLAIMED", "CONFIRMED", "CONSUMED"):
+            data = confirmed
+            status = confirmed_status
+    _welfare_cache.pop(access_key or "", None)
+    if status not in ("CLAIMED", "CONFIRMED", "CONSUMED"):
+        raise CodeArtsError("领取未生效（状态 %s）" % (status or "空"))
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "status": status,
+        "title": data.get("campaignTitle") or "",
+        "claimed_at": data.get("claimedAt") or "",
+        "raw": data,
+    }
+
+
+def welfare_claim_daily(access_key, secret_key, security_token,
+                        timeout=DEFAULT_TIMEOUT):
+    """签到：先看清单里今天的签到是不是已经领过，没有就 claim + confirm。
+
+    返回 claim 结果，并带 ``activity``（重新拉一次清单后的签到条目），
+    面板据此直接显示「今日已领」，不靠猜。
+    """
+    daily = welfare_daily(access_key, secret_key, security_token,
+                          timeout=timeout, use_cache=False)
+    if not daily:
+        raise CodeArtsError("活动清单里没有「每日签到」")
+    campaign_id = daily.get("campaign_id")
+    if daily.get("status") in ("CLAIMED", "CONFIRMED", "CONSUMED"):
+        return {"ok": True, "already": True, "campaign_id": campaign_id,
+                "status": daily["status"], "title": daily.get("title") or "",
+                "amount": daily.get("amount"),
+                "claimed_at": daily.get("claimed_at") or "",
+                "activity": daily}
+    result = welfare_claim(access_key, secret_key, security_token, campaign_id,
+                           timeout=timeout)
+    result["already"] = False
+    try:
+        fresh = welfare_daily(access_key, secret_key, security_token,
+                              timeout=timeout, use_cache=False)
+    except Exception:
+        fresh = None
+    if fresh:
+        result["activity"] = fresh
+        if fresh.get("amount") is not None:
+            result["amount"] = fresh["amount"]
+    if result.get("amount") is None:
+        result["amount"] = daily.get("amount")
     return result
 
 

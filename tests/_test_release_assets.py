@@ -266,11 +266,11 @@ class ManifestTests(unittest.TestCase):
                 if name.endswith((".bat", ".sh", ".command")):
                     self.assertIn(name, listed, "便携包清单缺少 %s" % name)
 
-    def test_runtime_data_files_are_listed(self):
-        # ca_pricing._candidate_file() prefers pricing/pricing.json over the
-        # copy inlined in the module, so a package without it silently ships
-        # older prices than the release it came from.
-        self.assertIn("pricing/pricing.json", tools.read_manifest())
+    # 价格估算体系已移除（2026-10-22）：原先的
+    # test_runtime_data_files_are_listed 断言 pricing/pricing.json 随包发布，
+    # 现在 pricing/ 与 ca_pricing.py 都已删除，该用例一并移除。
+    # 清单完整性仍由 test_every_listed_path_exists / test_every_module_is_listed
+    # 覆盖。
 
     def test_entries_are_relative_and_inside_the_repo(self):
         for name in tools.read_manifest():

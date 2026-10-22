@@ -41,8 +41,10 @@ class HealthAuthTests(unittest.TestCase):
                 settings.set_api_keys(directory, [key])
                 check(True)
 
+                # Disabling the last key must not switch checking off: only the
+                # explicit auth_disabled switch may do that.
                 settings.set_api_keys(directory, [dict(key, enabled=False)])
-                check(False)
+                check(True)
 
                 settings.set_api_keys(directory, [key])
                 settings.set_auth_disabled(directory, True)

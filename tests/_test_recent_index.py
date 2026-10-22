@@ -48,12 +48,8 @@ os.environ["WB_USAGE_CACHE"] = "0"          # checkpoint 与本套件无关
 os.environ["WB_COUNT_TTL"] = "0"            # 老路的页数标签每次现算
 
 import ca_proxy as P          # noqa: E402
-import ca_pricing             # noqa: E402
 
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-ca_pricing.set_data_dir(USAGE_DIR)
-ca_pricing.set_settings_dir(ACCOUNTS_DIR)
-
 USAGE_LOG = P.USAGE_LOG
 INDEX = P.RECENT_INDEX_FILE
 

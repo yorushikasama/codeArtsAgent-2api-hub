@@ -113,4 +113,36 @@ check('a value without the x prefix is shown in the same format',
 cell = creditsCell({id: 'hy3', credits: 'X1.33'});
 check('an upper-case prefix is normalized too', cell.includes('1.33x'), cell);
 
+// 6. Off-peak window: credit_pricing.time_slots must reach the badge. Showing
+// only 0.18x would tell the user night usage costs the daytime price, while
+// upstream bills 0.09x for 21:00-07:59 Asia/Shanghai.
+window.VIEW_REALM = 'intl';
+const offPeakPricing = {
+  ratio: 0.05, ratio_display: '0.18x', input_price: 2, cache_price: 0.2,
+  output_price: 8, credits_per_mtok_input: 40, credits_per_mtok_cache: 4,
+  credits_per_mtok_output: 160, formula: 'credits = (...) / 1e6 / ratio',
+  time_slots: {off_peak: {
+    timezone: 'Asia/Shanghai', schedule: '0 0 21 * * *',
+    duration: 11, timeunit: 'hour', ratio_display: '0.09x',
+    notice: '每日 21:00-07:59 错峰半价',
+    credits_per_mtok_input: 20, credits_per_mtok_output: 80,
+  }},
+};
+cell = creditsCell({id: 'deepseek-v4.1-flash', credits: 'x0.18',
+                    credit_pricing: offPeakPricing});
+check('the daytime multiplier is still shown', cell.includes('0.18x'), cell);
+check('the off-peak multiplier gets its own line',
+      cell.includes('错峰 0.09x'), cell);
+check('the off-peak tooltip carries the upstream notice',
+      cell.includes('每日 21:00-07:59 错峰半价'), cell);
+cell = creditsCell({id: 'glm-5.3', credits: 'x0.79'});
+check('a model without time slots shows no off-peak line',
+      !cell.includes('错峰'), cell);
+cell = creditsCell({id: 'deepseek-v4.1-flash', credits: 'x0.18',
+                    credit_pricing: {ratio_display: '0.18x',
+                                     credits_per_mtok_output: 160,
+                                     time_slots: {}}});
+check('an empty time_slots object is harmless',
+      !cell.includes('错峰') && cell.includes('0.18x'), cell);
+
 console.log('model credits assertions passed (' + checks + ' checks)');

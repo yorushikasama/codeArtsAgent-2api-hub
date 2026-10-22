@@ -51,12 +51,7 @@ _time.time = lambda: FROZEN
 
 import ca_proxy as P
 import ca_accounts
-import ca_pricing
-
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-ca_pricing.set_data_dir(USAGE_DIR)
-ca_pricing.set_settings_dir(ACCOUNTS_DIR)
-
 USAGE_LOG = P.USAGE_LOG
 LEGACY = os.path.join(USAGE_DIR, "usage-aggregate-cache.json")
 KIND_FILES = {kind: P._usage_cache_kind_path(kind)

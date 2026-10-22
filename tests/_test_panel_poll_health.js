@@ -215,24 +215,9 @@ function check(ok, msg){
     rows[0].total_tokens = 31;                    // 同一行的数字变了（回填/补数）
     await api.refresh();
     check(writes === 2, '行数据变化必须立刻重画');
-
-    usagePayload.accounts_map.u1.nickname = '甲甲';  // 行没变、昵称变了
-    await api.refresh();
-    check(writes === 3, '账号昵称变化也要重画（账号列直接取它）');
-
-    // 显示币种（CNY/USD）不在行数据里，指纹必须把它算进去：切换币种时
-    // setCostCurrency() 会就地重刷表格，被指纹挡住的话价格列会停在旧币种上。
-    check(current.includes('￥'), '人民币模式下价格列应带 ￥');
-    api.setCostCurrency('USD');
-    await new Promise(r => setImmediate(r));
-    await new Promise(r => setImmediate(r));
-    check(writes === 4, '切换显示币种必须重画价格列（指纹漏了 costCurrency 就会卡住）');
-    check(current.includes('$') && !current.includes('￥'),
-      '重画后的价格列应换成美元符号');
-    api.setCostCurrency('CNY');
-    await new Promise(r => setImmediate(r));
-    await new Promise(r => setImmediate(r));
-    check(writes === 5, '切回人民币也要重画');
+    // 价格估算体系已移除（2026-10-22）：表格里不再有价格列，
+    // 「切换币种必须重画」这组断言没有可观察对象了。指纹仍需覆盖
+    // 账号昵称等行外字段（上面三条已钉住）。
   }
 
   /* 6) 日志终端：没有新行一个字节都不动；有新行只 append；过滤变化整表重画；

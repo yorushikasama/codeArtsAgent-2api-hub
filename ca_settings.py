@@ -248,7 +248,18 @@ def verify_panel_password(accounts_dir, password):
     return hmac.compare_digest(given, stored)
 
 
-def set_panel_password(accounts_dir, password):
+def set_panel_password(accounts_dir, password, source="launcher"):
+    """改面板密码。``source`` 记「谁改的」，决定重启时听谁的。
+
+    2026-10-21 的坑：systemd 的 ExecStart 带着 ``--panel-password
+    "$PANEL_PASSWORD"``（来自 .credentials），而 main() 无条件执行本函数，
+    于是**每次重启都把面板里改过的密码还原成 .credentials 的旧值**。
+    用户表现为「我明明改过密码，现在登不进去 / 我改错了」——日志里
+    "password set from --panel-password" 一天出现了 28 次，全是我部署时重启的。
+
+    现在 source 存进 ``panel_password_source``，启动时只在这两件事都成立时
+    才应用启动参数：密码还不是它、且面板没接管过。见 apply_launcher_password()。
+    """
     with _lock:
         data = load(accounts_dir)
         if password == DEFAULT_PANEL_PASSWORD:
@@ -256,13 +267,87 @@ def set_panel_password(accounts_dir, password):
             data.pop("panel_password_rounds", None)
             data["panel_password_hash"] = ""
             data["panel_password_default"] = True
+            data["panel_password_source"] = ""
         else:
             salt = secrets.token_hex(16)
             data["panel_password_salt"] = salt
             data["panel_password_rounds"] = PBKDF2_ROUNDS
             data["panel_password_hash"] = _digest(password, salt)
             data["panel_password_default"] = False
+            data["panel_password_source"] = source or ""
         save(accounts_dir, data)
+
+
+def panel_password_source(accounts_dir):
+    """'panel' = 用户在面板里设过；'' / 'launcher' = 来自启动参数。"""
+    data = load(accounts_dir)
+    return str(data.get("panel_password_source") or "")
+
+
+def apply_launcher_password(accounts_dir, password, force=False):
+    """启动时决定 ``--panel-password`` 要不要写进存档。返回动作名。
+
+    三种结果：
+      'same'    已经就是这个密码 —— 什么都不做（不重写 hash，免得每次启动
+                都把 settings.json 的 mtime 改掉）
+      'kept'    面板里设过密码，启动参数可能是过期值 —— **保留面板的**
+      'applied' 首次部署 / 面板没设过 / 显式 force —— 应用启动参数
+
+    为什么不能简单「启动参数永远赢」：.credentials 是部署时写的，用户之后在
+    面板里改密码时它不会跟着变，于是每次重启都把用户的改动抹掉。
+    也不能简单「面板永远赢」：运维改 .credentials 想重置密码时会静默失效。
+    所以两边都要有明确出路 —— 面板改密码时会顺手同步 .credentials
+    （sync_env_password），同步成功就谁都不会被覆盖；同步失败（文件只读）
+    时按面板的来，并留 force 给运维强推。
+    """
+    if verify_panel_password(accounts_dir, password):
+        return "same"
+    if panel_password_source(accounts_dir) == "panel" and not force:
+        return "kept"
+    set_panel_password(accounts_dir, password, source="launcher")
+    return "applied"
+
+
+def env_password_path(project_dir=None):
+    """启动脚本读密码的那个 env 文件。优先环境变量，其次项目根目录。"""
+    explicit = os.environ.get("PANEL_PASSWORD_FILE")
+    if explicit:
+        return explicit
+    base = project_dir or os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base, ".credentials")
+
+
+def sync_env_password(path, password):
+    """把 PANEL_PASSWORD 写回 env 文件，其它行原样保留。成功返回 True。
+
+    只替换 ``PANEL_PASSWORD=`` 那一行；没有该键则追加。走临时文件 +
+    os.replace，避免写一半把服务起不来。**任何失败都只返回 False** ——
+    调用方（改密码接口）不能因为同步失败就把改密码这件事判为失败。
+    """
+    try:
+        rows, hit = [], False
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("PANEL_PASSWORD="):
+                    rows.append("PANEL_PASSWORD=%s\n" % password)
+                    hit = True
+                else:
+                    rows.append(line)
+        if not hit:
+            if rows and not rows[-1].endswith("\n"):
+                rows[-1] += "\n"
+            rows.append("PANEL_PASSWORD=%s\n" % password)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.writelines(rows)
+        try:
+            os.chmod(tmp, 0o600)      # 里面还有 API_KEY，不能给别人读
+        except OSError:
+            pass
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        return False
 
 
 def api_key_override(accounts_dir):

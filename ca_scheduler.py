@@ -3,7 +3,8 @@
 负责常驻后台自动执行：
 1. Token 保活 (Keepalive)：定期检查 Token 剩余寿命，不足 2 小时自动调用 Refresh Token。
 2. 码道每日领取 (Daily Token Claim)：为 accounts/codearts/ 下的每个华为云会话
-   领取当日推理额度（码道侧的「签到」），每日两次。
+   领取当日推理额度（opengw benefit，不是活动页的「每日签到」积分），每日两次。
+   积分签到走 snap-access /v1/ops，面板上手动触发，不在这里自动跑。
 3. 对话活跃上报 (Activity Report)：每日定时为国内版账号上报轻量会话事件，点亮连登与热力墙。
 4. 猫猫旅行与日常结算 (Cat Travel & Welfare)：自动派出猫猫旅行或领取归来奖励。
 5. 状态持久化与看板展示：暴露状态、执行记录、支持手动立即触发与开关切换。
@@ -132,7 +133,7 @@ class Scheduler:
             self._run_lock.release()
 
     def claim_daily_tokens(self):
-        """为每个码道会话领取当日推理额度（码道侧的「签到」）。
+        """为每个码道会话领取当日推理额度（token 额度，不是积分签到）。
 
         与账号池完全独立：会话存在 accounts/codearts/，不走 /v1 调度，所以这里
         自己读目录、自己记账。领取接口幂等，额度已满时会被识别成跳过而不是一次

@@ -285,8 +285,6 @@ th.sortable:focus-visible .sort-arrow.idle{opacity:1}
 .cost-cell{cursor:help}
 /* 价估算总开关关闭时，除开关本身外整块功能从界面上撤掉：价格列、KPI 卡片、
    设置页的取价子控件与未定价清单一并隐藏，只留下开关，方便随时再打开。 */
-body.pricing-off .pricing-col{display:none}
-body.pricing-off #kpiCostCard{display:none}
 /* 胶囊式开关：原生 checkbox 管状态与键盘可达性，视觉交给 .switch-track。
    点一下即切换并立即保存，所以不再另配「保存」按钮。 */
 .switch{position:relative;display:inline-flex;align-items:center;gap:8px;font-size:13px;
@@ -1250,15 +1248,11 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '7天内到期': 'expiring within 7 days',
     'API Key 不能为空': 'API Key cannot be empty',
     'API Key 内容': 'API Key value',
-    'API 等价花费': 'API-equivalent cost',
     'CNY（策略记录的汇率，': 'CNY (rate recorded with the policy,',
     'GitHub 项目仓库': 'GitHub repository',
     'Key 维度只从本次升级之后开始记录：更早的请求没有这个字段，会一直留在「(切换前)」里且不会再增长。': 'Per-key attribution starts only with this upgrade: earlier requests have no such field, so they stay under (before switch) and never grow.',
     '收起「(切换前)」': 'Collapse "(before switch)"',
     '只影响这张表的显示，不改变任何统计口径：收起后那一行的用量依然计入合计': 'Only changes how this table is drawn, not any accounting: a folded row still counts toward the totals',
-    'OpenRouter 价估算': 'OpenRouter estimate',
-    'OpenRouter 价估算：按 OpenRouter 公布的模型价折算，覆盖该账号在所选区间内的请求；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示': 'OpenRouter estimate: converted from the model prices OpenRouter publishes, covering the requests of this account in the selected range; conditionally priced models (input-length thresholds or time windows) are tiered per request; the policy a single request actually used, its three unit prices and the match source are in the hover tip of that row in Recent requests',
-    'OpenRouter 价估算：按该行（模型·区域·账号）的 token 消耗折算；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示': 'OpenRouter estimate: converted from the token usage of this row (model · region · account); conditionally priced models (input-length thresholds or time windows) are tiered per request; the policy a single request actually used, its three unit prices and the match source are in the hover tip of that row in Recent requests',
     'OpenRouter 无对应': 'no OpenRouter match',
     'Token 消耗与推理指标透视': 'Token usage and reasoning metrics',
     'CodeArts 用量看板': 'CodeArts Usage Dashboard',
@@ -1283,7 +1277,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '· 耗时': '· duration',
     '⇄ 切换默认出口为【国内版】': '⇄ Switch the default exit to China',
     '。名字带渠道后缀（如': '. Names carrying a channel suffix (such as',
-    '。没人引用、又已经不作数的策略会被清掉（每个模型至少留一条，刚取到的那批不动）。取价间隔以': '. Policies nobody references and that are no longer valid get cleaned up (every model keeps at least one, and the batch just fetched is left alone). The fetch interval is counted in',
     '「绑定账号」只统计已启用账号；停用账号会自动释放槽位，重新启用后需重新绑定。在网关页账号表的「出口」下拉中调整绑定。名称留空时按出口自动显示「国家 类型」，点「测试」会补全出口信息并据此命名。': 'Bound accounts counts enabled accounts only; disabling an account releases its slot automatically and you must bind it again after re-enabling. Adjust the binding in the Exit dropdown of the account table on the gateway page. With an empty name the slot shows Country Type from the exit; clicking Test fills in the exit info and names the slot accordingly.',
     '一键做任务领积分': 'Run all tasks and claim credits',
     '上一页': 'Previous',
@@ -1291,7 +1284,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '上下文窗口': 'Context window',
     '上下文缓存命中率': 'Context cache hit rate',
     '上次:': 'Last:',
-    '上次取价': 'Last price fetch',
     '上次失败：': 'Last failure:',
     '上游按 24 小时窗口给每个账号、每个模型配额；预算 = 撞线账号在窗口内用量的平均值（上游不给这个数字，只能撞线时反推），已用从各账号自己的重置时刻起算。没有撞线记录（或记录已过期）的组合按最近 24 小时保守估计（标「按 24h 估算」）。': 'The upstream grants each account a per-model quota inside a 24h window. The budget is the average window usage of the accounts that hit the cap (the upstream never publishes it, so it is inferred when one does), and each account\'s used amount counts from its own reset clock. Pairs with no cap on record (or a stale one) are estimated from the last 24h and marked "est. from last 24h".',
     '上游中断': 'Upstream interrupted',
@@ -1392,7 +1384,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '分钟': 'minutes',
     '分钟)': 'min)',
     '秒': 'seconds',
-    '分钟取一次价': 'minutes per price fetch',
     '切换失败:': 'Switch failed:',
     '切换颜色主题': 'Switch color theme',
     '切换默认出口为【国内版】': 'Switch the default exit to China',
@@ -1448,10 +1439,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '原生': 'Native',
     '发现': 'Found',
     '发起失败:': 'Could not start:',
-    '取价输入 = 内置目录': 'Price input = built-in catalog',
     '取消': 'Cancel',
     '变体名未命中基准': 'variant name matched no base',
-    '变体后缀继承': 'Variant suffix inheritance',
     '可用': 'Available',
     '可用账号池': 'Usable account pool',
     '各账号用量透视与模型消耗分布': 'Per-account usage and model consumption breakdown',
@@ -1459,10 +1448,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '名称': 'Name',
     '后台定时调度器:': 'Background scheduler:',
     '后台调度器已': 'Background scheduler is now',
-    '向基准模型取价（要求唯一命中，命不中照旧显示未定价）；关掉开关即恢复「只有覆盖表与同名匹配才定价」。': 'priced from the base model (a unique match is required, otherwise it still shows as unpriced); turning the switch off restores pricing from the override table and same-name matches only.',
     '启动参数': 'Launcher args',
     '启用': 'Enable',
-    '启用价估算': 'Enable estimate',
     '启用自动切换': 'Enable auto-switch',
     '启用调度': 'Enable scheduler',
     '回到顶部': 'Back to top',
@@ -1499,10 +1486,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '完成': 'Done',
     '官方 CodeBuddy CLI (CLI)': 'official CodeBuddy CLI (CLI)',
     '官方 VSCode 插件 (VSC)': 'official VSCode extension (VSC)',
-    '定价依据：出厂快照（还没有取到策略）': 'Pricing basis: factory snapshot (no policy fetched yet)',
-    '定价刷新': 'Price refresh',
-    '定价策略': 'Pricing policy',
-    '定价策略：': 'Pricing policy:',
     '定时': 'Scheduler',
     '实时捕获反向代理请求、流式转发、调度巡检、任务打卡与异常告警 (内存保留最新 2000 条)': 'Live capture of reverse-proxy requests, streaming forwards, scheduler checks, task check-ins and alerts (the latest 2000 are kept in memory)',
     '实时监听中': 'Live',
@@ -1545,10 +1528,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '已把全部账号的出站身份切换为 ': 'Switched the outbound identity of ALL accounts to ',
     '已全部启用所有账号': 'All accounts enabled',
     '已关闭保留积分': 'Reserved credits off',
-    '已关闭变体继承：带后缀的名字不再自动取价': 'Variant inheritance off: suffixed names are no longer priced automatically',
     '已关闭每日积分限额': 'Daily credit limit off',
     '已关闭自动切换出站身份': 'Outbound identity auto-switch off',
-    '已关闭自动取价（仍可手动取一次）': 'Automatic price fetch off (you can still fetch once by hand)',
     '已关闭：工具声明原样透传': 'Off: tool declarations pass through untouched',
     '已切换为': 'Switched to',
     '已删除 API Key': 'Deleted API key',
@@ -1662,7 +1643,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '成长能量余额': 'Growth energy balance',
     '所属区域': 'Region',
     '所有已启用账号都已绑定代理出口': 'Every enabled account already has a proxy exit',
-    '手填的映射存在数据目录的 pricing-overrides.json（不改源码），登记后立即触发一次取价；留空提交即删除该映射。候选只是字面相似度建议，不自动采用。': 'Manual mappings live in pricing-overrides.json in the data directory, with no source changes; registering one triggers a price fetch right away, and submitting it empty deletes it. The candidates are only literal-similarity suggestions and are never applied automatically.',
     '打卡中...': 'Checking in...',
     '打卡失败:': 'Check-in failed:',
     '执行出错:': 'Execution error:',
@@ -1714,6 +1694,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '时间': 'Time',
     '明细': 'Details',
     '显示条数:': 'Rows:',
+    '显示密码': 'Show password',
+    '隐藏密码': 'Hide password',
     '普通/体验用户': 'Free/trial user',
     '普通用户': 'Free user',
     '暂停': 'Pause',
@@ -1762,8 +1744,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '未发现国内版账号': 'No China account found',
     '未命名': 'Unnamed',
     '未在本机检测到桌面客户端登录凭证。': 'No desktop client credentials found on this machine.',
-    '未定价': 'Unpriced',
-    '未定价模型': 'Unpriced models',
     '未归属': 'Unattributed',
     '未探测': 'Not probed',
     '未接取': 'Not claimed',
@@ -1817,7 +1797,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '槽位还没有填写代理地址': 'The slot has no proxy address yet',
     '模型': 'Model',
     '模型 ID': 'Model ID',
-    '模型价格估算': 'Model price estimate',
     '模型名称': 'Model name',
     '模型性能指标与用量一览': 'Model performance and usage',
     '模型能力': 'Capabilities',
@@ -1954,7 +1933,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '窗口起点': 'Window start',
     '窗口内已用': 'Used this window',
     '立即保活刷新': 'Keep-alive refresh now',
-    '立即取价': 'Fetch prices now',
     '立即巡检保活': 'Run the keep-alive check now',
     '立即拉取最新日志': 'Fetch the latest logs now',
     '端到端耗时': 'End-to-end time',
@@ -1980,14 +1958,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '编辑 API Key': 'Edit API key',
     '管理代理出口与网关模型，查看当日调用量、估算花费、成功率与最近请求。': 'Manage proxy exits and the gateway model list; review call volume, estimated cost, success rate and recent requests.',
     '管理账号池：添加/导入/导出、启用停用、凭证与积分刷新、代理出口绑定，以及签到与每日活跃记录。': 'Manage the account pool: add/import/export, enable/disable, credential and credit refresh, exit binding, plus check-in and daily activity records.',
-    '网关实时目录里新增的模型，上游新上架的名字无需改代码就会进入下一轮取价；两次取价之间就被调用的新模型，第一笔请求即按内存里的目录': 'models newly added to the live catalog of the gateway; names upstream has just listed enter the next price fetch with no code change, and a new model called between two fetches is',
     '网关平均生成速度': 'Gateway average generation speed',
     '网关日志已清空': 'Gateway logs cleared',
-    '网关每隔这段时间去 OpenRouter 取一次价：每个模型每份不同的价格存成一条': 'The gateway fetches prices from OpenRouter every so often: each distinct price set of a model is stored as one',
     '网关设置': 'Gateway settings',
-    '面板密码与界面语言、API Key 与出口绑定、代理槽与限额、价格估算、出站身份与本地网络工具。': 'Panel password and UI language, API Keys and exit binding, proxy slots and quotas, price estimation, outbound identity and local web tools.',
-    '估算价格': 'Estimated cost',
-    '估算价格（国内版）': 'Estimated cost (China)',
     '积分消耗': 'Credits used',
     '积分消耗（国内版）': 'Credits used (China)',
     '估算价值: ': 'Est. value: ',
@@ -2027,7 +2000,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '解码密钥已就绪（keyId': 'Decryption key ready (keyId',
     '触发失败:': 'Trigger failed:',
     '警告': 'warnings',
-    '计，默认 5 分钟；填 0 表示不自动刷新（仍可用「立即取价」手动取一次）。': '; the default is 5 minutes. 0 turns automatic fetching off (you can still fetch once with Fetch prices now).',
     '设备码:': 'Device code:',
     '设置': 'Settings',
     '近 1 天': 'Last 1 day',
@@ -2206,7 +2178,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '首次取到）': 'first fetched)',
     '默认出口': 'Default exit',
     '（停用）': '(disabled)',
-    '（内容相同就复用同一条，不重复写），并声明「现在生效的是哪一条」。每条请求按它发生时生效的那一条计价，所以之后调价不会改写之前的数字；请求只记它引用的是哪条策略，不内嵌整份价格。取价时还没有价的模型，用之后第一次取到的价补算并标': '(identical content reuses the same row instead of writing a duplicate), and states which one is in effect. Every request is priced by whichever policy was in effect when it happened, so later price changes never rewrite earlier numbers; a request only records which policy it referenced, not a copy of the whole price table. A model with no price at fetch time is back-filled from the first price fetched later and marked with',
     '（变体未命中': '(variant unmatched,',
     '（只读，密钥只留在网关内存里）。通常几秒钟，内存大时要十几秒。': '(read-only; the key stays in the memory of the gateway only). It usually takes a few seconds, or a dozen or so on a large process.',
     '（基准） →': '(base) →',
@@ -2249,7 +2220,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '账号限额': 'Account limits',
     '调度器未初始化': 'The scheduler is not initialized',
     '未运行': 'Not running',
-    '价格刷新未运行': 'Price refresh is not running',
     '未找到可用的国内版账号': 'No usable China account found',
     '未找到已启用的国内版账号': 'No enabled China account found',
     '未找到指定的国内版账号': 'No matching China account found',
@@ -2275,7 +2245,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     " 个账号绑定，删除后它们将回退直连。继续？": " 個帳號繫結，刪除後它們將回退直連。繼續？",
     " 个，启用 ": " 個，啟用 ",
     " 分钟)": " 分鐘)",
-    " 分钟取一次价": " 分鐘取一次價",
     " 已加入账号池": " 已加入帳號池",
     " 行日志": " 行日誌",
     " 账号，之后相关请求都会走该账号": " 帳號，之後相關請求都會走該帳號",
@@ -2307,8 +2276,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "API Key 与出口绑定": "API Key 與出口繫結",
     "GitHub 项目仓库": "GitHub 專案倉庫",
     "Key 维度只从本次升级之后开始记录：更早的请求没有这个字段，会一直留在「(切换前)」里且不会再增长。": "Key 維度只從本次升級之後開始記錄：更早的請求沒有這個欄位，會一直留在「(切換前)」裡且不會再增長。",
-    "OpenRouter 价估算：按 OpenRouter 公布的模型价折算，覆盖该账号在所选区间内的请求；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示": "OpenRouter 價估算：按 OpenRouter 公佈的模型價折算，覆蓋該帳號在所選區間內的請求；按條件定價的模型（輸入長度閾值或時段）按每條請求取檔；單條請求實際用的策略、三檔單價與匹配來源見「最近請求」裡那條的懸停提示",
-    "OpenRouter 价估算：按该行（模型·区域·账号）的 token 消耗折算；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示": "OpenRouter 價估算：按該行（模型·區域·帳號）的 token 消耗折算；按條件定價的模型（輸入長度閾值或時段）按每條請求取檔；單條請求實際用的策略、三檔單價與匹配來源見「最近請求」裡那條的懸停提示",
     "CodeArts 网关看板": "CodeArts 閘道看板",
     "[task_runner] 正在启动全自动任务接取、事件上报与奖励领取流水...": "[task_runner] 正在啟動全自動任務接取、事件上報與獎勵領取流水...",
     "] 吗？密钥会被抹掉且无法恢复；看板里它已经产生的历史用量仍会保留这个名字。": "] 嗎？金鑰會被抹掉且無法恢復；看板裡它已經產生的歷史用量仍會保留這個名字。",
@@ -2345,7 +2312,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "今日未签到": "今日未簽到",
     "从 Web 控制台同步最新昵称（改名后免重登）": "從 Web 控制檯同步最新暱稱（改名後免重登）",
     "付费用户": "付費使用者",
-    "价格刷新未运行": "價格重新整理未執行",
     "任务名称 / 代码": "任務名稱 / 程式碼",
     "会员类型:": "會員型別:",
     "会员类型: ": "會員型別: ",
@@ -2371,7 +2337,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "一键切换所有出站身份：": "一鍵切換所有出站身份：",
     "分钟": "分鐘",
     "分钟)": "分鐘)",
-    "分钟取一次价": "分鐘取一次價",
     "切换默认出口为【国内版】": "切換預設出口為【國內版】",
     "列表，点击上方选项卡即可查看": "列表，點選上方選項卡即可檢視",
     "创建": "建立",
@@ -2397,8 +2362,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "剥掉的后缀：": "剝掉的字尾：",
     "加载中...": "載入中...",
     "勾选要导入为槽位的出口：": "勾選要匯入為槽位的出口：",
-    "取价输入 = 内置目录": "取價輸入 = 內建目錄",
-    "变体后缀继承": "變體字尾繼承",
     "可用账号池": "可用帳號池",
     "各账号用量透视与模型消耗分布": "各帳號用量透視與模型消耗分佈",
     "同一批请求按调用方使用的 API Key 再分一次组，用于把消耗归属到人 / 项目": "同一批請求按呼叫方使用的 API Key 再分一次組，用於把消耗歸屬到人 / 專案",
@@ -2408,7 +2371,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "启动参数": "啟動引數",
     "启用": "啟用",
     "启用临期优先": "啟用臨期優先",
-    "启用价估算": "啟用價估算",
     "启用自动切换": "啟用自動切換",
     "启用调度": "啟用排程",
     "回收密钥": "回收金鑰",
@@ -2422,7 +2384,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "多个账号按会话粘性 + 轮询使用；某个账号被上游拒绝时自动切到下一个": "多個帳號按會話粘性 + 輪詢使用；某個帳號被上游拒絕時自動切到下一個",
     "如 deepseek* 或 gpt-6-astra；多个用逗号分隔，支持 * 通配": "如 deepseek* 或 gpt-6-astra；多個用逗號分隔，支援 * 通配",
     "官方 VSCode 插件 (VSC)": "官方 VSCode 外掛 (VSC)",
-    "定价刷新": "定價重新整理",
     "实时捕获反向代理请求、流式转发、调度巡检、任务打卡与异常告警 (内存保留最新 2000 条)": "實時捕獲反向代理請求、流式轉發、排程巡檢、任務打卡與異常告警 (記憶體保留最新 2000 條)",
     "密钥已回收，正在重新扫描": "金鑰已回收，正在重新掃描",
     "导入": "匯入",
@@ -2459,13 +2420,11 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "已全部停用所有账号": "已全部停用所有帳號",
     "已把全部账号的出站身份切换为 ": "已把全部帳號的出站身份切換為 ",
     "已全部启用所有账号": "已全部啟用所有帳號",
-    "已关闭变体继承：带后缀的名字不再自动取价": "已關閉變體繼承：帶字尾的名字不再自動取價",
     "已关闭：工具声明原样透传": "已關閉：工具宣告原樣透傳",
     "已切换为": "已切換為",
     "已切换为 ": "已切換為 ",
     "已加入账号池": "已加入帳號池",
     "已启用": "已啟用",
-    "已启用 OpenRouter 价估算": "已啟用 OpenRouter 價估算",
     "已启用：429 时自动切换出站身份": "已啟用：429 時自動切換出站身份",
     "已启用：余额低于": "已啟用：餘額低於",
     "失败重试": "失敗重試",
@@ -2526,7 +2485,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "当前账号正常": "目前帳號正常",
     "待解码的凭证（加密存储）": "待解碼的憑證（加密儲存）",
     "所有已启用账号都已绑定代理出口": "所有已啟用帳號都已繫結代理出口",
-    "手填的映射存在数据目录的 pricing-overrides.json（不改源码），登记后立即触发一次取价；留空提交即删除该映射。候选只是字面相似度建议，不自动采用。": "手填的對映存在資料目錄的 pricing-overrides.json（不改原始碼），登記後立即觸發一次取價；留空提交即刪除該對映。候選只是字面相似度建議，不自動採用。",
     "扫描桌面客户端账号": "掃描桌面客戶端帳號",
     "扫描桌面客户端": "掃描桌面客戶端",
     "批量操作失败:": "批次操作失敗:",
@@ -2636,13 +2594,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "缓存命中率": "快取命中率",
     "管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。": "管理帳號池與代理出口，查看當日呼叫量、估算花費、成功率、最近請求與閘道模型清單。",
     "网关与运维": "閘道與運維",
-    "网关实时目录里新增的模型，上游新上架的名字无需改代码就会进入下一轮取价；两次取价之间就被调用的新模型，第一笔请求即按内存里的目录": "閘道實時目錄裡新增的模型，上游新上架的名字無需改程式碼就會進入下一輪取價；兩次取價之間就被呼叫的新模型，第一筆請求即按記憶體裡的目錄",
     "网关平均生成速度": "閘道平均生成速度",
     "网关日志已清空": "閘道日誌已清空",
-    "网关每隔这段时间去 OpenRouter 取一次价：每个模型每份不同的价格存成一条": "閘道每隔這段時間去 OpenRouter 取一次價：每個模型每份不同的價格存成一條",
     "管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。": "管理帳號池與代理出口，查看當日呼叫量、估算花費、成功率、最近請求與閘道模型清單。",
     "网关设置": "閘道設定",
-    "面板密码与界面语言、API Key 与出口绑定、代理槽与限额、价格估算、出站身份与本地网络工具。": "面板密碼與介面語言、API Key 與出口繫結、代理槽與限額、價格估算、出站身份與本地網路工具。",
     "网关调用量": "閘道呼叫量",
     "网关运行日志": "閘道執行日誌",
     "网关默认上游已切换并永久保存为:": "閘道預設上游已切換並永久儲存為:",
@@ -2655,7 +2610,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "行日志": "行日誌",
     "覆盖同 UID 账号": "覆蓋同 UID 帳號",
     "解码密钥已就绪（keyId": "解碼金鑰已就緒（keyId",
-    "计，默认 5 分钟；填 0 表示不自动刷新（仍可用「立即取价」手动取一次）。": "計，預設 5 分鐘；填 0 表示不自動重新整理（仍可用「立即取價」手動取一次）。",
     "设备码:": "裝置碼:",
     "设备码: ' + esc(a.machineId.slice(0,14)) + '...": "裝置碼: ' + esc(a.machineId.slice(0,14)) + '...",
     "设置": "設定",
@@ -2756,7 +2710,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "请填写 0 或正数（像素）": "請填寫 0 或正數（像素）",
     "默认出口": "預設出口",
     "默认开启": "預設開啟",
-    "（内容相同就复用同一条，不重复写），并声明「现在生效的是哪一条」。每条请求按它发生时生效的那一条计价，所以之后调价不会改写之前的数字；请求只记它引用的是哪条策略，不内嵌整份价格。取价时还没有价的模型，用之后第一次取到的价补算并标": "（內容相同就複用同一條，不重複寫），並宣告「現在生效的是哪一條」。每條請求按它發生時生效的那一條計價，所以之後調價不會改寫之前的數字；請求只記它引用的是哪條策略，不內嵌整份價格。取價時還沒有價的模型，用之後第一次取到的價補算並標",
     "（只读，密钥只留在网关内存里）。通常几秒钟，内存大时要十几秒。": "（只讀，金鑰只留在閘道記憶體裡）。通常幾秒鐘，記憶體大時要十幾秒。",
     "（已导入）": "（已匯入）",
     "（策略早于该字段，按当前映射表推断）": "（策略早於該欄位，按目前對映表推斷）",
@@ -2771,7 +2724,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "）的模型默认按": "）的模型預設按",
     "），加密凭据可直接导入。": "），加密憑據可直接匯入。",
     "，登录后请在「设置」中修改。": "，登入後請在「設定」中修改。",
-    "；关闭后不再向 OpenRouter 取价，也不再折算任何金额，相关列、卡片与取价控件一并隐藏（只留这个开关）。": "；關閉後不再向 OpenRouter 取價，也不再折算任何金額，相關列、卡片與取價控制元件一併隱藏（只留這個開關）。",
     "；变体继承当前已关闭": "；變體繼承目前已關閉",
     "未活跃打卡一键打卡": "未活躍打卡一鍵打卡",
     "今日未打卡账号": "今日未打卡帳號",
@@ -3551,12 +3503,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <div class="s" id="kCacheSub">—</div>
       <canvas class="spark" id="sparkCache"></canvas>
     </div>
-    <div class="kpi big">
-      <div class="k"><span class="ic">¥</span>API 等价花费 <span class="delta" id="deltaCost"></span></div>
-      <div class="v" id="kCost">—</div>
-      <div class="s" id="kCostSub">—</div>
-      <canvas class="spark" id="sparkCost"></canvas>
-    </div>
     <div class="kpi ringcard">
       <div class="k"><span class="ic">✓</span>请求成功率</div>
       <div class="ringwrap">
@@ -3754,16 +3700,40 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
         <div style="flex:1;min-width:180px">
           <div style="font-size:12px;color:var(--dim);margin-bottom:4px">当前密码</div>
-          <input id="setPwdCurrent" type="password" placeholder="当前密码"
-                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+          <!-- autocomplete 分开标注：否则密码管理器会把同一个旧密码同时填进
+               两栏，提交时「当前密码」对不上。data-* 是几家密码管理器的忽略
+               标记；真正的保险是输入框里的睁眼/闭眼和表单内错误提示。 -->
+          <div style="position:relative">
+            <input id="setPwdCurrent" type="password" placeholder="当前密码"
+                   name="panel-current-password" autocomplete="current-password"
+                   data-lpignore="true" data-1p-ignore="true" data-bwignore="true"
+                   style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 38px 8px 12px;color:var(--fg);font:inherit">
+            <button type="button" onclick="togglePwdVisibility(this,'setPwdCurrent')"
+                    title="显示密码" aria-label="显示密码" aria-pressed="false"
+                    style="position:absolute;right:4px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0;background:transparent;border:0;border-radius:6px;color:var(--dim);cursor:pointer">
+              <svg class="pwd-eye-open" style="display:none" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="pwd-eye-off" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.8 21.8 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 7 11 7a21.8 21.8 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+            </button>
+          </div>
         </div>
         <div style="flex:1;min-width:180px">
           <div style="font-size:12px;color:var(--dim);margin-bottom:4px">新密码</div>
-          <input id="setPwdNew" type="password" placeholder="至少 4 位"
-                 style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+          <div style="position:relative">
+            <input id="setPwdNew" type="password" placeholder="至少 4 位"
+                   name="panel-new-password" autocomplete="new-password"
+                   data-lpignore="true" data-1p-ignore="true" data-bwignore="true"
+                   style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 38px 8px 12px;color:var(--fg);font:inherit">
+            <button type="button" onclick="togglePwdVisibility(this,'setPwdNew')"
+                    title="显示密码" aria-label="显示密码" aria-pressed="false"
+                    style="position:absolute;right:4px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0;background:transparent;border:0;border-radius:6px;color:var(--dim);cursor:pointer">
+              <svg class="pwd-eye-open" style="display:none" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="pwd-eye-off" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.8 21.8 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 7 11 7a21.8 21.8 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+            </button>
+          </div>
         </div>
         <button onclick="savePanelPassword(this)">修改密码</button>
       </div>
+      <div id="setPwdMsg" style="font-size:12px;color:var(--dim);min-height:16px;margin-top:8px"></div>
     </section>
 
     <section>
@@ -3953,51 +3923,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     </section>
 
 
-      <section>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-          <div>
-            <h2 style="margin:0">模型价格估算 <em id="setPricingEnabledState"></em></h2>
-            <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              按 OpenRouter 上同名模型的价格，把每条请求的 token 折算成人民币，供面板的「OpenRouter 价估算」列与「API 等价花费」卡片使用。<b>默认开启</b>；关闭后不再向 OpenRouter 取价，也不再折算任何金额，相关列、卡片与取价控件一并隐藏（只留这个开关）。<b>重新打开会补算关闭期间的请求</b>：那段请求按之后第一次取到的价折算并标 <code>*</code>，所以关掉再打开不会丢数。
-            </div>
-            <div id="pricingOffNote" style="display:none;font-size:12px;color:var(--dim);margin-top:4px">
-              价估算已关闭：不再取价、不再折算金额，价格列与「API 等价花费」卡片一并隐藏；重新打开后会补算关闭期间的请求。
-            </div>
-            <div id="pricingDetails">
-              <h3 style="margin:14px 0 0;font-size:14px">定价刷新 <em id="setPricingState"></em></h3>
-              <div style="font-size:12px;color:var(--dim);margin-top:4px">
-                网关每隔这段时间去 OpenRouter 取一次价：每个模型每份不同的价格存成一条<b>定价策略</b>（内容相同就复用同一条，不重复写），并声明「现在生效的是哪一条」。每条请求按它发生时生效的那一条计价，所以之后调价不会改写之前的数字；请求只记它引用的是哪条策略，不内嵌整份价格。取价时还没有价的模型，用之后第一次取到的价补算并标 <code>*</code>。没人引用、又已经不作数的策略会被清掉（每个模型至少留一条，刚取到的那批不动）。取价间隔以<b>分钟</b>计，默认 5 分钟；填 0 表示不自动刷新（仍可用「立即取价」手动取一次）。<span id="setPricingMeta"></span>
-              </div>
-              <div style="font-size:12px;color:var(--dim);margin-top:4px">
-                取价输入 = 内置目录 <b>∪</b> 网关实时目录里新增的模型，上游新上架的名字无需改代码就会进入下一轮取价；两次取价之间就被调用的新模型，第一笔请求即按内存里的目录<b>按需补价</b>。名字带渠道后缀（如 <code>-lkeap</code>）的模型默认按<b>变体后缀继承</b>向基准模型取价（要求唯一命中，命不中照旧显示未定价）；关掉开关即恢复「只有覆盖表与同名匹配才定价」。
-              </div>
-              <div id="setPricingCurrent"></div>
-              <div id="setPricingGaps"></div>
-            </div>
-          </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-            <label class="switch">
-              <input id="setPricingEnabled" type="checkbox" onchange="savePricingEnabled(this)">
-              <span class="switch-track"></span>
-              <span>启用价估算</span>
-            </label>
-            <div id="pricingControls" style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-            <div>
-              <div style="font-size:12px;color:var(--dim);margin-bottom:4px">刷新间隔（分钟）</div>
-              <input id="setPricingMinutes" type="number" min="0" step="1" value="5"
-                     style="width:150px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
-            </div>
-            <button onclick="savePricingMinutes(this)">保存</button>
-            <button onclick="refreshPricingNow(this)">立即取价</button>
-            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-              <input id="setPricingVariant" type="checkbox" style="width:16px;height:16px">
-              变体后缀继承
-            </label>
-            <button onclick="savePricingVariant(this)">保存</button>
-            </div>
-          </div>
-        </div>
-      </section>
 
       <section>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
@@ -4660,15 +4585,24 @@ async function loadCodeartsAccounts(){
       const quotaHtml = a.credit
         ? caCreditHtml(a.credit)
         : caBalanceHtml(a.balance, a.balanceError, localUsage && localUsage[a.account]);
-      // 连积分都拿不到、且额度报的是「渠道没了」，领取必然失败，换「重新授权」。
-      const dead = !a.credit && caBalanceErrDead(a.balanceError);
+      // 额度报「渠道没了」时领取必然失败，换「重新授权」；积分还在也不影响这个判断。
+      const dead = caBalanceErrDead(a.balanceError);
+      // 每日签到是活动系统（/v1/ops）的积分，与 token 额度互不影响：
+      // benefit 渠道被收回时它照样能签，所以按钮单独判断。
+      const daily = a.welfare || null;
+      const wStatus = daily ? String(daily.status || "").toUpperCase() : "";
+      const canSign = !!daily && (daily.claimable || !wStatus || wStatus === "ELIGIBLE");
       return '<div class="ca-row"><div class="ca-main">'
         + '<span class="ca-name">' + esc(a.account || "(未命名)") + badge + '</span>'
         + '<span class="ca-sub">' + esc(when) + " · " + esc(renew)
         + (a.domain_id ? " · 账号域 " + esc(String(a.domain_id).slice(0, 8)) + "…" : "")
         + '</span>'
         + quotaHtml
+        + caWelfareHtml(daily, a.welfareError)
         + '</div><div class="ca-actions">'
+        + (canSign
+            ? '<button class="sec mini" data-ca-id="' + id + '" onclick="claimCodeartsWelfare(this)">积分签到</button>'
+            : "")
         + (dead
             ? '<button class="sec mini" onclick="openCodeartsLogin()">重新授权</button>'
             : '<button class="sec mini" data-ca-id="' + id + '" onclick="claimCodeartsBenefit(this)">领取今日额度</button>')
@@ -4696,6 +4630,35 @@ function caBalanceErrText(err){
   if(caBalanceErrDead(s)) return "额度不可用 · 上游已收回福利渠道，需要重新授权";
   if(/unauthorized|401|403/i.test(s)) return "凭证失效，需要重新授权";
   return "额度读取失败：" + s;
+}
+
+/* 领取失败文案：后端已经带了一次「领取失败:」，这里去掉重复前缀，
+   再把上游收回渠道翻成能照着做的提示。 */
+function caClaimErrText(err){
+  const s = String(err || "").replace(/^领取失败[:：]\s*/, "");
+  if(caBalanceErrDead(s)) return "上游已收回福利渠道，需要重新授权";
+  if(/unauthorized|401|403/i.test(s)) return "凭证失效，需要重新授权";
+  return s;
+}
+
+/* 每日签到（活动页「每日签到领 1000 积分」）的状态行。它是 /v1/ops 的
+   积分体系，既不是 token 额度，也不是上面那一栏积分总量。 */
+function caWelfareHtml(w, err){
+  if(err) return '<span class="ca-sub">积分签到不可用：' + esc(caWelfareErrText(err)) + '</span>';
+  if(!w) return '';
+  const amount = w.amount ? (' ' + fmt(w.amount) + ' 积分') : '';
+  const st = String(w.status || '').toUpperCase();
+  let text = '积分签到：可领' + amount;
+  if(st === 'CLAIMED' || st === 'CONFIRMED' || st === 'CONSUMED') text = '积分签到：今日已领' + amount;
+  else if(st && st !== 'ELIGIBLE') text = '积分签到：' + st;
+  return '<span class="ca-sub">' + esc(text) + '</span>';
+}
+
+function caWelfareErrText(err){
+  const s = String(err || "").replace(/^签到失败[:：]\s*/, "");
+  if(/APIG\.0301|signature/i.test(s)) return "签名不被接受，该接口可能只认客户端令牌";
+  if(/unauthorized|401|403/i.test(s)) return "凭证失效，需要重新授权";
+  return s;
 }
 
 /* 上游额度读不到时，退一步用本网关自己的累计量顶一格 —— 有数字总比空着强，
@@ -4760,11 +4723,32 @@ async function claimCodeartsBenefit(btn){
     }else if(res.ok){
       toast("领取成功：" + (res.msg || ""), "ok");
     }else{
-      toast("领取失败：" + (res.msg || "未知原因"), "bad");
+      toast("领取失败：" + caClaimErrText(res.msg || "未知原因"), "bad");
     }
     await loadCodeartsAccounts();
   }catch(e){
-    toast("领取失败：" + caBalanceErrText(e.message), "bad");
+    toast("领取失败：" + caClaimErrText(e.message), "bad");
+    btn.disabled = false; btn.textContent = old;
+  }
+}
+
+async function claimCodeartsWelfare(btn){
+  const id = btn && btn.getAttribute("data-ca-id");
+  if(!id) return;
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "签到中…";
+  try{
+    const r = await postJSON("/accounts/codearts/welfare/claim", {accountId: id});
+    const res = (r && r.results && r.results[0]) || {};
+    if(res.ok){
+      const amount = res.amount ? (" +" + fmt(res.amount) + " 积分") : "";
+      toast(res.already ? ("今日已签到" + amount) : ("签到成功" + amount), "ok");
+    }else{
+      toast("签到失败：" + caWelfareErrText(res.msg || "未知原因"), "bad");
+    }
+    await loadCodeartsAccounts();
+  }catch(e){
+    toast("签到失败：" + caWelfareErrText(e.message), "bad");
     btn.disabled = false; btn.textContent = old;
   }
 }
@@ -5076,6 +5060,17 @@ function renderAvailableModels(){
         + fmtC(cp.credits_per_mtok_output) + ' 积分。';
       credBadge += '<div style="font-size:10px;color:var(--dim);margin-top:3px;cursor:help" title="' + esc(tip) + '">'
         + '入 ' + fmtC(cp.credits_per_mtok_input) + ' · 出 ' + fmtC(cp.credits_per_mtok_output) + ' 积分/M</div>';
+    }
+    // 1c. 错峰时段（码道 deepseek 独有）：上游同时给 default 与 off_peak 两档，
+    //     只显示代表倍率会让用户以为夜里也按 0.18x 扣。把错峰的倍率单列一行，
+    //     悬浮提示用上游自己的说明（含具体时段）。
+    const offPeak = cp && cp.time_slots && cp.time_slots.off_peak;
+    if(offPeak && offPeak.ratio_display){
+      const offTip = offPeak.notice
+        || ('错峰时段按 ' + offPeak.ratio_display + ' 计费'
+            + (offPeak.schedule ? '（' + offPeak.schedule + '）' : ''));
+      credBadge += '<div style="font-size:10px;color:var(--accent2);margin-top:2px;cursor:help" title="' + esc(offTip) + '">'
+        + '错峰 ' + esc(offPeak.ratio_display) + '</div>';
     }
 
     // 2. 模型能力 (Vision, Tool calls)
@@ -5390,9 +5385,10 @@ let costCurrency = 'CNY';
 try { if(localStorage.getItem('wb-cost-currency') === 'USD') costCurrency = 'USD'; } catch(e) {}
 // 汇率由 /usage、/usage/recent、/usage/analytics 的 usd_cny 字段更新。
 let costUsdRate = 7.1;
-// 价估算总开关（后端设置 pricing_enabled，默认开）。关掉只是为了省掉算价与
-// 渲染开销：价格列与卡片都留在原地，内容显示「—」，观感不变。
-let PRICING_ON = true;
+// 价格估算体系已下线（2026-10-22）：本网关只按码道积分记账，不再把 token
+// 折算成人民币 / 美元，也不再向 OpenRouter 取价。恒为 false，相关列与卡片
+// 已从结构里删除，这里的常量只为让历史调用点短路。
+let PRICING_ON = false;
 function costSymbol(){ return costCurrency === 'USD' ? '$' : '￥'; }
 // 小额保留更多小数位，避免 0.00x 被显示成 0.00；与费用估算的展示口径一致。
 function fmtCostVal(val, sym){
@@ -5461,7 +5457,7 @@ const SORT_COL_KINDS = {
   // 挂 data-sort 单独给（见 renderRemainingUsage / renderCreditGrants）。
   remainingUsageTable: ['text', 'text', 'text', 'text', 'num', 'num', 'num'],
   creditGrantsTable:   ['text', 'text', 'text', 'text', 'text', 'num', 'num', 'text', 'text'],
-  analyticsAccountTable: ['text', 'text', 'num', 'num', 'num', 'num', null, 'num'],
+  analyticsAccountTable: ['text', 'text', 'num', 'num', 'num', 'num', null],
   analyticsKeyTable: ['text', 'text', 'num', 'num', 'num', 'num', 'num', null],
   perfMatrix:       ['text', 'text', 'text', 'num', 'num', 'num', 'num', 'num',
                      'num', 'num', 'num', 'num', 'num'],
@@ -5989,14 +5985,22 @@ async function getJSON(url, opts){
 // 只有真的会被轮询、且服务端确实发 ETag 的只读接口才用它；其余读取保持默认的
 // no-store，免得"顺手加上"之后把必须每次都新的响应也变成可缓存校验的。
 const POLL_READ = {revalidate: true};
-async function postJSON(url, body){
+async function postJSON(url, body, opts){
   const r = await fetch(url, {method:'POST', headers: authHeaders({'Content-Type':'application/json'}),
                               body: JSON.stringify(body || {})});
   const t = await r.text();
   let parsed = {};
   try { parsed = t ? JSON.parse(t) : {}; } catch(e) { parsed = {raw: t}; }
-  if(r.status === 401 || r.status === 403){ panelSessionLost(); throw new Error('unauthorized'); }
-  if(!r.ok) throw new Error((parsed.error && parsed.error.message) || r.status);
+  // opts.localAuth：这个接口的 401 由调用方自己处理。改密码时「当前密码
+  // 不对」也回 401——别在这里开登录闸门，否则一次输错就变成掉线。
+  const localAuth = !!(opts && opts.localAuth);
+  if((r.status === 401 || r.status === 403) && !localAuth){ panelSessionLost(); throw new Error('unauthorized'); }
+  if(!r.ok){
+    const err = new Error((parsed.error && parsed.error.message) || r.status);
+    // 带上状态码，调用方才能区分「会话失效」和「参数不对」。
+    err.status = r.status;
+    throw err;
+  }
   return parsed;
 }
 function toast(msg, kind){
@@ -7405,7 +7409,7 @@ async function refreshInner(gen){
   lastRecentFp = recentFp;
   COST_TIP_ROWS.clear();
   document.getElementById('recent').innerHTML = rows.length ?
-    '<table class="data-cards"><thead><tr><th>时间</th><th>模型</th><th>推理强度</th><th>账号</th><th>模式</th><th>结果</th><th>耗时</th><th>首字</th><th>速度</th><th>输入</th><th>输出</th><th>思考</th><th>缓存</th><th>总 token</th><th>积分</th><th class="pricing-col" style="color:var(--warn)">估算价格</th></tr></thead><tbody>'
+    '<table class="data-cards"><thead><tr><th>时间</th><th>模型</th><th>推理强度</th><th>账号</th><th>模式</th><th>结果</th><th>耗时</th><th>首字</th><th>速度</th><th>输入</th><th>输出</th><th>思考</th><th>缓存</th><th>总 token</th><th>积分</th></tr></thead><tbody>'
     + rows.map((r, i) => {
         // 关闭时不登记悬停明细，也不挂 data-cost-key：列还在（观感不变），
         // 但没有任何可解释的价格，省掉整张表的明细构建与 hover 开销。
@@ -7426,14 +7430,10 @@ async function refreshInner(gen){
         + '<td style="color:var(--think)" data-label="思考">' + fmt(r.reasoning_tokens) + '</td>'
         + '<td data-label="缓存">' + (r.cache_hit_pct!=null ? r.cache_hit_pct+'%' : '—') + '</td>'
         + '<td data-label="总 token"><b>' + fmt(r.total_tokens) + '</b></td>'
-        // 网关自己的记账没有积分口径（上游按套餐扣，不按请求返回），单条请求的
-        // 积分算不出来 —— 显示「—」比 0.00 诚实，账号级的实数在账号行和顶卡上。
-        + '<td data-label="积分" style="color:var(--accent2)" title="单条请求的积分由上游按套餐扣减，网关无法逐笔取得">' + (r.credit ? Number(r.credit).toFixed(2) : '—') + '</td>'
-        + '<td data-label="OpenRouter 价估算" class="cost-cell pricing-col" style="color:var(--warn)"'
-        +   (costKey ? ' data-cost-key="' + esc(costKey) + '"' : '') + '>'
-        +   fmtCost(r.cost_cny)
-        +   (r.cost_backfilled ? '<span style="color:var(--dim)">*</span>' : '')
-        + '</td>'
+        // 积分：按码道自己的计费档逐条算（compute in ca_codearts.credit_for_usage），
+        // 与账号级的「总已用积分」同一口径。估算价格那一列已移除 —— 两套价格
+        // 并排显示只会让人不知道该信哪个。
+        + '<td data-label="积分" style="color:var(--accent2)" title="按码道计费档算出的单条积分（与客户端「总已用积分」同口径）">' + (r.credit ? Number(r.credit).toFixed(2) : '—') + '</td>'
       + '</tr>';
       }).join('') + '</tbody></table>'
     : '<div class="empty">还没有请求记录</div>';
@@ -7541,11 +7541,21 @@ function panelNeedsLogin(){
   if(input){ input.focus(); }
 }
 
-function panelSessionLost(){
+// 登录闸门下面那行提示。tone='ok' 用正文色（例如「密码已更新，请重新登录」），
+// 其余用错误色；下一次登录失败时 submitPanelLogin 会把它改回错误色。
+function setPanelLoginMessage(text, tone){
+  const msg = document.getElementById('panelLoginMsg');
+  if(!msg) return;
+  msg.textContent = text || '';
+  msg.style.color = tone === 'ok' ? 'var(--dim)' : 'var(--bad)';
+}
+
+function panelSessionLost(message, tone){
   // The session this tab holds is no longer valid - the gateway restarted,
-  // or the token expired. Drop it and stop every poller: leaving them
-  // running means each tick fails, re-opens the gate and logs another 401
-  // server-side, which is how a stale tab ends up filling the log.
+  // the token expired, or the password was just changed. Drop it and stop
+  // every poller: leaving them running means each tick fails, re-opens the
+  // gate and logs another 401 server-side, which is how a stale tab ends up
+  // filling the log.
   PANEL_READY = false;
   PANEL_TIMERS.forEach(t => clearInterval(t));
   PANEL_TIMERS = [];
@@ -7557,8 +7567,7 @@ function panelSessionLost(){
   if(loginTimer){ clearInterval(loginTimer); loginTimer = null; }
   PANEL_TOKEN = '';
   try { sessionStorage.removeItem(PANEL_STORE); } catch(e) {}
-  const msg = document.getElementById('panelLoginMsg');
-  if(msg) msg.textContent = '会话已失效，请重新输入密码';
+  setPanelLoginMessage(message || '会话已失效，请重新输入密码', tone);
   panelNeedsLogin();
 }
 
@@ -7569,10 +7578,9 @@ function panelHideGate(){
 
 async function submitPanelLogin(){
   const input = document.getElementById('panelPwdInput');
-  const msg = document.getElementById('panelLoginMsg');
   const password = (input && input.value) || '';
-  if(!password){ if(msg) msg.textContent = '请输入面板密码'; return; }
-  if(msg) msg.textContent = '';
+  if(!password){ setPanelLoginMessage('请输入面板密码'); return; }
+  setPanelLoginMessage('');
   try {
     const r = await fetch('/panel/login', {
       method: 'POST',
@@ -7581,18 +7589,17 @@ async function submitPanelLogin(){
     });
     const data = await r.json().catch(() => ({}));
     if(!r.ok){
-      if(msg) msg.textContent = (data.error && data.error.message) || '密码错误';
+      setPanelLoginMessage((data.error && data.error.message) || '密码错误');
       return;
     }
     PANEL_TOKEN = data.token || '';
     try { sessionStorage.setItem(PANEL_STORE, PANEL_TOKEN); } catch(e) {}
     if(input) input.value = '';
-    panelHideGate();
-    toast('已进入面板', 'ok');
-    if(data.using_default_password){
-      toast('当前是默认密码 admin，建议到「设置」里修改', 'warn');
-    }
-    await startDashboard();
+    // 登录后整页重载：登录闸门可能在部署很久之后才出现（例如网关重启让内存
+    // 令牌失效），这个标签页里跑的 JS 可能已经比服务端旧。旧版把改密码的
+    // 401 当成掉线处理，就是旧页面造成的。重载一次让脚本与网关对齐；新页面
+    // 会从 sessionStorage 取回令牌，直接进面板。
+    location.reload();
   } catch(e) {
     if(msg) msg.textContent = '登录失败: ' + e.message;
   }
@@ -8585,27 +8592,73 @@ function clearUiLanguageOverride(btn){
   location.reload();
 }
 
+// 改密码的结果留在表单下面，不只用 4 秒就消失的 toast：失败原因（当前密码
+// 不对、新密码与旧密码相同、会话失效）必须一直看得见。
+function setPwdMessage(text, kind){
+  const box = document.getElementById('setPwdMsg');
+  if(!box) return;
+  box.textContent = text || '';
+  box.style.color = kind === 'bad' ? 'var(--bad)'
+                  : kind === 'warn' ? 'var(--warn)'
+                  : kind === 'ok' ? 'var(--accent2)' : 'var(--dim)';
+}
+// 输入框右侧的睁眼/闭眼：只切换这一个框，方便对照检查旧密码和新密码各自
+// 有没有多打空格、全角字符。
+function togglePwdVisibility(btn, inputId){
+  const el = document.getElementById(inputId);
+  if(!el) return;
+  const show = el.type === 'password';
+  el.type = show ? 'text' : 'password';
+  const label = show ? '隐藏密码' : '显示密码';
+  if(btn){
+    btn.setAttribute('title', label);
+    btn.setAttribute('aria-label', label);
+    btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+    const icons = btn.querySelectorAll ? btn.querySelectorAll('svg') : [];
+    for(let i = 0; i < icons.length; i++){
+      const svg = icons[i];
+      const isOpen = svg.classList.contains('pwd-eye-open');
+      svg.style.display = (isOpen === show) ? '' : 'none';
+    }
+  }
+}
 async function savePanelPassword(btn){
   const cur = (document.getElementById('setPwdCurrent') || {}).value || '';
   const nw = (document.getElementById('setPwdNew') || {}).value || '';
-  if(!cur || !nw){ toast('请填写当前密码和新密码', 'warn'); return; }
+  if(!cur || !nw){ setPwdMessage('请填写当前密码和新密码', 'warn'); return; }
+  // 两栏被密码管理器填成同一个值时，服务端会接受但对用户来说「什么都没变」，
+  // 先在本地拦住并说清楚。
+  if(cur === nw){ setPwdMessage('新密码与当前密码相同，密码不会变化', 'warn'); return; }
+  setPwdMessage('');
   btn.disabled = true;
   try {
-    const data = await postJSON('/panel/password', {current: cur, new: nw});
-    if(data.token){
-      PANEL_TOKEN = data.token;
-      try { sessionStorage.setItem(PANEL_STORE, PANEL_TOKEN); } catch(e) {}
-    }
+    // localAuth：这条路由的 401 是「当前密码不对」，不是会话失效。绝不能让
+    // 它触发 panelSessionLost——那会清掉令牌、弹出登录页，把一次输错变成
+    // 掉线。错误文案由下面的 catch 持久显示在表单里。
+    const data = await postJSON('/panel/password', {current: cur, new: nw}, {localAuth: true});
     document.getElementById('setPwdCurrent').value = '';
     document.getElementById('setPwdNew').value = '';
-    toast('面板密码已更新', 'ok');
-    const pwdState = document.getElementById('setPwdState');
-    if(pwdState){
-      pwdState.textContent = (nw === 'admin') ? '(当前为默认密码)' : '(已自定义)';
-      pwdState.style.color = (nw === 'admin') ? 'var(--warn)' : 'var(--accent2)';
-    }
+    // 服务端改完密码会吊销所有会话，也不再下发新令牌。直接回到登录闸门，
+    // 让用户用新密码重新登录；留在面板里会让人以为还是旧密码在生效。
+    const okMsg = data.synced_env === false
+      ? '面板密码已更新（未能同步 .credentials，重启后仍以面板为准），请用新密码重新登录'
+      : '面板密码已更新，请用新密码重新登录';
+    setPwdMessage(okMsg, 'ok');
+    panelSessionLost(okMsg, 'ok');
   } catch(e) {
-    toast('修改失败: ' + e.message, 'bad');
+    const msg = String((e && e.message) || e || '');
+    // 「panel password required」是路由最前面的会话检查；其余 401 都是
+    // 当前密码不对。会话真失效时，下一次轮询也会把登录页打开，这里只负责
+    // 把原因说清楚，不主动踢人。
+    if(e && e.status === 401 && /panel password required/.test(msg)){
+      setPwdMessage('面板会话已失效，请重新登录后再改密码', 'bad');
+    } else if(e && e.status === 401){
+      setPwdMessage(msg, 'bad');
+      const input = document.getElementById('setPwdCurrent');
+      if(input) input.focus();
+    } else {
+      setPwdMessage('修改失败: ' + msg, 'bad');
+    }
   } finally {
     btn.disabled = false;
   }
@@ -10600,7 +10653,6 @@ function renderPerfMatrix(usage, perf){
       + '<td data-label="端到端耗时">' + totWall + '</td>'
       + '<td data-label="缓存命中">' + totCache + '</td>'
       + '<td data-label="用量占比">100%</td>'
-      + '<td data-label="OpenRouter 价估算" class="pricing-col" style="color:var(--warn)">' + (PRICING_ON ? fmtCost(sumCost) : '—') + '</td>'
       + '</tr>';
 
     const rows = rowsData.map(m => {
@@ -10681,9 +10733,6 @@ function renderPerfMatrix(usage, perf){
         + '<td data-label="端到端耗时">' + m_wall + '</td>'
         + '<td data-label="缓存命中">' + m_cache + '</td>'
         + '<td style="min-width:90px" data-label="用量占比"><span class="bar-fill" style="width:' + Math.max(3, pctTok).toFixed(1) + '%"></span> <span style="font-size:11px;color:var(--dim)">' + pctTok.toFixed(1) + '%</span></td>'
-        + '<td data-label="OpenRouter 价估算" class="pricing-col" style="color:var(--warn)" title="OpenRouter 价估算：按该行（模型·区域·账号）的 token 消耗折算；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示">'
-        +   ((m.cost_cny || 0) > 0 ? fmtCost(m.cost_cny) : '<span style="color:var(--dim)">—</span>')
-        + '</td>'
         + '</tr>';
     }).join('');
 
@@ -10702,7 +10751,6 @@ function renderPerfMatrix(usage, perf){
       + '<th style="text-align:left">账号</th>'
       + '<th>请求数</th><th>失败</th><th>总 Token</th><th style="min-width:190px">输入 / 输出 / 思考</th>'
       + '<th>首字延迟 (TTFT)</th><th>生成速度</th><th>端到端耗时</th><th>缓存命中率</th><th>用量占比</th>'
-      + '<th class="pricing-col" style="color:var(--warn)">估算价格</th>'
       + '</tr></thead><tbody>' + summaryRow + rows + '</tbody></table>';
     applyTableSort('perfMatrix');
   }
@@ -11168,19 +11216,8 @@ function renderAnalytics(data){
   if(elSuccessRate) elSuccessRate.innerHTML = '<span style="color:' + (errReq ? 'var(--warn)' : 'var(--accent2)') + '">' + successPct + '%</span>';
   if(elSuccessDetail) elSuccessDetail.textContent = '失败 ' + fmt(errReq) + ' 次';
 
-  // KPI 8: API 等价花费（跟随范围切换；与网关页一致，人民币与美元同时给出）
-  if(data.usd_cny) costUsdRate = Number(data.usd_cny) || costUsdRate;
-  const elCostRange = document.getElementById('kpiCostRange');
-  const elCostValue = document.getElementById('kpiCostValue');
-  const elCostDetail = document.getElementById('kpiCostDetail');
-  if(elCostRange) elCostRange.textContent = '(' + rangeLabel() + ')';
-  // 关闭时卡片留在原地（观感不变），数值显示「—」：后端根本没有折算金额，
-  // 这里不能把「没有数」渲染成 ￥0.000。
-  if(elCostValue) elCostValue.innerHTML = PRICING_ON
-    ? fmtCostBoth(currentSum.cost_cny != null ? currentSum.cost_cny : 0, 14) : '—';
-  if(elCostDetail) elCostDetail.innerHTML = (PRICING_ON && analyticsRange !== 'all' && sumAll.cost_cny != null)
-    ? '总计（全部历史）' + fmtCostBoth(sumAll.cost_cny, 11) + '<br>按 OpenRouter 模型价折算'
-    : '按 OpenRouter 模型价折算的等价 token 花费';
+  // KPI 8「API 等价花费」已随价格估算体系一并移除（2026-10-22）。
+  // 本网关只记积分，不再折算货币。
 
   // Table 1: 账号透视表
   const acctTbody = document.getElementById('analyticsAccountTbody');
@@ -11233,9 +11270,6 @@ function renderAnalytics(data){
           + '<td><b style="color:var(--accent)">' + fmtCompact(st.total_tokens || 0) + '</b></td>'
           + '<td><b style="color:var(--accent2)">' + (st.credit != null ? Number(st.credit).toFixed(2) : '0.00') + '</b></td>'
           + '<td style="text-align:left;max-width:440px">' + pills + '</td>'
-          + '<td class="pricing-col" style="color:var(--warn)" title="OpenRouter 价估算：按 OpenRouter 公布的模型价折算，覆盖该账号在所选区间内的请求；按条件定价的模型（输入长度阈值或时段）按每条请求取档；单条请求实际用的策略、三档单价与匹配来源见「最近请求」里那条的悬停提示">'
-          +   (st.cost_cny != null && st.cost_cny > 0 ? fmtCost(st.cost_cny) : '<span style="color:var(--dim)">—</span>')
-          + '</td>'
           + '</tr>';
       }).join('');
     }
@@ -11522,7 +11556,6 @@ function drawSparks(){
   drawSpark('sparkReqs',   arr.map(b => b.requests || 0), '--chart-line');
   drawSpark('sparkSpeed',  arr.map(b => (b.total_tokens || 0) / step), '--chart-bar');
   drawSpark('sparkCache',  arr.map(b => b.prompt_tokens ? (b.cached_tokens || 0) / b.prompt_tokens * 100 : 0), '--chart-line');
-  drawSpark('sparkCost',   arr.map(b => b.credit || 0), '--chart-bar');
 }
 function nicknameOf(uid){
   const acc = ((state.analytics || {}).accounts || []).find(x => x.uid === uid);
@@ -11656,10 +11689,8 @@ function renderKpis(){
   $('kCache').innerHTML = fmtPct(w.cache_hit_pct);
   $('kCacheSub').innerHTML = `缓存复用 <b>${numSpan(w.cached_tokens)}</b> tokens`;
 
-  // ⑥ 花费
-  const usd = a.usd_cny ? w.cost_cny / a.usd_cny : null;
-  $('kCost').innerHTML = `<span style="color:var(--red)" ${w.cost_cny != null ? `data-tip="${fullNum(w.cost_cny, 4)} 元"` : ''}>${fmtCostCny(w.cost_cny)}</span>`;
-  $('kCostSub').innerHTML = usd != null ? `<span style="color:var(--green)">${usd.toLocaleString('zh-CN',{minimumFractionDigits:2,maximumFractionDigits:2})}</span> · 积分消耗 ${numSpan(w.credit, 1)}` : '—';
+  // ⑥ 花费卡片已随价格估算体系一并移除（2026-10-22）。
+  // 本网关只记积分：积分总量在「积分消耗」卡片与账号行上，不再折算货币。
 
   $('pageSub').textContent = `区间 ${fmtCompact(w.total_tokens)} tokens · ${fmtCompact(w.requests)} 次请求 · 更新于 ${new Date().toLocaleTimeString('zh-CN', {hour12:false})}`;
 
@@ -11669,7 +11700,6 @@ function renderKpis(){
   setDelta('deltaTokens', w.total_tokens, prevSummary ? prevSummary.tok : null);
   setDelta('deltaReqs', w.requests, prevSummary ? prevSummary.req : null);
   setDelta('deltaCache', selfCache, prevCache);
-  setDelta('deltaCost', w.credit, prevSummary ? prevSummary.cred : null);
 }
 function peakThroughput(){
   const s = state.series;

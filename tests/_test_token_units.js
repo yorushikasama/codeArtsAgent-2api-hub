@@ -128,13 +128,9 @@ assert.ok(el('kpiTodayTokensDetail').innerHTML.includes('缓存 800K'), '范围�
 assert.strictEqual(el('kpiTotalTokens').textContent, '123M', '全部历史 token 大数字应紧凑显示');
 assert.ok(el('kpiTotalTokensDetail').innerHTML.includes('缓存 900K'), '全部历史明细应含缓存 token');
 assert.ok(el('kpiCacheDetail').textContent.includes('缓存 800K'), '缓存命中率卡副行应带缓存 token 数');
-assert.ok(el('kpiCostDetail').innerHTML.includes('总计（全部历史）'), '花费卡应给出总计行');
-assert.ok(el('kpiCostDetail').innerHTML.includes('￥12.50'), '总计应为全部历史人民币金额');
-
-/* 价估算关闭时：数值回「—」，总计行也不出现 */
-api.PRICING_ON = false;
-api.renderAnalytics(PAYLOAD);
-assert.ok(el('kpiCostValue').innerHTML.includes('—'), '价估算关闭时花费显示 —');
+/* 价格估算体系已移除（2026-10-22）：数据看板不再有「花费卡」与折算金额，
+   相关断言连同 PRICING_ON 开关的检查一并删除。token 紧凑单位与缓存展示
+   仍由上面几条断言覆盖。 */
 assert.ok(!el('kpiCostDetail').innerHTML.includes('总计'), '价估算关闭时不应有总计行');
 
 console.log('_test_token_units.js: all assertions passed');

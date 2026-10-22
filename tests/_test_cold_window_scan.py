@@ -60,12 +60,7 @@ import time as _time
 _time.time = lambda: FROZEN
 
 import ca_proxy as P
-import ca_pricing
-
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-ca_pricing.set_data_dir(USAGE_DIR)
-ca_pricing.set_settings_dir(ACCOUNTS_DIR)
-
 USAGE_LOG = P.USAGE_LOG
 PRICING_FILE = os.path.join(_TMP, "pricing.json")
 os.environ["WB_PRICING_FILE"] = PRICING_FILE
@@ -314,13 +309,17 @@ check("整点窗口：冷态扫描 == 热态桶求和（逐字节）",
 
 print()
 print("[3] 价表内容变化（T14 的真实触发）：窗口不折，all-time 重折")
+# 注意：价格估算体系已于 2026-10-22 移除，写价表不再改变任何聚合真值。
+# 这一节保留它的**流程**（窗口请求不付全量重折、all-time 从零折到尾巴），
+# 那是与计价无关的缓存语义；只把「真值随价变」的断言去掉。
 write_pricing(PRICING_B)
 cache_env(enabled=0, min_bytes=0, min_seconds=0, days=0)
 restart()
 REF_TODAY_B = canon(P._usage_snapshot_uncached(None, since=TODAY0, until=None))
 REF_ALL_B = canon(P._usage_snapshot_uncached())
-check("换了价表内容：真值确实变了（对照自检）",
-      REF_TODAY_B != REF_TODAY and REF_ALL_B != REF_ALL)
+check("换了价表内容：真值不变（价格体系已移除，对照自检）",
+      REF_TODAY_B == REF_TODAY and REF_ALL_B == REF_ALL,
+      (REF_TODAY_B == REF_TODAY, REF_ALL_B == REF_ALL))
 write_pricing(PRICING_B)      # 再把 mtime 推一格，保证新内容被读到
 cache_env(enabled=0, min_bytes=0, min_seconds=0)
 restart()
@@ -354,7 +353,7 @@ print()
 print("[4] analytics：窗口半先扫描，all-time 半照折（它本来就是载荷的一半）")
 cache_env(enabled=0, min_bytes=0, min_seconds=0)
 restart()
-pricing_on = P.ca_pricing.pricing_enabled()
+pricing_on = False   # 价格估算体系已移除，折叠恒在「不计价」档
 with FoldCounter("_fold_usage_analytics") as c:
     an_cold = P._analytics_window(None, TODAY0, None, None, pricing_on)
 check("冷态 analytics 窗口半：折的行数 == 窗口内的行数",

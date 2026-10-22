@@ -50,6 +50,7 @@ try:
 except ValueError:
     MAX_CONCURRENT_CHAT = CHAT_SLOTS_FLOOR
 CHAT_SLOT_WAIT_SECONDS = float(os.environ.get("WB_CHAT_SLOT_WAIT", 30))
+import select
 import socket
 import sys
 import threading
@@ -65,7 +66,6 @@ import ca_codearts
 import ca_egress
 import ca_ipintel
 import ca_logstore
-import ca_pricing
 import ca_settings
 import ca_upstream_pool
 import ca_webtools
@@ -227,6 +227,11 @@ def cors_origin_allowed(path):
 _lock = threading.Lock()
 _login_lock = threading.Lock()
 _chat_slots = threading.BoundedSemaphore(MAX_CONCURRENT_CHAT)
+
+#: 「响应已经发出去了」的哨兵。`_error` / `_anthropic_error` 返回它，让
+#: 「返回 (error, result)」形态的调用方能用 `if error is not None` 判出
+#: 「已回过响应、不要再碰 result」。见 _error 的注释。
+RESPONDED = object()
 def resize_chat_slots(ready_accounts):
     """Size the chat concurrency ceiling from the pool, when asked to.
 
@@ -384,20 +389,40 @@ def configured_keys():
     except Exception as exc:
         log("could not read api keys: %s" % exc)
         return []
+def panel_keys_configured():
+    """True once the panel has held a key (live, disabled, or deleted).
+
+    The launcher fallback exists for deployments whose panel was never
+    configured. Counting deleted rows here keeps removing the last key from
+    reviving that fallback - and from turning the gateway into an open relay.
+    """
+    try:
+        if ca_settings.api_keys(ACCOUNTS_DIR, include_deleted=True):
+            return True
+        return bool(ca_settings.api_key_override(ACCOUNTS_DIR)[1])
+    except Exception as exc:
+        log("could not read api key history: %s" % exc)
+        return True
 def auth_required():
     """Whether /v1 calls must present a key at all."""
     if ca_settings.auth_disabled(ACCOUNTS_DIR):
         return False
-    if any(entry.get("enabled") for entry in configured_keys()):
+    # Any stored row counts, enabled or not: disabling a key must not switch
+    # checking off. Turning auth off is the explicit auth_disabled toggle.
+    if configured_keys():
+        return True
+    # Every row was deleted: fail closed until the panel gets a key again.
+    if panel_keys_configured():
         return True
     return bool(API_KEY)
 def identify_key(supplied):
     """Return the key entry a caller used, or None when nothing matches.
-    Once the panel has at least one key, those keys are the only accepted
+    Once the panel has ever held a key, those keys are the only accepted
     credentials - otherwise a launcher key left in a .bat file would silently
-    keep working after the panel was locked down.
+    keep working after the panel was locked down, and deleting the last panel
+    key would bring that launcher key back.
     """
-    extra = () if configured_keys() else (API_KEY,)
+    extra = () if panel_keys_configured() else (API_KEY,)
     return ca_settings.match_api_key(ACCOUNTS_DIR, supplied, extra_keys=extra)
 def _empty_stats():
     return {"requests": 0, "errors": 0, "prompt_tokens": 0, "completion_tokens": 0,
@@ -710,10 +735,9 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
     # existed; the dashboard reports those as two different buckets, and a
     # missing field is the only evidence of the cutover that survives.
     row["key"] = key or ""
-    # The price policy this request is measured against, stored as a reference
-    # so the table can be de-duplicated and swept. A row written before the
-    # table existed has no reference and falls back to the timeline.
-    row["cost_policy"] = ca_pricing.current_policy_id(model)
+    # 价格策略引用。价格估算体系已下线，字段保留为空串（历史行里可能有值，
+    # 读取侧一律不依赖它）。
+    row["cost_policy"] = ""
     # Only when the request had one: the panel shows a chip for rows that carry
     # the field, and a model without reasoning controls has nothing to report.
     if effort:
@@ -3235,19 +3259,9 @@ def _pricing_inputs(pricing_on=None):
     a different settings file whenever the two disagree, and the fingerprint
     would then watch an input the fold never read.
     """
-    # pricing_on 由调用方传入时不再自己问一次总开关：一次扫描里它只该被问一次
-    # （见 _usage_snapshot_uncached / _compute_usage_analytics_uncached），指纹
-    # 与折叠读到的因此是同一个值。
-    try:
-        if not (ca_pricing.pricing_enabled() if pricing_on is None else pricing_on):
-            return (False, None, None, None)
-        return (True,
-                ca_pricing.load_policies() or _EMPTY_POLICIES,
-                ca_pricing.load_timeline() or _EMPTY_TIMELINE,
-                ca_pricing.load_pricing())
-    except Exception as exc:
-        log("pricing inputs unreadable: %s" % exc)
-        return None
+    # 价格估算体系已下线（2026-10-22）：不再读价表，「关闭」是唯一状态。
+    # 保留函数签名是因为快照 / 指纹 / 缓存三条链路都靠它开短路。
+    return (False, None, None, None)
 
 
 def _pricing_unchanged(previous, current):
@@ -3471,7 +3485,7 @@ def _priced_note(priced, row, cost, pricing):
     if source == "builtin":
         # 解析结果没进 cost（pid 为空、或它的策略查不到，两条都落到内置快照）：
         # 再问一次时间线，把「解析出没出 pid / 是不是回填」记准。
-        resolved, scan_backfilled = ca_pricing.policy_ref_at(at, model)
+        resolved, scan_backfilled = None, False
         if resolved is None:
             # 整条时间线都没提到这个模型：解析扫过全部行，之后任何时刻补一
             # 行都会改变结果，所以它按「整条时间线里提到它的行」记账。
@@ -3857,33 +3871,50 @@ def _cost_from_memo(entry):
     return cost
 
 
+#: 价格估算体系已下线（2026-10-22）：这个网关只按码道积分记账，不再折算
+#: OpenRouter / 美元等价花费。所有成本出口统一返回这一份零值。
+#:
+#: 形状必须与 `ca_pricing.cost_for_row(..., details=False)` 逐键一致，调用方
+#: （`_fold_cost`、`_feed_analytics`、面板接口）才不会 KeyError。
+#: `known=False` + `disabled=True` 是刻意的组合：`_fold_cost` 据此既不累加、
+#: 也不把模型记进 `cost_missing`（那会在面板上冒出「未定价模型」的假告警）。
+_ZERO_COST = {
+    "cny": 0.0,
+    "known": False,
+    "disabled": True,
+    "policy": "",
+    "source": "",
+    "source_at": 0,
+    "backfilled": False,
+    "usd": 0.0,
+    "usd_cny": 0.0,
+    "input_price": 0.0,
+    "cache_price": 0.0,
+    "output_price": 0.0,
+    "matched_by": "",
+    "reason": "pricing removed",
+    # 「最近请求」行里那几个拆解字段（悬停卡片用）。价格体系下线后一律 None，
+    # 面板不该显示编出来的 0。
+    "band": None,
+    "rates": None,
+    "unit": None,
+    "currency": None,
+    "or_id": None,
+    "via": None,
+    "inherited_from": None,
+    "override_from": None,
+    "band_note": None,
+    "via_derived": False,
+}
+
+
 def _row_cost(row, pricing, pricing_on):
-    """一行的估算成本，跨视图复用（见「行级结果记忆」一节）。
+    """一行的估算成本。
 
-    pricing 是本次扫描开头取到的 _pricing_inputs() 元组：命中要求条目与它
-    同代。pricing 为 None（价表读不出来）时不进表，照旧每行现算——那条路径
-    本来就不该被记忆；空行（falsy row）同理，它走的是原函数的短路分支。
-
-    返回的形状与 ca_pricing.cost_for_row(..., details=False) 逐键相同；命中
-    时按条目重建一份，调用方拿到的是自己的副本，与现算路径一致。
+    价格体系已移除，恒返回零值 —— 保留函数与签名是因为聚合、增量快照、
+    analytics 三处都从这里取价，改签名会波及二十多个核心函数。
     """
-    if pricing is None or not row:
-        return ca_pricing.cost_for_row(row, details=False, enabled=pricing_on)
-    key = (row.get("model"), row.get("cost_policy"), row.get("at"),
-           row.get("prompt_tokens"), row.get("cached_tokens"),
-           row.get("completion_tokens"))
-    memo = _row_cost_memo
-    try:
-        entry = memo.get(key)
-    except TypeError:
-        # 不可哈希的字段（坏行）：原函数到 (doc.get("models") or {}).get(model)
-        # 那一步也会抛 TypeError，这里不抢先，交给它
-        return ca_pricing.cost_for_row(row, details=False, enabled=pricing_on)
-    if entry is not None and _pricing_unchanged(entry[0], pricing):
-        return _cost_from_memo(entry)
-    cost = ca_pricing.cost_for_row(row, details=False, enabled=pricing_on)
-    _row_cost_remember(key, pricing, cost)
-    return cost
+    return dict(_ZERO_COST)
 
 
 def _row_cost_remember(key, pricing, cost):
@@ -4358,7 +4389,8 @@ def _usage_snapshot_uncached(realm=None, since=None, until=None):
     rep = POOL.representative(realm=r) if POOL else current_account()
     # 总开关整扫只问一次，值一路传进折叠与价格指纹：每行重问一次就是每行一次
     # os.stat，2.7 万行上很可观（见 tests/_test_usage_aggregate_fold.py）。
-    pricing_on = ca_pricing.pricing_enabled()
+    # 价格估算体系已下线：折叠永远在「不计价」档跑。
+    pricing_on = False
     if since is None and until is None:
         # An open window covers every row, and the rows only ever arrive at
         # the end of the log, so the all-time totals are carried over from the
@@ -4372,7 +4404,7 @@ def _usage_snapshot_uncached(realm=None, since=None, until=None):
     snap["realm"] = r or "all"
     # Cost figures are CNY; the panel divides by this rate to show USD
     # without a round trip.
-    snap["usd_cny"] = ca_pricing.usd_cny()
+    snap["usd_cny"] = 0.0
     snap["accounts_map"] = {a.uid: {"nickname": a.nickname, "realm": a.realm} for a in POOL.accounts} if POOL else {}
     snap["account"] = {
         "uid": (rep.uid if rep else ""),
@@ -5632,7 +5664,7 @@ def recent_usage(limit=100, realm=None, page=1):
     # are all None when the row is unpriced - the panel must say so rather
     # than show a made-up 0.
     for r in page_rows:
-        cost = ca_pricing.cost_for_row(r)
+        cost = dict(_ZERO_COST)
         r["cost_cny"] = round(cost["cny"], 6) if cost["known"] else None
         r["cost_band"] = cost["band"] if cost["known"] else None
         # cost_policy stays as the row recorded it; cost_source is what the
@@ -5658,7 +5690,7 @@ def recent_usage(limit=100, realm=None, page=1):
         "page": page,
         "limit": limit,
         "total_pages": total_pages,
-        "usd_cny": ca_pricing.usd_cny(),
+        "usd_cny": 0.0,
         "rows": page_rows
     }
 POOL = None
@@ -8249,7 +8281,7 @@ def _finalize_analytics_stat(stat_obj):
 def _compute_usage_analytics_uncached(realm=None, since=None, until=None):
     """Detailed analytics for Token, Cache, and Reasoning metrics page."""
     # 与 /usage 快照同一条规矩：一次扫描里总开关只问一次，值传进折叠与指纹。
-    pricing_on = ca_pricing.pricing_enabled()
+    pricing_on = False
     all_maps, offset = _analytics_all_time(realm, pricing_on)
     if since is None and until is None:
         # An open window covers every row, so the windowed half is the
@@ -8286,7 +8318,7 @@ def _compute_usage_analytics_uncached(realm=None, since=None, until=None):
         "window": {"since": since, "until": until},
         "realm": realm or "all",
         # Cost figures are CNY; the panel divides by this rate to show USD.
-        "usd_cny": ca_pricing.usd_cny(),
+        "usd_cny": 0.0,
         "summary": {"window": window_summary, "all_time": all_summary},
         "accounts": accts_list,
         "models": models_list,
@@ -9401,10 +9433,11 @@ def _usage_cache_snapshot_entry(realm, state):
     if offset <= 0 or not isinstance(tail, bytes) or state.get("snap") is None:
         return None
     # 「用到的价」记录（T15；见「用到的价」状态指纹一节）：形状不合格就不写。
-    # 记录为 None（总开关关着 / 价表读不出来）时也跳过——那份折叠没读任何价，
-    # 落盘没有任何加速作用（采纳端只认「记录也是 None」这一种一致）。
+    # 价格估算体系移除后折叠不再读任何价，record 恒为 None —— 这种状态**仍然
+    # 值得落盘**（缓存的价值在跳过 2.7 万行重扫，与计价无关），校验交给
+    # offset / tail / 日志指纹。只有「有记录但形状坏了」才跳过。
     record = state.get("pricing")
-    if not _pricing_record_ok(record):
+    if record is not None and not _pricing_record_ok(record):
         return None
     realm_inputs = state.get("realm")
     realm_key = _realm_inputs_key(realm_inputs)
@@ -9494,8 +9527,8 @@ def _usage_cache_analytics_entry(realm, state):
     if offset <= 0 or not isinstance(tail, bytes):
         return None
     record = state.get("pricing")
-    if not _pricing_record_ok(record):
-        return None          # 同 snapshot：「用到的价」记录不合格就不写
+    if record is not None and not _pricing_record_ok(record):
+        return None          # 同 snapshot：记录存在但形状坏了才不写
     realm_inputs = state.get("realm")
     realm_key = _realm_inputs_key(realm_inputs)
     if realm_key is None:
@@ -9762,12 +9795,13 @@ def runtime_settings_view():
         "daily_token_limit": ca_settings.daily_token_limit(ACCOUNTS_DIR),
         "daily_credit_limit": ca_settings.daily_credit_limit(ACCOUNTS_DIR),
         "model_daily_token_limit": ca_settings.model_daily_token_limit(ACCOUNTS_DIR),
-        "pricing_refresh_minutes": ca_settings.pricing_refresh_minutes(ACCOUNTS_DIR),
+        "pricing_refresh_minutes": 0,
         "credits_refresh_hours": ca_settings.credits_refresh_hours(ACCOUNTS_DIR),
         "section_max_height": ca_settings.section_max_height(ACCOUNTS_DIR),
         "ui_language": ca_settings.ui_language(ACCOUNTS_DIR),
-        "pricing_variant_inherit": ca_settings.pricing_variant_inherit(ACCOUNTS_DIR),
-        "pricing_enabled": ca_settings.pricing_enabled(ACCOUNTS_DIR),
+        # 价格估算体系已下线：这两个开关不再存在，恒 False。
+        "pricing_variant_inherit": False,
+        "pricing_enabled": False,
         "auto_switch_product": ca_settings.auto_switch_product(ACCOUNTS_DIR),
         "enable_anthropic_messages": ca_settings.enable_anthropic_messages(ACCOUNTS_DIR),
         "local_web_tools": ca_settings.local_web_tools(ACCOUNTS_DIR),
@@ -10280,11 +10314,280 @@ def fetch_models(realm=None):
 # 不是「服务端报了什么就信什么」（内置/限时福利两组都实测过，见 ca_codearts
 # 里 chat_headers 的注释）。
 
-#: 码道账号的**并发会话上限只有 3 个**（撞上就是 400 TM.00001041）。网关是
-#: 单进程多线程，多个客户端同时打必然超；所以在这里串行化 —— 默认只放 1 个
-#: 请求进去，请求完成才放下一个。账号多时可用 CODEARTS_CONCURRENCY 调大。
-_CODEARTS_SLOTS = threading.Semaphore(
-    max(1, int(os.environ.get("CODEARTS_CONCURRENCY") or 1)))
+#: 码道账号的**并发会话上限只有 3 个**（撞上就是 400 TM.00001041）。
+#:
+#: 旧值是 1（彻底串行）。那是错的：账号能给 3 个，网关自己只放 1 个，第二个
+#: 请求就得**等前一个生成完**才算开始 —— 一条三千字的回答要几分钟，用户看到
+#: 的就是「发出去没反应」。2026-10-22 实测：两个客户端并发，第二个卡 4 分钟。
+#:
+#: 现在默认 2：留一个名额给账号上的其它使用者（本机 CodeArts IDE、另一台机器），
+#: 撞车时靠下面的排队超时 + 429 兜住，而不是死等。可用 CODEARTS_CONCURRENCY 调。
+CODEARTS_CONCURRENCY = max(1, int(os.environ.get("CODEARTS_CONCURRENCY") or 2))
+
+#: 拿不到并发名额时最多等多久（秒）。超时立刻回 429 而不是无限排队 ——
+#: 排队中的请求没有任何反馈，客户端只能干等到自己超时（ZCode 4 分钟）。
+CODEARTS_SLOT_WAIT = float(os.environ.get("CODEARTS_SLOT_WAIT") or 20.0)
+
+#: 撞上「并发会话已满」时的退避序列。它和 TPM 限流不是一回事：名额在别人手里，
+#: 通常一秒级就会释放，用不着 5/12/25/40（合计 82 秒）那么久 —— 那 82 秒里
+#: 客户端早自己重试了，反而叠出更多会话。
+CODEARTS_BUSY_DELAYS = (2.0, 5.0, 8.0)
+
+#: 一般瞬时限流（TPM 打满）的退避。额度按分钟恢复，等得久一点才有效。
+CODEARTS_RETRY_DELAYS = (5.0, 12.0, 25.0, 40.0)
+
+#: 真流式转发开关（默认开）。置 0 可退回「读完整条流再回放」的老行为。
+CODEARTS_STREAM_PASSTHROUGH = (os.environ.get(
+    "CODEARTS_STREAM_PASSTHROUGH") or "1").strip().lower() not in ("0", "false", "no")
+
+#: 撞上「并发会话已满」后把这个号晾多久（秒）。晾着期间不再往它身上派活，
+#: 有别的号就换号，没别的号就等它解冻 —— 比盲重试快得多。
+CODEARTS_BUSY_COOLDOWN = float(os.environ.get("CODEARTS_BUSY_COOLDOWN") or 5.0)
+
+#: TPM 限流（ModelArts.811xx）的冷却。额度按分钟恢复，晾 20 秒是折中：
+#: 既不会把号彻底歇掉，也能让同一波请求换到别的号去。
+CODEARTS_TPM_COOLDOWN = float(os.environ.get("CODEARTS_TPM_COOLDOWN") or 20.0)
+
+#: 授权类错误（STS 失效、401/403）的冷却。这种错重试没用，得人工重新授权，
+#: 先把它从池子里摘掉，别让后面的请求一遍遍撞。
+CODEARTS_AUTH_COOLDOWN = float(os.environ.get("CODEARTS_AUTH_COOLDOWN") or 300.0)
+
+#: 上游把 chunked 流掐断后，在**一个字都还没给客户端**的前提下换号重开几次。
+#: 只在没出内容时重开：那时客户端只收到一个空的 role 帧，整段重来完全无感；
+#: 吐过内容之后再重开会把两段回答拼在一起，比断流更难排查。
+CODEARTS_STREAM_RESTARTS = max(0, int(os.environ.get("CODEARTS_STREAM_RESTARTS") or 1))
+
+#: 上面的重开还有个时间预算：断流发生在几十秒之后时，再开一条会话又是几十秒，
+#: 客户端早自己重试了 —— 那才是把 3 个名额吃干净的原因。
+CODEARTS_STREAM_RESTART_BUDGET = float(
+    os.environ.get("CODEARTS_STREAM_RESTART_BUDGET") or 90.0)
+
+#: 会话 busy 续期间隔（秒）。上游会话的空闲回收是分钟级，30s 一次足够；
+#: 比请求本身更频繁没有意义，而且每次续期都是一次签名请求。
+CODEARTS_SESSION_PING = float(os.environ.get("CODEARTS_SESSION_PING") or 30.0)
+
+
+class _CodeartsAccountPool:
+    """按**账号**分配并发名额，并在账号之间做负载与故障转移。
+
+    上游的并发上限是账号级的 3 个会话。旧实现用一个全局信号量（默认 2）：
+      · 总容量不随账号数增长 —— 3 个号仍然只能同时跑 2 条；
+      · 轮转挑号完全不看谁在忙 —— 第 3 条可能压到已经满的号上，另一个号
+        闲着，白撞 TM.00001041 再退避重试。
+    所以这里每个账号一个信号量（容量 CODEARTS_CONCURRENCY，默认 2，给 IDE
+    等其它使用者留 1 个），挑号时先看空闲、再看冷却。
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._semaphores = {}     # 账号 id -> Semaphore（每号独立容量）
+        self._cool_until = {}     # 账号 id -> 冷却到期时间戳
+        self._inflight = {}       # 账号 id -> 正在跑的请求数（面板用）
+        self._cursor = 0
+
+    @staticmethod
+    def key_of(sess):
+        account = sess.get("account") or {}
+        return str(account.get("id") or account.get("label") or "default")
+
+    def _sem(self, key):
+        with self._lock:
+            sem = self._semaphores.get(key)
+            if sem is None:
+                sem = threading.Semaphore(max(1, CODEARTS_CONCURRENCY))
+                self._semaphores[key] = sem
+            return sem
+
+    @staticmethod
+    def _usable():
+        usable = []
+        for sess in ca_codearts.load_sessions(ACCOUNTS_DIR):
+            _left, expired, renewable = _codearts_left(sess)
+            if not expired or renewable:
+                usable.append(sess)
+        return usable
+
+    def acquire(self, timeout=None):
+        """要一个名额。返回 ``(session, key)``；拿不到时 ``(None, None)``。
+
+        先试「不等待」的：谁有空位给谁。全都忙才在**第一个候选**上等一小会
+        儿（最多 0.25s）然后重新评估 —— 这样别的号空出来的瞬间就能换过去，
+        而不是死等某一个号。
+        """
+        timeout = CODEARTS_SLOT_WAIT if timeout is None else timeout
+        deadline = time.time() + max(0.0, timeout)
+        while True:
+            sessions = self._usable()
+            if not sessions:
+                return None, None
+            now = time.time()
+            ready = [s for s in sessions
+                     if self._cool_until.get(self.key_of(s), 0.0) <= now]
+            if ready:
+                candidates = ready
+            else:
+                # 全在冷却：只等最早解冻的那个，别去撞刚被限流的号
+                candidates = [min(
+                    sessions, key=lambda s: self._cool_until.get(self.key_of(s), 0.0))]
+            start = self._cursor % len(candidates)
+            ordered = candidates[start:] + candidates[:start]
+            self._cursor += 1
+            for sess in ordered:
+                key = self.key_of(sess)
+                if self._sem(key).acquire(blocking=False):
+                    return self._admit(sess, key), key
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return None, None
+            key = self.key_of(ordered[0])
+            if self._sem(key).acquire(timeout=min(0.25, remaining)):
+                return self._admit(ordered[0], key), key
+            time.sleep(min(0.05, max(0.0, deadline - time.time())))
+
+    def _admit(self, sess, key):
+        """已经拿到槽位：记在跑数、顺手把 STS 续上。"""
+        with self._lock:
+            self._inflight[key] = self._inflight.get(key, 0) + 1
+        try:
+            return _ensure_fresh(sess)
+        except BaseException:
+            self.release(key)
+            raise
+
+    def release(self, key):
+        with self._lock:
+            if self._inflight.get(key):
+                self._inflight[key] -= 1
+        try:
+            self._sem(key).release()
+        except ValueError:          # 多还了：忽略，别把请求炸掉
+            pass
+
+    def penalize(self, key, seconds):
+        """把这个号晾一会儿（冷却期内挑号会跳过它）。"""
+        with self._lock:
+            until = time.time() + max(0.0, seconds)
+            if until > self._cool_until.get(key, 0.0):
+                self._cool_until[key] = until
+
+    def snapshot(self):
+        """每号「在跑几条 / 还剩几秒冷却」，给面板与排障用。"""
+        now = time.time()
+        with self._lock:
+            keys = set(self._semaphores) | set(self._inflight) | set(self._cool_until)
+            return {key: {
+                "in_flight": self._inflight.get(key, 0),
+                "cooling_s": round(max(0.0, self._cool_until.get(key, 0.0) - now), 1),
+            } for key in sorted(keys)}
+
+
+_CODEARTS_POOL = _CodeartsAccountPool()
+
+
+class _CodeartsLease:
+    """一次码道上游连接的持有凭证。
+
+    为什么不直接返回 resp：**并发名额和连接是同一条命** —— 忘了关连接，
+    上游会话就挂到它自己超时；忘了还名额，后面所有请求都排队。把两件事绑在
+    一个对象上，调用方只需要在 finally 里 close() 一次。
+
+    从 2026-10-22 起还多带一条**上游会话**：上游的并发闸不认「请求结束」，
+    只认 ``chat-session/heartbeat`` 的 busy/idle（见 ca_codearts.heartbeat）。
+    所以 close() 除了关连接、还本地名额，还要 idle 注销 —— 三件事缺一，名额
+    都会在不同的地方泄漏。
+    """
+
+    def __init__(self, resp, account_label, started_at, account_key,
+                 session_id=None, session_cred=None):
+        self.resp = resp
+        self.account_label = account_label
+        self.started_at = started_at
+        self.account_key = account_key
+        self.session_id = session_id
+        self._session_cred = session_cred
+        self._last_ping = time.time()
+        self._closed = False
+
+    def keepalive(self):
+        """流式期间按需续期 busy（默认 30s 一次）。返回是否真的发了一次。"""
+        if not self.session_id or not self._session_cred:
+            return False
+        now = time.time()
+        if (now - self._last_ping) < CODEARTS_SESSION_PING:
+            return False
+        self._last_ping = now
+        ok, detail = ca_codearts.heartbeat(
+            *(self._session_cred + (self.session_id, "busy")))
+        if not ok:
+            # 续期失败**不释放名额**：一次网络抖动不等于对话结束，急着 idle
+            # 会把还活着的对话踢掉。收尾时照常 idle。
+            log("codearts session renew failed: %s" % detail)
+        return True
+
+    def lines(self, abort_check=None, stats=None):
+        """逐行吐出上游 SSE（str），顺手按需续期会话。"""
+        if not self.session_id:
+            return ca_codearts.iter_sse(self.resp, abort_check, stats=stats)
+        return self._lines_with_ping(abort_check, stats)
+
+    def _lines_with_ping(self, abort_check, stats):
+        for line in ca_codearts.iter_sse(self.resp, abort_check, stats=stats):
+            self.keepalive()
+            yield line
+
+    def byte_lines(self, abort_check=None, stats=None):
+        """逐行吐出（bytes）—— Responses / Messages 的事件翻译器吃这种。"""
+        for line in self.lines(abort_check, stats):
+            yield line.encode("utf-8")
+
+    def close(self):
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self.resp.close()      # 关上游连接 = 上游立刻回收这条会话
+        except Exception:
+            pass
+        _CODEARTS_POOL.release(self.account_key)
+        if self.session_id and self._session_cred:
+            ok, detail = ca_codearts.heartbeat(
+                *(self._session_cred + (self.session_id, "idle")))
+            if not ok:
+                log("codearts session idle failed: %s" % detail)
+
+
+def _codearts_max_tokens(payload):
+    """请求里的输出上限，缺省 4096。非数字一律按缺省，别把坏值传给上游。"""
+    value = (payload.get("max_tokens")
+             or payload.get("max_completion_tokens") or 4096)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 4096
+
+
+def _tap_codearts_sse(lines, sink):
+    """把 usage / 帧内错误顺手记进 sink，再把行原样交给翻译器。
+
+    事件翻译器只负责出事件、不管记账；流式路径没有聚合结果，用量只能在这里捞。
+    """
+    for line in lines:
+        text = line.decode("utf-8", "replace") if isinstance(line, bytes) else line
+        stripped = text.strip()
+        if stripped.startswith("data:"):
+            raw = stripped[5:].strip()
+            if raw and raw != "[DONE]":
+                try:
+                    piece = json.loads(raw)
+                except Exception:
+                    piece = None
+                if isinstance(piece, dict):
+                    if isinstance(piece.get("usage"), dict):
+                        sink["usage"] = piece["usage"]
+                    if piece.get("error_code") and not sink.get("error"):
+                        sink["error"] = "%s %s" % (
+                            piece.get("error_code"), piece.get("error_msg") or "")
+        yield line
 
 _CODEARTS_CATALOG = {"at": 0.0, "models": [], "errors": {}}
 _CODEARTS_CATALOG_TTL = 300.0
@@ -10488,6 +10791,12 @@ def codearts_model_meta(m):
     pricing = m.get("creditPricing")
     if pricing:
         meta["creditPricing"] = pricing
+    # ---- 缺省采样参数 ----
+    # 上游 AgentCenter 的真实默认值（ca_codearts.BUILTIN_MODEL_SAMPLING）。
+    # model_entry 会原样带到 /v1/models，面板的「默认采样参数」列读的就是它。
+    for key in ("temperature", "top_p"):
+        if m.get(key) is not None:
+            meta[key] = m[key]
     # ---- 思考档位 ----
     # 逆向后确认：strengths 里的字符串直接就是请求里的 reasoning_effort
     # （客户端 mB() 拼成 {reasoningEffort: 值}）。上游**不接受关闭思考**，
@@ -10537,13 +10846,111 @@ def _codearts_retryable(status, text):
             or "并发会话数已达上限" in body)
 
 
+def _codearts_error_detail(text):
+    """从码道的错误体里抠出 (错误码, 人能看的说明)。"""
+    try:
+        d = json.loads(text or "")
+        detail = (d.get("error_msg") or d.get("message")
+                  or (d.get("error") or {}).get("message") or "")
+        code = (d.get("error_code")
+                or (d.get("error") or {}).get("code") or "")
+        return str(code), str(detail)
+    except Exception:
+        return "", (text or "")[:200]
+
+
+def _codearts_frame_status(text):
+    """帧内错误（HTTP 200 + error_code）→ 该回给客户端的 ``(状态码, type)``。
+
+    上游把很多错误塞在 SSE 帧里而不是 HTTP 状态码上。首帧之前我们还来得及
+    回一个真正的状态码，就别一律当 502 —— 客户端靠它决定「等一会儿重试」
+    还是「这个请求本身就错了，改了再发」。
+    """
+    body = text or ""
+    if ("TM.00001041" in body or "并发会话数已达上限" in body
+            or "ModelArts.811" in body or "rate limit" in body.lower()
+            or "too many requests" in body.lower()):
+        return 429, "rate_limit_error"
+    if ("001001005" in body or "param is invalid" in body
+            or "参数校验" in body):
+        return 400, "invalid_request_error"
+    return 502, "upstream_error"
+
+
+class _CodeartsRateLimit(Exception):
+    """给 ``_rate_limited`` 用的最小载体（码道路径没有现成的异常对象）。"""
+
+    def __init__(self, message, wait=10):
+        Exception.__init__(self, message)
+        self.message = message
+        self.wait = max(1, int(wait))
+        self.detail = ""
+
+
+def _codearts_fail_spec(status, code, detail, anthropic=False):
+    """上游失败 → ``(HTTP 状态码, error.type)``。
+
+    这张表照 CodeArts2API-Go 的 ``internal/apierr``（README 里也有一份）：
+
+      | 情况 | 状态码 | OpenAI type | Anthropic type |
+      |---|---|---|---|
+      | 账号池为空 | 503 | server_error | overloaded_error |
+      | **凭据失效（无法续期）** | 502 | **credentials_error** | authentication_error |
+      | 上游并发上限 / 429 | 429 | rate_limit_error | rate_limit_error |
+      | 参数 / 模型名不合法 | 400 | invalid_request_error | invalid_request_error |
+      | 模型不存在 | 404 | invalid_request_error | invalid_request_error |
+      | 上游 5xx / 网络 | 502 | upstream_error | overloaded_error |
+
+    关键是**别把「重试没意义」的错报成 502**：以前我们把 max_tokens 超限
+    （`InferHub.001001005.400`）也回 502 upstream_error，客户端当成网关抖动
+    反复重试同一条错误请求，日志里每次都是同一个 400。
+    """
+    text = "%s %s" % (code or "", detail or "")
+    low = text.lower()
+    # 1041 在 HTTP 上是 400，但语义是「等会儿再来」，所以先于参数错判断
+    if (status == 429 or "tm.00001041" in low or "modelarts.811" in low
+            or "rate limit" in low or "too many requests" in low
+            or "并发会话数已达上限" in text):
+        return 429, "rate_limit_error"
+    if (status in (401, 403) or "apig.0301" in low or "apig.0303" in low
+            or "sts5.18" in low or "security token" in low
+            or "authentication" in low or "authorization" in low):
+        return 502, ("authentication_error" if anthropic else "credentials_error")
+    if (status == 404 or "002002009" in low or "model is not registered" in low
+            or "model not found" in low or "模型不存在" in text):
+        return 404, "invalid_request_error"
+    if (status == 400 or "001001005" in low or "param is invalid" in low
+            or "malformed_json" in low or "参数" in text):
+        return 400, "invalid_request_error"
+    return 502, ("overloaded_error" if anthropic else "upstream_error")
+
+
+def _codearts_concurrency_full(status, text):
+    """这一发是不是撞了「账号并发会话已满」（TM.00001041）？
+
+    单独认这个码，是因为它该用**短退避**：名额在别人（或上一轮没释放的会话）
+    手里，通常几秒就让出来；按通用限流的 5/12/25/40 退避，82 秒全花在等一个
+    早就没人要的答案上，客户端早就自己重试了。
+    """
+    body = text or ""
+    return ("TM.00001041" in body or "并发会话数已达上限" in body)
+
+
 def _collect_codearts_sse(text):
-    """把码道的 SSE 流聚合成 (正文, 推理, usage, 帧内错误)。
+    """把码道的 SSE 流聚合成 (正文, 推理, usage, 帧内错误, tool_calls)。
 
     码道回的是 OpenAI 形状的 chunk，但错误可能藏在帧里而 HTTP 仍是 200，
     所以必须逐帧扫 error_code —— 只看状态码会把失败读成成功。
+
+    tool_calls（2026-10-21 补）：上游 function calling 是原生支持的，会以
+    `delta.tool_calls` 逐帧下发（同一个 index 的 arguments 分片续接），外加
+    `finish_reason="tool_calls"`。**以前这里只收 content / reasoning_content，
+    tool_calls 被整段丢掉** —— 上游明明正确地请求了工具，网关聚合完就把
+    delta 清空，于是渲染层永远看不到调用，模型自己编的 `<tool_call>` 文本
+    反而被当成正文发出去。
     """
     content, reasoning, usage, err = "", "", {}, ""
+    tool_calls = []
     for line in (text or "").splitlines():
         if not line.startswith("data:"):
             continue
@@ -10564,7 +10971,35 @@ def _collect_codearts_sse(text):
             delta = choice.get("delta") or {}
             content += delta.get("content") or ""
             reasoning += delta.get("reasoning_content") or ""
-    return content, reasoning, usage, err
+            for call in delta.get("tool_calls") or []:
+                _merge_tool_call(tool_calls, call)
+    return content, reasoning, usage, err, tool_calls
+
+
+def _merge_tool_call(calls, call):
+    """把一帧 delta.tool_calls 并进累积列表。
+
+    同一个 index 会分多帧到达：第一帧带 id/type/name，后面的帧只带 arguments
+    的增量片段。按 index 归并，缺失字段沿用已有值。
+    """
+    if not isinstance(call, dict):
+        return
+    try:
+        index = int(call.get("index") or 0)
+    except (TypeError, ValueError):
+        index = len(calls)
+    while len(calls) <= index:
+        calls.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
+    slot = calls[index]
+    for key in ("id", "type"):
+        if call.get(key):
+            slot[key] = call[key]
+    fn = call.get("function") or {}
+    target = slot.setdefault("function", {"name": "", "arguments": ""})
+    if fn.get("name"):
+        target["name"] = fn["name"]
+    if fn.get("arguments"):
+        target["arguments"] = (target.get("arguments") or "") + fn["arguments"]
 
 
 class _BufferedSSELines:
@@ -14226,7 +14661,15 @@ def additional_tools_from_input(payload):
 
 
 def _tools_for_chat(tools):
-    """Downgrade custom tools; leave everything else untouched."""
+    """Downgrade custom tools; leave everything else untouched.
+
+    注意：**这两个上游要的工具形状不一样**，别在这里做统一归一。
+    WorkBuddy 收的是 Responses 那种扁平声明（{"type":"function","name":…}），
+    原样透传就对了，`_test_custom_tools.py` 也按这个契约锁着。
+    码道（inferhub）只认 Chat 的包裹形状（{"function":{"name":…}}），漏了会回
+    `InferHub.001001015.400 Tool function cannot empty` —— 那层转换在
+    `ca_codearts.normalize_tools` 里按码道自己的规矩做，不污染这条通用路径。
+    """
     out = []
     for t in tools or []:
         if not isinstance(t, dict):
@@ -16202,6 +16645,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             pass
         log(fmt % args)
+
     def _json(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
         self.send_response(code)
@@ -16415,11 +16859,18 @@ class Handler(BaseHTTPRequestHandler):
         if hint:
             error["gateway_hint"] = hint
         self._json(code, {"error": error})
+        # 返回 RESPONDED 而不是 None（2026-10-21 修）：调用方把返回值当
+        # 「错误元组」传给 _codearts_chat_result 一类「返回 (error, result)」的
+        # 函数，靠 `if error is not None` 判断是否已经回过响应。原先这里隐式
+        # 返回 None，于是已回完 502 的路径又被当成成功继续走 result["model"]，
+        # 每条失败请求都在日志里留一段 TypeError 栈，还把真实错误埋掉。
+        return RESPONDED
     def _anthropic_error(self, code, message, err_type=None):
         """Reply with the Anthropic JSON error envelope, not OpenAI's."""
         self._handle_expect_continue()
         self._discard_body()
-        return self._json(code, anthropic_error_obj(code, message, err_type))
+        self._json(code, anthropic_error_obj(code, message, err_type))
+        return RESPONDED
     def _rate_limited(self, exc):
         """429 with Retry-After, so clients back off instead of hammering.
 
@@ -16458,6 +16909,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
+        return RESPONDED
     def _anthropic_rate_limited(self, exc):
         """429 with Retry-After in the Anthropic error envelope."""
         wait = max(1, int(getattr(exc, "wait", 60) or 60))
@@ -16477,10 +16929,33 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
+        return RESPONDED
+
+    def _codearts_fail(self, status, code, detail, label="", anthropic=False):
+        """按 `_codearts_fail_spec` 写出错误响应，返回「已响应」哨兵。
+
+        429 走 `_rate_limited`（带 Retry-After，客户端才知道等多久），
+        其余走 `_error` / `_anthropic_error`。
+        """
+        st, et = _codearts_fail_spec(status, code, detail, anthropic)
+        text = "%s %s" % (code or "", detail or "")
+        msg = "codearts %s: %s" % (code or "error", detail or "")
+        if label:
+            msg += " (account %s)" % label
+        if st == 429:
+            wait = (CODEARTS_BUSY_COOLDOWN
+                    if ("tm.00001041" in text.lower()
+                        or "并发会话数已达上限" in text)
+                    else CODEARTS_TPM_COOLDOWN)
+            exc = _CodeartsRateLimit(msg, wait)
+            return (self._anthropic_rate_limited(exc) if anthropic
+                    else self._rate_limited(exc))
+        if anthropic:
+            return self._anthropic_error(st, msg, et)
+        return self._error(st, msg, et)
 
     def _download(self, filename, obj):
-        """Send a JSON document as a browser download.
-        Content-Disposition is quoted because the filename is generated from
+        """Send a JSON document as a browser download.        Content-Disposition is quoted because the filename is generated from
         user-controlled parts (the realm filter) and could otherwise break the
         header or allow a response-splitting attempt.
         """
@@ -16610,9 +17085,14 @@ class Handler(BaseHTTPRequestHandler):
         hint = ("send it as 'Authorization: Bearer <key>' or '?key=<key>'; "
                 "copy the value from the panel's 设置 page")
         try:
-            if not any(k.get("enabled") for k in configured_keys()) and not API_KEY:
-                hint = ("no key is configured - open the dashboard and add one, "
-                        "or restart with --api-key")
+            if not any(k.get("enabled") for k in configured_keys()):
+                if panel_keys_configured():
+                    hint = "no enabled key - open the dashboard and add one"
+                elif API_KEY:
+                    hint = "check the --api-key / API_KEY value used to start the gateway"
+                else:
+                    hint = ("no key is configured - open the dashboard and add one, "
+                            "or restart with --api-key")
         except Exception:
             pass
         self._error(401, "invalid api key - " + hint, "invalid_request_error")
@@ -16841,12 +17321,26 @@ class Handler(BaseHTTPRequestHandler):
                         existing["credits"] = str(
                             item.get("creditRatio") or pricing.get("ratio") or ""
                         ).rstrip("xX").strip() or existing.get("credits")
+                    # 重名模型的采样默认值也以码道为准：请求实际拐去了码道，
+                    # 展示成 WorkBuddy 那套默认值等于说错话。
+                    for key in ("temperature", "top_p"):
+                        if item.get(key) is not None:
+                            existing[key] = item[key]
                     strengths = item.get("thinkingStrengths") or []
                     if strengths:
                         existing["reasoning_efforts"] = list(strengths)
                         existing["reasoning_default_effort"] = (
                             item.get("thinkingDefault") or strengths[0])
                         existing["reasoning_can_disable"] = False
+                    else:
+                        # 码道对这几个重名模型没有可选档位（实测只有
+                        # GLM-5.2 / glm-5.2-sft-harmony 有）。请求实际走码道，
+                        # 留着 WorkBuddy 的档位列表会让面板展示一组上游根本
+                        # 不认的档位；清掉后按「原生」显示。
+                        for key in ("reasoning_efforts", "reasoning_default_effort",
+                                    "reasoning_fixed_effort",
+                                    "reasoning_can_disable"):
+                            existing.pop(key, None)
                 known.add(item["id"])
             # 始终带出码道这一段的诊断信息：清单里没出现码道模型时，
             # 调用方/面板要能一眼看出是「没账号」还是「取数失败」。
@@ -17108,6 +17602,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authorized():
             return
         items = []
+        # 运行期状态（在跑几条 / 还剩几秒冷却）：多账号时面板要能看出「谁在
+        # 干活、谁被晾着」，否则「为什么这个号不接活」只能靠猜日志。
+        runtime = _CODEARTS_POOL.snapshot()
         for session in ca_codearts.load_sessions(ACCOUNTS_DIR):
             info = ca_codearts.summarize(session)
             info["file"] = os.path.basename(
@@ -17131,6 +17628,19 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 info["credit"] = None
                 info["creditError"] = str(exc)
+            # 每日签到（活动页「每日签到领 1000 积分」）。第三个体系：token 额度
+            # 走 opengw benefit，积分总量走 snap-manager，签到走 snap-access
+            # /v1/ops。清单按 AK 缓存一分钟，轮询不会每次都打上游。
+            try:
+                info["welfare"] = ca_codearts.welfare_daily(
+                    session.get("accessKey"), session.get("secretKey"),
+                    session.get("securitytoken"))
+            except Exception as exc:
+                info["welfare"] = None
+                info["welfareError"] = str(exc)
+            info["runtime"] = runtime.get(
+                str(info.get("account_id") or ""),
+                {"in_flight": 0, "cooling_s": 0.0})
             items.append(info)
         try:
             port = self.server.server_address[1]
@@ -17139,6 +17649,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {
             "accounts": items,
             "count": len(items),
+            # 每号并发容量（上游账号级上限 3，网关默认用 2，留 1 个给 IDE）
+            "concurrency_per_account": CODEARTS_CONCURRENCY,
+            "pool": runtime,
             "port": port,
             "callbackPath": ca_codearts.AUTH_REDIRECT_PATH,
         })
@@ -17185,6 +17698,52 @@ class Handler(BaseHTTPRequestHandler):
                        "accountId": acct.get("id") or "", "label": label,
                        "balance": None}
                 add_log_entry(f"[账号] 码道 [{label}] 领取每日额度失败: {exc}",
+                              level="WARN", tag="accounts")
+            results.append(res)
+        return self._json(200, {"results": results})
+
+    def _route_codearts_welfare_claim(self, payload):
+        """积分签到（活动页「每日签到领 1000 积分」），与领取 token 额度是两回事。"""
+        account_id = payload.get("accountId") or ""
+        sessions = ca_codearts.load_sessions(ACCOUNTS_DIR)
+        if account_id:
+            sessions = [s for s in sessions
+                        if (s.get("account") or {}).get("id") == account_id]
+            if not sessions:
+                return self._error(404, "codearts account not found",
+                                   "invalid_request_error")
+        results = []
+        for session in sessions:
+            acct = session.get("account") or {}
+            label = acct.get("label") or acct.get("id") or "码道账号"
+            try:
+                session = ca_codearts.ensure_fresh_session(
+                    ACCOUNTS_DIR, session, CODEARTS_REFRESH_MARGIN)
+                acct = session.get("account") or acct
+                label = acct.get("label") or acct.get("id") or label
+            except Exception as exc:  # noqa: BLE001
+                log("codearts: welfare claim renew failed for %s: %s" % (label, exc),
+                    level="WARN")
+            try:
+                res = ca_codearts.welfare_claim_daily(
+                    session.get("accessKey"), session.get("secretKey"),
+                    session.get("securitytoken"))
+                res["accountId"] = acct.get("id") or ""
+                res["label"] = label
+                amount = res.get("amount")
+                extra = ("+%s 积分" % amount) if amount else "已到账"
+                if res.get("already"):
+                    add_log_entry(
+                        f"[账号] 码道 [{label}] 积分签到: 今日已签到（{extra}）",
+                        tag="accounts")
+                else:
+                    add_log_entry(
+                        f"[账号] 码道 [{label}] 积分签到: {extra}", tag="accounts")
+            except Exception as exc:
+                res = {"ok": False, "already": False,
+                       "msg": "签到失败: %s" % exc,
+                       "accountId": acct.get("id") or "", "label": label}
+                add_log_entry(f"[账号] 码道 [{label}] 积分签到失败: {exc}",
                               level="WARN", tag="accounts")
             results.append(res)
         return self._json(200, {"results": results})
@@ -17359,18 +17918,18 @@ class Handler(BaseHTTPRequestHandler):
             return
         if PRICING:
             return self._json(200, PRICING.status())
+        # 价格估算体系已下线（2026-10-22）：这里只回一个「不存在」的状态，
+        # 面板不会再拉取价表，也不再显示任何折算金额。
         return self._json(200, {
             "interval_minutes": 0.0, "enabled": False, "running": False,
-            "master_enabled": ca_settings.pricing_enabled(ACCOUNTS_DIR),
+            "master_enabled": False,
             "policies": 0, "models": 0, "current": {}, "logs": [],
             "gaps": [], "gap_summary": {"total": 0, "or_missing": 0,
                                         "variant_unmatched": 0, "aliases": 0,
-                                        "variants_enabled":
-                                            ca_settings.pricing_variant_inherit(ACCOUNTS_DIR)},
-            "variant_inherit": ca_settings.pricing_variant_inherit(ACCOUNTS_DIR),
-            "overrides_file": ca_pricing.overrides_path(),
-            "policies_file": ca_pricing.policies_path(),
-            "timeline": ca_pricing.timeline_path(), "msg": "未运行",
+                                        "variants_enabled": False},
+            "variant_inherit": False,
+            "overrides_file": "", "policies_file": "", "timeline": "",
+            "msg": "价格估算体系已移除，本网关只记积分",
         })
 
     def _get_settings(self):
@@ -17866,22 +18425,13 @@ class Handler(BaseHTTPRequestHandler):
                                    "invalid_request_error")
             reply["ui_language"] = ca_settings.set_ui_language(ACCOUNTS_DIR, raw)
         if "pricing_variant_inherit" in payload:
-            # Strictly a JSON boolean, like the other switches: "false" as a
-            # string would be truthy and silently keep the feature on.
+            # 价格估算体系已下线（2026-10-22）：开关还认得，但不再有任何效果。
             raw = payload.get("pricing_variant_inherit")
             if not isinstance(raw, bool):
                 return self._error(400, "pricing_variant_inherit must be true or false",
                                    "invalid_request_error")
-            previous = ca_settings.pricing_variant_inherit(ACCOUNTS_DIR)
-            ca_settings.set_pricing_variant_inherit(ACCOUNTS_DIR, raw)
             reply["pricing_variant_inherit"] = raw
-            if PRICING and previous != raw:
-                # The switch only takes effect on the next fetch - a refresh
-                # drops (off) or adds (on) the suffix-inherited assignments -
-                # so kick one off rather than waiting out the interval.
-                threading.Thread(target=PRICING.run_once, daemon=True,
-                                 name="price-refresh-inherit").start()
-                reply["pricing_refresh_started"] = True
+            reply["pricing_removed"] = True
         if "enable_anthropic_messages" in payload:
             raw = payload.get("enable_anthropic_messages")
             if not isinstance(raw, bool):
@@ -18174,15 +18724,46 @@ class Handler(BaseHTTPRequestHandler):
             current = str(payload.get("current") or "")
             new = str(payload.get("new") or "")
             if not ca_settings.verify_panel_password(ACCOUNTS_DIR, current):
-                return self._error(401, "current password is wrong", "invalid_request_error")
+                # 当前密码不对。这条 401 必须和「会话失效」区分开：以前前端
+                # 把两者的 401 一起当掉线，令牌被清、登录闸门弹出来，错误
+                # 文案还被 toast 的 'unauthorized' 过滤掉——用户看到的就是
+                # 「点了修改，没提示，直接回到登录页」（2026-10-22 线上反馈）。
+                # 前端现在用 localAuth 声明这条 401 不动会话，并把这段文案
+                # 原样、持久地显示在表单下面。
+                return self._error(
+                    401,
+                    "当前密码不正确，请重新输入；若忘了，可在服务端用 --panel-password-force 重置",
+                    "invalid_request_error")
             if len(new) < 4:
                 return self._error(400, "new password must be at least 4 characters", "invalid_request_error")
-            ca_settings.set_panel_password(ACCOUNTS_DIR, new)
-            if new != ca_settings.DEFAULT_PANEL_PASSWORD:
-                # Rotating the password invalidates every other browser session.
-                PANEL.revoke_all()
-            token = PANEL.create()
-            return self._json(200, {"ok": True, "token": token})
+            if new == current:
+                # 「改成一个一样的密码」是合法请求但什么都不变；如果回 200，
+                # 用户会以为改成功了，然后拿旧密码去登录——正是「改完还是原来
+                # 的密码」这种反馈。明确拒绝，让调用方看到原因。
+                return self._error(
+                    400,
+                    "新密码不能与当前密码相同",
+                    "invalid_request_error")
+            # source='panel'：重启时不要再被 .credentials 的旧值覆盖
+            ca_settings.set_panel_password(ACCOUNTS_DIR, new, source="panel")
+            # 顺手把 .credentials 也改成新值，让「面板」与「启动参数」从此一致。
+            # 失败（文件只读 / 不存在）也不算改密码失败：source=panel 已经保证
+            # 重启后仍然是这个密码。只是下次运维改 .credentials 会显得没生效。
+            env_file = ca_settings.env_password_path(os.path.dirname(
+                os.path.abspath(__file__)))
+            if new == ca_settings.DEFAULT_PANEL_PASSWORD:
+                synced = False          # 默认密码不写进 env 文件
+            else:
+                synced = ca_settings.sync_env_password(env_file, new)
+                if not synced:
+                    log("panel      : could not sync %s, the new password still "
+                        "survives restarts (panel source)" % env_file)
+            # Rotating the password invalidates every browser session, including
+            # this one: the dashboard must come back to the login gate and use
+            # the new password. Handing out a fresh token here let the old tab
+            # stay logged in, which looked like the change had not taken effect.
+            PANEL.revoke_all()
+            return self._json(200, {"ok": True, "synced_env": bool(synced)})
         return self._error(404, "not found", "invalid_request_error")
     def _handle_accounts(self, path, payload):
         """Account-management endpoints (dashboard uses these)."""
@@ -18228,6 +18809,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_codearts_refresh_catalog(payload)
         if path == "/accounts/codearts/claim":
             return self._route_codearts_claim(payload)
+        if path == "/accounts/codearts/welfare/claim":
+            return self._route_codearts_welfare_claim(payload)
         if path == "/accounts/codearts/delete":
             return self._route_codearts_delete(payload)
         if path == "/accounts/import/desktop":
@@ -18479,18 +19062,9 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"ok": False, "msg": "调度器未初始化"})
 
     def _route_pricing_refresh(self, payload):
-        # Fetching takes tens of seconds, so it runs on its own thread and the
-        # panel polls /pricing for the outcome.
-        if not PRICING:
-            return self._json(200, {"ok": False, "msg": "价格刷新未运行"})
-        if not ca_settings.pricing_enabled(ACCOUNTS_DIR):
-            return self._json(200, {"ok": False, "msg": "价估算已关闭，请先启用"})
-        threading.Thread(target=PRICING.run_once, daemon=True,
-                         name="price-refresh-manual").start()
-        out = PRICING.status()
-        out["ok"] = True
-        out["msg"] = "已开始抓取，稍候刷新查看结果"
-        return self._json(200, out)
+        """价格估算体系已下线（2026-10-22），保留接口只为给出明确答复。"""
+        return self._json(200, {"ok": False, "running": False,
+                                "msg": "价格估算体系已移除，本网关只记积分"})
 
     def _route_catalog_refresh(self, payload):
         """面板「刷新模型清单」：强制向上游拉一次指定版本的目录。
@@ -18509,44 +19083,14 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"ok": True})
 
     def _route_pricing_mapping(self, payload):
-        """面板手填一条「hub 模型 → OpenRouter id」映射。
+        """价格估算体系已下线（2026-10-22）。
 
-        写进 usage/pricing-overrides.json（运行期覆盖，不改源码里的
-        OVERRIDES，也不随镜像升级丢失），随后立刻触发一次取价，让这条映射
-        在几秒内生效。or_id 为空表示删除该映射。写入只认形状像 OpenRouter
-        id 的值，并在快照里有该条目时予以确认（没有也接受，但要如实说明，
-        因为上游随时可能刚上架而本地清单还没刷新）。
+        以前这里给面板手填「hub 模型 → OpenRouter id」的映射并触发取价。
+        现在整套价格估算移除，接口保留为「明确拒绝」，避免前端拿到 404 后
+        显示成网络错误。
         """
-        if PRICING is None:
-            return self._json(200, {"ok": False, "msg": "价格刷新未运行"})
-        if not ca_settings.pricing_enabled(ACCOUNTS_DIR):
-            return self._json(200, {"ok": False, "msg": "价估算已关闭，请先启用"})
-        model = str(payload.get("model") or "").strip()
-        or_id = str(payload.get("or_id") or "").strip()
-        if not model:
-            return self._error(400, "model is required", "invalid_request_error")
-        if or_id and not re.match(r"^[A-Za-z0-9._\-]+/[A-Za-z0-9._\-:]+$", or_id):
-            return self._error(400, "or_id must look like 'vendor/model'",
-                               "invalid_request_error")
-        or_models, _by_norm = ca_pricing.live_index()
-        known = bool(or_id) and or_id in (or_models or {})
-        ca_pricing.save_runtime_override(model, or_id)
-        PRICING.invalidate_gaps()
-        threading.Thread(target=PRICING.run_once, daemon=True,
-                         name="price-refresh-mapping").start()
-        if not or_id:
-            msg = "已删除 %s 的手填映射，下次取价起按自动匹配" % model
-        elif known:
-            msg = "已记录 %s → %s，正在重新取价" % (model, or_id)
-        else:
-            msg = ("已记录 %s → %s；本次快照里还没看到该条目，"
-                   "取价后仍可能显示未定价" % (model, or_id))
-        add_log_entry("[定价] 面板手填映射：%s → %s%s"
-                      % (model, or_id or "(清除)",
-                         "" if (known or not or_id) else "（快照暂无此条目）"),
-                      tag="pricing")
-        return self._json(200, {"ok": True, "model": model, "or_id": or_id,
-                                "known": known, "msg": msg})
+        return self._json(200, {"ok": False,
+                                "msg": "价格估算体系已移除，本网关只记积分"})
 
     def _route_realm(self, payload):
         # Changing the exit affects every key that is not realm-bound, so
@@ -19398,7 +19942,36 @@ class Handler(BaseHTTPRequestHandler):
 
 
     # ---- 码道模型：按模型名分流到华为云推理入口 ----
-    def _codearts_chat_result(self, payload, want_stream=None, error_factory=None):
+    def _client_disconnected(self):
+        """下游客户端是不是已经把连接关了（或发了 FIN）。
+
+        用在读上游的循环里：SSE 是一段段吐的，网关每读一块就问一次，发现对端
+        走了就掐掉上游 —— 否则那个回答会一直被"读"下去，账号的并发会话名额
+        （只有 3 个）就一直被一个没人要的请求占着。
+
+        **只认 FIN，不认"有数据可读"**：HTTP/1.1 keep-alive 下客户端在处理期间
+        发数据是异常行为，但把"有数据"当成断开会让正常的 pipelining 客户端
+        被误杀。        所以 peek 到一个字节就返回 False，peek 到空字节（读到 EOF）
+        才判断开。socket 已坏（对方 RST、本地已 close）一律按断开处理。
+
+        **没有 connection 属性时返回 False**：单元测试的假 handler 就是这样，
+        它没有真 socket，不能因此被判成「客户端已断开」—— 那样每个用例都会
+        走进 aborted 分支，看起来像「角色归一坏了」。
+        """
+        try:
+            sock = self.connection
+        except AttributeError:
+            return False
+        try:
+            readable, _, _ = select.select([sock], [], [], 0)
+            if not readable:
+                return False
+            return not sock.recv(1, socket.MSG_PEEK)
+        except (OSError, ValueError):
+            return True
+
+    def _codearts_chat_result(self, payload, want_stream=None, error_factory=None,
+                              anthropic=False):
         """跑一次码道推理，把 SSE 聚合成结果。
 
         上游**只支持流式**（glm-5.3 传非流式直接 400 空响应体），所以这里
@@ -19428,41 +20001,97 @@ class Handler(BaseHTTPRequestHandler):
         except (TypeError, ValueError):
             max_tokens = 4096
 
-        session = pick_codearts_session()
-        if session is None:
-            return fail(
-                503,
-                "no usable codearts account (STS expired or not logged in); "
-                "re-authorize it in the panel",
-                "invalid_request_error"), None
-
-        account_label = (session.get("account") or {}).get("label")
         t_start = time.time()
         status, text, last_exc = None, "", None
-        # 三试：瞬时限流/并发上限退避重试；超时也值得再给一次机会。
-        delays = (5, 12, 25, 40)
-        for attempt in range(len(delays) + 1):
+        account_label = None
+        # 每轮都重新向池子要号：失败时给这个号打冷却，下一轮自然换号。
+        delays = CODEARTS_BUSY_DELAYS
+        attempt = 0
+        while True:
+            if self._client_disconnected():
+                log("codearts aborted before retry: client gone model=%s" % model)
+                return None, {"model": model, "content": "", "reasoning": "",
+                              "usage": {}, "tool_calls": [], "raw": "",
+                              "want_stream": bool(payload.get("stream")),
+                              "aborted": True}
+            wait = (CODEARTS_SLOT_WAIT if attempt == 0
+                    else min(2.0, CODEARTS_SLOT_WAIT))
+            session, account_key = _CODEARTS_POOL.acquire(wait)
+            if session is None:
+                if not _CODEARTS_POOL._usable():
+                    return fail(
+                        503,
+                        "no usable codearts account (STS expired or not logged "
+                        "in); re-authorize it in the panel",
+                        "invalid_request_error"), None
+                log("codearts no slot: model=%s accounts=%s"
+                    % (model, _CODEARTS_POOL.snapshot()))
+                return fail(
+                    429,
+                    "gateway busy: every codearts account is at capacity "
+                    "(%d per account); retry in a few seconds"
+                    % CODEARTS_CONCURRENCY,
+                    "rate_limit_error"), None
+
+            account_label = (session.get("account") or {}).get("label")
+            # 与流式路径同一套会话生命周期：busy 登记 → 请求带 user-session-id
+            # → 读完 idle 注销。聚合路径也要走，否则非流式请求照样漏名额。
+            cred = (session.get("accessKey"), session.get("secretKey"),
+                    session.get("securitytoken"))
+            session_id = ca_codearts.new_session_id()
+            hb_ok, hb_detail = ca_codearts.heartbeat(
+                *(cred + (session_id, "busy")), timeout=6)
+            if not hb_ok:
+                log("codearts session busy failed: %s" % hb_detail)
             try:
-                # 闸门只包住「向上游要结果」这一段：并发上限是账号级的，
-                # 排队 waiting 期间不该占着名额。
-                with _CODEARTS_SLOTS:
-                    # 思考开关：客户端给了 thinking / reasoning_effort 才透传，
-                    # 没给就沿用上游默认（保持旧行为不变）。
-                    status, text = ca_codearts.chat_for_model(
-                        session.get("accessKey"), session.get("secretKey"),
-                        session.get("securitytoken"), model, messages,
-                        max_tokens=max_tokens, stream=True,
-                        extra=ca_codearts.thinking_extra_from(payload))
+                # 思考开关：客户端给了 thinking / reasoning_effort 才透传，
+                # 没给就沿用上游默认（保持旧行为不变）。
+                # tools / tool_choice 必须一起送（上游原生支持 function
+                # calling）；不送模型就看不到工具，只能编 <tool_call> 文本。
+                status, text = ca_codearts.chat_for_model(
+                    cred[0], cred[1], cred[2], model, messages,
+                    max_tokens=max_tokens, stream=True,
+                    extra=ca_codearts.thinking_extra_from(payload),
+                    tools=payload.get("tools"),
+                    tool_choice=payload.get("tool_choice"),
+                    abort_check=self._client_disconnected,
+                    session_id=session_id)
                 last_exc = None
+            except ca_codearts.ChatAborted:
+                # 客户端已经走了：不再重试、不再写错误记录（这不是上游故障）。
+                log("codearts aborted: client gone, upstream closed model=%s" % model)
+                return None, {"model": model, "content": "", "reasoning": "",
+                              "usage": {}, "tool_calls": [],
+                              "raw": "", "want_stream": bool(payload.get("stream")),
+                              "aborted": True}
             except Exception as exc:                 # noqa: BLE001
                 status, text, last_exc = None, "", exc
-            if last_exc is None and not _codearts_retryable(status, text):
+            finally:
+                # 先注销会话、再还本地名额：反过来的话，下一个拿到名额的请求
+                # 可能在上游还没收到 idle 时就开始 busy，两个会话撞在一起。
+                ca_codearts.heartbeat(*(cred + (session_id, "idle")), timeout=6)
+                # 名额只包住「向上游要结果」这一段，读完了立刻还。
+                _CODEARTS_POOL.release(account_key)
+
+            retryable = last_exc is not None or _codearts_retryable(status, text)
+            if retryable and last_exc is None:
+                if _codearts_concurrency_full(status, text):
+                    # 这个号的名额满了：晾几秒，下一轮换号
+                    _CODEARTS_POOL.penalize(account_key, CODEARTS_BUSY_COOLDOWN)
+                    delays = CODEARTS_BUSY_DELAYS
+                elif status == 429 or "ModelArts.811" in (text or ""):
+                    _CODEARTS_POOL.penalize(account_key, CODEARTS_TPM_COOLDOWN)
+                    delays = CODEARTS_RETRY_DELAYS
+                elif status in (401, 403):
+                    _CODEARTS_POOL.penalize(account_key, CODEARTS_AUTH_COOLDOWN)
+            if not retryable or attempt >= len(delays):
                 break
-            if attempt < len(delays):
-                log("codearts retry %d/%d: model=%s cause=%s"
-                    % (attempt + 1, len(delays), model,
-                       (str(last_exc) if last_exc else (text or "")[:120])))
-                time.sleep(delays[attempt])
+            log("codearts retry %d/%d: model=%s acct=%s cause=%s"
+                % (attempt + 1, len(delays), model, account_label,
+                   (str(last_exc) if last_exc else (text or "")[:120])))
+            time.sleep(delays[attempt])
+            attempt += 1
+
         if last_exc is not None:
             record_error(model, 502, str(last_exc)[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
@@ -19471,23 +20100,18 @@ class Handler(BaseHTTPRequestHandler):
                         "upstream_error"), None
 
         if status not in (200, 201):
-            try:
-                d = json.loads(text)
-                detail = (d.get("error_msg") or d.get("message")
-                          or (d.get("error") or {}).get("message") or "")
-                code = (d.get("error_code")
-                        or (d.get("error") or {}).get("code") or "")
-            except Exception:
-                detail, code = text[:200], ""
-            record_error(model, 502, ("%s %s" % (code, detail))[:200],
+            code, detail = _codearts_error_detail(text)
+            st, _et = _codearts_fail_spec(status, code, detail, anthropic)
+            record_error(model, st, ("%s %s" % (code, detail))[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=account_label, key=self._key_id())
-            return fail(
-                502, "codearts returned %s: %s" % (status, detail or code),
-                "upstream_error"), None
+            # 限流 429（带 Retry-After）/ 凭据失效 / 参数错 400 / 模型不存在 404
+            # / 其余 502 —— 同一张表，见 _codearts_fail_spec。
+            return self._codearts_fail(status, code, detail, account_label,
+                                       anthropic), None
 
-        content, reasoning, usage, frame_err = _collect_codearts_sse(text)
-        if frame_err and not content and not reasoning:
+        content, reasoning, usage, frame_err, tool_calls = _collect_codearts_sse(text)
+        if frame_err and not content and not reasoning and not tool_calls:
             record_error(model, 502, frame_err[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=account_label, key=self._key_id())
@@ -19507,19 +20131,384 @@ class Handler(BaseHTTPRequestHandler):
             "content": content,
             "reasoning": reasoning,
             "usage": usage,
+            "tool_calls": tool_calls,
             "raw": text,
             "want_stream": want_stream,
         }
 
+    def _codearts_open_lease(self, payload, model, messages, max_tokens,
+                             fail=None, anthropic=False):
+        """拿**某个账号**的并发名额 + 建连（含重试与换号）。
+
+        三种结果：
+          · ``(error, None)`` —— 已经回过响应，调用方直接 return error；
+          · ``(None, None)``  —— 客户端在等待期间走了，调用方直接 return None；
+          · ``(None, lease)`` —— **调用方必须在 finally 里 lease.close()**。
+
+        每一轮重试都重新向池子要号：失败时先给这个号打冷却（并发满 5s、
+        TPM 20s、授权错 300s），下一轮挑号自然就跳到别的账号去了。这就是
+        多账号的故障转移 —— 不需要额外的分支，冷却表本身就是转移依据。
+
+        重试只发生在还没给客户端发过任何字节之前。一旦开始转发，头部已经
+        承诺 200，就没有干净的退路了 —— 那时出错只能作为帧内事件告知。
+
+        **每一轮都会向上游登记一条会话**（`heartbeat busy` + 请求头带
+        `user-session-id`）。这不是可选项：上游的并发闸不认「请求结束」，
+        不 busy/idle 就只会在服务端超时时才回收，3 个名额会莫名其妙被占满
+        （见 ca_codearts.HEARTBEAT_PATH 的注释）。建连失败时立刻 idle 掉刚
+        busy 的那个 id，避免留下半开会话。
+        """
+        fail = fail or self._error
+        t_start = time.time()
+        status, text, last_exc = None, "", None
+        account_label = None
+        delays = CODEARTS_BUSY_DELAYS      # 先按「名额满」的短节奏
+        attempt = 0
+        while True:
+            if self._client_disconnected():
+                log("codearts aborted before open: client gone model=%s" % model)
+                return None, None
+
+            # 首轮等满（可能是真排队），后续轮等短一点：重试阶段要的是「快点
+            # 换个号试试」，不是继续占着排队位置。
+            wait = CODEARTS_SLOT_WAIT if attempt == 0 else min(
+                2.0, CODEARTS_SLOT_WAIT)
+            session, key = _CODEARTS_POOL.acquire(wait)
+            if session is None:
+                if not _CODEARTS_POOL._usable():
+                    return fail(
+                        503,
+                        "no usable codearts account (STS expired or not logged "
+                        "in); re-authorize it in the panel",
+                        "invalid_request_error"), None
+                log("codearts no slot: model=%s accounts=%s"
+                    % (model, _CODEARTS_POOL.snapshot()))
+                return fail(
+                    429,
+                    "gateway busy: every codearts account is at capacity "
+                    "(%d per account); retry in a few seconds"
+                    % CODEARTS_CONCURRENCY,
+                    "rate_limit_error"), None
+
+            account_label = (session.get("account") or {}).get("label")
+            # 先向上游登记一条会话（busy），再带着同一个 user-session-id 发请求。
+            # 不登记的话，每个请求都会让上游**隐式开一条永不注销的会话** ——
+            # 3 个名额很快占满，之后一律 TM.00001041（2026-10-22 事故：客户端
+            # 连接早断了，上游那边的会话还挂着）。
+            cred = (session.get("accessKey"), session.get("secretKey"),
+                    session.get("securitytoken"))
+            session_id = ca_codearts.new_session_id()
+            hb_ok, hb_detail = ca_codearts.heartbeat(
+                *(cred + (session_id, "busy")), timeout=6)
+            if not hb_ok:
+                # 登记失败**不阻断**：心跳是保命手段，不是前置条件。真拿不到
+                # 名额时 open_chat 会回 1041，走下面的重试 / 换号。
+                log("codearts session busy failed: %s" % hb_detail)
+            try:
+                status, resp, text = ca_codearts.open_chat(
+                    cred[0], cred[1], cred[2], model, messages,
+                    max_tokens=max_tokens, stream=True,
+                    extra=ca_codearts.thinking_extra_from(payload),
+                    tools=payload.get("tools"),
+                    tool_choice=payload.get("tool_choice"),
+                    session_id=session_id)
+                last_exc = None
+            except Exception as exc:            # noqa: BLE001
+                status, resp, text, last_exc = None, None, "", exc
+
+            if resp is not None:
+                return None, _CodeartsLease(resp, account_label, t_start, key,
+                                            session_id=session_id,
+                                            session_cred=cred)
+            # 没拿到句柄：刚 busy 的那个 id 要立刻注销（哪怕 busy 本身没成）。
+            # 不注销，上游可能已经记成半开会话，白占一个名额。
+            ca_codearts.heartbeat(*(cred + (session_id, "idle")), timeout=6)
+
+            # 这一轮失败：先把名额还掉，再决定是换号重试还是放弃。
+            _CODEARTS_POOL.release(key)
+
+            retryable = last_exc is not None or _codearts_retryable(status, text)
+            if retryable and last_exc is None:
+                if _codearts_concurrency_full(status, text):
+                    _CODEARTS_POOL.penalize(key, CODEARTS_BUSY_COOLDOWN)
+                    delays = CODEARTS_BUSY_DELAYS
+                elif status == 429 or "ModelArts.811" in (text or ""):
+                    _CODEARTS_POOL.penalize(key, CODEARTS_TPM_COOLDOWN)
+                    delays = CODEARTS_RETRY_DELAYS
+                elif status in (401, 403):
+                    _CODEARTS_POOL.penalize(key, CODEARTS_AUTH_COOLDOWN)
+            if not retryable or attempt >= len(delays):
+                break
+            log("codearts open retry %d/%d: model=%s acct=%s cause=%s"
+                % (attempt + 1, len(delays), model, account_label,
+                   (str(last_exc) if last_exc else (text or "")[:120])))
+            time.sleep(delays[attempt])
+            attempt += 1
+
+        elapsed_ms = int((time.time() - t_start) * 1000)
+        if last_exc is not None:
+            record_error(model, 502, str(last_exc)[:200],
+                         elapsed_ms=elapsed_ms, account=account_label,
+                         key=self._key_id())
+            return fail(502, "codearts unreachable: %s" % last_exc,
+                        "upstream_error"), None
+
+        code, detail = _codearts_error_detail(text)
+        record_error(model, 502, ("%s %s" % (code, detail))[:200],
+                     elapsed_ms=elapsed_ms, account=account_label,
+                     key=self._key_id())
+        # 按语义映射，见 _codearts_fail_spec：限流 429（带 Retry-After）、
+        # 凭据失效 credentials_error、参数错 400、模型不存在 404、其余 502。
+        # 以前这里一律 502 upstream_error，参数错误会被客户端当网关抖动重试。
+        return self._codearts_fail(status, code, detail, account_label,
+                                   anthropic), None
+
+    def _handle_codearts_chat_stream(self, payload):
+        """把码道的 SSE **边收边转**给客户端。
+
+        这是「转圈几分钟，然后一次性刷出全文」的解药。老路径
+        （``_codearts_chat_result``）要等上游把整条流吐完才回放，客户端在整个
+        生成期间收不到一个字节 —— 一条三千字的回答按 25 tok/s 算要两分钟，
+        客户端只看得到转圈，还可能触发自己的空闲超时（ZCode 4 分钟）后重试，
+        而重试会**再开一个上游会话**，几个叠起来就把账号的 3 个并发名额吃干净
+        （2026-10-22 事故）。
+
+        这里改成逐帧转发：客户端几秒内看到首字，上游吐完即结束、名额立刻释放；
+        客户端中途断开时 iter_sse 的 abort_check 会抛 ChatAborted，finally 里
+        lease.close() 关掉上游连接 → 上游立刻回收会话。
+
+        **200 头推迟到第一帧才发**（照 CodeArts2API-Go 的 ``started``、
+        Coding2API 的 ``emitted``）：首帧之前失败还能回一个干净的错误码，客户端
+        会按正常失败重试；一旦发过头就只能靠帧内错误收尾。首帧之后若上游把
+        chunked 流掐断（``UpstreamBroken``），绝不能让异常冒到 socketserver ——
+        那就是「半截回答 + 连接凭空消失」。
+        """
+        model = str(payload.get("model") or "")
+        messages = normalize_roles(payload.get("messages") or [])
+        max_tokens = _codearts_max_tokens(payload)
+        created = int(time.time())
+        cid = "chatcmpl-codearts-%s" % uuid.uuid4().hex[:24]
+        t_start = time.time()
+
+        content_parts, reasoning_parts = [], []
+        usage, finish_reason, frame_err, truncated = {}, None, "", ""
+        account_label = None
+        account_key = None
+        headers_sent = False
+        restarts = 0
+
+        def emit(obj):
+            blob = "data: " + json.dumps(obj, ensure_ascii=False) + "\n\n"
+            self.wfile.write(blob.encode("utf-8"))
+            self.wfile.flush()
+
+        def frame(delta, finish=None, extra=None):
+            body = {"id": cid, "object": "chat.completion.chunk",
+                    "created": created, "model": model,
+                    "choices": [{"index": 0, "delta": delta,
+                                 "finish_reason": finish}]}
+            if extra:
+                body.update(extra)
+            return body
+
+        def send_headers():
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            # nginx 默认会攒够一缓冲区才往下发，SSE 就变成「还是一坨」。
+            # 这个头让 nginx 对我们这个响应关掉缓冲（默认 honor）。
+            self.send_header("X-Accel-Buffering", "no")
+            if cors_origin_allowed(self.path):
+                self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+        while True:
+            error, lease = self._codearts_open_lease(
+                payload, model, messages, max_tokens)
+            if error is not None:
+                if not headers_sent:
+                    return error
+                # 只可能发生在「断流后重开」这一轮：头早就 200 了，回不了 JSON。
+                log("codearts stream gave up after restart: model=%s" % model)
+                try:
+                    emit({"error": {"message": "codearts upstream unavailable",
+                                    "type": "upstream_error", "code": 502}})
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError,
+                        ConnectionAbortedError):
+                    pass
+                return None
+            if lease is None:
+                return None      # 客户端已经走了
+
+            account_label = lease.account_label
+            account_key = lease.account_key
+            try:
+                try:
+                    for line in lease.lines(self._client_disconnected):
+                        if not line.startswith("data:"):
+                            continue
+                        raw = line[5:].strip()
+                        if not raw or raw == "[DONE]":
+                            continue
+                        try:
+                            piece = json.loads(raw)
+                        except Exception:
+                            continue
+                        if piece.get("error_code"):
+                            frame_err = "%s %s" % (piece.get("error_code"),
+                                                   piece.get("error_msg") or "")
+                            break
+                        if isinstance(piece.get("usage"), dict):
+                            usage = piece["usage"]
+                        if not headers_sent:
+                            # 收到上游第一帧才提交 200 + SSE 头。在这之前失败，
+                            # 还能回一个干净的错误码让客户端自己重试 —— Go 版
+                            # CodeArts2API 的 started、Coding2API 的 emitted 都是
+                            # 这个口径。头一发出去，就只剩「帧内错误」这一条退路。
+                            try:
+                                send_headers()
+                                headers_sent = True
+                                emit(frame({"role": "assistant", "content": ""}))
+                            except (BrokenPipeError, ConnectionResetError,
+                                    ConnectionAbortedError):
+                                return None
+                        for choice in piece.get("choices") or []:
+                            delta = choice.get("delta") or {}
+                            if delta.get("content"):
+                                content_parts.append(delta["content"])
+                            if delta.get("reasoning_content"):
+                                reasoning_parts.append(delta["reasoning_content"])
+                            if choice.get("finish_reason"):
+                                finish_reason = choice["finish_reason"]
+                            if delta:
+                                # 原样转发 delta：reasoning_content 与
+                                # tool_calls（含各自的 index）都在里面，
+                                # 自己重拼反而容易漏字段。
+                                emit(frame(delta, choice.get("finish_reason")))
+                except ca_codearts.ChatAborted:
+                    log("codearts stream aborted: client gone model=%s" % model)
+                    return None
+                except ca_codearts.UpstreamBroken as exc:
+                    # 上游把 chunked 流掐了（没写终止块）。**绝不能让它冒出去**：
+                    # 头已经是 200，异常会一路冒到 socketserver，客户端拿到的就是
+                    # 「半截回答 + 连接凭空消失」—— 既没有 finish_reason 也没有
+                    # [DONE]，也就是用户说的「直接断流」。
+                    truncated = str(exc)
+                    log("codearts stream broken: model=%s after %dms %s"
+                        % (model, int((time.time() - t_start) * 1000), exc))
+                except (BrokenPipeError, ConnectionResetError,
+                        ConnectionAbortedError):
+                    log("codearts stream closed by client model=%s" % model)
+                    return None
+            finally:
+                lease.close()
+
+            # 上游断了，但一个字都还没给客户端（只发过那个空的 role 帧）：
+            # 换号重开一条，对客户端完全无感。**吐过内容就不能重开** —— 两段
+            # 回答拼在一起比断流更难排查，而且上下文已经和第一次不同了。
+            if (truncated and not content_parts and not reasoning_parts
+                    and not frame_err
+                    and restarts < CODEARTS_STREAM_RESTARTS
+                    and (time.time() - t_start) < CODEARTS_STREAM_RESTART_BUDGET
+                    and not self._client_disconnected()):
+                restarts += 1
+                # 这个号刚把连接掐了：晾一下再看，池子里有别的号就换过去。
+                # 与 Go 版 CodeArts2API 的 withAccountRetry 同口径 —— 首帧前的
+                # 失败算「这个号这次不行」，不该让同一个号连撞。
+                if account_key:
+                    _CODEARTS_POOL.penalize(account_key, CODEARTS_BUSY_COOLDOWN)
+                log("codearts stream restart %d/%d: model=%s reason=%s"
+                    % (restarts, CODEARTS_STREAM_RESTARTS, model, truncated))
+                truncated = ""
+                continue
+            break
+
+        elapsed_ms = int((time.time() - t_start) * 1000)
+        if not headers_sent:
+            # 一帧有效数据都没接到（上游连上就断、或上来就是一个错误帧）：
+            # 头还没发出去，能回干净的错误码让客户端按正常失败重试 ——
+            # 比「200 + 半截流」诚实得多。
+            reason = frame_err or truncated or "upstream returned no frames"
+            code, err_type = _codearts_frame_status(reason)
+            record_error(model, code, reason[:200], elapsed_ms=elapsed_ms,
+                         account=account_label, key=self._key_id())
+            return self._error(code, "codearts error: %s" % reason, err_type)
+
+        if frame_err and not content_parts and not reasoning_parts:
+            # 一个字都没出就报错：头已经承诺 200 了，只能按帧内错误告知。
+            record_error(model, 502, frame_err[:200],
+                         elapsed_ms=elapsed_ms,
+                         account=account_label, key=self._key_id())
+            try:
+                emit({"error": {"message": "codearts error: %s" % frame_err,
+                                "type": "upstream_error", "code": 502}})
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError,
+                    ConnectionAbortedError):
+                pass
+            return None
+
+        if truncated:
+            # 上游把流掐断了（不管有没有吐过内容）：**不能补 finish_reason=stop**
+            # ——那等于给半截回答盖一个「正常结束」的章，客户端会当成完整结果
+            # （CodeArts2api 的 routes/chat.py 也是这个口径）。发一条明确的
+            # error 帧再 [DONE]，要不要重试交给客户端决定。
+            record_error(model, 502, truncated[:200], elapsed_ms=elapsed_ms,
+                         account=account_label, key=self._key_id())
+            try:
+                emit({"error": {
+                    "message": "codearts upstream closed the stream: %s"
+                               % truncated,
+                    "type": "upstream_error", "code": 502}})
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError,
+                    ConnectionAbortedError):
+                pass
+            if content_parts or reasoning_parts:
+                try:
+                    record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
+                                 account=account_label, key=self._key_id(),
+                                 outcome="upstream_aborted")
+                except Exception:
+                    pass
+            return None
+
+        try:
+            emit(frame({}, finish_reason or "stop", {"usage": usage}))
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError,
+                ConnectionAbortedError):
+            return None
+
+        try:
+            record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
+                         account=account_label, key=self._key_id(),
+                         outcome="completed")
+        except Exception:
+            pass
+        return None
+
     def _handle_codearts_chat(self, payload):
         """把一个 OpenAI 形状的请求转发给码道，再把结果转回 OpenAI 形状。"""
+        if CODEARTS_STREAM_PASSTHROUGH and payload.get("stream"):
+            # 流式请求走真转发（边收边给）；非流式仍走「聚合后一次性返回」。
+            return self._handle_codearts_chat_stream(payload)
         error, result = self._codearts_chat_result(payload)
         if error is not None:
             return error
+        if result.get("aborted"):
+            return None      # 客户端已经断开，一个字都不要再写
         model = result["model"]
         content = result["content"]
         reasoning = result["reasoning"]
         usage = result["usage"]
+        tool_calls = result.get("tool_calls") or []
         want_stream = result["want_stream"]
 
         created = int(time.time())
@@ -19529,11 +20518,17 @@ class Handler(BaseHTTPRequestHandler):
             msg = {"role": "assistant", "content": content}
             if reasoning:
                 msg["reasoning_content"] = reasoning
+            # 走结构化字段而不是把 <tool_call> 文本当正文 —— 客户端据此
+            # 决定要不要真的去执行工具。
+            finish = "stop"
+            if tool_calls:
+                msg["tool_calls"] = tool_calls
+                finish = "tool_calls"
             return self._json(200, {
                 "id": cid, "object": "chat.completion", "created": created,
                 "model": model,
                 "choices": [{"index": 0, "message": msg,
-                             "finish_reason": "stop"}],
+                             "finish_reason": finish}],
                 "usage": usage,
             })
 
@@ -19565,7 +20560,13 @@ class Handler(BaseHTTPRequestHandler):
                 emit(chunk({"reasoning_content": reasoning}))
             if content:
                 emit(chunk({"content": content}))
-            emit(chunk({}, "stop", {"usage": usage}))
+            # 工具调用逐个成帧。OpenAI 的流式形态里 delta.tool_calls 的
+            # index 是「这是第几个调用」的定位符 —— 写成常量 0 会让客户端
+            # 把并行的多个调用认成同一个，参数互相覆盖。
+            for position, call in enumerate(tool_calls):
+                emit(chunk({"tool_calls": [dict(call, index=position)]}))
+            emit(chunk({}, "tool_calls" if tool_calls else "stop",
+                       {"usage": usage}))
             self.wfile.write(b"data: [DONE]\n\n")
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -19579,18 +20580,29 @@ class Handler(BaseHTTPRequestHandler):
         翻译在进站时由 responses_to_chat() 完成；这里只负责把码道的
         chat-completions 结果转回 Responses 的 JSON / 事件流。
         """
+        if want_stream and CODEARTS_STREAM_PASSTHROUGH:
+            # 事件翻译器本来就直接吃 SSE 行流，接上实时行流就是真流式：
+            # 上游吐一帧、客户端收一帧，不必等整条回答生成完。
+            return self._responses_codearts_stream(
+                chat_req, custom_names, request_meta, namespace_map)
         error, result = self._codearts_chat_result(
             chat_req, want_stream=want_stream)
         if error is not None:
             return error
+        if result.get("aborted"):
+            return None
         model = result["model"]
         if not want_stream:
             message = {"role": "assistant", "content": result["content"]}
             if result["reasoning"]:
                 message["reasoning_content"] = result["reasoning"]
+            finish = "stop"
+            if result.get("tool_calls"):
+                message["tool_calls"] = result["tool_calls"]
+                finish = "tool_calls"
             chat_obj = {
                 "choices": [{"index": 0, "message": message,
-                             "finish_reason": "stop"}],
+                             "finish_reason": finish}],
                 "usage": result["usage"],
             }
             return self._json(200, chat_to_response(
@@ -19630,6 +20642,102 @@ class Handler(BaseHTTPRequestHandler):
             return
         return None
 
+    def _responses_codearts_stream(self, chat_req, custom_names,
+                                   request_meta, namespace_map):
+        """Responses 协议的码道流式：直接吃上游实时 SSE，边翻译边下发。
+
+        ``stream_responses_events`` 的入参本来就是一个「SSE 行流」，老的
+        流式路径喂的是已经读完的 ``_BufferedSSELines``。这里换成本地实时行流
+        （``lease.byte_lines``）就变成真转发 —— 翻译器不用改一行。
+        """
+        model = str(chat_req.get("model") or "")
+        messages = normalize_roles(chat_req.get("messages") or [])
+        error, lease = self._codearts_open_lease(
+            chat_req, model, messages, _codearts_max_tokens(chat_req))
+        if error is not None:
+            return error
+        if lease is None:
+            return None
+
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            if cors_origin_allowed(self.path):
+                self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            holder = {
+                "usage": None,
+                "custom_names": custom_names,
+                "request_meta": request_meta,
+                "namespace_map": namespace_map,
+                "base_body": chat_req,
+                "base_messages": chat_req.get("messages"),
+            }
+            tap = {"usage": None, "error": ""}
+            try:
+                for frame in stream_responses_events(
+                        _tap_codearts_sse(
+                            lease.byte_lines(self._client_disconnected), tap),
+                        model, holder):
+                    self.wfile.write(clean_responses_frame(frame))
+                    self.wfile.flush()
+            except ca_codearts.ChatAborted:
+                log("responses/codearts aborted: client gone model=%s" % model)
+                return None
+            except ca_codearts.UpstreamBroken as exc:
+                # 上游把 chunked 流掐了：补一个 response.failed 再收尾，别让
+                # Codex 只看到「流没了」而摸不着头脑。
+                log("responses/codearts upstream broken: model=%s after %dms %s"
+                    % (model, int((time.time() - lease.started_at) * 1000), exc))
+                try:
+                    rid = holder.get("response_id") or "resp_%s" % uuid.uuid4().hex[:24]
+                    self.wfile.write(clean_responses_frame((
+                        "event: response.failed\ndata: " + json.dumps({
+                            "type": "response.failed",
+                            "response": {"id": rid, "object": "response",
+                                         "status": "failed",
+                                         "error": {"code": "upstream_closed",
+                                                   "message": str(exc)}}},
+                            ensure_ascii=False) + "\n\n").encode("utf-8")))
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                except Exception:
+                    pass
+                return None
+            except (BrokenPipeError, ConnectionResetError,
+                    ConnectionAbortedError):
+                log("responses/codearts closed by client model=%s" % model)
+                return None
+            except Exception as exc:                 # noqa: BLE001
+                # 头已经发出去了，不能再回 JSON 错误；按既有流式路径的约定收尾。
+                log("responses/codearts stream aborted: %s" % exc)
+                try:
+                    self.wfile.write(b"data: [DONE]\n\n")
+                    self.wfile.flush()
+                except Exception:
+                    pass
+                return None
+
+            elapsed_ms = int((time.time() - lease.started_at) * 1000)
+            usage = tap["usage"] or holder.get("usage") or {}
+            if tap.get("error") and not usage:
+                record_error(model, 502, tap["error"][:200],
+                             elapsed_ms=elapsed_ms,
+                             account=lease.account_label, key=self._key_id())
+            try:
+                record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
+                             account=lease.account_label, key=self._key_id(),
+                             outcome="completed")
+            except Exception:
+                pass
+            return None
+        finally:
+            lease.close()
+
     def _messages_codearts(self, chat_req, want_stream):
         """用 Anthropic Messages 协议服务码道模型。
 
@@ -19637,13 +20745,20 @@ class Handler(BaseHTTPRequestHandler):
         WorkBuddy 空池；错误信封也必须换成 Anthropic 的，否则 Claude Code
         会把 503 当成不可重试的协议错误。
         """
-        def anthropic_error(code, message, _err_type=None):
-            return self._anthropic_error(code, message)
+        def anthropic_error(code, message, err_type=None):
+            return self._anthropic_error(code, message, err_type)
+
+        if want_stream and CODEARTS_STREAM_PASSTHROUGH:
+            # 同 Responses：翻译器吃 SSE 行流，喂实时流就是真转发。
+            return self._messages_codearts_stream(chat_req, anthropic_error)
 
         error, result = self._codearts_chat_result(
-            chat_req, want_stream=want_stream, error_factory=anthropic_error)
+            chat_req, want_stream=want_stream, error_factory=anthropic_error,
+            anthropic=True)
         if error is not None:
             return error
+        if result.get("aborted"):
+            return None
         model = result["model"]
         if not want_stream:
             message = {"role": "assistant", "content": result["content"]}
@@ -19683,6 +20798,83 @@ class Handler(BaseHTTPRequestHandler):
                 pass
             return
         return None
+
+    def _messages_codearts_stream(self, chat_req, anthropic_error):
+        """Anthropic Messages 协议的码道流式（Claude Code 走这条）。"""
+        model = str(chat_req.get("model") or "")
+        messages = normalize_roles(chat_req.get("messages") or [])
+        error, lease = self._codearts_open_lease(
+            chat_req, model, messages, _codearts_max_tokens(chat_req),
+            fail=anthropic_error, anthropic=True)
+        if error is not None:
+            return error
+        if lease is None:
+            return None
+
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Connection", "close")
+            self.send_header("X-Accel-Buffering", "no")
+            if cors_origin_allowed(self.path):
+                self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+
+            holder = {"usage": None}
+            tap = {"usage": None, "error": ""}
+            try:
+                for frame in stream_messages_events(
+                        _tap_codearts_sse(
+                            lease.byte_lines(self._client_disconnected), tap),
+                        model, holder):
+                    self.wfile.write(frame)
+                    self.wfile.flush()
+            except ca_codearts.ChatAborted:
+                log("messages/codearts aborted: client gone model=%s" % model)
+                return None
+            except ca_codearts.UpstreamBroken as exc:
+                # Claude Code 认 event: error，收到它会按可重试错误处理；
+                # 静默断连反而会被当成「回答就这么短」。
+                log("messages/codearts upstream broken: model=%s after %dms %s"
+                    % (model, int((time.time() - lease.started_at) * 1000), exc))
+                try:
+                    self.wfile.write(anthropic_sse_frame("error", {
+                        "error": {"type": "api_error",
+                                  "message": "upstream closed the stream: %s"
+                                             % exc}}))
+                    self.wfile.flush()
+                except Exception:
+                    pass
+                return None
+            except (BrokenPipeError, ConnectionResetError,
+                    ConnectionAbortedError):
+                return None
+            except Exception as exc:                 # noqa: BLE001
+                log("messages/codearts stream aborted: %s" % exc)
+                try:
+                    self.wfile.write(anthropic_sse_frame("error", {
+                        "error": {"type": "api_error", "message": str(exc)}}))
+                    self.wfile.flush()
+                except Exception:
+                    pass
+                return None
+
+            elapsed_ms = int((time.time() - lease.started_at) * 1000)
+            usage = tap["usage"] or holder.get("usage") or {}
+            if tap.get("error") and not usage:
+                record_error(model, 502, tap["error"][:200],
+                             elapsed_ms=elapsed_ms,
+                             account=lease.account_label, key=self._key_id())
+            try:
+                record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
+                             account=lease.account_label, key=self._key_id(),
+                             outcome="completed")
+            except Exception:
+                pass
+            return None
+        finally:
+            lease.close()
 
     def _dispatch_chat_post(self, path, payload):
         # 先挡背景请求：Codex 自己发的（记忆整理／环境建议／自动复核）
@@ -19978,7 +21170,8 @@ def _parse_cli_args():
                     help="listen on every interface so other devices on the LAN can "
                          "reach it (implies --host 0.0.0.0 and forces an api key)")
     ap.add_argument("--api-key", default=os.environ.get("API_KEY") or os.environ.get("WB_PROXY_KEY") or None,
-                    help="require this bearer token on /v1/* (optional)")
+                    help="require this bearer token on /v1/* (optional; ignored once "
+                         "the panel has ever held a key)")
     ap.add_argument("--system-prompt", default=DEFAULT_SYSTEM_PROMPT,
                     help="system message injected when the request has none (required upstream)")
     ap.add_argument("--user-agent", default=None,
@@ -19991,7 +21184,13 @@ def _parse_cli_args():
     ap.add_argument("--import-desktop", action="store_true",
                     help="import the desktop app credential as an account, then exit")
     ap.add_argument("--panel-password", default=None,
-                    help="set the web panel password on startup (default: admin)")
+                    help="set the web panel password on startup (default: admin). "
+                         "Ignored once the password has been changed in the panel, "
+                         "so a restart no longer reverts it - use "
+                         "--panel-password-force to override deliberately")
+    ap.add_argument("--panel-password-force", action="store_true",
+                    help="apply --panel-password even when the panel set the "
+                         "password itself (the reset path for a forgotten one)")
     args = ap.parse_args()
     return args
 
@@ -20084,17 +21283,28 @@ def _bootstrap_runtime(args):
     # it. Generate one on first use, persist it, and reuse it afterwards.
     if args.lan and not API_KEY:
         API_KEY, api_key_generated = ca_settings.ensure_launcher_key(ACCOUNTS_DIR)
-    # A key saved from the panel wins over an auto-generated LAN key so a
-    # change made in the browser survives a restart of the .bat file. An
-    # explicit --api-key on the command line still takes precedence.
+    # A legacy panel key wins over an auto-generated LAN key so a change made
+    # in the browser survives a restart of the launcher. Once the panel holds
+    # any key, identify_key() accepts panel keys alone and this fallback is
+    # never consulted.
     global API_KEY_FILE_SET
     saved_key, key_from_panel = ca_settings.api_key_override(ACCOUNTS_DIR)
     if key_from_panel and not args.api_key:
         API_KEY = saved_key
         API_KEY_FILE_SET = True
     if args.panel_password:
-        ca_settings.set_panel_password(ACCOUNTS_DIR, args.panel_password)
-        log("panel      : password set from --panel-password")
+        # 启动参数里的密码不再是「覆盖」，而是「初次设置」。原因见
+        # ca_settings.apply_launcher_password 的注释：.credentials 是部署时写的，
+        # 用户在面板里改过之后它不会跟着变，无条件覆盖等于每次重启都把用户的
+        # 改动抹掉（2026-10-21 实测：一天被抹 28 次，用户以为自己输错了）。
+        action = ca_settings.apply_launcher_password(
+            ACCOUNTS_DIR, args.panel_password, force=args.panel_password_force)
+        if action == "applied":
+            log("panel      : password set from --panel-password")
+        elif action == "kept":
+            log("panel      : keeping the password set in the panel "
+                "(use --panel-password-force to override)")
+        # 'same' 什么都不用说：这是正常重启
     elif ca_settings.panel_password_is_default(ACCOUNTS_DIR):
         log("panel      : password is still the default 'admin' - change it in the panel")
     POOL = ca_accounts.AccountPool(ACCOUNTS_DIR, log=log)
@@ -20117,18 +21327,8 @@ def _bootstrap_runtime(args):
     # 目录兜底：每天至少从上游 API 取一次（活跃使用的部署里 300s 缓存早就
     # 刷得更新，这个线程只兜长时间没人访问 / 一直吃缓存文件或内置快照）。
     start_catalog_daily()
-    global PRICING
-    # The policy table and its timeline live beside the usage log, so one
-    # volume carries both and the request references resolve locally.
-    ca_pricing.set_data_dir(USAGE_DIR)
-    # The panel's pricing switches (master switch, variant inheritance) live in
-    # settings.json; point the pricing side at the same file the panel writes.
-    ca_pricing.set_settings_dir(ACCOUNTS_DIR)
-    # The refresher always exists so /pricing can report its state; with the
-    # master switch off its loop simply parks without fetching.
-    PRICING = ca_pricing.PriceRefresher(
-        ca_settings.pricing_refresh_minutes(ACCOUNTS_DIR))
-    PRICING.start()
+    # 价格估算体系已下线（2026-10-22）：不再初始化取价器，不再读价表，
+    # 也不再有 OpenRouter 映射。计费只按码道积分。
     # Credit balances back the expiring-credits dispatch preference, and only
     # the sign-in / daily-activity tasks used to refresh them. The refresher
     # keeps them current in the background so no request pays for a lookup.
@@ -20275,13 +21475,20 @@ def _serve_forever(args):
     # Report the state the request path actually enforces: the panel can turn
     # key checking on after startup, so reading API_KEY alone printed "off"
     # while every /v1 call was still being rejected with 401.
+    _panel_keys = [k for k in configured_keys() if k.get("enabled")]
     if auth_required():
-        _panel_keys = [k for k in configured_keys() if k.get("enabled")]
-        _key_state = ("on (%d key(s) from the panel)" % len(_panel_keys)) if _panel_keys else "on (--api-key)"
+        if _panel_keys:
+            _key_state = "on (%d key(s) from the panel)" % len(_panel_keys)
+        elif API_KEY and not panel_keys_configured():
+            _key_state = "on (--api-key)"
+        else:
+            _key_state = "on (no enabled key - add one in the panel)"
     else:
         _key_state = "off"
     log(f"listening  : http://{args.host}:{args.port}/v1  (api key: {_key_state})")
     log(f"dashboard  : http://{args.host}:{args.port}/")
+    if _panel_keys and API_KEY and all(k.get("key") != API_KEY for k in _panel_keys):
+        log("api key   : --api-key ignored (panel keys take precedence)")
     # Keep the handler referenced for the process lifetime: SetConsoleCtrlHandler
     # stores a raw pointer, so a collected callback would crash on close.
     _ctrl_handler = install_console_close_handler()

@@ -10,6 +10,7 @@
 3. DPoP proof 用公钥独立验签，而不是复用自己的签名函数。
 """
 
+import calendar
 import hashlib
 import io
 import json
@@ -914,9 +915,58 @@ check("实测表里没有的模型留 0，不编造",
           for m in norm if m["id"] not in _LIMITS),
       [m["id"] for m in norm if m["id"] not in _LIMITS])
 
+# 默认采样参数同样来自 AgentCenter detail 的实测值（2026-10-22）。
+# 有实测值的模型带 temperature / top_p；没测过的不能凭空补一个默认值。
+_SAMPLING = C.BUILTIN_MODEL_SAMPLING
+check("采样参数按实测表带出",
+      (norm[0].get("temperature"), norm[0].get("top_p"))
+      == _SAMPLING["glm-5.2-sft-harmony"], norm[0])
+check("采样参数对每个模型各自取值",
+      (norm[2].get("temperature"), norm[2].get("top_p"))
+      == _SAMPLING["glm-5.3"], norm[2])
+check("没有实测值的模型不带采样参数键",
+      "temperature" not in norm[1] and "top_p" not in norm[1], norm[1])
+check("未实测的多模态模型不猜采样参数",
+      "Qwen3-VL-235B" not in _SAMPLING and "kimi-k2.6-vl" not in _SAMPLING,
+      sorted(_SAMPLING))
+
+# deepseek-v4.1-flash 走的是限时福利组（normalize_models），不经过
+# normalize_builtin；它同样有实测采样值，不能因此漏成「—」。
+_benefit = C.normalize_models([{"model_id": "deepseek-v4.1-flash",
+                                "context_window": 1000000,
+                                "max_tokens": 384000}])
+check("福利组模型也带实测采样参数",
+      (_benefit[0].get("temperature"), _benefit[0].get("top_p")) == (0.5, 0.0),
+      _benefit[0])
+# 网关配置的 max_tokens=384000 是参数上限；模型真实输出是 65536，
+# 请求也会被 clamp_max_tokens 夹到 65536。清单必须显示后者。
+check("福利组上限以实测表为准",
+      (_benefit[0]["maxInputTokens"], _benefit[0]["maxOutputTokens"])
+      == C.BUILTIN_MODEL_LIMITS["deepseek-v4.1-flash"], _benefit[0])
+# 客户端那一行写着 0.18x / 入 40 · 出 160 积分/M，网关不补就和它对不上。
+_benefit_cp = _benefit[0].get("creditPricing") or {}
+check("福利组模型带出实测倍率", _benefit[0].get("creditRatio") == "0.18x",
+      _benefit[0].get("creditRatio"))
+check("福利组模型带出每百万积分",
+      (_benefit_cp.get("credits_per_mtok_input"),
+       _benefit_cp.get("credits_per_mtok_output")) == (40.0, 160.0), _benefit_cp)
+check("福利组模型的错峰档也带出",
+      (_benefit_cp.get("time_slots") or {}).get("off_peak", {}).get("ratio_display")
+      == "0.09x", _benefit_cp.get("time_slots"))
+_benefit_bare = C.normalize_models([{"model_id": "glm-5.3-flash"}])
+check("福利组未实测的模型不带采样参数",
+      "temperature" not in _benefit_bare[0] and "top_p" not in _benefit_bare[0],
+      _benefit_bare[0])
+check("福利组未定价的模型不编倍率",
+      "creditRatio" not in _benefit_bare[0]
+      and "creditPricing" not in _benefit_bare[0], _benefit_bare[0])
+
 # 两组合并：任一组失败都不能让整份清单挂掉
 BENEFIT_RAW = [{"model_id": "deepseek-v4.1-flash", "context_window": 1000000,
                 "max_tokens": 384000, "sort": 40}]
+
+
+THINK_CALLS = []
 
 
 def with_groups(benefit_exc=None, builtin_exc=None, variants=None,
@@ -928,35 +978,58 @@ def with_groups(benefit_exc=None, builtin_exc=None, variants=None,
     真发出去的结果只是随机失败（实测 APIG.0613 IAM unavailable）。
     """
     saved = (C.gateway_config, C.builtin_models, C.thinking_variants)
+
+    def _fake_variants(*a, **k):
+        names = a[3] if len(a) > 3 else k.get("model_names")
+        THINK_CALLS.append(list(names or []))
+        return dict(variants or {})
+
     C.gateway_config = (lambda *a, **k: (_ for _ in ()).throw(benefit_exc)) \
         if benefit_exc else (lambda *a, **k: {"models": list(BENEFIT_RAW)})
     C.builtin_models = (lambda *a, **k: (_ for _ in ()).throw(builtin_exc)) \
         if builtin_exc else (lambda *a, **k: list(BUILTIN_SAMPLE))
     C.thinking_variants = (lambda *a, **k: (_ for _ in ()).throw(variants_exc)) \
-        if variants_exc else (lambda *a, **k: dict(variants or {}))
+        if variants_exc else _fake_variants
     try:
         return C.model_catalog("AK", "SK", "TOK")
     finally:
         C.gateway_config, C.builtin_models, C.thinking_variants = saved
 
 
-THINK_VARIANTS = {"glm-5.2-sft-harmony": {"strengths": ["high", "max"],
-                                          "default": "high"}}
+# 上游思考档位接口的键是 **model_name**，不是 model_id：
+# glm-5.2-sft-harmony 的展示名是 GLM-5.2-ArkTS-SPARK。这里按真实形状打桩，
+# 只按 id 查的实现会把它的 high/max 丢掉、面板错显示「原生」。
+THINK_VARIANTS = {
+    "GLM-5.2-ArkTS-SPARK": {"strengths": ["high", "max"], "default": "high"},
+    "GLM-5.2": {"strengths": ["high", "max"], "default": "high"},
+    "GLM-5.3": {"strengths": [], "default": ""},
+}
 
 cat = with_groups(variants=THINK_VARIANTS)
 check("两组都取到", len(cat["models"]) == 4, len(cat["models"]))
 check("取数无错时 errors 为空", cat["errors"] == {}, cat["errors"])
+# 请求侧同样要发展示名：上游只按 model_name 匹配，发 id 的模型问不到档位。
+check("档位接口按展示名请求",
+      THINK_CALLS[-1] == ["GLM-5.2-ArkTS-SPARK", "Qwen3-VL-235B", "GLM-5.3"],
+      THINK_CALLS[-1])
 _think = [m for m in cat["groups"][C.GROUP_BUILTIN]
           if m["id"] == "glm-5.2-sft-harmony"][0]
 check("思考档位贴到模型上", _think.get("thinkingStrengths") == ["high", "max"],
       _think.get("thinkingStrengths"))
 check("思考默认档位带出", _think.get("thinkingDefault") == "high", _think)
+check("档位接口按展示名返回时仍按 id 贴对",
+      _think.get("thinkingStrengths") == ["high", "max"], _think)
 check("THINKING_STRENGTHS 被填上",
       C.THINKING_STRENGTHS.get("glm-5.2-sft-harmony", {}).get("strengths")
       == ["high", "max"], C.THINKING_STRENGTHS)
+check("THINKING_STRENGTHS 用 id 作键，不残留展示名",
+      "GLM-5.2-ArkTS-SPARK" not in C.THINKING_STRENGTHS, C.THINKING_STRENGTHS)
 check("没有档位的模型是空数组而不是缺字段",
       [m for m in cat["groups"][C.GROUP_BUILTIN]
        if m["id"] == "Qwen3-VL-235B"][0]["thinkingStrengths"] == [])
+check("有档位但为空时也不编档位",
+      [m for m in cat["groups"][C.GROUP_BUILTIN]
+       if m["id"] == "glm-5.3"][0]["thinkingStrengths"] == [], cat["models"])
 
 # 档位接口挂了：清单照旧返回，但要记一笔 —— 否则面板上全显示「原生」，
 # 分不清是「本来没有档位」还是「这次没问到」。
@@ -970,7 +1043,8 @@ check("限时福利排在内置之前（与 UI 一致）",
 check("限时福利那侧带 group 标记",
       cat["models"][0]["group"] == C.GROUP_BENEFIT, cat["models"][0])
 check("限时福利那侧带上下文窗口",
-      cat["models"][0]["contextWindow"] == 1000000, cat["models"][0])
+      cat["models"][0]["contextWindow"]
+      == C.BUILTIN_MODEL_LIMITS["deepseek-v4.1-flash"][0], cat["models"][0])
 
 only_builtin = with_groups(benefit_exc=RuntimeError("网关挂了"))
 check("限时福利挂了仍返回内置", len(only_builtin["models"]) == 3, only_builtin["errors"])
@@ -1009,6 +1083,7 @@ _META = {
     "maxInputTokens": 1000000, "maxOutputTokens": 384000,
     "supportsImages": False, "supportsReasoning": True,
     "supportsToolCall": True, "routable": True, "creditRatio": None,
+    "temperature": 0.5, "top_p": 0.0,
 }
 
 adapt = P.codearts_model_meta(_META)
@@ -1019,6 +1094,8 @@ check("上下文长度同时给了 maxInputTokens",
       adapt.get("maxInputTokens") == 1000000, adapt)
 check("maxOutputTokens 一并带出", adapt.get("maxOutputTokens") == 384000, adapt)
 check("厂商标成 codearts", adapt.get("vendor") == "codearts", adapt)
+check("默认采样参数进 meta",
+      adapt.get("temperature") == 0.5 and adapt.get("top_p") == 0.0, adapt)
 
 # 关键：把适配结果喂给 model_entry 不能炸
 try:
@@ -1031,6 +1108,8 @@ if entry:
     check("条目 id 正确", entry.get("id") == _META["id"], entry.get("id"))
     check("条目 object 是 model", entry.get("object") == "model")
     check("条目有 context_length", bool(entry.get("context_length")), entry)
+    check("条目带出默认采样参数",
+          entry.get("temperature") == 0.5 and entry.get("top_p") == 0.0, entry)
 
 # 没有上下文信息的模型（内置那组服务端不给）也不能炸
 bare = dict(_META, id="GLM-5.2", contextWindow=0, maxInputTokens=0,
@@ -1165,6 +1244,103 @@ P.ACCOUNTS_DIR = _ROUTE_DIR
 
 
 # ---------------------------------------------------------------------------
+# /v1/models 合并：重名条目的码道字段必须盖过 WorkBuddy 的
+# ---------------------------------------------------------------------------
+#
+# deepseek-v4.1-flash / glm-5.3 两边都有，请求实际拐去码道。WorkBuddy 那份
+# 的倍率、采样默认值和思考档位都不适用，清单必须展示码道这一套。
+
+print()
+print("== /v1/models 合并重名条目 ==")
+
+
+class _CatalogHandler(P.Handler):
+    def __init__(self):
+        self.captured = None
+
+    def _authorized(self):
+        return True
+
+    def _request_realm(self):
+        return "cn"
+
+    def _json(self, code, obj):
+        self.captured = (code, obj)
+
+
+_WB_META = {
+    "contextWindow": {"supportedLengths": [1000000]},
+    "maxInputTokens": 1000000, "maxOutputTokens": 65536,
+    "supportsReasoning": True,
+    "reasoning": {"supportedEfforts": ["low", "high"],
+                  "defaultEffort": "low", "canDisableThinking": True},
+    "temperature": 0.7, "top_p": 0.9, "credits": "0.50",
+}
+_CA_DS = {
+    "id": "deepseek-v4.1-flash", "name": "deepseek-v4.1-flash",
+    "group": C.GROUP_BENEFIT, "supportsImages": False,
+    "supportsReasoning": True, "supportsToolCall": True,
+    "creditRatio": "0.18x",
+    "creditPricing": {"ratio": 0.05, "ratio_display": "0.18x",
+                      "credits_per_mtok_output": 160.0, "time_slots": {}},
+    "temperature": 0.5, "top_p": 0.0,
+    "thinkingStrengths": [], "thinkingDefault": "",
+}
+_CA_GLM = dict(_CA_DS, id="glm-5.3", name="glm-5.3",
+               creditRatio="0.79x",
+               thinkingStrengths=["high", "max"], thinkingDefault="high")
+
+_saved_merge = (P.workbuddy_accounts_available, P.fetch_models,
+                P.codearts_catalog, P.codearts_deployed,
+                P.ca_modelsdev.refresh_async)
+try:
+    P.workbuddy_accounts_available = lambda: True
+    P.fetch_models = lambda realm=None: [
+        ("deepseek-v4.1-flash", dict(_WB_META)),
+        ("glm-5.3", dict(_WB_META)),
+        ("hy4-preview", {"contextWindow": {"supportedLengths": [200000]}}),
+    ]
+    P.codearts_catalog = lambda: {"models": [dict(_CA_DS), dict(_CA_GLM)],
+                                  "errors": {}}
+    P.codearts_deployed = lambda: True
+    P.ca_modelsdev.refresh_async = lambda *a, **k: None
+    _merge_handler = _CatalogHandler()
+    _merge_handler._get_v1_models()
+finally:
+    (P.workbuddy_accounts_available, P.fetch_models,
+     P.codearts_catalog, P.codearts_deployed,
+     P.ca_modelsdev.refresh_async) = _saved_merge
+
+_merge_code, _merge_payload = _merge_handler.captured
+_by_id = {e["id"]: e for e in _merge_payload["data"]}
+_ds_entry = _by_id["deepseek-v4.1-flash"]
+check("重名条目保留 WorkBuddy 的上下文",
+      _ds_entry.get("context_length") == 1000000, _ds_entry)
+check("重名条目归属路由都标成码道",
+      _ds_entry.get("owned_by") == "codearts"
+      and _ds_entry.get("routed_via") == "codearts", _ds_entry)
+check("重名条目倍率取码道", _ds_entry.get("credits") == "0.18", _ds_entry)
+check("重名条目计费规则取码道",
+      (_ds_entry.get("credit_pricing") or {}).get("ratio_display") == "0.18x",
+      _ds_entry)
+check("重名条目采样默认值取码道",
+      (_ds_entry.get("temperature"), _ds_entry.get("top_p")) == (0.5, 0.0),
+      _ds_entry)
+check("码道没有档位时清掉 WorkBuddy 的档位",
+      not any(k in _ds_entry for k in ("reasoning_efforts",
+                                       "reasoning_default_effort",
+                                       "reasoning_fixed_effort",
+                                       "reasoning_can_disable")), _ds_entry)
+_glm_entry = _by_id["glm-5.3"]
+check("码道有档位时用码道的列表",
+      _glm_entry.get("reasoning_efforts") == ["high", "max"]
+      and _glm_entry.get("reasoning_default_effort") == "high"
+      and _glm_entry.get("reasoning_can_disable") is False, _glm_entry)
+check("不归码道的条目不动", _by_id["hy4-preview"].get("owned_by") == "workbuddy",
+      _by_id["hy4-preview"])
+
+
+# ---------------------------------------------------------------------------
 # 模型封锁不能被码道分流绕过去
 # ---------------------------------------------------------------------------
 #
@@ -1240,6 +1416,11 @@ class _FakeResponsesHandler(P.Handler):
         self.status = None
         self.payload = None
 
+    def _client_disconnected(self):
+        # 桩没有真实 socket；基类实现读 self.connection 会抛 AttributeError，
+        # 被当成「客户端已断开」，码道链路于是在第一次尝试前就退出。
+        return False
+
     def _json(self, code, obj):
         self.status = code
         self.payload = obj
@@ -1272,7 +1453,7 @@ _CHAT_RAW = (
 )
 
 
-def _stub_codearts(payload, want_stream=None, error_factory=None):
+def _stub_codearts(payload, want_stream=None, error_factory=None, anthropic=False):
     return None, {
         "model": payload.get("model"),
         "content": "你好",
@@ -1281,6 +1462,37 @@ def _stub_codearts(payload, want_stream=None, error_factory=None):
         "raw": _CHAT_RAW,
         "want_stream": bool(want_stream),
     }
+
+
+class _StubLease:
+    """测试替身：把一段现成 SSE 文本伪装成「实时行流」。
+
+    2026-10-22 起真流式走 ca_codearts.open_chat + iter_sse，不再经过
+    _codearts_chat_result，所以流式用例必须在这个新接缝上打桩，否则会真的
+    去连上游（一次跑三分钟，看着像挂死）。
+    """
+
+    account_label = "stub"
+
+    def __init__(self, text):
+        self._text = text
+        self.started_at = __import__("time").time()
+
+    def lines(self, abort_check=None):
+        for line in self._text.splitlines(keepends=True):
+            yield line
+
+    def byte_lines(self, abort_check=None):
+        for line in self.lines(abort_check):
+            yield line.encode("utf-8")
+
+    def close(self):
+        pass
+
+
+def _stub_open_lease(payload, model, messages, max_tokens, fail=None,
+                     anthropic=False):
+    return None, _StubLease(_CHAT_RAW)
 
 
 _h = _FakeResponsesHandler()
@@ -1297,6 +1509,7 @@ check("非流式保留 usage",
 
 _h = _FakeResponsesHandler()
 _h._codearts_chat_result = _stub_codearts
+_h._codearts_open_lease = _stub_open_lease
 _h._responses_codearts({"model": "deepseek-v4.1-flash", "messages": []},
                        True, set(), {"tools": []}, None)
 _sse = _h.wfile.getvalue().decode("utf-8")
@@ -1359,6 +1572,7 @@ check("Messages 非流式回填 model",
 
 _h = _FakeResponsesHandler()
 _h._codearts_chat_result = _stub_codearts
+_h._codearts_open_lease = _stub_open_lease
 _h._messages_codearts({"model": "deepseek-v4.1-flash", "messages": []}, True)
 _sse = _h.wfile.getvalue().decode("utf-8")
 check("Messages 流式事件齐全",
@@ -1387,6 +1601,40 @@ check("Messages 入口能返回码道正文",
 
 
 # ---------------------------------------------------------------------------
+print()
+print("== _error 必须返回哨兵（不回 None） ==")
+#
+# 2026-10-21 线上事故：_error 发完响应隐式返回 None，而调用方靠
+# `if error is not None` 判「是否已回过响应」。于是每条失败请求在回完 502
+# 之后又被当成成功继续走 result["model"]，日志里留下一段
+# TypeError: 'NoneType' object is not subscriptable，真实错误被埋掉。
+
+_h2 = _FakeResponsesHandler()
+_h2.headers = {}
+_h2._handle_expect_continue = lambda: None
+_h2._discard_body = lambda: None
+_r = P.Handler._error(_h2, 502, "boom", "upstream_error")
+check("_error 回的不是 None", _r is not None, repr(_r))
+check("_error 回的是 RESPONDED", _r is P.RESPONDED, repr(_r))
+_r2 = P.Handler._anthropic_error(_h2, 400, "nope", "invalid_request_error")
+check("_anthropic_error 回的是 RESPONDED", _r2 is P.RESPONDED, repr(_r2))
+
+
+def _stub_fail(payload, want_stream=None, error_factory=None):
+    """模拟「已回过响应」的形态：返回 (RESPONDED, None)。"""
+    return P.RESPONDED, None
+
+
+_h3 = _FakeResponsesHandler()
+_h3._codearts_chat_result = _stub_fail
+# 以前这一行会抛 TypeError；现在应安静返回、不碰 result
+_out = P.Handler._handle_codearts_chat(
+    _h3, {"model": "glm-5.3", "messages": [{"role": "user", "content": "hi"}]})
+check("已回过响应的路径不再解引用 result",
+      _out is P.RESPONDED, repr(_out))
+
+
+# ---------------------------------------------------------------------------
 # 发给码道的消息：角色名归一，正文不动
 # ---------------------------------------------------------------------------
 
@@ -1397,25 +1645,64 @@ _seen = {}
 
 
 def _fake_chat(ak, sk, tok, model, messages, max_tokens=None, stream=True,
-               extra=None):
+               extra=None, timeout=None, tools=None, tool_choice=None,
+               abort_check=None, aborted=None, session_id=None):
+    # 桩要跟上真实签名：tools / tool_choice（2026-10-21 透传）、
+    # abort_check（2026-10-22 客户端断开感知）。漏一个关键字参数就是
+    # TypeError，测出来像「角色归一坏了」，其实是桩老了。
     _seen["model"] = model
     _seen["messages"] = messages
     _seen["max_tokens"] = max_tokens
     _seen["stream"] = stream
     _seen["extra"] = extra
+    _seen["tools"] = tools
+    _seen["tool_choice"] = tool_choice
+    _seen["abort_check"] = abort_check
+    _seen["session_id"] = session_id
     return 200, (
         'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
         'data: {"usage":{"prompt_tokens":1,"completion_tokens":1,'
         '"total_tokens":2}}\n\ndata: [DONE]\n\n')
 
 
+class _FakePool:
+    """测试替身：固定给同一个会话，不碰真实账号目录。
+
+    2026-10-22 起码道路径每轮都向 _CODEARTS_POOL 要号（多账号负载/故障转移），
+    不再直接调 pick_codearts_session —— 桩要打在新接缝上，否则会真读磁盘、
+    拿不到账号就直接 503。
+    """
+
+    def __init__(self, sess):
+        self.sess = sess
+        self.released = 0
+        self.penalties = []
+
+    def acquire(self, timeout=None):
+        return self.sess, "a"
+
+    def release(self, key):
+        self.released += 1
+
+    def penalize(self, key, seconds):
+        self.penalties.append((key, seconds))
+
+    def _usable(self):
+        return [self.sess]
+
+    def snapshot(self):
+        return {"a": {"in_flight": 0, "cooling_s": 0.0}}
+
+
 _saved_pick = P.pick_codearts_session
-_saved_chat = C.chat_for_model
+_saved_pool = P._CODEARTS_POOL
+_saved_chat, _saved_hb = C.chat_for_model, C.heartbeat
 _saved_record = P.record_usage
-P.pick_codearts_session = lambda: {
+C.heartbeat = lambda *a, **k: (True, "ok")
+P._CODEARTS_POOL = _FakePool({
     "accessKey": "AK", "secretKey": "SK", "securitytoken": "TK",
     "account": {"id": "a", "label": "a"},
-    "expires_at": "2099-01-01T00:00:00.000Z"}
+    "expires_at": "2099-01-01T00:00:00.000Z"})
 C.chat_for_model = _fake_chat
 P.record_usage = lambda *a, **k: None
 try:
@@ -1428,8 +1715,10 @@ try:
          ]},
         want_stream=False)
 finally:
+    P._CODEARTS_POOL = _saved_pool
     P.pick_codearts_session = _saved_pick
     C.chat_for_model = _saved_chat
+    C.heartbeat = _saved_hb
     P.record_usage = _saved_record
 
 _sent = _seen.get("messages") or []
@@ -1465,10 +1754,13 @@ def _run_with(payload):
     _seen.clear()
     saved_pick, saved_chat, saved_rec = (P.pick_codearts_session,
                                          C.chat_for_model, P.record_usage)
-    P.pick_codearts_session = lambda: {
+    saved_hb = C.heartbeat
+    C.heartbeat = lambda *a, **k: (True, "ok")
+    saved_pool = P._CODEARTS_POOL
+    P._CODEARTS_POOL = _FakePool({
         "accessKey": "AK", "secretKey": "SK", "securitytoken": "TK",
         "account": {"id": "a", "label": "a"},
-        "expires_at": "2099-01-01T00:00:00.000Z"}
+        "expires_at": "2099-01-01T00:00:00.000Z"})
     C.chat_for_model = _fake_chat
     P.record_usage = lambda *a, **k: None
     try:
@@ -1479,8 +1771,10 @@ def _run_with(payload):
                                         want_stream=False)
         return _seen.get("extra")
     finally:
+        P._CODEARTS_POOL = saved_pool
         P.pick_codearts_session = saved_pick
         C.chat_for_model = saved_chat
+        C.heartbeat = saved_hb
         P.record_usage = saved_rec
 
 
@@ -1494,6 +1788,146 @@ check("关思考的请求不再发给上游（避免 81001）",
 check("没要求时 extra 为 None（不改变旧行为）",
       _run_with({}) is None,
       "默认请求不该带 thinking")
+
+
+# ---------------------------------------------------------------------------
+print()
+print("== max_tokens 夹紧（客户端固定发 128000 的回归） ==")
+#
+# 2026-10-21 线上事故：ZCode 对所有模型固定发 max_tokens=128000，而 glm-5.3 的
+# 输出上限是 65536。上游不回「值太大」，而是回
+# InferHub.001001005.400 The request param is invalid —— 一句话把整个请求打死，
+# 且这个码不在 _codearts_retryable 里，重试多少次都是同样的 502。
+# 现象：用户侧「glm-5.3 一直失败」，而同账号的 GLM-5.2 正常。
+
+# ---------------------------------------------------------------------------
+print()
+print("== 积分静态兜底（服务重启后 credit 全 0 的回归） ==")
+#
+# 2026-10-22 线上事故：面板上每条请求的积分都是 0.00。原因是 CREDIT_TIERS 是
+# 进程内的运行时状态，只在有人请求模型目录时才被填充 —— 服务重启后、第一次
+# 拉 /v1/models 之前，credit_for_usage 查不到档位就返回 None，记录里留着 0。
+# 实测：重启后那批请求全 0；手动打一次 /v1/models 再发请求，立刻变成 0.0428。
+# 修法是把上游实测到的几档固化进 CREDIT_TIERS_STATIC 作为兜底。
+
+check("静态表覆盖 glm-5.3", "glm-5.3" in C.CREDIT_TIERS_STATIC)
+check("静态表的 ratio 与上游一致", 
+      C.CREDIT_TIERS_STATIC["glm-5.3"]["ratio"] == 0.0443,
+      C.CREDIT_TIERS_STATIC["glm-5.3"]["ratio"])
+check("运行时表为空时，积分仍能算出来（不再返回 None）",
+      C.credit_for_usage("glm-5.3", 153, 0, 31) is not None,
+      C.credit_for_usage("glm-5.3", 153, 0, 31))
+_c = C.credit_for_usage("glm-5.3", 13, 0, 64)
+check("算出来的量级对（13 入 / 64 出 ≈ 0.04 积分）",
+      _c is not None and 0.03 < _c < 0.06, _c)
+check("未定价模型仍然返回 None（不编倍率）",
+      C.credit_for_usage("Qwen3-VL-235B", 100, 0, 100) is None,
+      C.credit_for_usage("Qwen3-VL-235B", 100, 0, 100))
+check("openpangu-2.0-pro 仍是两段计价",
+      len(C.CREDIT_TIERS_STATIC["openpangu-2.0-pro"]["tiers"]) == 2,
+      C.CREDIT_TIERS_STATIC["openpangu-2.0-pro"]["tiers"])
+# 运行时表优先：上游调价时不能被静态表盖过
+_saved = dict(C.CREDIT_TIERS)
+try:
+    C.CREDIT_TIERS["glm-5.3"] = {"ratio": 0.5, "tiers": [
+        {"input_from": 0, "input_to": -1, "ratio": 0.5,
+         "input_price": 100.0, "cache_price": 0.0, "output_price": 0.0}]}
+    check("运行时档位优先于静态兜底",
+          C.credit_tier_for("glm-5.3")["ratio"] == 0.5,
+          C.credit_tier_for("glm-5.3")["ratio"])
+finally:
+    C.CREDIT_TIERS.clear()
+    C.CREDIT_TIERS.update(_saved)
+
+check("128000 被夹到 glm-5.3 的 65536（模型最大输出）",
+      C.clamp_max_tokens("glm-5.3", 128000) == (65536, True),
+      C.clamp_max_tokens("glm-5.3", 128000))
+check("正好等于模型上限的值不动（65536 是能力，不是错值）",
+      C.clamp_max_tokens("glm-5.3", 65536) == (65536, False),
+      C.clamp_max_tokens("glm-5.3", 65536))
+check("表里没有的模型不夹（别用猜的数改坏本来能过的请求）",
+      C.clamp_max_tokens("kimi-k2.6-vl", 128000) == (128000, False),
+      C.clamp_max_tokens("kimi-k2.6-vl", 128000))
+check("chat_body 里的 max_tokens 已夹到模型上限",
+      C.chat_body("glm-5.3", [], max_tokens=128000)["max_tokens"] == 65536,
+      C.chat_body("glm-5.3", [], max_tokens=128000))
+check("chat_body 对无模型上限的模型保持原值",
+      C.chat_body("kimi-k2.6-vl", [], max_tokens=128000)["max_tokens"] == 128000,
+      C.chat_body("kimi-k2.6-vl", [], max_tokens=128000))
+
+
+# ---------------------------------------------------------------------------
+print()
+print("== 工具调用透传与聚合 ==")
+#
+# 同一个事故的第二半：chat_body 过去只组 model/messages/max_tokens/stream，
+# tools 整个被丢掉。IDE 客户端（ZCode 一次发 39 个工具）于是完全不知道有哪些
+# 工具可用，只能把调用写成 `<tool_call>…</tool_call>` 纯文本发回来 ——
+# 上游明明原生支持 function calling（会回 delta.tool_calls + finish_reason
+# tool_calls），聚合层却只收 content / reasoning_content，把 tool_calls 丢了。
+
+_TOOLS = [{"type": "function", "function": {"name": "get_date",
+                                          "description": "d",
+                                          "parameters": {"type": "object"}}}]
+_body = C.chat_body("glm-5.3", [], max_tokens=256, tools=_TOOLS,
+                    tool_choice="auto")
+check("chat_body 带上了 tools", _body.get("tools") == _TOOLS, _body)
+check("chat_body 带上了 tool_choice", _body.get("tool_choice") == "auto", _body)
+check("没有 tools 时不塞空字段",
+      "tools" not in C.chat_body("glm-5.3", [], max_tokens=256),
+      C.chat_body("glm-5.3", [], max_tokens=256))
+
+# --- 扁平（Responses）形状必须包成码道认的 function 包裹 ---
+#
+# 线上实测：Responses 入口把 Codex 的扁平声明原样转给码道，上游回
+# `InferHub.001001015.400 Tool function cannot empty` —— 它按 tool["function"]
+# 取名字，取到空就拒掉整个请求。而 WorkBuddy 上游恰恰要扁平（见
+# _test_custom_tools 的 "ordinary function tool untouched"），所以这层转换
+# 只能留在码道自己的模块里，不能改通用转换函数。
+
+_FLAT = [{"type": "function", "name": "get_date", "description": "d",
+          "parameters": {"type": "object", "properties": {}}, "strict": True}]
+_shaped = C.normalize_tools(_FLAT)
+check("扁平声明被包进 function",
+      _shaped and _shaped[0].get("function", {}).get("name") == "get_date",
+      _shaped)
+check("name/description/parameters/strict 都搬进去了",
+      _shaped and _shaped[0]["function"].get("parameters") == {"type": "object", "properties": {}}
+      and _shaped[0]["function"].get("strict") is True, _shaped)
+check("已经是包裹形状的不重复包一层",
+      C.normalize_tools(_TOOLS) == _TOOLS, C.normalize_tools(_TOOLS))
+check("码道没有执行器的声明（custom/web_search）被丢掉",
+      C.normalize_tools([{"type": "custom", "name": "apply_patch"},
+                         {"type": "web_search"}]) == [],
+      C.normalize_tools([{"type": "custom", "name": "apply_patch"},
+                         {"type": "web_search"}]))
+check("chat_body 里走的就是包裹形状",
+      (C.chat_body("glm-5.3", [], max_tokens=256, tools=_FLAT)
+       .get("tools") or [{}])[0].get("function", {}).get("name") == "get_date",
+      C.chat_body("glm-5.3", [], max_tokens=256, tools=_FLAT).get("tools"))
+
+# 上游真实返回的形状（2026-10-21 线上实测抓的帧）
+_SSE_TOOL = (
+    'data: {"choices":[{"delta":{"role":"assistant",'
+    '"reasoning_content":"let me call it"}}]}\n\n'
+    'data: {"choices":[{"delta":{"content":"","tool_calls":[{"id":"call_1",'
+    '"index":0,"type":"function","function":{"name":"get_date",'
+    '"arguments":"{\\"day\\":"}}]}}]}\n\n'
+    'data: {"choices":[{"delta":{"tool_calls":[{"index":0,'
+    '"function":{"arguments":"3}"}}]}}],"usage":'
+    '{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n'
+    'data: [DONE]\n\n'
+)
+_c, _r, _u, _e, _tc = P._collect_codearts_sse(_SSE_TOOL)
+check("tool_calls 被聚合出来", len(_tc) == 1, _tc)
+check("工具名正确", _tc and _tc[0]["function"]["name"] == "get_date", _tc)
+check("id 正确", _tc and _tc[0]["id"] == "call_1", _tc)
+check("分片的 arguments 被拼接",
+      _tc and _tc[0]["function"]["arguments"] == '{"day":3}',
+      _tc[0]["function"]["arguments"] if _tc else None)
+check("usage 照样收到", _u.get("total_tokens") == 15, _u)
+check("无 tool 调用时返回空列表", P._collect_codearts_sse(
+    'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')[4] == [], "应为空")
 
 
 # ---------------------------------------------------------------------------
@@ -1558,6 +1992,139 @@ try:
 finally:
     C._http = _saved_http
 check("remain 缺失时按 total-used 兜底", fb["remaining"] == 70.0, fb)
+
+# ---------------------------------------------------------------------------
+# 每日签到（活动页「每日签到领 1000 积分」）：/v1/ops 的积分体系
+# 响应结构照抄 2026-10-19 本机客户端日志里的 delivery / claim / confirm。
+# ---------------------------------------------------------------------------
+print()
+print("== 每日签到（积分） ==")
+
+
+def _welfare_delivery(claimed):
+    daily = {
+        "campaignId": 1, "title": "每日签到领1000积分", "type": "USER_LOGIN",
+        "benefitAmount": 1000, "benefitUnit": "CREDIT",
+        "status": "CONFIRMED" if claimed else "ELIGIBLE",
+        "claimable": not claimed, "description": "每日签到领取1000积分",
+    }
+    return {
+        "channel": "IDE", "serverTime": 1792392647046,
+        "items": [
+            {"campaignId": 4, "title": "新用户注册送 4000 积分",
+             "type": "NEW_USER_REGISTER", "benefitAmount": 4000,
+             "benefitUnit": "CREDIT", "status": "CLAIMED", "claimable": False},
+            daily,
+        ],
+    }
+
+
+_welfare_state = {"claimed": False}
+_welfare_calls = []
+
+
+def _fake_welfare_http(method, url, headers=None, body=None, timeout=None):
+    path = urllib.parse.urlsplit(url).path
+    _welfare_calls.append({
+        "method": method, "url": url, "headers": dict(headers or {}),
+        "body": json.loads(body) if body else None,
+    })
+    if path == C.WELFARE_DELIVERY_PATH:
+        return {"code": 0, "message": "ok", "data": _welfare_delivery(_welfare_state["claimed"])}
+    if path == C.WELFARE_CLAIM_PATH:
+        _welfare_state["claimed"] = True
+        return {"code": 0, "message": "ok", "data": {
+            "campaignId": 1, "campaignTitle": "每日签到领1000积分",
+            "status": "CLAIMED", "totalAmount": 1000,
+            "claimedAt": "2026-10-21T01:00:00Z"}}
+    if path == C.WELFARE_CONFIRM_PATH:
+        return {"code": 0, "message": "ok", "data": {
+            "campaignId": 1, "campaignTitle": "每日签到领1000积分",
+            "status": "CONFIRMED", "totalAmount": 1000,
+            "claimedAt": "2026-10-21T01:00:00Z"}}
+    raise AssertionError("unexpected welfare url: " + url)
+
+
+_saved_http = C._http
+C._http = _fake_welfare_http
+C._welfare_cache.clear()
+try:
+    _acts = C.welfare_activities("AK", "SK", "TOK")
+finally:
+    C._http = _saved_http
+
+check("活动清单按 type 找到每日签到", _acts["daily"]["campaign_id"] == 1, _acts["daily"])
+check("活动清单保留其它活动", len(_acts["items"]) == 2, len(_acts["items"]))
+check("签到金额取 benefitAmount", _acts["daily"]["amount"] == 1000, _acts["daily"])
+check("可领状态是 ELIGIBLE", _acts["daily"]["status"] == "ELIGIBLE", _acts["daily"])
+
+_get = _welfare_calls[-1]
+check("delivery 是 GET 且带 channel=IDE",
+      _get["method"] == "GET" and "channel=IDE" in _get["url"], _get["url"])
+check("delivery 带 AK/SK 签名", "Authorization" in _get["headers"], sorted(_get["headers"]))
+check("delivery 带 STS 令牌",
+      _get["headers"].get("X-Security-Token") == "TOK", sorted(_get["headers"]))
+
+# 领取：claim → confirm → 重新拉清单确认状态
+_welfare_state["claimed"] = False
+_welfare_calls.clear()
+C._http = _fake_welfare_http
+C._welfare_cache.clear()
+try:
+    _claim = C.welfare_claim_daily("AK", "SK", "TOK")
+finally:
+    C._http = _saved_http
+
+check("签到成功", _claim["ok"] is True and _claim["already"] is False, _claim)
+check("签到后状态是 CONFIRMED", _claim["status"] == "CONFIRMED", _claim)
+check("签到达成后带回刷新过的活动状态",
+      _claim["activity"]["status"] == "CONFIRMED", _claim.get("activity"))
+check("签到带回 1000 积分", _claim["amount"] == 1000, _claim)
+
+_claim_call = next(c for c in _welfare_calls if c["method"] == "POST"
+                   and c["url"].endswith(C.WELFARE_CLAIM_PATH))
+check("claim body 带 campaignId", _claim_call["body"]["campaignId"] == 1, _claim_call["body"])
+check("claim body 带 channel=IDE", _claim_call["body"]["channel"] == "IDE", _claim_call["body"])
+check("幂等键形如 claim_1_<毫秒>",
+      _claim_call["body"]["idempotentKey"].startswith("claim_1_"), _claim_call["body"])
+
+_confirm_call = next(c for c in _welfare_calls if c["method"] == "POST"
+                     and c["url"].endswith(C.WELFARE_CONFIRM_PATH))
+check("领完自动 confirm", _confirm_call["body"] == {"campaignId": 1}, _confirm_call["body"])
+check("签到后重新拉了一次清单（不信本地状态）",
+      sum(1 for c in _welfare_calls if c["url"].startswith(C.SNAP_HOST + C.WELFARE_DELIVERY_PATH)) == 2,
+      len(_welfare_calls))
+
+# 已领过就不要再打 claim / confirm
+_welfare_state["claimed"] = True
+_welfare_calls.clear()
+C._http = _fake_welfare_http
+C._welfare_cache.clear()
+try:
+    _again = C.welfare_claim_daily("AK", "SK", "TOK")
+finally:
+    C._http = _saved_http
+
+check("今日已签到时直接返回 already", _again["ok"] is True and _again["already"] is True, _again)
+check("已签到不再发 POST",
+      not any(c["method"] == "POST" for c in _welfare_calls), _welfare_calls)
+
+# 业务失败：code 非 0 要抛出来（HTTP 仍是 200）
+C._http = lambda *a, **k: {"code": 4000,
+                           "message": "invalid channel, group not found",
+                           "data": None}
+C._welfare_cache.clear()
+try:
+    _raised = False
+    try:
+        C.welfare_daily("AK", "SK", "TOK")
+    except C.CodeArtsError as exc:
+        _raised = True
+        check("业务错误带上游 message", "invalid channel" in str(exc), str(exc))
+    check("code 非 0 视为失败", _raised)
+finally:
+    C._http = _saved_http
+    C._welfare_cache.clear()
 
 # ---------------------------------------------------------------------------
 # 8. 积分计费：倍率 × 单价（逆向自客户端 calculateTurnCredits）
@@ -1642,6 +2209,104 @@ pv_pro = C.credit_pricing_view(C.CREDIT_TIERS["openpangu-2.0-pro"])
 check("多段模型带出 tiers（2 段）", len(pv_pro.get("tiers") or []) == 2, pv_pro)
 check("公式写明是除以 ratio", "/ 1e6 / ratio" in pv["formula"], pv["formula"])
 
+# ---- deepseek 错峰档：按时间而不是按 token 长度选段 ----
+# 上游把 default（0.18x）与 off_peak（0.09x）写成完全相同的 input 区间，
+# 只按 token 数选段会永远命中 default，夜间账目翻倍。时段 21:00 起 11 小时，
+# 即 21:00–07:59 Asia/Shanghai（UTC+8，无夏令时）。
+DS_RAW = {
+    "model_id": "deepseek-v4.1-flash", "model_name": "DeepSeek-V4.1-Flash",
+    "credit": [
+        {"input_from": 0, "input_to": -1, "ratio": "0.05",
+         "ratio_display": "0.18x", "time_slot_id": "default",
+         "input_price": "2", "cache_price": "0.2", "output_price": "8"},
+        {"input_from": 0, "input_to": -1, "ratio": "0.05",
+         "ratio_display": "0.09x", "time_slot_id": "off_peak",
+         "input_price": "1", "cache_price": "0.1", "output_price": "4"},
+    ],
+    "time_slots": {
+        "off_peak": {
+            "timezone": "Asia/Shanghai", "schedule": "0 0 21 * * *",
+            "duration": 11, "timeunit": "hour",
+            "notice": {"zh_cn": "错峰时段5折优惠（每晚21:00-次日7:59）",
+                       "en_us": "Off-peak 50% discount"},
+        },
+        # 上游还会给一个 schedule=null 的 default 槽：它只是把说明重复一遍，
+        # 不是时段，展示时不能当成第二档。
+        "default": {
+            "timezone": "Asia/Shanghai", "schedule": None,
+            "duration": None, "timeunit": "hour",
+        },
+    },
+}
+ds_raw = C._credit_tier_raw(DS_RAW)
+check("两档时段都保留，没有被拍平",
+      [r["time_slot_id"] for r in ds_raw["tiers"]] == ["default", "off_peak"],
+      ds_raw["tiers"])
+check("时段定义随档位带出",
+      ds_raw["time_slots"]["off_peak"]["schedule"] == "0 0 21 * * *",
+      ds_raw["time_slots"])
+C.normalize_builtin([DS_RAW])
+ds = C.CREDIT_TIERS["deepseek-v4.1-flash"]
+
+# 北京时间 → epoch（UTC = 北京 - 8h）
+def bj(hour, minute=0, second=0, day=22):
+    return calendar.timegm((2026, 10, day, hour - 8, minute, second))
+
+
+day = bj(10)                    # 10:00 白天
+night = bj(22)                  # 22:00 夜间
+check("白天选默认档 0.18x",
+      C._pick_credit_tier(ds, 100, day)["ratio_display"] == "0.18x",
+      C._pick_credit_tier(ds, 100, day))
+check("夜间选错峰档 0.09x",
+      C._pick_credit_tier(ds, 100, night)["ratio_display"] == "0.09x",
+      C._pick_credit_tier(ds, 100, night))
+check("20:59:59 仍按默认档",
+      C._pick_credit_tier(ds, 100, bj(20, 59, 59))["ratio_display"] == "0.18x")
+check("21:00 整进入错峰",
+      C._pick_credit_tier(ds, 100, bj(21))["ratio_display"] == "0.09x")
+check("07:59:59 仍在错峰",
+      C._pick_credit_tier(ds, 100, bj(7, 59, 59, day=23))["ratio_display"] == "0.09x")
+check("08:00 整退出错峰",
+      C._pick_credit_tier(ds, 100, bj(8, day=23))["ratio_display"] == "0.18x")
+check("未知时区不打折",
+      C._time_slot_active({"timezone": "UTC", "schedule": "0 0 21 * * *",
+                           "duration": 11, "timeunit": "hour"}, night) is False)
+
+# 积分：白天 2/0.05 = 40 积分每百万输入；夜间 1/0.05 = 20，正好减半
+check("白天百万输入 = 40 积分",
+      C.credit_for_usage("deepseek-v4.1-flash", 1000000, 0, 0, when=day) == 40.0,
+      C.credit_for_usage("deepseek-v4.1-flash", 1000000, 0, 0, when=day))
+check("夜间百万输入 = 20 积分",
+      C.credit_for_usage("deepseek-v4.1-flash", 1000000, 0, 0, when=night) == 20.0,
+      C.credit_for_usage("deepseek-v4.1-flash", 1000000, 0, 0, when=night))
+check("夜间百万输出 = 80 积分",
+      C.credit_for_usage("deepseek-v4.1-flash", 0, 0, 1000000, when=night) == 80.0,
+      C.credit_for_usage("deepseek-v4.1-flash", 0, 0, 1000000, when=night))
+check("夜间缓存价同步减半",
+      C.credit_for_usage("deepseek-v4.1-flash", 1000000, 1000000, 0,
+                         when=night) == 2.0,
+      C.credit_for_usage("deepseek-v4.1-flash", 1000000, 1000000, 0, when=night))
+
+# 展示：默认档的代表值不变，错峰档单独给出可读规则，且不混进 tiers
+pv_ds = C.credit_pricing_view(ds)
+check("错峰视图带倍率 0.09x",
+      pv_ds["time_slots"]["off_peak"]["ratio_display"] == "0.09x", pv_ds)
+check("错峰视图带时段说明",
+      pv_ds["time_slots"]["off_peak"]["schedule"] == "0 0 21 * * *", pv_ds)
+check("错峰视图带上游中文说明",
+      pv_ds["time_slots"]["off_peak"]["notice"]
+      == "错峰时段5折优惠（每晚21:00-次日7:59）", pv_ds)
+check("default 槽不算错峰档", "default" not in pv_ds["time_slots"], pv_ds)
+check("错峰档百万输入 = 20 积分",
+      pv_ds["time_slots"]["off_peak"]["credits_per_mtok_input"] == 20.0, pv_ds)
+check("错峰档百万输出 = 80 积分",
+      pv_ds["time_slots"]["off_peak"]["credits_per_mtok_output"] == 80.0, pv_ds)
+check("错峰行不算进分段 tiers（区间不会重复）", "tiers" not in pv_ds, list(pv_ds))
+check("默认档仍是 0.18x / 40 积分",
+      pv_ds["ratio_display"] == "0.18x"
+      and pv_ds["credits_per_mtok_input"] == 40.0, pv_ds)
+
 # 模型对象上要带出可读规则，面板才有东西显示
 objs = C.normalize_builtin([GLM52_RAW])
 check("模型对象带 creditPricing",
@@ -1656,6 +2321,203 @@ for want, (pin, pout) in ((0.02, (100, 10)), (0.15, (300, 180)),
     got = C.credit_for_usage("GLM-5.2", pin, 0, pout)
     check("反推 %s 积分（%d 入 / %d 出）→ %.2f" % (want, pin, pout, got),
           abs(got - want) < 0.005, got)
+
+
+# ---------------------------------------------------------------------------
+# 真流式转发的两个地基：open_chat（只建连不读）与 iter_sse（逐行吐出）
+# ---------------------------------------------------------------------------
+# 为什么单独测这两个：流式路径一旦把「响应头」先发给客户端就没有退路了，
+# 所以正确性全靠这两个函数 —— 建连失败必须能拿到错误体去判重试，
+# 逐行读取必须能扛住「多字节字符正好被切在两块之间」和「客户端已经走了」。
+
+class _FakeResp:
+    """按给定字节块依次吐出，模拟上游 SSE 分段到达。"""
+
+    def __init__(self, pieces, status=200):
+        self.pieces = list(pieces)
+        self.status = status
+        self.closed = False
+
+    def read1(self, size=8192):
+        return self.pieces.pop(0) if self.pieces else b""
+
+    def close(self):
+        self.closed = True
+
+
+_TEXT = "data: {\"choices\":[{\"delta\":{\"content\":\"你好\"}}]}\n\ndata: [DONE]\n\n"
+_RAW = _TEXT.encode("utf-8")
+# 在「你」的三字节中间切开：逐块 decode 会吐替换字符，增量解码不会
+_cut = _RAW.index("你".encode("utf-8")) + 1
+_lines = list(C.iter_sse(_FakeResp([_RAW[:_cut], _RAW[_cut:]])))
+# 4 行：data 行、空行、[DONE] 行、空行 —— SSE 的空行分隔符也要原样吐出去
+check("iter_sse 跨块拼行", len(_lines) == 4, len(_lines))
+check("iter_sse 不产生替换字符（多字节未被切断）",
+      "\ufffd" not in "".join(_lines), "".join(_lines)[:80])
+check("iter_sse 第一行完整",
+      json.loads(_lines[0][5:])["choices"][0]["delta"]["content"] == "你好",
+      _lines[0])
+
+_calls = {"n": 0}
+
+
+def _die():
+    _calls["n"] += 1
+    return True
+
+
+try:
+    list(C.iter_sse(_FakeResp([_RAW]), _die))
+    _aborted = False
+except C.ChatAborted:
+    _aborted = True
+check("iter_sse 客户端断开时抛 ChatAborted", _aborted)
+
+# 尾部没有换行的残行也要吐出来，否则最后一帧会被吞掉
+_tail = list(C.iter_sse(_FakeResp([b"data: {}\n", b"data: [DONE]"])))
+check("iter_sse 吐出没有行尾的残行", _tail[-1] == "data: [DONE]", _tail)
+
+# open_chat：200 要交回未读句柄，错误要把响应体读完交给重试判定
+_REAL_URLOPEN = C.urllib.request.urlopen
+
+
+class _OkResp(_FakeResp):
+    status = 200
+
+
+def _fake_open_ok(*a, **kw):
+    return _OkResp([_RAW])
+
+
+C.urllib.request.urlopen = _fake_open_ok
+try:
+    _st, _resp, _txt = C.open_chat("a", "b", "c", "glm-5.3", [], max_tokens=16)
+finally:
+    C.urllib.request.urlopen = _REAL_URLOPEN
+check("open_chat 成功时返回未读句柄", _st == 200 and _resp is not None and _txt == "",
+      (_st, type(_resp).__name__))
+
+
+def _fake_open_429(*a, **kw):
+    raise C.urllib.error.HTTPError(
+        "u", 429, "too many", {}, io.BytesIO(b'{"error_msg":"queue full"}'))
+
+
+C.urllib.request.urlopen = _fake_open_429
+try:
+    _st2, _resp2, _txt2 = C.open_chat("a", "b", "c", "glm-5.3", [], max_tokens=16)
+finally:
+    C.urllib.request.urlopen = _REAL_URLOPEN
+check("open_chat 失败时返回状态码+错误体、不给句柄",
+      _st2 == 429 and _resp2 is None and "queue full" in _txt2,
+      (_st2, _resp2, _txt2[:60]))
+
+# 并发判定：1041 走短退避，别混进 82 秒的 TPM 节奏
+check("TM.00001041 认作并发已满",
+      P._codearts_concurrency_full(400, '{"error_code":"TM.00001041"}'))
+check("TPM 81114 不算并发已满",
+      not P._codearts_concurrency_full(429, '{"error_code":"ModelArts.81114"}'))
+check("并发满的退避明显短于 TPU 限流",
+      sum(P.CODEARTS_BUSY_DELAYS) < sum(P.CODEARTS_RETRY_DELAYS),
+      (P.CODEARTS_BUSY_DELAYS, P.CODEARTS_RETRY_DELAYS))
+
+# 网关自己只放 1 个进上游，等于让第二个客户端等第一个生成完 —— 那是
+# 「发出去几分钟没反应」的另一半原因。默认必须大于 1，且不超账号上限 3。
+check("码道并发默认 2（账号给 3，留一个给别人）",
+      P.CODEARTS_CONCURRENCY == 2, P.CODEARTS_CONCURRENCY)
+check("真流式转发默认开启",
+      P.CODEARTS_STREAM_PASSTHROUGH is True, P.CODEARTS_STREAM_PASSTHROUGH)
+
+
+# ---------------------------------------------------------------------------
+# 多账号：每号独立名额、按空闲挑号、冷却跳过、故障转移
+# ---------------------------------------------------------------------------
+#
+# 上游的并发上限是**账号级**的 3 个会话。旧实现只有一个全局信号量，多账号时
+# 两个问题：总容量不随账号数增长（3 个号也只能跑 2 条），以及轮转挑号不看谁
+# 在忙（第 3 条可能压到已满的号上，另一个号闲着）。
+
+
+def _sess(aid):
+    return {"accessKey": "AK-" + aid, "secretKey": "SK", "securitytoken": "TK",
+            "account": {"id": aid, "label": aid},
+            "expires_at": "2099-01-01T00:00:00.000Z"}
+
+
+_pool = P._CodeartsAccountPool()
+_pool._usable = lambda: [_sess("a"), _sess("b")]
+_got = [_pool.acquire(0)[1] for _ in range(4)]
+check("两个账号各给一份名额（不是全局共享一个）",
+      sorted(_got) == ["a", "a", "b", "b"], _got)
+check("每账号容量 = CODEARTS_CONCURRENCY",
+      _got.count("a") == P.CODEARTS_CONCURRENCY, _got)
+_sess5, _key5 = _pool.acquire(0.05)
+check("全部占满时明确返回空（调用方据此回 429）",
+      _sess5 is None and _key5 is None, (_sess5, _key5))
+check("在跑数按账号记", _pool.snapshot()["a"]["in_flight"] == 2, _pool.snapshot())
+for _k in _got:
+    _pool.release(_k)
+check("还名额后在跑数归零", _pool.snapshot()["a"]["in_flight"] == 0,
+      _pool.snapshot())
+
+# 冷却中的号要被跳过；全在冷却时挑最早解冻的，别饿死
+_pool2 = P._CodeartsAccountPool()
+_pool2._usable = lambda: [_sess("a"), _sess("b")]
+_pool2.penalize("a", 60)
+_pick2, _pk2 = _pool2.acquire(0)
+check("冷却中的账号被跳过（换另一个号）", _pk2 == "b", _pk2)
+_pool2.release(_pk2)
+
+_pool3 = P._CodeartsAccountPool()
+_pool3._usable = lambda: [_sess("a"), _sess("b")]
+_pool3.penalize("a", 30)
+_pool3.penalize("b", 60)
+_pick3, _pk3 = _pool3.acquire(0)
+check("全在冷却时挑最早解冻的（不饿死）", _pk3 == "a", _pk3)
+_pool3.release(_pk3)
+
+# 故障转移：A 号报「并发会话已满」→ 给 A 打冷却、立刻换 B
+_saved_pool, _saved_open, _saved_hb2 = P._CODEARTS_POOL, C.open_chat, C.heartbeat
+_saved_delays, _saved_err = P.CODEARTS_BUSY_DELAYS, P.record_error
+try:
+    _fx = P._CodeartsAccountPool()
+    _fx._usable = lambda: [_sess("a"), _sess("b")]
+    P._CODEARTS_POOL = _fx
+    P.CODEARTS_BUSY_DELAYS = (0.0,)
+    P.record_error = lambda *a, **k: None
+    C.heartbeat = lambda *a, **k: (True, "ok")
+    _calls = []
+
+    def _open_by_account(ak, sk, tk, model, messages, **kw):
+        _calls.append(ak)
+        if ak == "AK-a":
+            return (400, None,
+                    '{"error_code":"TM.00001041",'
+                    '"error_msg":"并发会话数已达上限(3个)"}')
+        return 200, _FakeResp([b""]), ""
+
+    C.open_chat = _open_by_account
+    _h = _FakeResponsesHandler()
+    _err, _lease = _h._codearts_open_lease(
+        {"model": "glm-5.3", "messages": []}, "glm-5.3", [], 64)
+    check("撞并发满会换号重试（多账号故障转移）",
+          _err is None and _lease is not None and _lease.account_key == "b",
+          (_err, getattr(_lease, "account_key", None)))
+    check("换号前先试了原账号", _calls[:2] == ["AK-a", "AK-b"], _calls)
+    check("失败的账号被打上冷却",
+          _fx.snapshot().get("a", {}).get("cooling_s", 0) > 0, _fx.snapshot())
+    check("租约持有的是成功账号的名额",
+          _fx.snapshot().get("b", {}).get("in_flight") == 1, _fx.snapshot())
+    if _lease is not None:
+        _lease.close()
+    check("租约关闭后名额归还",
+          _fx.snapshot().get("b", {}).get("in_flight") == 0, _fx.snapshot())
+finally:
+    P._CODEARTS_POOL = _saved_pool
+    C.open_chat = _saved_open
+    C.heartbeat = _saved_hb2
+    P.CODEARTS_BUSY_DELAYS = _saved_delays
+    P.record_error = _saved_err
 
 
 print()

@@ -60,14 +60,9 @@ os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 
 import ca_proxy as P
 import ca_accounts
-import ca_pricing
-
 # 这个套件不碰真 accounts/ 目录：ACCOUNTS_DIR 是脚本旁边的硬编码路径，只能
 # 在导入后重绑（_test_analytics_by_key.py 里记过同样的坑）。
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-ca_pricing.set_data_dir(USAGE_DIR)
-ca_pricing.set_settings_dir(ACCOUNTS_DIR)
-
 USAGE_LOG = P.USAGE_LOG
 # v4 布局：一类状态一份文件。套件按 kind 读写这些文件，个别用例还会直接
 # 改坏某一类的文件来验证「一类坏不影响其余类」。
@@ -320,9 +315,6 @@ FROZEN = __FROZEN__
 _t.time = lambda: FROZEN
 sys.path.insert(0, __ROOT__)
 import ca_proxy as P
-import ca_pricing
-ca_pricing.set_data_dir(P.USAGE_DIR)
-ca_pricing.set_settings_dir(P.ACCOUNTS_DIR)
 out = {
     "snap": P._usage_snapshot_uncached(),
     "snap_intl": P._usage_snapshot_uncached(realm="intl"),
@@ -452,9 +444,10 @@ check("基线：无 checkpoint 时三份聚合都有内容",
       GOLDEN_OBJ["snap"]["requests"] > 0 and GOLDEN_OBJ["byacct"]
       and GOLDEN_OBJ["analytics"]["accounts"],
       (GOLDEN_OBJ["snap"]["requests"], len(GOLDEN_OBJ["byacct"])))
-check("基线：有价与无价两条路径都被折到",
-      GOLDEN_OBJ["snap"]["cost_missing"] and GOLDEN_OBJ["snap"]["cost_cny"] > 0,
-      (GOLDEN_OBJ["snap"]["cost_missing"], GOLDEN_OBJ["snap"]["cost_cny"]))
+check("基线：价格估算体系已移除，折叠不再产生任何成本",
+      GOLDEN_OBJ["snap"]["cost_cny"] == 0
+      and not GOLDEN_OBJ["snap"].get("cost_missing"),
+      (GOLDEN_OBJ["snap"].get("cost_missing"), GOLDEN_OBJ["snap"]["cost_cny"]))
 # 单出口：两个区域名（一个是已删的 intl）过滤出来的都是同一批行，
 # 所以数字相同——这里钉住的是「两个视图都非空且互相一致」。
 check("基线：两个区域视图都非空且一致（单出口）",
@@ -819,46 +812,26 @@ make_checkpoint()
 # 4.7 指纹
 mutate_cache(lambda d: _entry(d, "snapshot").update({"pricing": ["on", "x", "y", "z"]}),
              "价格指纹被改（旧形状的列表）")
-mutate_cache(lambda d: _entry(d, "snapshot").update({"pricing": None}),
-             "价格指纹缺失")
-mutate_cache(lambda d: _entry(d, "snapshot")["pricing"].update({"builtin": "0" * 40}),
-             "用到的价：内置价目表摘要被改")
-mutate_cache(lambda d: _entry(d, "snapshot")["pricing"].update({"timeline_models": []}),
-             "用到的价：时间线依赖被抹掉（投影摘要对不上）")
+# 「pricing 为 null」这条不再作为判废条件：价格估算体系已移除（2026-10-22），
+# 折叠不再读任何价，record 恒为 None 是**合法**状态，缓存仍靠 offset / tail /
+# 日志指纹校验。改成 null 时拒绝会让正常运行永远无法复用缓存 —— 同理，
+# builtin / timeline_models 这两条「用到的价」子指纹也没有对象可改了。
 # 现存的出口只有一个，"cn" 就是当下的指纹，改它才叫「被改」。
 mutate_cache(lambda d: _entry(d, "snapshot").update({"realm_inputs": ["other", []]}),
              "realm 指纹被改")
 mutate_cache(lambda d: _entry(d, "analytics").update({"pricing": ["off"]}),
              "analytics 的价格指纹被改", kind="analytics")
-mutate_cache(lambda d: _entry(d, "analytics")["pricing"].update({"refs": {"ghost": "0" * 40}}),
-             "analytics 的用到的价：多出一个查不到的 pid", kind="analytics")
+# 「多出一个查不到的 pid」这条也随价格体系一起移除：analytics 的 pricing
+# 记录同样恒为 None，没有 refs 可以改。
 mutate_cache(lambda d: _entry(d, "analytics").update({"realm_inputs": ["other", []]}),
              "analytics 的 realm 指纹被改", kind="analytics")
 
 # 4.8 真实变化：价格表 / realm 归属
+#
+# 价格估算体系已移除（2026-10-22）：改价表不再影响任何聚合结果，这一组
+# 「改价 → 缓存作废 → 按新价重算」的断言没有可观察对象了，连同它们的
+# 价表写入一起删掉。缓存失效本身的保证仍由 4.7 的 mutate_cache 覆盖。
 make_checkpoint()
-write_pricing({**PRICING, "meta": {"usd_cny": 7.4}, "models": {
-    **PRICING["models"],
-    "m-a": {"unit": 1000000, "currency": "CNY",
-            "flat": {"input_cache_hit": 0.9, "input_cache_miss": 1.8,
-                     "output": 3.6}},
-}})
-cache_env_off()
-restart()
-GOLDEN_PRICE = canon(live())
-check("价格表变了：真值确实变了", GOLDEN_PRICE != GOLDEN)
-cache_env_nowrite()
-restart()
-got, err = live_canon()
-check("价格表变了：checkpoint 作废、结果按新价重算", got == GOLDEN_PRICE,
-      err or first_diff(GOLDEN_PRICE, got or ""))
-# 这里不再断言「一定没有采用 checkpoint」：是否采用取决于本次有没有写过一份
-# 新价的 checkpoint（缓存开关与「折叠可复现」的判定组合不同，单出口之后这条
-# 分支变得可走）。能确定的是上一条——结果必须按新价算。指纹本身的失效由 4.7
-# 的 mutate_cache 那几条直接钉住。
-check("价格表变了：没有把旧价结果留在快照里",
-      got == GOLDEN_PRICE and got != GOLDEN,
-      (got == GOLDEN_PRICE, got == GOLDEN))
 
 write_pricing(PRICING)
 # 「切换出口 → 真值与缓存一起变」这条场景需要两个出口才有意义。国际版删除后

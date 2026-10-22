@@ -55,12 +55,7 @@ import time as _time
 _time.time = lambda: FROZEN
 
 import ca_proxy as P
-import ca_pricing
-
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
-ca_pricing.set_data_dir(USAGE_DIR)
-ca_pricing.set_settings_dir(ACCOUNTS_DIR)
-
 USAGE_LOG = P.USAGE_LOG
 # v4 布局：一类状态一份文件（usage-aggregate-cache-<kind>.json）。
 KIND_FILES = {kind: P._usage_cache_kind_path(kind)
@@ -322,11 +317,6 @@ FROZEN = __FROZEN__
 _t.time = lambda: FROZEN
 sys.path.insert(0, __ROOT__)
 import ca_proxy as P
-import ca_pricing
-ca_pricing.set_data_dir(P.USAGE_DIR)
-ca_pricing.set_settings_dir(P.ACCOUNTS_DIR)
-
-
 def window_start(name):
     """与父进程同一套窗口算法（range_window 的 week/month 读系统时钟，
     子进程里也一样漂；这里锚在冻结时钟上）。"""

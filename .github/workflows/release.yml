@@ -303,7 +303,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "包内运行时无法执行" }
           Push-Location $root
           try {
-            & $py -c "import ca_proxy, ca_accounts, ca_pricing, ca_atrest, ca_webtools, ca_scheduler, ca_tasks; print('app imports ok')"
+            & $py -c "import ca_proxy, ca_accounts, ca_atrest, ca_webtools, ca_scheduler, ca_tasks; print('app imports ok')"
             if ($LASTEXITCODE -ne 0) { throw "包内运行时跑不动应用模块" }
           } finally { Pop-Location }
 
