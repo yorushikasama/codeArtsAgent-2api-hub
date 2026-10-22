@@ -19,6 +19,7 @@ import http.client
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -959,6 +960,164 @@ _u2 = Q.anthropic_usage({"prompt_tokens": 100, "completion_tokens": 5,
                          "prompt_cache_hit_tokens": 40})
 check("缓存命中进 cache_read_input_tokens", _u2["cache_read_input_tokens"] == 40, _u2)
 check("非 dict 用量给全零", Q.anthropic_usage(None)["input_tokens"] == 0, None)
+
+
+# ---------------------------------------------------------------------------
+# 14. 第五刀：SSE 读取层 + Messages 流式状态机搬进 ca_protocol
+# ---------------------------------------------------------------------------
+
+section("14. Messages 流式状态机（真调，不只看 import）")
+
+
+def _sse_lines(*chunks):
+    """把 chat-completions 的 chunk 序列包成上游字节行。"""
+    out = []
+    for c in chunks:
+        out.append(c.encode() if isinstance(c, str)
+                   else b"data: " + json.dumps(c).encode())
+    out.append(b"data: [DONE]")
+    return iter(out)
+
+
+def _events(frames):
+    out = []
+    for frame in frames:
+        name = data = None
+        for line in frame.decode().splitlines():
+            if line.startswith("event: "):
+                name = line[7:]
+            elif line.startswith("data: "):
+                data = json.loads(line[6:])
+        out.append((name, data))
+    return out
+
+
+def _messages(chunks, model="m", holder=None):
+    return _events(Q.stream_messages_events(_sse_lines(*chunks), model, holder))
+
+
+check("六个别名都指向 ca_protocol 的同一对象",
+      P.stream_messages_events is Q.stream_messages_events
+      and P.iter_sse_lines is Q.iter_sse_lines
+      and P.strip_data_prefix is Q.strip_data_prefix
+      and P.anthropic_error_type is Q.anthropic_error_type
+      and P._anthropic_message_id is Q.anthropic_message_id
+      and P._new_id is Q.new_id, None)
+check("_new_id 前缀与随机尾巴还在",
+      P._new_id("call_").startswith("call_") and len(P._new_id("call_")) > 8, None)
+check("SSE_READ_BLOCK 是同一整数", P.SSE_READ_BLOCK == Q.SSE_READ_BLOCK == 65536, None)
+
+_holder = {}
+_ev = _messages([
+    {"id": "chatcmpl-1", "model": "deepseek-v3",
+     "choices": [{"delta": {"content": "你"}}]},
+    {"choices": [{"delta": {"content": "好"}}]},
+    {"choices": [{"delta": {}, "finish_reason": "stop"}],
+     "usage": {"prompt_tokens": 11, "completion_tokens": 3,
+               "prompt_tokens_details": {"cached_tokens": 7}}},
+], holder=_holder)
+_names = [n for n, _ in _ev]
+check("流以 message_start 开场、message_stop 收尾",
+      _names[0] == "message_start" and _names[-1] == "message_stop", _names[:3])
+_text = "".join(d["delta"]["text"] for n, d in _ev
+                if n == "content_block_delta" and d["delta"]["type"] == "text_delta")
+check("正文按序拼回去", _text == "你好", repr(_text))
+_start = [d for n, d in _ev if n == "message_start"][0]["message"]
+check("model 透传、id 补 msg_ 前缀",
+      _start["model"] == "deepseek-v3" and _start["id"].startswith("msg_"), _start)
+_delta = [d for n, d in _ev if n == "message_delta"][0]
+check("stop_reason=end_turn 且用量含缓存命中",
+      _delta["delta"]["stop_reason"] == "end_turn"
+      and _delta["usage"]["input_tokens"] == 11
+      and _delta["usage"]["output_tokens"] == 3
+      and _delta["usage"]["cache_read_input_tokens"] == 7, _delta)
+check("上游原始用量交回调用方（否则用量行全空）",
+      (_holder.get("usage") or {}).get("completion_tokens") == 3, _holder)
+
+_ev = _messages([
+    {"choices": [{"delta": {"reasoning_content": "想"}}]},
+    {"choices": [{"delta": {"content": "答案"}}]},
+    {"choices": [{"delta": {}, "finish_reason": "length"}]},
+])
+_seq = [(n, d.get("content_block", {}).get("type") or d.get("delta", {}).get("type"))
+        for n, d in _ev if n in ("content_block_start", "content_block_delta")]
+check("reasoning 先开 thinking 块、正文再开 text 块",
+      _seq[0] == ("content_block_start", "thinking")
+      and _seq[1] == ("content_block_delta", "thinking_delta")
+      and ("content_block_start", "text") in _seq, _seq)
+check("length → max_tokens",
+      [d for n, d in _ev if n == "message_delta"][0]["delta"]["stop_reason"] == "max_tokens",
+      None)
+
+_ev = _messages([
+    {"choices": [{"delta": {"tool_calls": [
+        {"index": 0, "id": "call_a",
+         "function": {"name": "get_weather", "arguments": "{\"c\""}}]}}]},
+    {"choices": [{"delta": {"tool_calls": [
+        {"index": 0, "function": {"arguments": ":\"bj\"}"}}]}}]},
+    {"choices": [{"delta": {}, "finish_reason": "tool_calls"}]},
+])
+_blocks = [d["content_block"] for n, d in _ev if n == "content_block_start"]
+check("工具调用开一个 tool_use 块且 id/name 正确",
+      len(_blocks) == 1 and _blocks[0]["type"] == "tool_use"
+      and _blocks[0]["id"] == "call_a" and _blocks[0]["name"] == "get_weather", _blocks)
+_args = "".join(d["delta"]["partial_json"] for n, d in _ev
+                if n == "content_block_delta" and d["delta"]["type"] == "input_json_delta")
+check("参数分片拼回完整 JSON", _args == "{\"c\":\"bj\"}", _args)
+check("tool_calls → tool_use",
+      [d for n, d in _ev if n == "message_delta"][0]["delta"]["stop_reason"] == "tool_use",
+      None)
+
+_ev = _messages([{"error": {"message": "boom"}}])
+check("上游 error 帧翻成 Anthropic error 事件",
+      _ev[-1][0] == "error" and "boom" in _ev[-1][1]["error"]["message"], _ev)
+
+check("空流也补齐三段骨架（客户端不会卡住）",
+      [n for n, _ in _messages([])] == ["message_start", "message_delta", "message_stop"],
+      [n for n, _ in _messages([])][:5])
+
+_raw = iter([b": ping\n", b"data: not-json\n",
+             b'data: {"choices":[{"delta":{"content":"x"}}]}\n', b"data: [DONE]\n"])
+check("注释行与坏 JSON 被跳过、不中断流",
+      any(d.get("delta", {}).get("text") == "x"
+          for n, d in _events(Q.stream_messages_events(_raw, "m", {}))), None)
+
+
+class _Chunked:
+    """带 read1 的对象：走「按块读 + 内存切行」那条真路径。"""
+
+    def __init__(self, pieces):
+        self.pieces = list(pieces)
+        self.reads = 0
+
+    def read1(self, _n):
+        self.reads += 1
+        return self.pieces.pop(0) if self.pieces else b""
+
+
+_chunky = _Chunked([b'data: {"a":1}\n\ndata: {"b', b'":2}\n\ndata: [DONE]\n\n'])
+check("跨块断行被接上、空行也交出去",
+      list(Q.iter_sse_lines(_chunky)) ==
+      [b'data: {"a":1}\n', b"\n", b'data: {"b":2}\n', b"\n",
+       b"data: [DONE]\n", b"\n"], list(Q.iter_sse_lines(_chunky)))
+_hooks = []
+list(Q.iter_sse_lines(_Chunked([b"data: x\n", b""]),
+                      before_read=lambda: _hooks.append(1)))
+check("每次可能阻塞的读之前都回调（攒批写出的前提）", len(_hooks) >= 2, _hooks)
+
+# 第五刀真正的坑：函数搬走了，ca_proxy 里的调用点还在叫旧名字。
+# 别名只覆盖「调用方」，漏一个就是运行期 NameError（responses 断流收尾这次就
+# 被它吃掉，测试只看到「少了 response.failed」）。这里做一次静态普查。
+_proxy_src = open(P.__file__, encoding="utf-8").read()
+_protocol_src = open(Q.__file__, encoding="utf-8").read()
+_dangling = []
+for _m in re.finditer(r"^def ([a-z][a-z0-9_]*)\(", _protocol_src, re.M):
+    for _cand in (_m.group(1), "_" + _m.group(1)):
+        if _cand in vars(P):
+            continue
+        if re.search(r"(?<![\w.])%s\s*\(" % re.escape(_cand), _proxy_src):
+            _dangling.append(_cand)
+check("搬走的函数在 ca_proxy 里没有悬空旧名", not _dangling, _dangling)
 
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

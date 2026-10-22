@@ -23,6 +23,7 @@ Messages）的转换逻辑和 HTTP handler 搅在一起：函数里读 `self.wfi
 """
 
 import json
+import uuid
 
 
 def anthropic_text(value):
@@ -193,3 +194,297 @@ def anthropic_stop_reason(finish_reason):
     if value in ("content_filter", "refusal"):
         return "refusal"
     return "end_turn"
+
+
+SSE_READ_BLOCK = 64 * 1024
+
+def new_id(prefix):
+    return prefix + uuid.uuid4().hex
+
+
+def anthropic_message_id(value):
+    value = anthropic_text(value)
+    if not value:
+        return new_id("msg_")
+    return value if value.startswith("msg_") else "msg_" + value
+
+
+def anthropic_error_type(status):
+    """Map an HTTP status to the Anthropic error.type vocabulary."""
+    try:
+        status = int(status)
+    except (TypeError, ValueError):
+        status = 500
+    if status in (400, 422):
+        return "invalid_request_error"
+    if status == 401:
+        return "authentication_error"
+    if status == 403:
+        return "permission_error"
+    if status == 404:
+        return "not_found_error"
+    if status == 429:
+        return "rate_limit_error"
+    if status in (503, 529):
+        return "overloaded_error"
+    return "api_error"
+
+
+def strip_data_prefix(line):
+    line = line.strip()
+    # SSE comment / heartbeat / keepalive / empty line
+    if not line or line.startswith(":"):
+        return ""
+    while line.startswith("data:"):
+        line = line[5:].strip()
+    # Handle possible "data: : heartbeat"
+    if not line or line.startswith(":"):
+        return ""
+    return line
+
+
+def iter_sse_lines(source, block_size=SSE_READ_BLOCK, before_read=None):
+    """按块读取流式响应并逐行产出，把逐行 read 的 syscall 开销摊掉。
+
+    直接 `for line in resp` 迭代 http.client.HTTPResponse 时，每一行都要走
+    一次 read() syscall，而每次 syscall 都要释放并重新抢回 GIL。一轮流式回复
+    动辄几千条事件，于是进程大部分时间花在二十来个 handler 线程之间来回交接
+    GIL 上，而不是在干活。4 vCPU 真机实测（v1.7.2，15~20 req/s）：10 秒内
+    106 214 次 futex，占全部 syscall 时间的 71%，其中约三分之二来自这条逐行
+    读取路径。
+
+    read1() 每次最多一次底层 syscall，所以按块取回来再在内存里切行，能把
+    syscall 数降一到两个数量级。延迟不变：read1() 一有字节就返回，完整的行
+    立刻产出；只有跨块的那一行需要等下一块。
+
+    产出的行**带换行符**，与直接迭代 response 的形状完全一致，调用方一行都
+    不用改。没有 read1 的对象（列表、文本模式的文件……）退回普通迭代。
+
+    `before_read` 在每个**可能阻塞的 read1 之前**调一次，调用方可以在这里把
+    攒下的写出掉：一个读取块里的事件因此合成一次 write，而下一个字节一到就
+    立刻产出——延迟与逐块写完全一样，只是不再一个 chunk 一次 sendall。
+    """
+    read1 = getattr(source, "read1", None)
+    if read1 is None:
+        for line in source:
+            if before_read is not None:
+                before_read()
+            yield line
+        return
+    buf = b""
+    while True:
+        if before_read is not None:
+            before_read()
+        chunk = read1(block_size)
+        if not chunk:
+            break
+        buf += chunk
+        if b"\n" not in buf:
+            continue
+        head, _, buf = buf.rpartition(b"\n")
+        for line in head.split(b"\n"):
+            yield line + b"\n"
+    if buf:
+        # 上游没以换行收尾时，最后一行照旧要交出去（迭代 response 也是这个形状）。
+        yield buf
+
+
+def stream_messages_events(raw_iter, model, holder=None):
+    """Yield Anthropic Messages SSE frames from a chat-completions SSE stream."""
+    holder = holder if isinstance(holder, dict) else {}
+    state = {
+        "started": False,
+        "done": False,
+        "failed": False,
+        "id": "",
+        "model": model,
+        "stop": "end_turn",
+        "thinking_open": False,
+        "thinking_idx": None,
+        "text_open": False,
+        "text_idx": None,
+        "next": 0,
+        "tools": {},
+        "tool_order": [],
+        "usage": None,
+    }
+
+    def usage_payload():
+        return anthropic_usage(state.get("usage"))
+
+    def ensure_start(chunk=None):
+        if state["started"]:
+            return None
+        state["started"] = True
+        if isinstance(chunk, dict):
+            state["id"] = anthropic_text(chunk.get("id"))
+            state["model"] = anthropic_text(chunk.get("model")) or state["model"]
+        return anthropic_sse_frame("message_start", {
+            "message": {
+                "id": anthropic_message_id(state["id"]),
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+                "model": state["model"],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 0, "output_tokens": 0},
+            }
+        })
+
+    def ensure_thinking():
+        frames = []
+        if not state["thinking_open"]:
+            state["thinking_idx"] = state["next"]
+            state["next"] += 1
+            state["thinking_open"] = True
+            frames.append(anthropic_sse_frame("content_block_start", {
+                "index": state["thinking_idx"],
+                "content_block": {"type": "thinking", "thinking": ""},
+            }))
+        return frames
+
+    def ensure_text():
+        frames = []
+        if not state["text_open"]:
+            if state["thinking_open"]:
+                state["thinking_open"] = False
+                frames.append(anthropic_sse_frame(
+                    "content_block_stop", {"index": state["thinking_idx"]}))
+            state["text_idx"] = state["next"]
+            state["next"] += 1
+            state["text_open"] = True
+            frames.append(anthropic_sse_frame("content_block_start", {
+                "index": state["text_idx"],
+                "content_block": {"type": "text", "text": ""},
+            }))
+        return frames
+
+    for line in iter_sse_lines(raw_iter):
+        if state["done"] or state["failed"]:
+            break
+        data = strip_data_prefix(line.decode("utf-8", "replace"))
+        if not data:
+            continue
+        if data == "[DONE]":
+            break
+        try:
+            chunk = json.loads(data)
+        except Exception:
+            continue
+        if isinstance(chunk.get("error"), dict):
+            state["failed"] = True
+            err = chunk["error"]
+            yield anthropic_sse_frame("error", {
+                "error": {
+                    "type": anthropic_error_type(502),
+                    "message": anthropic_text(err.get("message") or "upstream error"),
+                }
+            })
+            return
+        start = ensure_start(chunk)
+        if start:
+            yield start
+        # Capture usage before the choices guard: the final upstream frame
+        # carries both the usage block and the finish_reason (and no delta),
+        # so skipping it here would zero out every streaming usage row.
+        if isinstance(chunk.get("usage"), dict):
+            state["usage"] = chunk["usage"]
+        choices = chunk.get("choices") if isinstance(chunk.get("choices"), list) else []
+        if not choices:
+            continue
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+        # Upstream thinking trace (deepseek-style reasoning_content) becomes
+        # native thinking blocks so the client can display the reasoning.
+        reason = delta.get("reasoning_content")
+        if isinstance(reason, str) and reason:
+            for frame in ensure_thinking():
+                yield frame
+            yield anthropic_sse_frame("content_block_delta", {
+                "index": state["thinking_idx"],
+                "delta": {"type": "thinking_delta", "thinking": reason},
+            })
+        text = delta.get("content")
+        if isinstance(text, str) and text:
+            for frame in ensure_text():
+                yield frame
+            yield anthropic_sse_frame("content_block_delta", {
+                "index": state["text_idx"],
+                "delta": {"type": "text_delta", "text": text},
+            })
+        for call in delta.get("tool_calls") or []:
+            if not isinstance(call, dict):
+                continue
+            try:
+                idx = int(call.get("index") or 0)
+            except (TypeError, ValueError):
+                idx = 0
+            entry = state["tools"].get(idx)
+            if entry is None:
+                entry = {"idx": idx, "block": None, "id": "", "name": "", "opened": False}
+                state["tools"][idx] = entry
+                state["tool_order"].append(idx)
+            if call.get("id"):
+                entry["id"] = anthropic_text(call.get("id"))
+            fn = call.get("function") if isinstance(call.get("function"), dict) else {}
+            if fn.get("name"):
+                entry["name"] = anthropic_text(fn.get("name"))
+            args = fn.get("arguments") if fn.get("arguments") is not None else ""
+            if not entry["opened"] and (entry["id"] or entry["name"] or args):
+                if state["thinking_open"]:
+                    state["thinking_open"] = False
+                    yield anthropic_sse_frame("content_block_stop", {"index": state["thinking_idx"]})
+                if state["text_open"]:
+                    state["text_open"] = False
+                    yield anthropic_sse_frame("content_block_stop", {"index": state["text_idx"]})
+                entry["opened"] = True
+                entry["block"] = state["next"]
+                state["next"] += 1
+                if not entry["id"]:
+                    entry["id"] = "toolu_" + str(idx)
+                yield anthropic_sse_frame("content_block_start", {
+                    "index": entry["block"],
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": entry["id"],
+                        "name": entry["name"],
+                        "input": {},
+                    },
+                })
+            if entry["opened"] and args:
+                yield anthropic_sse_frame("content_block_delta", {
+                    "index": entry["block"],
+                    "delta": {"type": "input_json_delta", "partial_json": anthropic_text(args)},
+                })
+        finish = choice.get("finish_reason")
+        if finish:
+            state["stop"] = anthropic_stop_reason(finish)
+    if state["failed"]:
+        return
+    if not state["started"]:
+        start = ensure_start(None)
+        if start:
+            yield start
+    if state["thinking_open"]:
+        state["thinking_open"] = False
+        yield anthropic_sse_frame("content_block_stop", {"index": state["thinking_idx"]})
+    if state["text_open"]:
+        state["text_open"] = False
+        yield anthropic_sse_frame("content_block_stop", {"index": state["text_idx"]})
+    for idx in state["tool_order"]:
+        entry = state["tools"][idx]
+        if not entry["opened"]:
+            continue
+        yield anthropic_sse_frame("content_block_stop", {"index": entry["block"]})
+    state["done"] = True
+    # Hand the raw upstream usage block back to the caller: the stream
+    # response records it on the usage row, and without this every streamed
+    # Messages request was logged as usage_missing.
+    holder["usage"] = state.get("usage")
+    yield anthropic_sse_frame("message_delta", {
+        "delta": {"stop_reason": state["stop"], "stop_sequence": None},
+        "usage": usage_payload(),
+    })
+    yield anthropic_sse_frame("message_stop", {})
+
