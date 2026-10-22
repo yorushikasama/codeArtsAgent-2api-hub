@@ -226,7 +226,7 @@ try:
     check("the second request parsed", b"414" not in second,
           second.split(b"\r\n", 1)[0].decode("latin-1", "replace"))
 
-    print("[3] a good request alone still works")
+    print("[3] an unknown model alone still answers (clean JSON, not a hang)")
     sock = socket.create_connection(("127.0.0.1", port), timeout=15)
     body = b'{"model":"x","messages":[{"role":"user","content":"hi"}]}'
     sock.sendall(b"POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\n"
@@ -237,8 +237,12 @@ try:
     except Exception:
         resp = b""
     sock.close()
-    check("no accounts configured -> clean JSON 503, not a hang",
-          resp.startswith(b"HTTP/1.1 503") and b"no usable account" in resp,
+    # 2026-10-22 起：这个部署没有任何 WorkBuddy 账号时，非码道模型不再回
+    # 503「没有可用账号」（那读起来像网关坏了），而是 404 + 可用清单。
+    # 本用例真正要钉的是「有干净 JSON 回答、没有挂住」，状态码按这条口径。
+    check("no accounts + unknown model -> clean JSON 404, not a hang",
+          resp.startswith(b"HTTP/1.1 404") and b"model_not_found" in resp
+          and b"is not served by this gateway" in resp,
           resp.split(b"\r\n", 1)[0].decode("latin-1", "replace"))
 
     print("[4] an over-long request line answers JSON, not stdlib HTML")

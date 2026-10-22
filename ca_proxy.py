@@ -2028,10 +2028,9 @@ def _pair_buffer(state, key):
     then cost two bisections plus one subtraction over `cum`, and appends stay
     O(1). Only the timestamps and the running sum are kept - a row's token
     count is never read again once it is folded into `cum`, so a third list
-    would be pure memory. No new stdlib import either: the packaged runtime's
-    trim contract (portable_runtime.REQUIRED_FILES) already vouches for
-    bisect, while `array` is not in it (builtin on Windows, a shared extension
-    elsewhere) - see tests/_test_release_assets.py.
+    would be pure memory. stdlib only, and `bisect` is a builtin module on
+    every CPython (unlike `array`, a shared extension on Linux), so this stays
+    import-safe however the gateway is packaged.
     `head` is the first live index, `base` the token sum of everything trimmed
     away so far - `cum` keeps counting from the very first row ever buffered,
     so a range whose left edge falls on the first live entry has to subtract

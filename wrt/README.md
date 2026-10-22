@@ -28,15 +28,15 @@ wrt/
 
 依赖（两套系统同名）：`python3-light`、`python3-urllib`、`python3-uuid`。
 
-## 与 release 工作流的关系
+## 与发布的关系
 
-`.github/workflows/release.yml` 在 `v*` tag 上跑：先校验 tag 与源码版本一致、
-等同一提交的测试矩阵通过，然后依次构建便携 ZIP、`.ipk`、`.apk`，生成
-`SHA256SUMS`，最后创建/更新 **Draft Release**（永不自动 publish）。
-本目录的两个脚本就是它的第 4 步，工作流不重复实现打包逻辑。
+仓库不使用 GitHub Actions（`.github/workflows/` 已于 2026-10-22 整体移除），
+所以 `.ipk` / `.apk` 改为**本地构建后手工上传**到 GitHub Release：打 `v*` tag 前
+先跑 `python tests/run_all.py`，再用本目录的两个脚本出包。
 
-脚本不再从网络拉源码：`--app-src` 不给时默认用当前仓库检出，CI 直接把
-`$GITHUB_WORKSPACE` 传进来。
+本目录的两个脚本自包含（脚本内嵌打包器并自检），不依赖任何 CI 步骤，也不从
+网络拉源码：`--app-src` 不给时默认用当前仓库检出；以前 CI 传的是
+`$GITHUB_WORKSPACE`，现在就是 `"$PWD"`。
 
 ## 本地构建
 
@@ -52,8 +52,10 @@ sh wrt/openwrt/build-apk.sh <SDK 目录> "$PWD"     # 产物在 wrt/apk/
 
 只改一处：`wrt/openwrt/codearts2api/Makefile` 的 `PKG_VERSION`（需要时
 `PKG_RELEASE`）。两个脚本都会把源码 `ca_proxy.py` 的 `server_version` 与
-`PKG_VERSION` 比对，`release.yml` 的 version job 还会把 tag 一起比对，
-三者任一不一致就拒绝出包——宁可不发，也不发一个版本号对不上的包。
+`PKG_VERSION` 比对，不一致就拒绝出包——宁可不发，也不发一个版本号对不上的包。
+以前 `release.yml` 的 version job 还会把 tag 一起比对，那份工作流已删除，
+**打 tag 前请自己把 tag 与这两处对一遍**（`server_version` 的两处一致性仍由
+`tests/_test_release_engineering.py` 钉住）。
 
 ## 数据目录与持久化
 

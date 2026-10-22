@@ -65,8 +65,8 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 132 个套件：106 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
-- CI（`.github/workflows/tests.yml`）跑同一条命令：Ubuntu 上 python 3.9 与 3.12，Windows 上 python 3.12。
+- 131 个套件：105 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 仓库不含 CI：`.github/workflows/` 已整体移除，测试只在本地/服务器手工跑（`--jobs 4` 可并行）。
 
 ---
 
@@ -204,6 +204,16 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
 
 ### Unreleased
+
+**移除全部 GitHub Actions 工作流**
+
+- 删掉 `.github/workflows/`（`tests` / `release` / `release-checksums` / `docker-publish` / `revert-guard`），
+  以及只为它们服务的 `release/` 打包工具（`matrix_legs.py` / `release_tools.py` / `portable_runtime.py` / `portable.txt`）
+  与 `tests/_test_release_assets.py`；
+- 测试不再自动跑：`python tests/run_all.py` 由本地/服务器手工执行；
+- 发布改为手工：打 `v*` tag 前先本地跑全量，`.ipk` / `.apk` 用 `wrt/openwrt/*.sh` 本地构建后上传；
+- 代价要说清：没有三平台（Ubuntu 3.9 / 3.12、Windows 3.12）矩阵，也没有合并前的自动回滚检查（revert guard）——
+  合并前请自己核对合并结果里 base 的新增代码是否还在。
 
 **项目身份从 WorkBuddy 改为 CodeArts（码道）**
 

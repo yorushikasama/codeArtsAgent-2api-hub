@@ -1,9 +1,12 @@
 """Release engineering pins (M6 F1-F3).
 
-The workflows, Dockerfile and compose file are text artifacts nothing else in
-the suite executes; these assertions keep the release discipline from silently
-disappearing (checksums asset, tag == source version, healthcheck, PUID/PGID).
-The last class keeps merge leftovers (conflict markers) out of the tree.
+The Dockerfile and compose file are text artifacts nothing else in the suite
+executes; these assertions keep the release discipline from silently
+disappearing (tag == source version, healthcheck, PUID/PGID). The last class
+keeps merge leftovers (conflict markers) out of the tree.
+
+GitHub Actions was removed from this repository (2026-10-22): there is no
+`.github/workflows/` any more, so nothing here may read a workflow file.
 
 Run with: python _test_release_engineering.py
 """
@@ -27,27 +30,6 @@ class VersionStringTests(unittest.TestCase):
         self.assertIsNotNone(overview, "overview version string not found")
         self.assertIsNotNone(server, "server header version string not found")
         self.assertEqual(overview.group(1), server.group(1))
-
-
-class WorkflowTests(unittest.TestCase):
-    def test_tests_workflow_asserts_tag_against_source(self):
-        text = read(".github", "workflows", "tests.yml")
-        self.assertIn('tags: ["v*"]', text)
-        self.assertIn("version-assert", text)
-        self.assertIn("refs/tags/v", text)
-        self.assertIn("GITHUB_REF_NAME", text)
-        self.assertIn("server_version", text)
-        # The workflow's extraction must see the same two strings the source
-        # test pins, otherwise a passing CI would mean nothing.
-        self.assertIn('"version"', text)
-
-    def test_release_checksums_workflow_hashes_every_asset(self):
-        text = read(".github", "workflows", "release-checksums.yml")
-        self.assertIn("types: [published]", text)
-        self.assertIn("gh release download", text)
-        self.assertIn("sha256sum *", text)
-        self.assertIn("gh release upload", text)
-        self.assertIn("checksums.txt", text)
 
 
 class DockerTests(unittest.TestCase):

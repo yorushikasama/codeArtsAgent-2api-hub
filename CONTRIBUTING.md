@@ -3,28 +3,31 @@
 > 适用：给本仓库提 Issue / PR 的所有人（包括维护者自己）。
 > 目标：每个改动都能被**独立评审、独立回滚**，并且**不把别人已经合进 main 的工作弄丢**。
 
+> **本仓库不使用 CI。** `.github/workflows/` 已整体移除（2026-10-22），没有测试矩阵、
+> 没有回滚检查、没有发布门禁。下面所有检查都靠本地命令，靠人记得跑。
+
 ## 0. 三条底线
 
 1. **一个 PR 一件事**：可独立评审、可独立回滚；跨主题请拆成多个 PR。
 2. **分支基于最新 main**：开 PR 前先 rebase / 重放补丁；分支落后且与 main 改过同一批文件时，解冲突**必须两边都留**。
-3. **不许弄丢 main 的近期改动**：合并结果里 base 新增的代码必须还在。仓库配有「回滚检查」CI（revert guard）自动核对——红了先 rebase；确认无碍则由维护者加 `revert-confirmed` 标签放行。
+3. **不许弄丢 main 的近期改动**：合并结果里 base 新增的代码必须还在。以前由「回滚检查」（revert guard）自动核对，**那份工作流已经删了**——现在只能人工看 `git diff <base>...<branch>`，重点盯「我没动过、却显示整段删除」的文件。
 
-> 为什么把这三条放在最前面：issue #270。一次解冲突「取一侧」的合并让 `dashboard.html` 整块消失（#265 表头排序 / #261 签到记录 / #262 更新检查 / #263 优先调度设置 UI），CI 6 红；排查、返工、回退的成本远超事前多花的那几分钟。
+> 为什么把这三条放在最前面：issue #270。一次解冲突「取一侧」的合并让 `dashboard.html` 整块消失（#265 表头排序 / #261 签到记录 / #262 更新检查 / #263 优先调度设置 UI），6 个套件当场变红；排查、返工、回退的成本远超事前多花的那几分钟。
 
 ## 1. 提交前自查（本地必须全过）
 
 | 检查 | 做法 |
 |---|---|
 | 分支基线 | 基于**最新** main（rebase / 重放补丁），别带着旧基线提 PR |
-| 测试全绿 | `python tests/run_all.py`（全部套件；CI 里并行跑 `--jobs 4`）。JS 套件需要 PATH 上有 `node`，缺失会跳过并提示——补上 node 再跑；单跑一个套件：`python tests/_test_xxx.py` |
-| 干净检出 | 跑完矩阵后 `python scripts/check_clean_checkout.py`（CI 会钉：套件不许写脏仓库） |
+| 测试全绿 | `python tests/run_all.py`（全部套件，可加 `--jobs 4` 并行）。JS 套件需要 PATH 上有 `node`，缺失会跳过并提示——补上 node 再跑；单跑一个套件：`python tests/_test_xxx.py` |
+| 干净检出 | 跑完矩阵后 `python scripts/check_clean_checkout.py`（发布前必跑：套件不许写脏仓库） |
 | 套件计数 | 新增/删除测试套件后，同步 README 的「N 个套件：X 个 Python + Y 个 JS」（有测试钉住） |
-| 依赖口径 | 保持**纯 Python 标准库**、兼容 **Python 3.9**（CI 矩阵：3.9 / 3.12 × Ubuntu / Windows） |
+| 依赖口径 | 保持**纯 Python 标准库**、兼容 **Python 3.9**（别用 3.10+ 语法；手上没有 3.9 时至少过 3.12） |
 | 面板文案 | 改看板文案要同步词典：繁体有测试钉住，英文词典一并补（键与 HTML 文本逐字一致，否则英文界面回落中文） |
 | 文本卫生 | 文本文件 LF；可执行脚本保持 755（`wrt/` 打包文件尤其） |
 | 隐私 | 不夹带密钥、token、个人信息、本机绝对路径 |
 | 行为变更 | 会改变默认行为的改动给开关、**默认关**；老安装行为不变 |
-| 版本号 | 涉及版本号时，`server_version` 与打包脚本、tag 三处一致（release 门禁会核对 tag == 源码版本） |
+| 版本号 | 涉及版本号时，`server_version` 的两处要一致（`tests/_test_release_engineering.py` 钉住）；tag 与源码版本的对齐**没人替你核对**，发布前自己比 |
 | 变更记录 | 用户可见的改动记到 README「六、版本更新记录」的 `### Unreleased` 段（发版时由维护者整理进 `docs/CHANGELOG.md`） |
 
 ## 2. PR 标题与正文
@@ -37,19 +40,24 @@
   4. **影响面与回滚**：谁受影响、出问题怎么退；
   5. **与其他 PR 的关系**：互斥 / 互补 / 依赖。
 
-## 3. CI 与合并
+## 3. 评审与合并
 
-- **三条腿全绿才算过**：`ubuntu 3.9`、`ubuntu 3.12`、`windows 3.12`（`tag matches source version` 只在打标签时跑，PR 上 skipped 属正常）。
-- **冲突怎么解**：在分支上解，**两边都留**（不要「取一侧」）；解完 push 回分支让 CI 重跑。**不要**在本地把冲突解掉后直接 push main——PR 触发的 CI 看不到那条路。
-- **回滚检查（revert guard）**：核对 GitHub 预计算的合并结果——base 自 merge-base 以来新增的代码行不许消失（本 PR 自己删的除外）。红了：
-  1. 推荐：把分支 rebase 到最新 main，检查自动转绿；
-  2. 或维护者核对无碍后加标签 `revert-confirmed` 放行。
-- **合并后**：main 的 CI 必须保持绿。发现坏了优先**确定性回退**（`git read-tree -u --reset <good-sha>` 后提交，或 revert），不要在红的基础上「前向补」。
+- **合并前**：`python tests/run_all.py` 全过。没有 CI，也没有第二个平台替你跑——本机过了就算过。
+- **冲突怎么解**：在分支上解，**两边都留**（不要「取一侧」）；解完再跑一次全量。**不要**在本地把冲突解掉后直接 push main。
+- **核对有没有弄丢代码**：`git diff <base>...<branch> --stat` 先看改了哪些文件，再看 `git log --oneline <base>..<branch>`；对不上号的文件用 `git diff <base>...<branch> -- <path>` 逐行确认。revert guard 删掉后，这一类事故只会在运行时（或下次跑测试时）才暴露。
+- **合并后**：main 必须保持绿。发现坏了优先**确定性回退**（`git read-tree -u --reset <good-sha>` 后提交，或 revert），不要在红的基础上「前向补」。
 - **别用改测试来消红**：测试红了先判断是自己的回归还是测试本身写错；删断言 / 改预期必须有明确理由并写进 PR 说明。
 
-## 4. 发布纪律（为什么 CI 必须绿）
+## 4. 发布纪律（没有门禁了，全靠发布者）
 
-release 流水线是强门禁：打 `v*` 标签时必须拿到该提交**完整测试矩阵逐腿通过**才允许写 release。**main 红了 = 全项目发不出新版**。所以「把 CI 修绿」不是可选项。
+打 `v*` tag 之前，发布者自己走完这套检查——以前 release 工作流会逐条拦，现在没有任何东西拦：
+
+1. `python tests/run_all.py` 全绿；
+2. `server_version` 两处一致（`python tests/_test_release_engineering.py`），并人工把 tag 与 `ca_proxy.py` 的版本对上；
+3. `.ipk` / `.apk` 用 `wrt/openwrt/build-ipk.sh` / `build-apk.sh` 本地构建（脚本自检版本号）；
+4. 资产与 `SHA256SUMS` 手工上传到 GitHub Release。
+
+代价说清楚：打错 tag 以前会被门禁挡下，现在会直接产生一个版本号对不上的 release。
 
 ## 5. 节奏说明
 

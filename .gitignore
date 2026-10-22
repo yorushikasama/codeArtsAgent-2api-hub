@@ -33,7 +33,7 @@ tests/_*.log
 python/
 *.zip
 
-# 发布打包产物（release 工作流与 wrt/ 脚本的输出，只该出现在 Release 资产里）
+# 发布打包产物（wrt/ 脚本的输出，只该出现在 Release 资产里）
 dist/
 .sdk-cache/
 wrt/ipk/
