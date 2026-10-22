@@ -1495,9 +1495,12 @@ def _stub_open_lease(payload, model, messages, max_tokens, fail=None,
     return None, _StubLease(_CHAT_RAW)
 
 
+# 一个最小的合法回合：单 system / 空列表会被网关在请求阶段拦下。
+_USER = {"role": "user", "content": "hi"}
+
 _h = _FakeResponsesHandler()
 _h._codearts_chat_result = _stub_codearts
-_h._responses_codearts({"model": "deepseek-v4.1-flash", "messages": []},
+_h._responses_codearts({"model": "deepseek-v4.1-flash", "messages": [_USER]},
                        False, set(), {"tools": []}, None)
 check("非流式回 response 对象",
       isinstance(_h.payload, dict) and _h.payload.get("object") == "response",
@@ -1510,7 +1513,7 @@ check("非流式保留 usage",
 _h = _FakeResponsesHandler()
 _h._codearts_chat_result = _stub_codearts
 _h._codearts_open_lease = _stub_open_lease
-_h._responses_codearts({"model": "deepseek-v4.1-flash", "messages": []},
+_h._responses_codearts({"model": "deepseek-v4.1-flash", "messages": [_USER]},
                        True, set(), {"tools": []}, None)
 _sse = _h.wfile.getvalue().decode("utf-8")
 check("流式发 Responses 事件（不是 chat.completion.chunk）",
@@ -1558,7 +1561,7 @@ print("== 码道 Messages 桥接 ==")
 
 _h = _FakeResponsesHandler()
 _h._codearts_chat_result = _stub_codearts
-_h._messages_codearts({"model": "deepseek-v4.1-flash", "messages": []}, False)
+_h._messages_codearts({"model": "deepseek-v4.1-flash", "messages": [_USER]}, False)
 _msg_blocks = (_h.payload or {}).get("content") or []
 check("Messages 非流式回 Anthropic message",
       (_h.payload or {}).get("type") == "message", _h.payload)
@@ -1570,10 +1573,30 @@ check("Messages 非流式保留 usage",
 check("Messages 非流式回填 model",
       _h.payload.get("model") == "deepseek-v4.1-flash", _h.payload)
 
+# 单 system / 空消息列表：上游回 ModelArts.81001.400，报错点离原因太远，
+# 网关在请求阶段就拦下（2026-10-23）。
+_SYSTEM_ONLY = {"model": "deepseek-v4.1-flash",
+                "messages": [{"role": "system", "content": "you are terse"}]}
+_h = _FakeResponsesHandler()
+_h._codearts_chat_result = _stub_codearts
+_h._responses_codearts(dict(_SYSTEM_ONLY), False, set(), {"tools": []}, None)
+check("Responses 只有 system 时回 400，文案点名 81001",
+      _h.status == 400 and "81001" in str((_h.payload or {}).get("error", {}).get("message")),
+      (_h.status, _h.payload))
+
+_h = _FakeResponsesHandler()
+_h._codearts_chat_result = _stub_codearts
+_h._messages_codearts(dict(_SYSTEM_ONLY), False)
+check("Messages 只有 system 时回 Anthropic 信封的 400",
+      _h.status == 400
+      and (_h.payload or {}).get("type") == "error"
+      and (_h.payload or {}).get("error", {}).get("type") == "invalid_request_error",
+      (_h.status, _h.payload))
+
 _h = _FakeResponsesHandler()
 _h._codearts_chat_result = _stub_codearts
 _h._codearts_open_lease = _stub_open_lease
-_h._messages_codearts({"model": "deepseek-v4.1-flash", "messages": []}, True)
+_h._messages_codearts({"model": "deepseek-v4.1-flash", "messages": [_USER]}, True)
 _sse = _h.wfile.getvalue().decode("utf-8")
 check("Messages 流式事件齐全",
       "event: message_start" in _sse

@@ -142,6 +142,31 @@ def normalize_roles(messages):
     return out
 
 
+def empty_conversation_error(messages):
+    """没有一轮 user/assistant 时给客户端的拒绝文案；没问题返回 None。
+
+    码道上游对「只有 system（或干脆空列表）」的请求回
+    ``ModelArts.81001.400 messages 参数非法``——这个报错出现在上游，
+    离真正原因很远：Responses 只发 ``instructions``、或者客户端把整段
+    提示词塞进系统消息时最容易撞上。在网关这层先拦下来，文案写清缺什么。
+
+    ``tool`` / ``function`` 也算一轮：它们只可能出现在助手回合之后，
+    真出现了就让上游去判，别在这里误伤。
+    """
+    if not isinstance(messages, (list, tuple)):
+        return None
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        role = str(msg.get("role") or "").strip().lower()
+        if role in ("user", "assistant", "tool", "function"):
+            return None
+    return ("messages must contain at least one user or assistant message: "
+            "the codearts upstream rejects a system-only prompt with "
+            "ModelArts.81001.400 (messages 参数非法). Send the actual question "
+            "as a user message.")
+
+
 def strip_empty_function_calls(obj):
     """PATCHED-BY-OPS: 递归剔除空 function_call 占位（Responses/chat 通用）。"""
     changed = False
@@ -187,7 +212,12 @@ def clean_responses_frame(frame):
                 except Exception:
                     pass
         out.append(line)
-    return ("\n".join(out) + "\n\n").encode("utf-8") if changed else frame
+    if not changed:
+        return frame
+    # splitlines() 把结尾的换行全吃掉了，这里补回**恰好一个**空行：SSE 的一帧
+    # 以空行结束。以前直接 ``+ "\n\n"``，输入本来就以 "\n\n" 结尾时（清理前的
+    # 帧都是）会多出一个换行 —— SSE 能容忍，但下游按行对比帧时会看到漂移。
+    return ("\n".join(out).rstrip("\n") + "\n\n").encode("utf-8")
 
 
 def anthropic_stop_reason(finish_reason):

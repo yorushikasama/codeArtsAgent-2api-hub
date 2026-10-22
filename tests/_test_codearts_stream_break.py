@@ -886,12 +886,43 @@ try:
         check("未知键退回内置默认",
               P._codearts_seconds("nope", 12) == 12.0,
               P._codearts_seconds("nope", 12))
+        S.set_codearts_config(_tmp12, {"concurrency": 5})
+        P._CODEARTS_TUNING.update({"at": 0.0, "cfg": None})
+        check("每账号并发实时读面板值（不用重启）",
+              P.codearts_concurrency() == 5, P.codearts_concurrency())
+        with open(os.path.join(_tmp12, "settings.json"), "w",
+                  encoding="utf-8") as _fh:
+            json.dump({"codearts": {"concurrency": 99}}, _fh)
+        P._CODEARTS_TUNING.update({"at": 0.0, "cfg": None})
+        check("落盘被手改成 99 时运行时退回默认（不会把上游打穿）",
+              P.codearts_concurrency() == S.CODEARTS_DEFAULTS["concurrency"],
+              P.codearts_concurrency())
     finally:
         P.ACCOUNTS_DIR = _saved_dir
         P._CODEARTS_TUNING.update({"at": 0.0, "cfg": None})
 finally:
     import shutil as _shutil3
     _shutil3.rmtree(_tmp12, ignore_errors=True)
+
+
+# 并发容量可调：换对象会让「刚 acquire 还没记账」的 release 打到新对象上，
+# 容量凭空长一格；自己记容量/空闲就没有这个窗口。
+_sem = P._ResizableSemaphore(2)
+check("信号量：取满后非阻塞取不到",
+      _sem.acquire(False) and _sem.acquire(False) and not _sem.acquire(False), None)
+_sem.release()
+check("信号量：释放一个就能再取一个", _sem.acquire(False), None)
+_sem.retune(4)
+check("信号量：调大后空闲数按在跑数换算",
+      _sem.capacity == 4 and _sem.acquire(False) and _sem.acquire(False)
+      and not _sem.acquire(False), None)
+_sem.retune(1)
+check("信号量：调小不踢在跑的，只收紧新名额",
+      _sem.capacity == 1 and not _sem.acquire(False), None)
+for _ in range(3):
+    _sem.release()
+check("信号量：多还的不会把容量撑大",
+      _sem.capacity == 1 and _sem.acquire(False), None)
 
 
 # ---------------------------------------------------------------------------

@@ -74,6 +74,27 @@ check("空 function_call / tool_calls 被剔除且就地修改",
       Q.strip_empty_function_calls(_obj) is True and _obj == {"keep": 1}, _obj)
 check("Responses 帧清洗保留 [DONE] 与坏 JSON",
       Q.clean_responses_frame(b"data: [DONE]\n\n") == b"data: [DONE]\n\n", None)
+_dirty = Q.clean_responses_frame(
+    b'event: response.output_item.added\n'
+    b'data: {"item":{"type":"function_call","call_id":"","name":"","arguments":""}}\n\n')
+check("清洗后的帧只留一个空行结尾（以前会多一个 \\n）",
+      _dirty.endswith(b"}\n\n") and not _dirty.endswith(b"\n\n\n"), _dirty[-20:])
+check("清洗不改 event: 行",
+      _dirty.startswith(b"event: response.output_item.added\n"), _dirty[:40])
+
+check("空对话/只有 system 会被拦下",
+      Q.empty_conversation_error([]) is not None
+      and Q.empty_conversation_error([{"role": "system", "content": "x"}]) is not None
+      and Q.empty_conversation_error(
+          [{"role": "developer", "content": "x"}]) is not None, None)
+check("有一轮 user / assistant / tool 就放行",
+      Q.empty_conversation_error([{"role": "system", "content": "x"},
+                                  {"role": "user", "content": "hi"}]) is None
+      and Q.empty_conversation_error([{"role": "assistant", "content": "a"}]) is None
+      and Q.empty_conversation_error([{"role": "tool", "content": "t"}]) is None, None)
+check("messages 不是列表时不在这里判（交给上游）",
+      Q.empty_conversation_error(None) is None
+      and Q.empty_conversation_error("x") is None, None)
 
 
 section("4. 用量映射")

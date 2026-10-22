@@ -10382,6 +10382,77 @@ def _codearts_seconds(name, fallback):
         return float(fallback)
     return float(max(1, value))
 
+
+def codearts_concurrency():
+    """每账号并发容量：面板值优先，其次环境变量，最后内置默认（2）。
+
+    面板写 1~8，这里再夹一次 —— 手改 settings.json 塞进 999 也不该把上游
+    那 3 个会话名额一次打穿。
+    """
+    try:
+        want = int(codearts_tuning().get("concurrency") or CODEARTS_CONCURRENCY)
+    except Exception:
+        want = CODEARTS_CONCURRENCY
+    return max(1, min(8, want))
+
+
+class _ResizableSemaphore:
+    """容量可调的信号量（面板改并发，下一条请求就生效，不用重启）。
+
+    标准库 ``threading.Semaphore`` 的容量定了就改不了；换成新对象又有个坑：
+    某个线程刚 ``acquire`` 完还没记账，换对象后它的 ``release`` 会打到新对象
+    上，容量凭空多出来一格。这里自己拿 Condition 记「容量 / 空闲」两个数，
+    调容量时按**在跑数不变**换算空闲数，acquire 与 release 永远打在同一个
+    对象上，没有换对象的窗口。
+    """
+
+    def __init__(self, capacity):
+        self._cond = threading.Condition()
+        self._capacity = max(1, int(capacity))
+        self._free = self._capacity
+
+    def acquire(self, blocking=True, timeout=None):
+        with self._cond:
+            if not blocking:
+                if self._free <= 0:
+                    return False
+                self._free -= 1
+                return True
+            if timeout is None:
+                while self._free <= 0:
+                    self._cond.wait()
+            else:
+                deadline = time.monotonic() + timeout
+                while self._free <= 0:
+                    remain = deadline - time.monotonic()
+                    if remain <= 0:
+                        return False
+                    self._cond.wait(remain)
+            self._free -= 1
+            return True
+
+    def release(self):
+        with self._cond:
+            # 多还了就夹在容量上：宁可少放一个，也别让 bug 悄悄放大并发
+            if self._free < self._capacity:
+                self._free += 1
+            self._cond.notify()
+
+    def retune(self, capacity):
+        """在跑的请求不受影响，只改「还能再进几个」。"""
+        with self._cond:
+            capacity = max(1, min(8, int(capacity)))
+            in_use = self._capacity - self._free
+            self._capacity = capacity
+            self._free = max(0, capacity - in_use)
+            self._cond.notify_all()
+
+    @property
+    def capacity(self):
+        with self._cond:
+            return self._capacity
+
+
 #: 用首条用户消息当会话指纹时要求的最短长度。太短（"hi"、"继续"）会撞车，
 #: 撞了只是"两个无关对话被排到同一个号"，无害但没必要。
 CODEARTS_AFFINITY_MIN_CHARS = 24
@@ -10466,13 +10537,15 @@ class _CodeartsAccountPool:
         return str(account.get("id") or account.get("label") or "default")
 
     def _sem(self, key):
+        """取这个账号的信号量；面板改过并发就顺手调容量（空闲时也不丢号）。"""
+        want = codearts_concurrency()
         with self._lock:
             sem = self._semaphores.get(key)
             if sem is None:
-                want = int(codearts_tuning().get("concurrency")
-                           or CODEARTS_CONCURRENCY)
-                sem = threading.Semaphore(max(1, min(8, want)))
+                sem = _ResizableSemaphore(want)
                 self._semaphores[key] = sem
+            else:
+                sem.retune(want)
             return sem
 
     @staticmethod
@@ -16718,7 +16791,7 @@ class Handler(BaseHTTPRequestHandler):
             "accounts": items,
             "count": len(items),
             # 每号并发容量（上游账号级上限 3，网关默认用 2，留 1 个给 IDE）
-            "concurrency_per_account": CODEARTS_CONCURRENCY,
+            "concurrency_per_account": codearts_concurrency(),
             "pool": runtime,
             "port": port,
             "callbackPath": ca_codearts.AUTH_REDIRECT_PATH,
@@ -19137,7 +19210,7 @@ class Handler(BaseHTTPRequestHandler):
                     429,
                     "gateway busy: every codearts account is at capacity "
                     "(%d per account); retry in a few seconds"
-                    % CODEARTS_CONCURRENCY,
+                    % codearts_concurrency(),
                     "rate_limit_error"), None
 
             account_label = (session.get("account") or {}).get("label")
@@ -19342,7 +19415,7 @@ class Handler(BaseHTTPRequestHandler):
                     429,
                     "gateway busy: every codearts account is at capacity "
                     "(%d per account); retry in a few seconds"
-                    % CODEARTS_CONCURRENCY,
+                    % codearts_concurrency(),
                     "rate_limit_error"), None
 
             account_label = (session.get("account") or {}).get("label")
@@ -19696,7 +19769,8 @@ class Handler(BaseHTTPRequestHandler):
     def _handle_codearts_chat(self, payload):
         """把一个 OpenAI 形状的请求转发给码道，再把结果转回 OpenAI 形状。"""
         for bad in (_codearts_choice_count_error(payload),
-                    _codearts_response_format_error(payload)):
+                    _codearts_response_format_error(payload),
+                    ca_protocol.empty_conversation_error(payload.get("messages"))):
             if not bad:
                 continue
             # 这两类都是「上游给不了你想要的形状」：既不能凑数，也不该假装
@@ -19788,6 +19862,10 @@ class Handler(BaseHTTPRequestHandler):
         翻译在进站时由 responses_to_chat() 完成；这里只负责把码道的
         chat-completions 结果转回 Responses 的 JSON / 事件流。
         """
+        empty = ca_protocol.empty_conversation_error(chat_req.get("messages"))
+        if empty:
+            # 上游对「只有 instructions」的请求回 81001，报错点太远，先拦。
+            return self._error(400, empty, "invalid_request_error")
         if want_stream and CODEARTS_STREAM_PASSTHROUGH:
             # 事件翻译器本来就直接吃 SSE 行流，接上实时行流就是真流式：
             # 上游吐一帧、客户端收一帧，不必等整条回答生成完。
@@ -19956,6 +20034,9 @@ class Handler(BaseHTTPRequestHandler):
         def anthropic_error(code, message, err_type=None):
             return self._anthropic_error(code, message, err_type)
 
+        empty = ca_protocol.empty_conversation_error(chat_req.get("messages"))
+        if empty:
+            return anthropic_error(400, empty, "invalid_request_error")
         if want_stream and CODEARTS_STREAM_PASSTHROUGH:
             # 同 Responses：翻译器吃 SSE 行流，喂实时流就是真转发。
             return self._messages_codearts_stream(chat_req, anthropic_error)
