@@ -8,18 +8,18 @@
 
 ---
 
-## 0. 现状（2026-10-22 夜间，第五刀收工后）
+## 0. 现状（2026-10-22 深夜，第六刀收工后）
 
 | 项 | 数字 |
 |---|---|
-| `ca_proxy.py` | 21 839 行 |
-| `ca_protocol.py` | 490 行，14 个函数 |
+| `ca_proxy.py` | 21 536 行 |
+| `ca_protocol.py` | 807 行，25 个函数 |
 | 测试套件 | 131 个（105 Python + 26 JS） |
-| `_test_codearts_stream_break.py` | 175 项 |
-| 线上 | `codearts-hub` active，跑的是 `0ecc9e7` |
-| 远端 | `origin/main` = `0ecc9e7` |
+| `_test_codearts_stream_break.py` | 193 项 |
+| 线上 | `codearts-hub` active，跑的是 `5c10396` |
+| 远端 | `origin/main` = `5c10396` |
 
-已完成五刀（都遵循「别名桥接、调用点零改动」）：
+已完成六刀（都遵循「别名桥接、调用点零改动」）：
 
 | 刀 | 搬走的东西 | 测试增量 |
 |---|---|---|
@@ -28,18 +28,25 @@
 | 3 | `normalize_roles` | +3 |
 | 4 | `anthropic_text`、`anthropic_usage`、`best_cached_tokens` | +4 |
 | 5 | `iter_sse_lines`、`strip_data_prefix`、`SSE_READ_BLOCK`、`stream_messages_events`、`new_id`、`anthropic_message_id`、`anthropic_error_type` | +19 |
+| 6 | `messages_to_chat` 一族 11 个函数（含 `anthropic_json_text`、`anthropic_blocks_to_messages`） | +18 |
 
 `ca_protocol.py` 现有函数：`anthropic_text`、`best_cached_tokens`、
 `anthropic_usage`、`anthropic_sse_frame`、`normalize_roles`、
 `strip_empty_function_calls`、`clean_responses_frame`、`anthropic_stop_reason`、
 `new_id`、`anthropic_message_id`、`anthropic_error_type`、`strip_data_prefix`、
-`iter_sse_lines`、`stream_messages_events`。
+`iter_sse_lines`、`stream_messages_events`、`anthropic_json_text`、
+`anthropic_block_text`、`anthropic_image_part`、`anthropic_document_text`、
+`anthropic_content_to_text`、`anthropic_system_text`、`anthropic_tool_choice`、
+`anthropic_tools_to_chat`、`anthropic_effort_from_messages`、
+`anthropic_blocks_to_messages`、`messages_to_chat`。
 
-**第五刀实测到的新坑（已加自动守卫）**：搬走 `_new_id` 时漏了一条别名，20 处
-调用全部悬空；`_responses_codearts` 的断流收尾把这个 `NameError` 吞在
-`try/except` 里，测试只表现为「少了 `response.failed`」，极易误判成状态机搬坏。
-测试第 14 节现在会做静态普查：`ca_protocol` 里每个函数，若 `ca_proxy` 仍以旧名
-（含 `_` 前缀）调用却拿不到同名属性，直接判红。
+**第五、第六两刀踩的是同一个坑**：搬走的函数在 `ca_proxy` 少写别名（第五刀的
+`_new_id`），或搬进 `ca_protocol` 后内部还叫旧下划线名（第六刀的 `_anthropic_text`）。
+两者都不会在 import 时暴露：前者被 `_responses_codearts` 的 `try/except` 吞成
+「少一帧」，后者只在真调 `messages_to_chat` 时才 `NameError`。
+测试现在做**双向静态普查**：`ca_proxy` 不许悬空旧名、`ca_protocol` 内部不许残留
+旧名，两处都用「临时去掉别名 / 加回旧名」反向验证过会报红。
+
 
 
 **关键结论：第 5 刀要用的依赖已经全部就位**，不需要再拖旁支。
@@ -52,20 +59,14 @@
 |---|---:|---|---|
 | ~~`stream_messages_events`~~ | ~~200~~ | 第 5 刀已搬 | — |
 | `stream_responses_events` | 496 | `ca_proxy.py:16402` | 同上 + `_responses_usage` 等 |
-| `messages_to_chat` | 80 | `ca_proxy.py:15945` | 下面 6 个 anthropic 辅助 |
-| `_anthropic_blocks_to_messages` | 60 | `ca_proxy.py:15885` | `_anthropic_text`（已搬） |
-| `_anthropic_content_to_text` | 26 | `ca_proxy.py:15718` | `_anthropic_text`（已搬） |
-| `anthropic_effort_from_messages` | 31 | `ca_proxy.py:15854` | 无 |
-| `anthropic_tools_to_chat` | 27 | `ca_proxy.py:15827` | 无 |
-| `_anthropic_tool_choice` | 19 | `ca_proxy.py:15808` | 无 |
-| `_anthropic_system_text` | 15 | `ca_proxy.py:15793` | 无 |
-| ~~`_anthropic_message_id`~~ | ~~7~~ | 第 5 刀已搬 | — |
+| ~~`messages_to_chat` 一族（11 个）~~ | ~~296~~ | 第 6 刀已搬 | — |
 | `chat_to_messages` | 47 | `ca_proxy.py:16032` | `anthropic_usage`、`anthropic_stop_reason` |
 | ~~`iter_sse_lines`~~ | ~~45~~ | 第 5 刀已搬 | — |
 | ~~`strip_data_prefix`~~ | ~~11~~ | 第 5 刀已搬 | — |
 
-剩余约 800 行；搬完 `ca_proxy.py` 约降到 21 000 行以下、`ca_protocol.py` 约 1 200 行。
-（第五刀后实测：21 839 / 490 行。）
+剩余约 543 行（Responses 状态机 496 + 非流式回包 47）；搬完 `ca_proxy.py`
+约降到 21 000 行、`ca_protocol.py` 约 1 300 行。
+（第六刀后实测：21 536 / 807 行。）
 
 **依赖顺序（必须按这个顺序，否则会拖出循环导入）**
 
@@ -74,7 +75,7 @@
       ↓
 第 5 刀  stream_messages_events        ← 已完成（0ecc9e7）
       ↓
-第 6 刀  Anthropic 请求层（6 个小函数 + messages_to_chat）
+第 6 刀  Anthropic 请求层（6 个小函数 + messages_to_chat）  ← 已完成（5c10396）
       ↓
 第 7 刀  stream_responses_events + _responses_usage
       ↓
@@ -136,7 +137,7 @@
   线上验了两条真请求（流式正文、流式工具调用），帧序列与用量行都对。
   **踩坑见 §0 末尾**——漏别名不会立刻炸，会被 `try/except` 吞成「少一帧」。
 
-### 第 6 刀：Anthropic 请求层（约 250 行）
+### 第 6 刀：Anthropic 请求层（约 250 行）✅ 已完成（`5c10396`）
 
 - 搬 `_anthropic_system_text`、`_anthropic_tool_choice`、`anthropic_tools_to_chat`、
   `anthropic_effort_from_messages`、`_anthropic_content_to_text`、
@@ -148,6 +149,13 @@
   `model_default_max_output_tokens`（查模型表），这是唯一的外部依赖——**不要搬它**，
   通过参数注入（`default_max_tokens=None`）或保留在 `ca_proxy` 里调用后传值。
 - **验收**：`_test_anthropic_messages` 50 项 + 新增对拍测试（见 §4）。
+- **实际结果**：真正的依赖簇是 **11 个**函数，比计划多出 4 个——
+  `_anthropic_content_to_text` 不是叶子，它拉着 `_anthropic_block_text` /
+  `_anthropic_image_part` / `_anthropic_document_text` / `_anthropic_json_text`。
+  所以「先搬叶子」这句要按**实际调用图**判断，别信函数清单。
+  `model_default_max_output_tokens` 按计划注入；`ca_proxy` 留同名包装函数。
+  对拍用「`git archive HEAD` 到临时目录 + 同一份 25 条 payload 脚本跑两遍」，
+  逐字节零差异（比只跑单测硬）。
 
 ### 第 7 刀：`stream_responses_events`（496 行，最大）
 
@@ -248,7 +256,7 @@
 | 时段 | 内容 |
 |---|---|
 | 1 | ~~第 5 刀 + golden 录制 + 全量回归~~ ✅ 2026-10-22 夜（golden 用「第 14 节真调」代替） |
-| 2 | 第 6 刀（5 个叶子 + blocks + messages_to_chat） |
+| 2 | ~~第 6 刀（5 个叶子 + blocks + messages_to_chat）~~ ✅ 2026-10-22 深夜（实际 11 个函数） |
 | 3 | 第 7 刀（最大，留足时间看事件顺序） |
 | 4 | 第 8 刀 + 第 10 刀拆桥（第 9 刀已在第 5 刀完成） |
 | 5 | `_test_protocol_pure.py` 补全、文档收尾、遗留项 1-4 |
