@@ -545,5 +545,82 @@ _sess2, _key2 = _pool.acquire(0, session_key="k:gone")
 check("绑定的号不在池里时正常换号", _key2 in ("acct-a", "acct-b"), _key2)
 
 
+# ---------------------------------------------------------------------------
+# 9. 模型别名：客户端自己的模型名 → 码道真名
+# ---------------------------------------------------------------------------
+
+section("9. 模型别名映射")
+
+import json as _json
+import os as _os
+import shutil as _shutil
+import tempfile as _tempfile
+
+_alias_dir = _tempfile.mkdtemp(prefix="aliases-")
+_saved_dir = P.ACCOUNTS_DIR
+P.ACCOUNTS_DIR = _alias_dir
+P._MODEL_ALIASES.update({"mtime": -2.0, "map": {}})
+try:
+    _alias_path = _os.path.join(_alias_dir, P.MODEL_ALIASES_FILE)
+
+    check("没有别名文件时是空表", P.model_aliases() == {}, P.model_aliases())
+
+    with open(_alias_path, "w", encoding="utf-8") as _fh:
+        _json.dump({
+            "claude-sonnet-4-5-20250929": "glm-5.3",
+            "claude-opus-4-1": "GLM-5.2",
+            "gpt-5-codex": "glm-5.2",
+            "": "ignored",
+            "broken": 42,
+        }, _fh)
+    _os.utime(_alias_path, (_os.path.getatime(_alias_path), _os.path.getmtime(_alias_path) + 1))
+
+    _map = P.model_aliases()
+    check("读到别名表（键统一小写）",
+          _map.get("claude-sonnet-4-5-20250929") == "glm-5.3", _map)
+    check("空键与非字符串值被丢掉", "" not in _map and "broken" not in _map, _map)
+
+    check("alias_target 查得到", P.alias_target("claude-sonnet-4-5-20250929") == "glm-5.3",
+          P.alias_target("claude-sonnet-4-5-20250929"))
+    check("alias_target 大小写无关",
+          P.alias_target("Claude-Sonnet-4-5-20250929") == "glm-5.3", None)
+    check("alias_target 查不到返回空串", P.alias_target("nope") == "", None)
+
+    _p1 = {"model": "claude-sonnet-4-5-20250929"}
+    P.canonicalize_model(_p1)
+    check("Claude Code 的模型名被映射到真名", _p1["model"] == "glm-5.3", _p1["model"])
+
+    _p2 = {"model": "claude-opus-4-1"}
+    P.canonicalize_model(_p2)
+    check("别名指向大写真名时原样用 GLM-5.2", _p2["model"] == "GLM-5.2", _p2["model"])
+
+    _p3 = {"model": "gpt-5-codex"}
+    P.canonicalize_model(_p3)
+    check("别名目标写小写时再归一成上游真名", _p3["model"] == "GLM-5.2", _p3["model"])
+
+    # 改文件 → 下一个请求生效（mtime 变了要重读，不能一直吃缓存）
+    with open(_alias_path, "w", encoding="utf-8") as _fh:
+        _json.dump({"claude-sonnet-4-5-20250929": "glm-5.2"}, _fh)
+    _stamp = _os.path.getmtime(_alias_path)
+    _os.utime(_alias_path, (_stamp + 2, _stamp + 2))
+    _p4 = {"model": "claude-sonnet-4-5-20250929"}
+    P.canonicalize_model(_p4)
+    check("改完别名文件立即生效", _p4["model"] == "GLM-5.2", _p4["model"])
+
+    # 坏文件不能把请求打死
+    with open(_alias_path, "w", encoding="utf-8") as _fh:
+        _fh.write("{ not json")
+    _os.utime(_alias_path, (_os.path.getmtime(_alias_path) + 3,
+                            _os.path.getmtime(_alias_path) + 3))
+    check("坏别名文件当作没有", P.model_aliases() == {}, P.model_aliases())
+    _p5 = {"model": "glm-5.3"}
+    P.canonicalize_model(_p5)
+    check("坏别名文件不影响真名归一", _p5["model"] == "glm-5.3", _p5["model"])
+finally:
+    P.ACCOUNTS_DIR = _saved_dir
+    P._MODEL_ALIASES.update({"mtime": -2.0, "map": {}})
+    _shutil.rmtree(_alias_dir, ignore_errors=True)
+
+
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

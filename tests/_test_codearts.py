@@ -1646,7 +1646,8 @@ _seen = {}
 
 def _fake_chat(ak, sk, tok, model, messages, max_tokens=None, stream=True,
                extra=None, timeout=None, tools=None, tool_choice=None,
-               abort_check=None, aborted=None, session_id=None):
+               abort_check=None, aborted=None, session_id=None,
+               header_timeout=None, idle_timeout=None):
     # 桩要跟上真实签名：tools / tool_choice（2026-10-21 透传）、
     # abort_check（2026-10-22 客户端断开感知）。漏一个关键字参数就是
     # TypeError，测出来像「角色归一坏了」，其实是桩老了。
@@ -1678,8 +1679,9 @@ class _FakePool:
         self.released = 0
         self.penalties = []
 
-    def acquire(self, timeout=None, session_key=None):
+    def acquire(self, timeout=None, session_key=None, model=None):
         self.last_session_key = session_key
+        self.last_model = model
         return self.sess, "a"
 
     def remember(self, session_key, key, now=None):

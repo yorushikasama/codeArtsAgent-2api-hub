@@ -10550,11 +10550,20 @@ class _CodeartsAccountPool:
         还给它（上游的 prompt cache 是按机器存的，换号等于前缀缓存全丢）。
         但粘性只是排序偏好 —— 那个号满了/在冷却时**立刻换号**，绝不为了一条
         偏好让用户多等。
+
+        ``model`` 用来判按模型的日限额；日 token / 日积分是账号级的。限额
+        每次请求只读一遍，读不出来按「未知」处理（fail-open），不误封。
         """
         timeout = CODEARTS_SLOT_WAIT if timeout is None else timeout
         deadline = time.time() + max(0.0, timeout)
+        try:
+            limits, stats = self._limits_for_request()
+        except Exception as exc:
+            log("codearts daily limits unavailable: %s" % exc)
+            limits, stats = {}, None
         while True:
-            sessions = self._usable()
+            sessions = [s for s in self._usable()
+                        if not self._limit_blocked(s, model, limits, stats)]
             if not sessions:
                 return None, None
             now = time.time()
@@ -10883,6 +10892,116 @@ def workbuddy_accounts_available():
     return bool(pool is not None and getattr(pool, "accounts", None))
 
 
+#: 模型别名表文件名（放在 accounts/ 下，与 settings.json 同级）。
+#:
+#: 为什么需要：Claude Code 默认发 `claude-sonnet-4-5-20250929`、Codex CLI 发
+#: `gpt-5-codex`，这些名字我们一个都不服务 —— 不改客户端配置就是 404。别名让
+#: 「换网关不换配置」成立，而不是逼用户去改 ANTHROPIC_MODEL / `-m`。
+#:
+#: **默认空**，刻意不内置任何猜测：写错一个别名比没有别名更糟（请求会静默
+#: 打到别的模型上，用户看到的是「回答不对」而不是「模型不存在」）。
+MODEL_ALIASES_FILE = "model_aliases.json"
+
+#: mtime 缓存的别名表。改完文件下一个请求就生效，不用重启进程。
+_MODEL_ALIASES = {"mtime": -2.0, "map": {}}
+
+
+def model_aliases():
+    """读别名表：``{"客户端写的名字": "码道模型名"}``。读不出来就当没有。"""
+    path = os.path.join(ACCOUNTS_DIR, MODEL_ALIASES_FILE)
+    try:
+        stamp = os.stat(path).st_mtime
+    except OSError:
+        _MODEL_ALIASES.update({"mtime": -1.0, "map": {}})
+        return {}
+    if stamp == _MODEL_ALIASES["mtime"]:
+        return _MODEL_ALIASES["map"]
+    try:
+        with open(path, encoding="utf-8") as handle:
+            raw = json.load(handle)
+    except Exception as exc:
+        # 只记一次（mtime 没变就不会重复进来），别让坏文件刷屏。
+        _MODEL_ALIASES.update({"mtime": stamp, "map": {}})
+        log("model aliases unreadable (%s): %s" % (path, exc))
+        return {}
+    mapping = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            name = str(key or "").strip()
+            target = value.strip() if isinstance(value, str) else ""
+            if name and target:
+                mapping[name.lower()] = target
+    _MODEL_ALIASES.update({"mtime": stamp, "map": mapping})
+    return mapping
+
+
+def alias_target(model_id):
+    """这个别名指向哪个模型（没有就返回空串）。大小写无关。"""
+    name = str(model_id or "").strip().lower()
+    if not name:
+        return ""
+    return model_aliases().get(name, "")
+
+
+def collapse_duplicate_v1(path):
+    """``/v1/v1/messages`` → ``/v1/messages``（重复的 ``/v1`` 前缀折掉一层）。
+
+    为什么会有人这么配：OpenAI SDK 的 ``base_url`` 约定**含** ``/v1``，Anthropic
+    SDK 约定**不含**。用户把同一个网关地址分别贴进两个客户端，必有一个多写
+    一层，得到的却是 ``404 not found`` —— 看起来像「网关不支持这个端点」，
+    实际只是路径拼重了。2026-10-22 的日志里 ``POST /v1/v1/messages`` 出现 24 次，
+    用户显然卡在这里。
+
+    只折 ``/v1/v1/...`` 这一种形态，且是循环折：贴三次也不会漏。
+    """
+    text = str(path or "")
+    while text.startswith("/v1/v1/"):
+        text = "/v1/" + text[len("/v1/v1/"):]
+    return text
+
+
+def _codearts_request_shape(payload, messages, max_tokens):
+    """把请求形状压成一行，供失败时打日志。
+
+    `InferHub.001001005.400 The request param is invalid` 是码道最常见也最没
+    信息量的失败（2026-10-22 的日志里 21 次，全部 model=glm-5.3）—— 上游不说
+    是哪个参数错了，只说「无效」。而它可能来自 max_tokens 越界、上下文过长、
+    图片塞给了非多模态模型、tools 形状不对…… 不看这些数字根本没法区分。
+    所以失败时把形状一起打出来，下一次就不用猜了。
+
+    只统计，不记录任何正文（日志里不该出现用户内容）。
+    """
+    chars = 0
+    images = 0
+    parts = 0
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            chars += len(content)
+            continue
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            parts += 1
+            kind = str(part.get("type") or "")
+            if kind in ("image_url", "input_image", "image"):
+                images += 1
+            text = part.get("text")
+            if isinstance(text, str):
+                chars += len(text)
+    return ("max_tokens=%s msgs=%d parts=%d chars=%d images=%d tools=%d "
+            "stream=%s thinking=%s"
+            % (max_tokens, len(messages or []), parts, chars, images,
+               len(payload.get("tools") or []) if isinstance(payload, dict) else 0,
+               bool((payload or {}).get("stream")) if isinstance(payload, dict) else False,
+               "yes" if isinstance(payload, dict)
+               and ca_codearts.thinking_extra_from(payload) else "no"))
+
+
 def canonicalize_model(payload):
     """把请求体里的 ``model`` 换成上游真名（就地改，返回同一个 dict）。
 
@@ -10890,13 +11009,18 @@ def canonicalize_model(payload):
     小写写法和上游真名对不上时，**报错和模型名毫无关系**（503 没有可用账号 /
     001001005 参数错 / 002002009 模型未注册），排查成本极高。
 
+    先查别名表再走真名归一：别名是用户显式配的映射，优先级高于「大小写改写」。
+    别名指向的名字本身也过一遍归一 —— 用户在别名表里写小写 ``glm-5.2`` 时
+    不该因此绕过 max_tokens 夹紧。
+
     认不出来的名字原样留着 —— 是不是码道模型由 ``routes_to_codearts`` 决定，
     不存在「本地改名」这回事。
     """
     if not isinstance(payload, dict):
         return payload
     given = payload.get("model")
-    real = ca_codearts.resolve_model(given)
+    real = alias_target(given) or ca_codearts.resolve_model(given)
+    real = ca_codearts.resolve_model(real) if real else real
     if real != given:
         payload["model"] = real
     return payload
@@ -10952,8 +11076,15 @@ def workbuddy_pool_empty():
 
 def unserved_model_message(model_id):
     available = [m for m in ca_codearts.CHAT_MODELS] if codearts_deployed() else []
-    return ("model '%s' is not served by this gateway. Available: %s"
-            % (model_id, ", ".join(available) or "(none - no account configured)"))
+    hint = ""
+    if codearts_deployed():
+        # 常见情况是客户端自带一套模型名（Claude Code / Codex CLI 都是硬编码的），
+        # 用户不知道可以在网关侧做映射。把「怎么办」写进报错，比让他猜好。
+        hint = (" If the client insists on its own name (claude-sonnet-4-5-*, "
+                "gpt-5-codex, ...), map it in accounts/%s." % MODEL_ALIASES_FILE)
+    return ("model '%s' is not served by this gateway. Available: %s%s"
+            % (model_id, ", ".join(available) or "(none - no account configured)",
+               hint))
 
 
 def mark_codearts_ownership(entries):
@@ -13802,29 +13933,11 @@ def upstream_timeouts():
 def _apply_stream_idle_timeout(response, seconds):
     """Switch the upstream socket to the mid-stream idle timeout.
 
-    urllib's timeout covers the initial request; the same socket is then
-    read for the whole SSE stream. Setting the socket timeout to the idle
-    value bounds each read instead of the whole stream. Best-effort: an
-    unknown socket shape keeps the header timeout.
+    Kept as a thin alias because both upstream families need the same
+    socket surgery; the implementation lives next to the CodeArts
+    transport (ca_codearts.apply_stream_idle_timeout).
     """
-    try:
-        seconds = float(seconds)
-    except (TypeError, ValueError):
-        return False
-    if seconds <= 0:
-        return False
-    fp = getattr(response, "fp", None)
-    raw = getattr(fp, "raw", None)
-    sock = getattr(raw, "_sock", None)
-    if sock is None:
-        sock = getattr(fp, "_sock", None)
-    if sock is None:
-        return False
-    try:
-        sock.settimeout(seconds)
-        return True
-    except Exception:
-        return False
+    return ca_codearts.apply_stream_idle_timeout(response, seconds)
 
 
 def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=None,
@@ -17423,7 +17536,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
     def do_GET(self):
         parsed = urlparse(self.path)
-        path = parsed.path
+        path = collapse_duplicate_v1(parsed.path)
         query = parse_qs(parsed.query)
         # 华为云登录回跳。必须早于面板鉴权：这是浏览器被服务端 307 过来的
         # 裸跳转，既带不上面板 cookie 也没法让用户补密码，拦下来就等于把
@@ -17636,6 +17749,25 @@ class Handler(BaseHTTPRequestHandler):
         # STS 过期且 refresh_token 也失效）条目会留在 workbuddy 上，而请求其实
         # 拐去了码道 —— 清单在撒谎，客户端会以为打不通的是 WorkBuddy 那边。
         mark_codearts_ownership(data)
+        # 别名条目：客户端用 `claude-sonnet-4-5-20250929` / `gpt-5-codex` 这类名字
+        # 时，清单里得看得见它们，否则「配了别名却列不出来」会让人以为没生效。
+        # 只列 target 真在本清单里的别名 —— 指向不存在模型的别名，列出来也调不通。
+        by_id = {entry.get("id"): entry for entry in data}
+        for alias, raw_target in sorted(model_aliases().items()):
+            if alias in by_id:
+                continue
+            # 别名目标要先归一：用户在别名表里写 `glm-5.2` 而清单里是
+            # `GLM-5.2`，不归一就查不到、别名永远不出现在清单里。
+            target = ca_codearts.resolve_model(raw_target)
+            base = by_id.get(target)
+            if base is None:
+                continue
+            entry = dict(base)
+            entry["id"] = alias
+            entry["alias_of"] = target
+            entry["owned_by"] = base.get("owned_by") or "codearts"
+            data.append(entry)
+            by_id[alias] = entry
         payload = {"object": "list", "data": data,
                    "realm": req_realm or CURRENT_REALM}
         payload.update(payload_extra)
@@ -20099,7 +20231,9 @@ class Handler(BaseHTTPRequestHandler):
         return
 
     def do_POST(self):
-        path = self.path.split("?")[0]
+        # 双 /v1 前缀兼容（OpenAI SDK 的 base_url 含 /v1、Anthropic SDK 不含，
+        # 用户贴同一个地址必有一个多写一层）。见 collapse_duplicate_v1。
+        path = collapse_duplicate_v1(self.path.split("?")[0])
         if path == "/settings/save":
             if not self._panel_ok():
                 return self._error(401, "panel password required", "invalid_request_error")
@@ -20296,6 +20430,10 @@ class Handler(BaseHTTPRequestHandler):
         account_label = None
         # 与流式路径同一个粘性口径（见 codearts_session_key）。
         sticky_key = codearts_session_key(getattr(self, "headers", None), payload)
+        # 面板的超时与出口退避都是每请求读一次，不能落在重试环里。
+        header_timeout, idle_timeout = upstream_timeouts()
+        egress_on = ca_settings.egress_backoff_enabled(ACCOUNTS_DIR)
+        egress_key = ca_upstream_pool.egress_key(ca_codearts.CHAT_PATH)
         # 每轮都重新向池子要号：失败时给这个号打冷却，下一轮自然换号。
         delays = CODEARTS_BUSY_DELAYS
         attempt = 0
@@ -20309,8 +20447,15 @@ class Handler(BaseHTTPRequestHandler):
             wait = (CODEARTS_SLOT_WAIT if attempt == 0
                     else min(2.0, CODEARTS_SLOT_WAIT))
             session, account_key = _CODEARTS_POOL.acquire(
-                wait, session_key=sticky_key)
+                wait, session_key=sticky_key, model=model)
             if session is None:
+                if _CODEARTS_POOL.limits_blocked(model):
+                    return fail(
+                        429,
+                        "codearts daily limit reached: every account is parked "
+                        "by the panel's daily token/credit limit; raise it in "
+                        "Settings or wait for local midnight",
+                        "rate_limit_error"), None
                 if not _CODEARTS_POOL._usable():
                     return fail(
                         503,
@@ -20344,6 +20489,7 @@ class Handler(BaseHTTPRequestHandler):
                 status, text = ca_codearts.chat_for_model(
                     cred[0], cred[1], cred[2], model, messages,
                     max_tokens=max_tokens, stream=True,
+                    timeout=header_timeout, idle_timeout=idle_timeout,
                     extra=ca_codearts.thinking_extra_from(payload),
                     tools=payload.get("tools"),
                     tool_choice=payload.get("tool_choice"),
@@ -20354,6 +20500,8 @@ class Handler(BaseHTTPRequestHandler):
                     # 真的服务成功了才绑定会话：失败的那一轮可能刚被上游拒绝，
                     # 不该把这条对话钉在一个拒绝过它的号上。
                     _CODEARTS_POOL.remember(sticky_key, account_key)
+                    if egress_on:
+                        ca_egress.note_success(egress_key)
             except ca_codearts.ChatAborted:
                 # 客户端已经走了：不再重试、不再写错误记录（这不是上游故障）。
                 log("codearts aborted: client gone, upstream closed model=%s" % model)
@@ -20381,12 +20529,21 @@ class Handler(BaseHTTPRequestHandler):
                     delays = CODEARTS_RETRY_DELAYS
                 elif status in (401, 403):
                     _CODEARTS_POOL.penalize(account_key, CODEARTS_AUTH_COOLDOWN)
+            egress_wait = 0.0
+            if egress_on and retryable and (
+                    last_exc is not None or status in (502, 503, 504)):
+                # 链路抖动记在出口上，不额外惩罚账号；退避是秒级，和原有的
+                # 重试节奏取较大者，不叠成两段等待。
+                egress_wait = min(ca_egress.note_transient(egress_key),
+                                  EGRESS_SLEEP_MAX)
+                log("codearts transient on the egress; backing off %.1fs"
+                    % egress_wait)
             if not retryable or attempt >= len(delays):
                 break
             log("codearts retry %d/%d: model=%s acct=%s cause=%s"
                 % (attempt + 1, len(delays), model, account_label,
                    (str(last_exc) if last_exc else (text or "")[:120])))
-            time.sleep(delays[attempt])
+            time.sleep(max(delays[attempt], egress_wait))
             attempt += 1
 
         if last_exc is not None:
@@ -20404,6 +20561,10 @@ class Handler(BaseHTTPRequestHandler):
                         "hiding it from /v1/models for %ds"
                         % (model, int(CODEARTS_BENEFIT_MISSING_TTL)))
             st, _et = _codearts_fail_spec(status, code, detail, anthropic)
+            # 参数错（001001005）不说清是哪个参数，把形状留在日志里，
+            # 下次才能区分「上下文太长 / max_tokens 越界 / 图片给了非多模态」。
+            log("codearts request shape on failure: model=%s %s"
+                % (model, _codearts_request_shape(payload, messages, max_tokens)))
             record_error(model, st, ("%s %s" % (code, detail))[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=account_label, key=self._key_id())
@@ -20469,6 +20630,10 @@ class Handler(BaseHTTPRequestHandler):
         # 这条对话的稳定标识：多账号时让同一对话的每一轮尽量落在同一个号上
         # （上游 prompt cache 是按机器存的，换号等于前缀缓存全丢）。
         sticky_key = codearts_session_key(getattr(self, "headers", None), payload)
+        # 与聚合路径同一口径：超时、出口退避每请求只读一次。
+        header_timeout, idle_timeout = upstream_timeouts()
+        egress_on = ca_settings.egress_backoff_enabled(ACCOUNTS_DIR)
+        egress_key = ca_upstream_pool.egress_key(ca_codearts.CHAT_PATH)
         delays = CODEARTS_BUSY_DELAYS      # 先按「名额满」的短节奏
         attempt = 0
         while True:
@@ -20480,8 +20645,16 @@ class Handler(BaseHTTPRequestHandler):
             # 换个号试试」，不是继续占着排队位置。
             wait = CODEARTS_SLOT_WAIT if attempt == 0 else min(
                 2.0, CODEARTS_SLOT_WAIT)
-            session, key = _CODEARTS_POOL.acquire(wait, session_key=sticky_key)
+            session, key = _CODEARTS_POOL.acquire(
+                wait, session_key=sticky_key, model=model)
             if session is None:
+                if _CODEARTS_POOL.limits_blocked(model):
+                    return fail(
+                        429,
+                        "codearts daily limit reached: every account is parked "
+                        "by the panel's daily token/credit limit; raise it in "
+                        "Settings or wait for local midnight",
+                        "rate_limit_error"), None
                 if not _CODEARTS_POOL._usable():
                     return fail(
                         503,
@@ -20515,6 +20688,7 @@ class Handler(BaseHTTPRequestHandler):
                 status, resp, text = ca_codearts.open_chat(
                     cred[0], cred[1], cred[2], model, messages,
                     max_tokens=max_tokens, stream=True,
+                    timeout=header_timeout, idle_timeout=idle_timeout,
                     extra=ca_codearts.thinking_extra_from(payload),
                     tools=payload.get("tools"),
                     tool_choice=payload.get("tool_choice"),
@@ -20527,6 +20701,8 @@ class Handler(BaseHTTPRequestHandler):
                 # 建连成功才记粘性：失败的那一轮不该把这条对话绑到一个
                 # 刚刚拒绝过我们的号上。
                 _CODEARTS_POOL.remember(sticky_key, key)
+                if egress_on:
+                    ca_egress.note_success(egress_key)
                 return None, _CodeartsLease(resp, account_label, t_start, key,
                                             session_id=session_id,
                                             session_cred=cred)
@@ -20547,12 +20723,21 @@ class Handler(BaseHTTPRequestHandler):
                     delays = CODEARTS_RETRY_DELAYS
                 elif status in (401, 403):
                     _CODEARTS_POOL.penalize(key, CODEARTS_AUTH_COOLDOWN)
+            egress_wait = 0.0
+            if egress_on and retryable and (
+                    last_exc is not None or status in (502, 503, 504)):
+                # 与聚合路径同一口径：链路抖动记在出口上，不额外惩罚账号；
+                # 退避秒级，和原有重试节奏取较大者，不叠成两段等待。
+                egress_wait = min(ca_egress.note_transient(egress_key),
+                                  EGRESS_SLEEP_MAX)
+                log("codearts transient on the egress; backing off %.1fs"
+                    % egress_wait)
             if not retryable or attempt >= len(delays):
                 break
             log("codearts open retry %d/%d: model=%s acct=%s cause=%s"
                 % (attempt + 1, len(delays), model, account_label,
                    (str(last_exc) if last_exc else (text or "")[:120])))
-            time.sleep(delays[attempt])
+            time.sleep(max(delays[attempt], egress_wait))
             attempt += 1
 
         elapsed_ms = int((time.time() - t_start) * 1000)
@@ -20564,6 +20749,8 @@ class Handler(BaseHTTPRequestHandler):
                         "upstream_error"), None
 
         code, detail = _codearts_error_detail(text)
+        log("codearts request shape on failure: model=%s %s"
+            % (model, _codearts_request_shape(payload, messages, max_tokens)))
         if "4004.200" in (code or "") or "benefit not found" in (detail or ""):
             if mark_benefit_missing(model):
                 log("codearts model %s has no benefit entitlement; "
