@@ -25,6 +25,80 @@ Messages）的转换逻辑和 HTTP handler 搅在一起：函数里读 `self.wfi
 import json
 
 
+def anthropic_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    return ""
+
+
+def best_cached_tokens(usage):
+    """Best cache-hit value across every alias the upstreams emit (E3).
+
+    Order mirrors the panel: prompt_tokens_details.cached_tokens >
+    prompt_cache_hit_tokens > cache_read_input_tokens > cached_tokens >
+    input_tokens_details.cached_tokens > completion_tokens_details.
+    First positive value wins; zero aliases never shadow a real hit.
+    """
+    if not isinstance(usage, dict):
+        return 0
+    prompt_details = usage.get("prompt_tokens_details") or {}
+    input_details = usage.get("input_tokens_details") or {}
+    details = usage.get("completion_tokens_details") or {}
+    for value in (prompt_details.get("cached_tokens"),
+                  usage.get("prompt_cache_hit_tokens"),
+                  usage.get("cache_read_input_tokens"),
+                  usage.get("cached_tokens"),
+                  input_details.get("cached_tokens"),
+                  details.get("cached_tokens")):
+        try:
+            number = float(value or 0)
+        except (TypeError, ValueError):
+            continue
+        if number > 0:
+            # Token counts must stay integers: the Codex client parses
+            # response.completed strictly and rejects 123.0 (invalid number).
+            return int(number)
+    return 0
+
+
+def anthropic_usage(usage):
+    out = {
+        "input_tokens": 0,
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 0,
+        "output_tokens": 0,
+    }
+    if not isinstance(usage, dict):
+        return out
+    try:
+        out["input_tokens"] = int(usage.get("prompt_tokens") or 0)
+    except (TypeError, ValueError):
+        pass
+    try:
+        out["output_tokens"] = int(usage.get("completion_tokens") or 0)
+    except (TypeError, ValueError):
+        pass
+    cached = usage.get("prompt_cache_hit_tokens")
+    if cached is None:
+        cached = best_cached_tokens(usage)
+    try:
+        out["cache_read_input_tokens"] = int(cached or 0)
+    except (TypeError, ValueError):
+        pass
+    try:
+        out["cache_creation_input_tokens"] = int(usage.get("prompt_cache_write_tokens") or 0)
+    except (TypeError, ValueError):
+        pass
+    service_tier = usage.get("service_tier")
+    if service_tier:
+        out["service_tier"] = service_tier
+    return out
+
+
 def anthropic_sse_frame(event, payload):
     """一个 Anthropic SSE 帧（bytes）：``event: x`` + 单行 data。
 

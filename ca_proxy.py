@@ -75,6 +75,9 @@ _anthropic_stop_reason = ca_protocol.anthropic_stop_reason
 _strip_empty_fc = ca_protocol.strip_empty_function_calls
 clean_responses_frame = ca_protocol.clean_responses_frame
 normalize_roles = ca_protocol.normalize_roles
+_anthropic_text = ca_protocol.anthropic_text
+_anthropic_usage = ca_protocol.anthropic_usage
+_best_cached_tokens = ca_protocol.best_cached_tokens
 import ca_upstream_pool
 import ca_webtools
 import ca_identity
@@ -652,36 +655,6 @@ def row_outcome(row):
     if o:
         return o
     return "failed" if row.get("error") else "completed"
-def _best_cached_tokens(usage):
-    """Best cache-hit value across every alias the upstreams emit (E3).
-
-    Order mirrors the panel: prompt_tokens_details.cached_tokens >
-    prompt_cache_hit_tokens > cache_read_input_tokens > cached_tokens >
-    input_tokens_details.cached_tokens > completion_tokens_details.
-    First positive value wins; zero aliases never shadow a real hit.
-    """
-    if not isinstance(usage, dict):
-        return 0
-    prompt_details = usage.get("prompt_tokens_details") or {}
-    input_details = usage.get("input_tokens_details") or {}
-    details = usage.get("completion_tokens_details") or {}
-    for value in (prompt_details.get("cached_tokens"),
-                  usage.get("prompt_cache_hit_tokens"),
-                  usage.get("cache_read_input_tokens"),
-                  usage.get("cached_tokens"),
-                  input_details.get("cached_tokens"),
-                  details.get("cached_tokens")):
-        try:
-            number = float(value or 0)
-        except (TypeError, ValueError):
-            continue
-        if number > 0:
-            # Token counts must stay integers: the Codex client parses
-            # response.completed strictly and rejects 123.0 (invalid number).
-            return int(number)
-    return 0
-
-
 def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_ms=None, fp=None,
                 account=None, outcome="completed", key=None, effort=None,
                 requested_model=None):
@@ -15713,16 +15686,6 @@ def anthropic_error_obj(status, message, error_type=None):
     }
 
 
-def _anthropic_text(value):
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value
-    if isinstance(value, (int, float, bool)):
-        return str(value)
-    return ""
-
-
 def _anthropic_json_text(value):
     if value is None:
         return "{}"
@@ -16057,40 +16020,6 @@ def messages_to_chat(payload):
                 messages.append({"role": role, "content": text})
     chat["messages"] = messages
     return chat
-
-
-def _anthropic_usage(usage):
-    out = {
-        "input_tokens": 0,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-        "output_tokens": 0,
-    }
-    if not isinstance(usage, dict):
-        return out
-    try:
-        out["input_tokens"] = int(usage.get("prompt_tokens") or 0)
-    except (TypeError, ValueError):
-        pass
-    try:
-        out["output_tokens"] = int(usage.get("completion_tokens") or 0)
-    except (TypeError, ValueError):
-        pass
-    cached = usage.get("prompt_cache_hit_tokens")
-    if cached is None:
-        cached = _best_cached_tokens(usage)
-    try:
-        out["cache_read_input_tokens"] = int(cached or 0)
-    except (TypeError, ValueError):
-        pass
-    try:
-        out["cache_creation_input_tokens"] = int(usage.get("prompt_cache_write_tokens") or 0)
-    except (TypeError, ValueError):
-        pass
-    service_tier = usage.get("service_tier")
-    if service_tier:
-        out["service_tier"] = service_tier
-    return out
 
 
 def _anthropic_message_id(value):

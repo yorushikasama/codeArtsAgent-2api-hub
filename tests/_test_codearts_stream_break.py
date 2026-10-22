@@ -950,5 +950,15 @@ check("原有角色不动（连对象都是同一个）",
 check("非 dict 条目原样保留",
       Q.normalize_roles(["junk"]) == ["junk"], None)
 
+_txt = Q.anthropic_text(None), Q.anthropic_text("ab"), Q.anthropic_text(3)
+check("文本归一：None→空串、原样、非串转串", _txt == ("", "ab", "3"), _txt)
+_u = Q.anthropic_usage({"prompt_tokens": 10, "completion_tokens": 2})
+check("用量映射字段齐全", _u["input_tokens"] == 10 and _u["output_tokens"] == 2
+      and _u["cache_read_input_tokens"] == 0, _u)
+_u2 = Q.anthropic_usage({"prompt_tokens": 100, "completion_tokens": 5,
+                         "prompt_cache_hit_tokens": 40})
+check("缓存命中进 cache_read_input_tokens", _u2["cache_read_input_tokens"] == 40, _u2)
+check("非 dict 用量给全零", Q.anthropic_usage(None)["input_tokens"] == 0, None)
+
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
