@@ -42,6 +42,12 @@ _src = open(Q.__file__, encoding="utf-8").read()
 _code = Q.re.sub(r'""".*?"""', "", _src, flags=Q.re.S) if hasattr(Q, "re") else _src
 check("没有 import socket", "import socket" not in _src, None)
 check("没有 open( / self.wfile", "open(" not in _code and "self.wfile" not in _code, None)
+check("没有 log(（不许往日志里写）", "log(" not in _code and "logging" not in _code, None)
+check("没有读 settings / 账号目录",
+      "ca_settings" not in _code and "ACCOUNTS_DIR" not in _code, None)
+_imports = set(Q.re.findall(r"^(?:import|from)\s+([\w.]+)", _code, Q.re.M))
+check("只依赖 json / re / time / uuid 四个标准库模块",
+      _imports <= {"json", "re", "time", "uuid"}, sorted(_imports))
 
 
 section("2. 帧层")

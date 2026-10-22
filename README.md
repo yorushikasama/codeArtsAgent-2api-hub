@@ -65,8 +65,10 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 132 个套件：106 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 133 个套件：107 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_test_protocol_pure.py` 只 import `ca_protocol`，用来钉住「协议层不依赖 ca_proxy、不碰 I/O」。
+- `tests/_test_protocol_golden.py` 对拍两种流式协议的**逐字节帧序列**（`tests/golden/*.json`）。
+  只有确认行为变化是想要的才重录：`python tests/record_protocol_golden.py`，录完 review diff。
 - 仓库不含 CI：`.github/workflows/` 已整体移除，测试只在本地/服务器手工跑（`--jobs 4` 可并行）。
 
 ---
@@ -224,6 +226,13 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
 
 ### Unreleased
+
+**协议层 golden：帧序列逐字节钉死**
+
+- 新增 `tests/_test_protocol_golden.py`（套件 133）：把 Anthropic Messages 与 Responses 各 6~7 个场景的**完整帧序列**存成 `tests/golden/*.json`，改完代码一 diff 就知道哪一帧变了。录制时把 `new_id` 与 `time` 打桩，所以能逐字节比。
+- 覆盖：正文 + 缓存用量、思考 + 正文、单/多工具调用（参数分片）、`max_tokens`、空流、上游错误帧、`stop_sequence` 命中、只有工具没有正文。
+- 反向验证过：把 `message_start` 改成 `message_startX`，6 个场景当场变红。
+- 顺带补三条纯度断言：`ca_protocol` 里不许出现 `log(` / `logging`、不许读 `ca_settings` / `ACCOUNTS_DIR`、只依赖 `json` / `re` / `time` / `uuid` 四个标准库模块。
 
 **Messages 的 `stop_sequence` 回填（尽力而为）与面板并发可见**
 

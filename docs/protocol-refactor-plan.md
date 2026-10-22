@@ -14,9 +14,10 @@
 |---|---|
 | `ca_proxy.py` | 20 729 行（起点 22 119） |
 | `ca_protocol.py` | 1 620 行，38 个函数 |
-| 测试套件 | 132 个（106 Python + 26 JS） |
+| 测试套件 | 133 个（107 Python + 26 JS） |
 | `_test_codearts_stream_break.py` | 214 项 |
-| `_test_protocol_pure.py` | 34 项（只 import ca_protocol） |
+| `_test_protocol_pure.py` | 41 项（只 import ca_protocol） |
+| `_test_protocol_golden.py` | 19 项（逐字节帧序列） |
 | 线上 | `codearts-hub` active，跑的是 `d6da9d9` |
 | 远端 | `origin/main` = `d6da9d9` |
 
@@ -203,26 +204,28 @@
 
 ---
 
-## 4. 测试策略：从「起服务器」到「构造输入」
+## 4. 测试策略：从「起服务器」到「构造输入」 ✅ 已落地
 
-现在协议层的测试靠 `_test_anthropic_*` 起真服务打 socket。搬完之后每层都能直接喂数据。
+现在协议层的测试靠 `_test_anthropic_*` 起真服务打 socket；搬完之后每层都能直接喂数据。
+三条都已实现：
 
-**建议新增独立套件 `tests/_test_protocol_pure.py`**（套件数 131 → 132，需同步 README）：
+1. **纯层套件** `tests/_test_protocol_pure.py`（41 项）：只 import `ca_protocol`，
+   覆盖帧层、角色归一、用量映射、请求翻译、SSE 读取、DSML、引用标注、namespace，
+   外加纯度断言（不许 `socket` / `open(` / `self.wfile` / `log(` / `ca_settings`，
+   只依赖 `json` / `re` / `time` / `uuid`）。
+2. **golden 套件** `tests/_test_protocol_golden.py`（19 项，套件数 133）：
+   - `tests/golden/anthropic_stream.json`：7 个场景 / 43 帧；
+   - `tests/golden/responses_stream.json`：6 个场景 / 50 帧；
+   - 场景清单与打桩逻辑放在 `tests/_golden_cases.py`，录制与对拍共用，避免两边漂移；
+   - 重录入口 `python tests/record_protocol_golden.py`，且只在「确认行为变化是想要的」时跑。
+   - 录制时把 `new_id` 与 `time` 钉死，所以能**逐字节**比较；套件里还有一条
+     「连跑两次结果完全相同」，防止以后有人引入未打桩的随机源把 golden 变成装饰。
+   - 反向验证过：把 `message_start` 改成 `message_startX`，6 个场景当场变红。
+3. **请求层对拍**：第 6 刀用 25 条 payload 在 HEAD 与工作区之间逐字节对拍
+   （文本 / 图片 / 文档 / 工具 / 工具结果 / 思考块 / system / effort / 非法输入），零差异。
 
-1. **帧序列 golden**：给定一串 chat delta（文本 / reasoning / tool_calls / finish），
-   断言产出的 Anthropic 帧序列**逐字节相等**。golden 从现有实现录一次，搬完用它对比，
-   这是「搬而不改」最硬的证明。
-2. **边界**：空 delta、只有 reasoning、只有 tool_calls、finish 缺失、usage 缺失、
-   非法 JSON 行、`[DONE]` 前后多余空行。
-3. **请求层**：Anthropic 请求 → chat 请求的对拍（图片、tool_result、thinking、
-   `stop_sequences`、`metadata.user_id`）。
-4. **不纯检查**：`ca_protocol` 源码里不许出现 `socket` / `self.` / `log(` / `open(`
-   —— 一条静态断言，防止以后有人往里塞 I/O。
-
-录制 golden 的方式：搬之前跑一次 `stream_messages_events(list_of_chunks, ...)`，
-把输出 `json.dumps` 存成 `tests/golden/anthropic_stream.json`；搬之后同输入同输出。
-
----
+原始计划里提过的「golden 存 `tests/golden/anthropic_stream.json`」已经照做，
+只是帧覆盖从「一串 delta」扩到了 13 个场景（含 Responses）。
 
 ## 5. 与协议抽取无关、但待处理的事项
 
@@ -261,9 +264,10 @@
 **完成标志（全部达成）**
 
 - ✅ `ca_proxy.py` 20 729 行（≤ 21 000），`ca_protocol.py` 覆盖全部协议转换；
-- ✅ `_test_protocol_pure.py`（34 项）全绿，只 import `ca_protocol`；
+- ✅ `_test_protocol_pure.py`（41 项）全绿，只 import `ca_protocol`；
 - ✅ `ca_proxy` 顶部不再有别名桥（只剩两个注入包装）；
-- ✅ 套件数 132（README 已同步）。
+- ✅ golden 套件钉住两种流式协议的逐字节帧序列（19 项）；
+- ✅ 套件数 133（README 已同步）。
 
 ---
 

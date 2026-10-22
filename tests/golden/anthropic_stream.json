@@ -1,0 +1,80 @@
+[
+ {
+  "name": "正文 + usage（含缓存命中）",
+  "frames": [
+   "event: message_start\ndata: {\"message\":{\"id\":\"msg_chatcmpl-g1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"glm-5.3\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}},\"type\":\"message_start\"}\n\n",
+   "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"},\"type\":\"content_block_start\"}\n\n",
+   "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"你\"},\"type\":\"content_block_delta\"}\n\n",
+   "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"好\"},\"type\":\"content_block_delta\"}\n\n",
+   "event: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\n",
+   "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":11,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":7,\"output_tokens\":3},\"type\":\"message_delta\"}\n\n",
+   "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  ]
+ },
+ {
+  "name": "思考 + 正文",
+  "frames": [
+   "event: message_start\ndata: {\"message\":{\"id\":\"msg_0001\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"glm-5.3\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}},\"type\":\"message_start\"}\n\n",
+   "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"thinking\",\"thinking\":\"\"},\"type\":\"content_block_start\"}\n\n",
+   "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"先想\"},\"type\":\"content_block_delta\"}\n\n",
+   "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"一下\"},\"type\":\"content_block_delta\"}\n\n",
+   "event: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\n",
+   "event: content_block_start\ndata: {\"index\":1,\"content_block\":{\"type\":\"text\",\"text\":\"\"},\"type\":\"content_block_start\"}\n\n",
+   "event: content_block_delta\ndata: {\"index\":1,\"delta\":{\"type\":\"text_delta\",\"text\":\"答案\"},\"type\":\"content_block_delta\"}\n\n",
+   "event: content_block_stop\ndata: {\"index\":1,\"type\":\"content_block_stop\"}\n\n",
+   "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":5,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":4},\"type\":\"message_delta\"}\n\n",
+   "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  ]
+ },
+ {
+  "name": "两个工具调用",
+  "frames": [
+   "event: message_start\ndata: {\"message\":{\"id\":\"msg_0002\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"glm-5.3\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}},\"type\":\"message_start\"}\n\n",
+   "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_a\",\"name\":\"get_time\",\"input\":{}},\"type\":\"content_block_start\"}\n\n",
+   "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"tz\\\"\"},\"type\":\"content_block_delta\"}\n\n",
+   "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\": \\\"UTC\\\"}\"},\"type\":\"content_block_delta\"}\n\n",
+   "event: content_block_start\ndata: {\"index\":1,\"content_block\":{\"type\":\"tool_use\",\"id\":\"call_b\",\"name\":\"ping\",\"input\":{}},\"type\":\"content_block_start\"}\n\n",
+   "event: content_block_delta\ndata: {\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"},\"type\":\"content_block_delta\"}\n\n",
+   "event: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\n",
+   "event: content_block_stop\ndata: {\"index\":1,\"type\":\"content_block_stop\"}\n\n",
+   "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":9,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":6},\"type\":\"message_delta\"}\n\n",
+   "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  ]
+ },
+ {
+  "name": "max_tokens 收尾",
+  "frames": [
+   "event: message_start\ndata: {\"message\":{\"id\":\"msg_0003\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"glm-5.3\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}},\"type\":\"message_start\"}\n\n",
+   "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"},\"type\":\"content_block_start\"}\n\n",
+   "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"半截\"},\"type\":\"content_block_delta\"}\n\n",
+   "event: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\n",
+   "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"max_tokens\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":3,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":2},\"type\":\"message_delta\"}\n\n",
+   "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  ]
+ },
+ {
+  "name": "空流（只有 [DONE]）",
+  "frames": [
+   "event: message_start\ndata: {\"message\":{\"id\":\"msg_0004\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"glm-5.3\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}},\"type\":\"message_start\"}\n\n",
+   "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":0,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":0},\"type\":\"message_delta\"}\n\n",
+   "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  ]
+ },
+ {
+  "name": "上游错误帧",
+  "frames": [
+   "event: error\ndata: {\"error\":{\"type\":\"api_error\",\"message\":\"upstream exploded\"},\"type\":\"error\"}\n\n"
+  ]
+ },
+ {
+  "name": "stop_sequence 命中（上游回显了停止串）",
+  "frames": [
+   "event: message_start\ndata: {\"message\":{\"id\":\"msg_0005\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"glm-5.3\",\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":0,\"output_tokens\":0}},\"type\":\"message_start\"}\n\n",
+   "event: content_block_start\ndata: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"},\"type\":\"content_block_start\"}\n\n",
+   "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"结果：STOP\"},\"type\":\"content_block_delta\"}\n\n",
+   "event: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\n",
+   "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":\"STOP\"},\"usage\":{\"input_tokens\":4,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":0,\"output_tokens\":3},\"type\":\"message_delta\"}\n\n",
+   "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
+  ]
+ }
+]
