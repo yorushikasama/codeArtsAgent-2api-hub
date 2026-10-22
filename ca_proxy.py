@@ -10373,6 +10373,13 @@ CODEARTS_AFFINITY_TTL = float(os.environ.get("CODEARTS_AFFINITY_TTL") or 1800.0)
 #: 粘性表上限。超了按最久未用淘汰 —— 它只是「选号偏好」，丢了最多退化成轮询。
 CODEARTS_AFFINITY_MAX = int(os.environ.get("CODEARTS_AFFINITY_MAX") or 4096)
 
+#: 粘性落盘的文件名（放在账号目录下，和 settings.json 作伴）。
+#: 为什么不每次请求都写：这张表只是「偏好」，丢最后几秒的绑定最多让一次请求
+#: 换个号；每请求一次 fsync 是拿延迟换一个几乎无感的收益。
+CODEARTS_AFFINITY_FILE = "codearts_affinity.json"
+CODEARTS_AFFINITY_SAVE_EVERY = float(
+    os.environ.get("CODEARTS_AFFINITY_SAVE_EVERY") or 10.0)
+
 #: 用首条用户消息当会话指纹时要求的最短长度。太短（"hi"、"继续"）会撞车，
 #: 撞了只是"两个无关对话被排到同一个号"，无害但没必要。
 CODEARTS_AFFINITY_MIN_CHARS = 24
@@ -10436,8 +10443,9 @@ class _CodeartsAccountPool:
     等其它使用者留 1 个），挑号时先看空闲、再看冷却。
     """
 
-    def __init__(self):
+    def __init__(self, state_dir=None):
         self._lock = threading.Lock()
+        self._state_dir = state_dir or ACCOUNTS_DIR
         self._semaphores = {}     # 账号 id -> Semaphore（每号独立容量）
         self._cool_until = {}     # 账号 id -> 冷却到期时间戳
         # (账号 id, 模型) -> 冷却到期时间戳。TPM 限流是**按模型**的：glm-5.3
@@ -10445,6 +10453,9 @@ class _CodeartsAccountPool:
         self._model_cool = {}
         self._inflight = {}       # 账号 id -> 正在跑的请求数（面板用）
         self._affinity = {}       # 会话键 -> (账号 id, 最后使用时间)，见 acquire
+        self._affinity_loaded = False   # 落盘的粘性只读一次
+        self._affinity_dirty = False    # 有改动还没写盘
+        self._affinity_saved = 0.0      # 上次写盘的时间（节流用）
         self._cursor = 0
 
     @staticmethod
@@ -10606,12 +10617,58 @@ class _CodeartsAccountPool:
                 return self._admit(ordered[0], key), key
             time.sleep(min(0.05, max(0.0, deadline - time.time())))
 
+    def _state_path(self):
+        return os.path.join(self._state_dir, CODEARTS_AFFINITY_FILE)
+
+    def _load_affinity_locked(self, now):
+        """第一次用到粘性时读一次盘。坏文件当没有 —— 绝不因此让请求失败。"""
+        if self._affinity_loaded:
+            return
+        self._affinity_loaded = True
+        try:
+            with open(self._state_path(), encoding="utf-8") as fh:
+                raw = json.load(fh)
+        except (OSError, ValueError):
+            return
+        if not isinstance(raw, dict):
+            return
+        for key, item in raw.items():
+            if not isinstance(item, (list, tuple)) or len(item) != 2:
+                continue
+            acct, stamp = item
+            try:
+                stamp = float(stamp)
+            except (TypeError, ValueError):
+                continue
+            if now - stamp <= CODEARTS_AFFINITY_TTL:
+                self._affinity[str(key)] = (str(acct), stamp)
+
+    def _save_affinity_locked(self, now, force=False):
+        """把粘性表写盘（按 ``CODEARTS_AFFINITY_SAVE_EVERY`` 节流）。"""
+        if not self._affinity_dirty:
+            return
+        if not force and now - self._affinity_saved < CODEARTS_AFFINITY_SAVE_EVERY:
+            return
+        self._affinity_dirty = False
+        self._affinity_saved = now
+        data = {key: [acct, stamp]
+                for key, (acct, stamp) in self._affinity.items()}
+        path = self._state_path()
+        tmp = path + ".tmp"
+        try:
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(data, fh, ensure_ascii=False)
+            os.replace(tmp, path)          # 原子替换：半个文件永远读不到
+        except OSError as exc:
+            log("codearts affinity save failed: %s" % exc)
+
     def _sticky(self, session_key, now=None):
         """这条对话绑在哪个号上；没绑、已过期都返回 None。"""
         if not session_key:
             return None
         now = time.time() if now is None else now
         with self._lock:
+            self._load_affinity_locked(now)
             item = self._affinity.get(session_key)
             if not item:
                 return None
@@ -10627,13 +10684,16 @@ class _CodeartsAccountPool:
             return
         now = time.time() if now is None else now
         with self._lock:
+            self._load_affinity_locked(now)
             self._affinity[session_key] = (key, now)
+            self._affinity_dirty = True
             if len(self._affinity) > CODEARTS_AFFINITY_MAX:
                 # 超限按最久没碰过的淘汰。它是纯偏好，丢了只会退化成轮询。
                 dead = sorted(self._affinity.items(),
                               key=lambda kv: kv[1][1])[:len(self._affinity) // 8 + 1]
                 for name, _item in dead:
                     self._affinity.pop(name, None)
+            self._save_affinity_locked(now)
 
     def _admit(self, sess, key):
         """已经拿到槽位：记在跑数、顺手把 STS 续上。"""

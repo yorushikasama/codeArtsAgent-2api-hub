@@ -1,5 +1,7 @@
 # 核心机密数据（千万不能上传到公共仓库）
 accounts/*.json
+# 粘性表原子写盘时的临时文件（崩在 replace 之前会留下一个）
+accounts/*.json.tmp
 accounts/agent-backups/
 !accounts/README.txt
 

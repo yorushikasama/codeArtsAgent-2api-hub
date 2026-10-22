@@ -20,6 +20,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -570,8 +571,10 @@ check("什么都没有就返回 None（不猜）", P.codearts_session_key(None, 
 
 # 池子：remember 之后，同一条对话优先回到那个号
 class _StubPool(P._CodeartsAccountPool):
-    def __init__(self, keys):
-        P._CodeartsAccountPool.__init__(self)
+    def __init__(self, keys, state_dir=None):
+        # 默认用临时目录：粘性现在会落盘，绝不能写进仓库的 accounts/。
+        P._CodeartsAccountPool.__init__(
+            self, state_dir=state_dir or tempfile.mkdtemp(prefix="affinity-"))
         self._keys = keys
 
     def _usable(self):
@@ -766,6 +769,64 @@ _pool_acct.penalize("acct-a", 30)
 _snap2 = _pool_acct.snapshot()
 check("账号级冷却记在 cooling_s（1041/凭据失效用）",
       _snap2["acct-a"]["cooling_s"] > 0, _snap2)
+
+
+# ---------------------------------------------------------------------------
+# 11. 粘性落盘：重启后同一条对话仍回到同一个账号
+# ---------------------------------------------------------------------------
+
+section("11. 粘性持久化")
+
+_d1 = tempfile.mkdtemp(prefix="affinity-")
+try:
+    _pa = _StubPool(["acct-a", "acct-b"], _d1)
+    _pa.remember("k:persist", "acct-b")
+    _file = os.path.join(_d1, P.CODEARTS_AFFINITY_FILE)
+    check("粘性写盘了", os.path.exists(_file), _d1)
+    check("没有残留 .tmp（原子替换）", not os.path.exists(_file + ".tmp"), None)
+
+    _pb = _StubPool(["acct-a", "acct-b"], _d1)
+    check("新实例读回粘性", _pb._sticky("k:persist") == "acct-b",
+          _pb._sticky("k:persist"))
+    _keys_p = set()
+    for _i in range(4):
+        _sess_p, _k_p = _pb.acquire(0, session_key="k:persist")
+        _keys_p.add(_k_p)
+        _pb.release(_k_p)
+    check("重启后同一对话仍落回同一个号", _keys_p == {"acct-b"}, _keys_p)
+
+    # 过期的绑定不该被加载
+    with open(_file, "w", encoding="utf-8") as _fh:
+        json.dump({"k:old": ["acct-a",
+                             time.time() - P.CODEARTS_AFFINITY_TTL - 60]}, _fh)
+    _pc = _StubPool(["acct-a"], _d1)
+    check("过期绑定不加载", _pc._sticky("k:old") is None, _pc._sticky("k:old"))
+
+    # 坏文件不能把请求打死
+    with open(_file, "w", encoding="utf-8") as _fh:
+        _fh.write("{ broken")
+    _pd = _StubPool(["acct-a"], _d1)
+    check("坏粘性文件当作没有", _pd._sticky("k:any") is None, None)
+
+    # 目标目录不存在也不抛（最坏只是丢粘性）
+    _pe = _StubPool(["acct-a"], os.path.join(_d1, "missing", "dir"))
+    try:
+        _pe.remember("k:x", "acct-a")
+        _bad_dir_ok = True
+    except Exception as _exc:                    # noqa: BLE001
+        _bad_dir_ok = _exc
+    check("落盘失败不影响请求", _bad_dir_ok is True, _bad_dir_ok)
+
+    # 节流：10 秒内第二次 remember 不重复写盘（mtime 不变）
+    _pf = _StubPool(["acct-a"], _d1)
+    _pf.remember("k:one", "acct-a")
+    _stamp1 = os.path.getmtime(_file)
+    time.sleep(0.02)
+    _pf.remember("k:two", "acct-a")
+    check("写盘按间隔节流", os.path.getmtime(_file) == _stamp1, None)
+finally:
+    import shutil as _shutil2
+    _shutil2.rmtree(_d1, ignore_errors=True)
 
 
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))
