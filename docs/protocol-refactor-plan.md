@@ -8,18 +8,18 @@
 
 ---
 
-## 0. 现状（2026-10-22 收盘）
+## 0. 现状（2026-10-22 夜间，第五刀收工后）
 
 | 项 | 数字 |
 |---|---|
-| `ca_proxy.py` | 22 119 行 |
-| `ca_protocol.py` | 195 行，8 个函数 |
+| `ca_proxy.py` | 21 839 行 |
+| `ca_protocol.py` | 490 行，14 个函数 |
 | 测试套件 | 131 个（105 Python + 26 JS） |
-| `_test_codearts_stream_break.py` | 156 项 |
-| 线上 | `codearts-hub` active，跑的是 `dea939c` |
-| 远端 | `origin/main` = `dea939c` |
+| `_test_codearts_stream_break.py` | 175 项 |
+| 线上 | `codearts-hub` active，跑的是 `0ecc9e7` |
+| 远端 | `origin/main` = `0ecc9e7` |
 
-已完成四刀（都遵循「别名桥接、调用点零改动」）：
+已完成五刀（都遵循「别名桥接、调用点零改动」）：
 
 | 刀 | 搬走的东西 | 测试增量 |
 |---|---|---|
@@ -27,10 +27,20 @@
 | 2 | `strip_empty_function_calls`、`clean_responses_frame` | +4 |
 | 3 | `normalize_roles` | +3 |
 | 4 | `anthropic_text`、`anthropic_usage`、`best_cached_tokens` | +4 |
+| 5 | `iter_sse_lines`、`strip_data_prefix`、`SSE_READ_BLOCK`、`stream_messages_events`、`new_id`、`anthropic_message_id`、`anthropic_error_type` | +19 |
 
 `ca_protocol.py` 现有函数：`anthropic_text`、`best_cached_tokens`、
 `anthropic_usage`、`anthropic_sse_frame`、`normalize_roles`、
-`strip_empty_function_calls`、`clean_responses_frame`、`anthropic_stop_reason`。
+`strip_empty_function_calls`、`clean_responses_frame`、`anthropic_stop_reason`、
+`new_id`、`anthropic_message_id`、`anthropic_error_type`、`strip_data_prefix`、
+`iter_sse_lines`、`stream_messages_events`。
+
+**第五刀实测到的新坑（已加自动守卫）**：搬走 `_new_id` 时漏了一条别名，20 处
+调用全部悬空；`_responses_codearts` 的断流收尾把这个 `NameError` 吞在
+`try/except` 里，测试只表现为「少了 `response.failed`」，极易误判成状态机搬坏。
+测试第 14 节现在会做静态普查：`ca_protocol` 里每个函数，若 `ca_proxy` 仍以旧名
+（含 `_` 前缀）调用却拿不到同名属性，直接判红。
+
 
 **关键结论：第 5 刀要用的依赖已经全部就位**，不需要再拖旁支。
 
@@ -40,7 +50,7 @@
 
 | 函数 | 行数 | 位置 | 依赖 |
 |---|---:|---|---|
-| `stream_messages_events` | 200 | `ca_proxy.py:16093` | 已在 ca_protocol 的 4 个 + `anthropic_error_type` |
+| ~~`stream_messages_events`~~ | ~~200~~ | 第 5 刀已搬 | — |
 | `stream_responses_events` | 496 | `ca_proxy.py:16402` | 同上 + `_responses_usage` 等 |
 | `messages_to_chat` | 80 | `ca_proxy.py:15945` | 下面 6 个 anthropic 辅助 |
 | `_anthropic_blocks_to_messages` | 60 | `ca_proxy.py:15885` | `_anthropic_text`（已搬） |
@@ -49,19 +59,20 @@
 | `anthropic_tools_to_chat` | 27 | `ca_proxy.py:15827` | 无 |
 | `_anthropic_tool_choice` | 19 | `ca_proxy.py:15808` | 无 |
 | `_anthropic_system_text` | 15 | `ca_proxy.py:15793` | 无 |
-| `_anthropic_message_id` | 7 | `ca_proxy.py:16025` | 无 |
+| ~~`_anthropic_message_id`~~ | ~~7~~ | 第 5 刀已搬 | — |
 | `chat_to_messages` | 47 | `ca_proxy.py:16032` | `anthropic_usage`、`anthropic_stop_reason` |
-| `iter_sse_lines` | 45 | `ca_proxy.py:14626` | `SSE_READ_BLOCK`（64 KiB） |
-| `strip_data_prefix` | 11 | `ca_proxy.py:12170` | 无 |
+| ~~`iter_sse_lines`~~ | ~~45~~ | 第 5 刀已搬 | — |
+| ~~`strip_data_prefix`~~ | ~~11~~ | 第 5 刀已搬 | — |
 
-合计约 1 064 行；搬完 `ca_proxy.py` 约降到 21 000 行、`ca_protocol.py` 约 1 200 行。
+剩余约 800 行；搬完 `ca_proxy.py` 约降到 21 000 行以下、`ca_protocol.py` 约 1 200 行。
+（第五刀后实测：21 839 / 490 行。）
 
 **依赖顺序（必须按这个顺序，否则会拖出循环导入）**
 
 ```
 帧层/映射（已完成）
       ↓
-第 5 刀  stream_messages_events        ← 只依赖已搬的
+第 5 刀  stream_messages_events        ← 已完成（0ecc9e7）
       ↓
 第 6 刀  Anthropic 请求层（6 个小函数 + messages_to_chat）
       ↓
@@ -69,7 +80,7 @@
       ↓
 第 8 刀  chat_to_messages（非流式回包）
       ↓
-第 9 刀  传输原语 iter_sse_lines / strip_data_prefix（可选）
+第 9 刀  传输原语 iter_sse_lines / strip_data_prefix  ← 已在第 5 刀顺手搬完
       ↓
 第 10 刀 拆别名桥（删 ca_proxy 里的 `x = ca_protocol.x`，调用点改用 ca_protocol.x）
 ```
@@ -109,7 +120,7 @@
 
 ## 3. 分刀细节
 
-### 第 5 刀：`stream_messages_events`（200 行，最高优先）
+### 第 5 刀：`stream_messages_events`（200 行，最高优先）✅ 已完成（`0ecc9e7`）
 
 - **内容**：Anthropic 流式状态机——`state` 字典 + `ensure_start` / `ensure_thinking` /
   `ensure_text` 三个闭包 + delta 分支 + 收尾帧。
@@ -120,12 +131,17 @@
   这些**一律不要动**，整块搬。
 - **验收**：现有 `_test_anthropic_messages`（50）与 `_test_codearts_stream_break`
   必须全绿；再抓一次真实 `/v1/messages` 流（需在面板开启）对比帧序列。
+- **实际结果**：HTTP 读取层（`iter_sse_lines` / `strip_data_prefix` / `SSE_READ_BLOCK`）
+  与三个小函数（`new_id` / `anthropic_message_id` / `anthropic_error_type`）一并搬完。
+  线上验了两条真请求（流式正文、流式工具调用），帧序列与用量行都对。
+  **踩坑见 §0 末尾**——漏别名不会立刻炸，会被 `try/except` 吞成「少一帧」。
 
 ### 第 6 刀：Anthropic 请求层（约 250 行）
 
 - 搬 `_anthropic_system_text`、`_anthropic_tool_choice`、`anthropic_tools_to_chat`、
   `anthropic_effort_from_messages`、`_anthropic_content_to_text`、
-  `_anthropic_blocks_to_messages`、`messages_to_chat`、`_anthropic_message_id`。
+  `_anthropic_blocks_to_messages`、`messages_to_chat`。
+  （`_anthropic_message_id` 已在第 5 刀搬走，别重复搬。）
 - **顺序**：先搬 5 个叶子（无依赖），再搬 `_anthropic_blocks_to_messages`，最后
   `messages_to_chat`；每搬一个跑一次 `import` + 实调。
 - **风险点**：`messages_to_chat` 里 `max_tokens` 的默认值来自
@@ -149,11 +165,14 @@
 - 顺带处理 `stop_sequence` 字段：当前恒 `None`，如果接了 `stop` 参数，这里可以回填
   **命中的那一条**（属于改逻辑，单独提交）。
 
-### 第 9 刀：传输原语（可选，45 + 11 行）
+### 第 9 刀：传输原语（可选，45 + 11 行）✅ 已在第 5 刀顺手搬完
 
 - `iter_sse_lines` 是**读取效率**优化，不是协议语义；放 `ca_protocol` 会让「纯函数层」
-  混入 I/O 概念。建议**不搬**，或另建 `ca_stream.py`。若搬，把 `SSE_READ_BLOCK`
-  一起搬并保持 `ca_proxy.SSE_READ_BLOCK` 别名，避免两处常量漂移。
+  混入 I/O 概念。原计划**不搬**，但第 5 刀搬状态机时把它一起带走了（状态机是它的
+  唯一使用者之一，且搬完 `SSE_READ_BLOCK` 不会两处漂移）。
+- 现状：`ca_protocol.iter_sse_lines` / `strip_data_prefix` / `SSE_READ_BLOCK`，
+  `ca_proxy` 保留同名别名。若以后要恢复「纯函数层不含 I/O」的洁癖，再单开一刀
+  拆到 `ca_stream.py`，不要混进协议刀。
 
 ### 第 10 刀：拆桥（收尾）
 
@@ -228,10 +247,10 @@
 
 | 时段 | 内容 |
 |---|---|
-| 1 | 第 5 刀 + golden 录制 + 全量回归 |
+| 1 | ~~第 5 刀 + golden 录制 + 全量回归~~ ✅ 2026-10-22 夜（golden 用「第 14 节真调」代替） |
 | 2 | 第 6 刀（5 个叶子 + blocks + messages_to_chat） |
 | 3 | 第 7 刀（最大，留足时间看事件顺序） |
-| 4 | 第 8 刀 + 第 9 刀（可选）+ 第 10 刀拆桥 |
+| 4 | 第 8 刀 + 第 10 刀拆桥（第 9 刀已在第 5 刀完成） |
 | 5 | `_test_protocol_pure.py` 补全、文档收尾、遗留项 1-4 |
 
 **不要在同一时段混做两刀**：每刀都要一次完整回归，混做会让失败定位成本翻倍。
