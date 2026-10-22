@@ -10440,6 +10440,9 @@ class _CodeartsAccountPool:
         self._lock = threading.Lock()
         self._semaphores = {}     # 账号 id -> Semaphore（每号独立容量）
         self._cool_until = {}     # 账号 id -> 冷却到期时间戳
+        # (账号 id, 模型) -> 冷却到期时间戳。TPM 限流是**按模型**的：glm-5.3
+        # 撞满不该把同一个号上的 deepseek 一起晾 20 秒（2026-10-22 补）。
+        self._model_cool = {}
         self._inflight = {}       # 账号 id -> 正在跑的请求数（面板用）
         self._affinity = {}       # 会话键 -> (账号 id, 最后使用时间)，见 acquire
         self._cursor = 0
@@ -10568,6 +10571,15 @@ class _CodeartsAccountPool:
             now = time.time()
             ready = [s for s in sessions
                      if self._cool_until.get(self.key_of(s), 0.0) <= now]
+            if ready and model:
+                # 模型级冷却：只在「还有别的号能跑这个模型」时才筛掉，
+                # 全在冷却时保持原样（宁可撞一次限流，也别让请求排死）。
+                model_key = str(model)
+                fresh = [s for s in ready
+                         if self._model_cool.get(
+                             (self.key_of(s), model_key), 0.0) <= now]
+                if fresh:
+                    ready = fresh
             if ready:
                 candidates = ready
             else:
@@ -10642,10 +10654,20 @@ class _CodeartsAccountPool:
         except ValueError:          # 多还了：忽略，别把请求炸掉
             pass
 
-    def penalize(self, key, seconds):
-        """把这个号晾一会儿（冷却期内挑号会跳过它）。"""
+    def penalize(self, key, seconds, model=None):
+        """把这个号晾一会儿（冷却期内挑号会跳过它）。
+
+        ``model`` 给了就只冷却「这个号跑这个模型」——TPM 限流是按模型的，
+        账号级冷却会连带把同一账号上的其它模型一起停掉。并发会话满（1041）
+        与凭据失效才是账号级的，调用方不传 model。
+        """
         with self._lock:
             until = time.time() + max(0.0, seconds)
+            if model:
+                mk = (key, str(model))
+                if until > self._model_cool.get(mk, 0.0):
+                    self._model_cool[mk] = until
+                return
             if until > self._cool_until.get(key, 0.0):
                 self._cool_until[key] = until
 
@@ -10653,11 +10675,22 @@ class _CodeartsAccountPool:
         """每号「在跑几条 / 还剩几秒冷却」，给面板与排障用。"""
         now = time.time()
         with self._lock:
+            # 过期项顺手清掉，别让长期运行的表无限长（每个模型一条）。
+            for mk in [k for k, until in self._model_cool.items() if until <= now]:
+                self._model_cool.pop(mk, None)
             keys = set(self._semaphores) | set(self._inflight) | set(self._cool_until)
-            return {key: {
-                "in_flight": self._inflight.get(key, 0),
-                "cooling_s": round(max(0.0, self._cool_until.get(key, 0.0) - now), 1),
-            } for key in sorted(keys)}
+            out = {}
+            for key in sorted(keys):
+                cooling = {str(model): round(until - now, 1)
+                           for (acct, model), until in self._model_cool.items()
+                           if acct == key and until > now}
+                out[key] = {
+                    "in_flight": self._inflight.get(key, 0),
+                    "cooling_s": round(max(0.0,
+                                           self._cool_until.get(key, 0.0) - now), 1),
+                    "model_cooling_s": cooling,
+                }
+            return out
 
 
 _CODEARTS_POOL = _CodeartsAccountPool()
@@ -10765,6 +10798,61 @@ def _codearts_max_tokens(payload):
         return int(value)
     except (TypeError, ValueError):
         return 4096
+
+
+def _codearts_extra(payload):
+    """思考参数 + 采样参数合成一份 extra（上游认的那些，见 ca_codearts）。
+
+    两件事分开算、合一发：`thinking` / `reasoning_effort` 决定思考预算，
+    `temperature` / `top_p` / `stop` / `seed` / 两个 penalty 决定采样。以前只
+    合了前者，后者全丢 —— 见 ca_codearts.sampling_extra_from 的注释。
+    """
+    merged = {}
+    for part in (ca_codearts.thinking_extra_from(payload),
+                 ca_codearts.sampling_extra_from(payload)):
+        if part:
+            merged.update(part)
+    return merged or None
+
+
+def _codearts_response_format_error(payload):
+    """``response_format`` 的拒绝文案；允许（或没给）时返回 None。
+
+    上游根本不实现这个字段 —— 实测连 ``{"type": "bogus"}`` 都回 200，说明它
+    被当未知键忽略。我们以前也静默丢掉，于是客户端以为 JSON 模式生效了，拿到
+    散文后再自己解析失败，报错位置离真正原因十万八千里。
+
+    ``"text"`` 放行（那就是默认行为，没必要拒绝）。要强制 schema 就用
+    tools / function calling —— 那条路上游是真支持的。
+    """
+    fmt = (payload or {}).get("response_format")
+    if not isinstance(fmt, dict):
+        return None
+    kind = str(fmt.get("type") or "").strip().lower()
+    if kind in ("", "text"):
+        return None
+    return ("response_format.type=%r is not supported: the codearts upstream "
+            "ignores this field (verified 2026-10-22 - even an invalid type "
+            "returns 200), so structured output cannot be guaranteed. Remove "
+            "the field and parse the text yourself, or force a schema through "
+            "tools/function calling." % kind)
+
+
+def _codearts_choice_count_error(payload):
+    """``n>1`` 的拒绝文案；不拒绝就返回 None。
+
+    上游只给一条 choice（``n=2`` 实测回帧内 001001005）。以前我们既不转发也不
+    报错，客户端按 n=2 解析却只拿到一条 —— 形状对不上，比直接报错更难查。
+    """
+    try:
+        n = int((payload or {}).get("n") or 1)
+    except (TypeError, ValueError):
+        n = 1
+    if n <= 1:
+        return None
+    return ("n=%d is not supported: the codearts upstream returns exactly one "
+            "choice per request. Send n=1 (or omit it) and repeat the call if "
+            "you really need independent samples." % n)
 
 
 def _tap_codearts_sse(lines, sink):
@@ -11323,6 +11411,12 @@ def _codearts_fail_spec(status, code, detail, anthropic=False):
     if (status == 404 or "002002009" in low or "model is not registered" in low
             or "model not found" in low or "模型不存在" in text):
         return 404, "invalid_request_error"
+    # InferHub.001001020.406 "The request model is not multimodal"：客户端把
+    # 图片发给了纯文本模型。这是**请求本身**的问题（换模型就好），回 400；
+    # 以前落进 502，客户端当成网关抖动一遍遍重试同一张图。
+    if ("001001020" in low or "not multimodal" in low
+            or "不支持多模态" in text):
+        return 400, "invalid_request_error"
     # InferHub.4004.200 benefit not found：这是**限时福利渠道**的回复 ——
     # 账号没有该模型的权益（没领、领完了、或这个账号本来就不在白名单里）。
     # 它不是网关故障，重试同一条请求也不会变；回 502 只会让客户端反复退避。
@@ -17331,6 +17425,10 @@ class Handler(BaseHTTPRequestHandler):
         st, et = _codearts_fail_spec(status, code, detail, anthropic)
         text = "%s %s" % (code or "", detail or "")
         msg = "codearts %s: %s" % (code or "error", detail or "")
+        if ("001001020" in text or "not multimodal" in text.lower()):
+            # 只说 "not multimodal" 用户不知道该换哪个 —— 直接把能用的列出来。
+            msg += (" — 该模型不支持图片输入，请改用 Qwen3-VL-235B 或 "
+                    "kimi-k2.6-vl，或去掉消息里的图片")
         if label:
             msg += " (account %s)" % label
         if st == 429:
@@ -20489,7 +20587,7 @@ class Handler(BaseHTTPRequestHandler):
                     cred[0], cred[1], cred[2], model, messages,
                     max_tokens=max_tokens, stream=True,
                     timeout=header_timeout, idle_timeout=idle_timeout,
-                    extra=ca_codearts.thinking_extra_from(payload),
+                    extra=_codearts_extra(payload),
                     tools=payload.get("tools"),
                     tool_choice=payload.get("tool_choice"),
                     abort_check=self._client_disconnected,
@@ -20524,7 +20622,8 @@ class Handler(BaseHTTPRequestHandler):
                     _CODEARTS_POOL.penalize(account_key, CODEARTS_BUSY_COOLDOWN)
                     delays = CODEARTS_BUSY_DELAYS
                 elif status == 429 or "ModelArts.811" in (text or ""):
-                    _CODEARTS_POOL.penalize(account_key, CODEARTS_TPM_COOLDOWN)
+                    _CODEARTS_POOL.penalize(account_key, CODEARTS_TPM_COOLDOWN,
+                                        model=model)
                     delays = CODEARTS_RETRY_DELAYS
                 elif status in (401, 403):
                     _CODEARTS_POOL.penalize(account_key, CODEARTS_AUTH_COOLDOWN)
@@ -20688,7 +20787,7 @@ class Handler(BaseHTTPRequestHandler):
                     cred[0], cred[1], cred[2], model, messages,
                     max_tokens=max_tokens, stream=True,
                     timeout=header_timeout, idle_timeout=idle_timeout,
-                    extra=ca_codearts.thinking_extra_from(payload),
+                    extra=_codearts_extra(payload),
                     tools=payload.get("tools"),
                     tool_choice=payload.get("tool_choice"),
                     session_id=session_id)
@@ -20718,7 +20817,8 @@ class Handler(BaseHTTPRequestHandler):
                     _CODEARTS_POOL.penalize(key, CODEARTS_BUSY_COOLDOWN)
                     delays = CODEARTS_BUSY_DELAYS
                 elif status == 429 or "ModelArts.811" in (text or ""):
-                    _CODEARTS_POOL.penalize(key, CODEARTS_TPM_COOLDOWN)
+                    _CODEARTS_POOL.penalize(key, CODEARTS_TPM_COOLDOWN,
+                                    model=model)
                     delays = CODEARTS_RETRY_DELAYS
                 elif status in (401, 403):
                     _CODEARTS_POOL.penalize(key, CODEARTS_AUTH_COOLDOWN)
@@ -21011,6 +21111,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_codearts_chat(self, payload):
         """把一个 OpenAI 形状的请求转发给码道，再把结果转回 OpenAI 形状。"""
+        for bad in (_codearts_choice_count_error(payload),
+                    _codearts_response_format_error(payload)):
+            if not bad:
+                continue
+            # 这两类都是「上游给不了你想要的形状」：既不能凑数，也不该假装
+            # 生效。请求阶段就回 400，比让客户端解析半截结果容易查得多。
+            record_error(payload.get("model") or "unknown", 400, bad,
+                         stream=payload.get("stream"), key=self._key_id())
+            return self._error(400, bad, "invalid_request_error")
         if CODEARTS_STREAM_PASSTHROUGH and payload.get("stream"):
             # 流式请求走真转发（边收边给）；非流式仍走「聚合后一次性返回」。
             return self._handle_codearts_chat_stream(payload)

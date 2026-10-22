@@ -205,6 +205,13 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+**码道协议补齐：采样参数、多模态错误、`n` / `response_format`**
+
+- **采样参数以前被白名单挡掉**：码道路径只转发 `model/messages/max_tokens/stream/thinking/tools/tool_choice`，`temperature` / `top_p` / `stop` / `seed` / `presence_penalty` / `frequency_penalty` 全部丢弃。上游实测（用非法值验证）是真解析这些字段的，现在原样转发；`stop` 字符串会包成数组（上游只收数组），超过 4 条按 OpenAI 语义裁掉。Anthropic 的 `stop_sequences` 因此也真正生效了。
+- **图片发给纯文本模型**（`InferHub.001001020.406` "not multimodal"）从 502 改成 400，并直接提示改用 `Qwen3-VL-235B` / `kimi-k2.6-vl`——以前客户端会当成网关抖动，反复重试同一张图。
+- **`n>1`** 与 **`response_format=json_object/json_schema`** 现在在请求阶段就回 400 说明原因（上游分别只给一条 choice、以及直接忽略该字段），不再静默降级：客户端拿到形状不符的结果比拿到明确错误更难查。
+- **TPM 限流按模型冷却**：`glm-5.3` 撞限流只晾这个模型，不再连带停掉同一账号上的其它模型（1041 并发满与凭据失效仍是账号级）。
+
 **移除全部 GitHub Actions 工作流**
 
 - 删掉 `.github/workflows/`（`tests` / `release` / `release-checksums` / `docker-publish` / `revert-guard`），

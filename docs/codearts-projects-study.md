@@ -410,9 +410,13 @@ http.client）时退回阻塞读，绝不假装发过心跳。连续 40 次空�
 | P1 | **模型别名**（客户端自带模型名 → 码道真名） | ✅ 已上线（`accounts/model_aliases.json`） |
 | P2 | 双 `/v1` 前缀兼容（OpenAI SDK 含 /v1、Anthropic SDK 不含） | ✅ 已上线 |
 | P2 | 失败时记录请求形状（诊断 001001005 参数错） | ✅ 已上线 |
-| P2 | `_sanitize_tool_calls`（悬空 tool_calls 清洗） | ⬜ 待做 |
+| P0 | **采样参数透传**（temperature / top_p / stop / seed / 两个 penalty） | ✅ 已上线（实测上游会解析并校验） |
+| P1 | 图片发给纯文本模型（`001001020.406`）→ 400 + 换模型提示 | ✅ 已上线 |
+| P1 | `n>1` 明确 400（上游只给一条 choice） | ✅ 已上线 |
+| P2 | `response_format` 明确 400（上游实测忽略该字段） | ✅ 已上线 |
+| P2 | `_sanitize_tool_calls`（悬空 tool_calls 清洗） | ✅ 早就有（`sanitize_tool_calls` / `merge_adjacent_tool_calls` / `cleanup_orphan_tool_calls`，这条是文档没跟上） |
 | P1 | 错误语义映射（429+Retry-After / credentials_error / 400 / 404） | ✅ 已上线 |
-| P2 | 模型级冷却 `(account, model)` | ⬜ 待做 |
+| P2 | 模型级冷却 `(account, model)` | ✅ 已上线（TPM 只晾这个模型，1041/凭据失效仍按账号） |
 | P2 | 协议转换抽成纯函数模块（可单测） | ⬜ 待评估 |
 | P3 | 本地满员回 409 而不是 429 | 观望（客户端对 409 的处理差异大） |
 | — | 滑动窗口限流（每 60s 3 次启动） | ❌ **不做**：心跳 idle 后实测 10 连发 0 次 1041，加了反而压吞吐 |

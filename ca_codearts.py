@@ -1833,6 +1833,46 @@ def thinking_extra_from(payload):
     return extra or None
 
 
+#: 上游认、我们也该转发的采样参数。2026-10-22 逐个实测过：故意给非法值
+#: （temperature="abc"、top_p=9、seed="abc"），上游都回帧内 001001005 ——
+#: 说明它真的解析并校验这些字段，而不是当未知键忽略。
+SAMPLING_FIELDS = ("temperature", "top_p", "seed",
+                   "presence_penalty", "frequency_penalty")
+
+
+def sampling_extra_from(payload):
+    """客户端请求 → 上游采样参数。没有可用项时返回 None。
+
+    为什么需要它：码道路径以前只转发 model/messages/max_tokens/stream/
+    thinking/tools/tool_choice，其余字段全丢。后果是 ``temperature=0`` 不生效
+    （代码类任务的重复性没法保证），而 Anthropic 的 ``stop_sequences`` 在翻译层
+    明明已经转成了 chat 的 ``stop``，到这一层又被吞掉 —— 客户端以为停了，
+    实际还在生成。
+
+    ``stop`` 单独处理：实测上游**只收数组**（``stop="END"`` 回 001001005），
+    所以字符串要包成单元素列表。OpenAI 的语义上限是 4 条，多发的我们裁掉，
+    不去赌上游的边界。
+    """
+    if not isinstance(payload, dict):
+        return None
+    extra = {}
+    for key in SAMPLING_FIELDS:
+        if key not in payload:
+            continue
+        value = payload.get(key)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            continue                # 坏值就地丢掉，别发上去换一个 400
+        extra[key] = int(value) if key == "seed" else float(value)
+    stop = payload.get("stop")
+    if isinstance(stop, str) and stop:
+        extra["stop"] = [stop]
+    elif isinstance(stop, (list, tuple)):
+        items = [s for s in stop if isinstance(s, str) and s]
+        if items:
+            extra["stop"] = items[:4]
+    return extra or None
+
+
 class ChatAborted(Exception):
     """下游客户端已经不要这条结果了，主动掐掉上游连接。
 

@@ -682,5 +682,91 @@ finally:
     _shutil.rmtree(_alias_dir, ignore_errors=True)
 
 
+# ---------------------------------------------------------------------------
+# 10. 采样参数透传 / 形状拒绝 / 模型级冷却（口径都来自 2026-10-22 的实测）
+# ---------------------------------------------------------------------------
+
+section("10. 上游认的采样参数与形状拒绝")
+
+_s = C.sampling_extra_from({"temperature": 0, "top_p": 0.9, "seed": 42,
+                            "presence_penalty": 0.5, "frequency_penalty": -0.5,
+                            "stop": "END"})
+check("数值参数原样带上", _s.get("temperature") == 0.0 and _s.get("top_p") == 0.9, _s)
+check("seed 取整", _s.get("seed") == 42 and isinstance(_s.get("seed"), int), _s)
+check("字符串 stop 包成单元素数组（上游只收数组）", _s.get("stop") == ["END"], _s)
+check("两个 penalty 都带上", _s.get("presence_penalty") == 0.5
+      and _s.get("frequency_penalty") == -0.5, _s)
+
+_s2 = C.sampling_extra_from({"stop": ["a", "b", "c", "d", "e", "f"]})
+check("stop 超过 4 条裁掉", _s2 == {"stop": ["a", "b", "c", "d"]}, _s2)
+
+_s3 = C.sampling_extra_from({"temperature": "abc", "top_p": [1], "seed": True,
+                             "stop": 3, "n": 2})
+check("坏类型就地丢掉，绝不发上去换 400", _s3 is None, _s3)
+check("空请求体不炸", C.sampling_extra_from(None) is None
+      and C.sampling_extra_from({}) is None, None)
+
+_m = P._codearts_extra({"temperature": 0,
+                        "thinking": {"type": "enabled", "budget_tokens": 1024}})
+check("思考参数与采样参数合到一份 extra",
+      _m.get("temperature") == 0.0
+      and _m.get("thinking", {}).get("budget_tokens") == 1024, _m)
+check("两者都没有时返回 None", P._codearts_extra({}) is None,
+      P._codearts_extra({}))
+
+_spec2 = P._codearts_fail_spec
+check("图片发给纯文本模型（001001020.406）→ 400，不是 502",
+      _spec2(200, "InferHub.001001020.406",
+             "The request model is not multimodal")
+      == (400, "invalid_request_error"),
+      _spec2(200, "InferHub.001001020.406", "not multimodal"))
+check("帧内映射同样走这张表",
+      P._codearts_frame_status("InferHub.001001020.406 not multimodal")[0] == 400,
+      P._codearts_frame_status("InferHub.001001020.406"))
+
+check("n=2 被明确拒绝",
+      "n=2" in (P._codearts_choice_count_error({"n": 2}) or ""),
+      P._codearts_choice_count_error({"n": 2}))
+check("n=1 / 缺省不拦", P._codearts_choice_count_error({"n": 1}) is None
+      and P._codearts_choice_count_error({}) is None, None)
+check("response_format=json_object 明确拒绝",
+      "not supported" in (P._codearts_response_format_error(
+          {"response_format": {"type": "json_object"}}) or ""), None)
+check("response_format=text 放行",
+      P._codearts_response_format_error(
+          {"response_format": {"type": "text"}}) is None, None)
+
+# 模型级冷却（TPM 是按模型的，不该连带停掉同账号的其它模型）
+_pool_m = _StubPool(["acct-a", "acct-b"])
+_pool_m.penalize("acct-a", 30, model="glm-5.3")
+_seen_m = []
+for _i in range(6):
+    _sess_m, _k_m = _pool_m.acquire(0, model="glm-5.3")
+    _seen_m.append(_k_m)
+    _pool_m.release(_k_m)
+check("模型级冷却只跳过这个模型", set(_seen_m) == {"acct-b"}, _seen_m)
+
+_seen_o = []
+for _i in range(6):
+    _sess_o, _k_o = _pool_m.acquire(0, model="deepseek-v4.1-flash")
+    _seen_o.append(_k_o)
+    _pool_m.release(_k_o)
+check("同账号的其它模型照常可用", set(_seen_o) == {"acct-a", "acct-b"}, _seen_o)
+
+_pool_solo = _StubPool(["solo"])
+_pool_solo.penalize("solo", 30, model="glm-5.3")
+_sess_s, _k_s = _pool_solo.acquire(0, model="glm-5.3")
+check("全在模型冷却时仍落到唯一的号（不为偏好把请求排死）", _k_s == "solo", _k_s)
+_snap = _pool_solo.snapshot()
+check("快照里能看到模型级冷却",
+      _snap["solo"]["model_cooling_s"].get("glm-5.3", 0) > 0, _snap)
+
+_pool_acct = _StubPool(["acct-a"])
+_pool_acct.penalize("acct-a", 30)
+_snap2 = _pool_acct.snapshot()
+check("账号级冷却记在 cooling_s（1041/凭据失效用）",
+      _snap2["acct-a"]["cooling_s"] > 0, _snap2)
+
+
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
