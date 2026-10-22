@@ -10,6 +10,7 @@ os.environ["WB_PROXY_USAGE_DIR"] = _startup_dir.name
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ca_proxy as P
+import ca_protocol as Q
 
 PASS = FAIL = 0
 
@@ -108,11 +109,11 @@ check("tool_result maps to a tool message",
 
 print()
 print("[2] budget thinking maps to effort")
-check("disabled -> none", P.anthropic_effort_from_messages({"thinking": {"type": "disabled"}}) == "none")
-check("enabled low", P.anthropic_effort_from_messages({"thinking": {"type": "enabled", "budget_tokens": 1000}}) == "low")
-check("enabled medium", P.anthropic_effort_from_messages({"thinking": {"type": "enabled", "budget_tokens": 9000}}) == "medium")
-check("enabled high", P.anthropic_effort_from_messages({"thinking": {"type": "enabled", "budget_tokens": 17000}}) == "high")
-check("enabled xhigh", P.anthropic_effort_from_messages({"thinking": {"type": "enabled", "budget_tokens": 40000}}) == "xhigh")
+check("disabled -> none", Q.anthropic_effort_from_messages({"thinking": {"type": "disabled"}}) == "none")
+check("enabled low", Q.anthropic_effort_from_messages({"thinking": {"type": "enabled", "budget_tokens": 1000}}) == "low")
+check("enabled medium", Q.anthropic_effort_from_messages({"thinking": {"type": "enabled", "budget_tokens": 9000}}) == "medium")
+check("enabled high", Q.anthropic_effort_from_messages({"thinking": {"type": "enabled", "budget_tokens": 17000}}) == "high")
+check("enabled xhigh", Q.anthropic_effort_from_messages({"thinking": {"type": "enabled", "budget_tokens": 40000}}) == "xhigh")
 
 print()
 print("[3] chat response maps to an Anthropic message")
@@ -128,7 +129,7 @@ chat_obj = {
     "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15,
               "prompt_cache_hit_tokens": 4, "prompt_cache_write_tokens": 2},
 }
-msg = P.chat_to_messages(chat_obj)
+msg = Q.chat_to_messages(chat_obj)
 check("id is a message id", msg["id"].startswith("msg_"), msg["id"])
 check("type/role are native", msg["type"] == "message" and msg["role"] == "assistant", msg)
 check("reasoning_content becomes a leading thinking block",
@@ -142,8 +143,8 @@ check("usage maps cache fields",
                        "cache_read_input_tokens": 4, "cache_creation_input_tokens": 2}, msg["usage"])
 check("no thinking block without reasoning_content",
       all(b["type"] != "thinking" for b in
-          P.chat_to_messages({"choices": [{"message": {"content": "hi"}}]})["content"]),
-      P.chat_to_messages({"choices": [{"message": {"content": "hi"}}]})["content"])
+          Q.chat_to_messages({"choices": [{"message": {"content": "hi"}}]})["content"]),
+      Q.chat_to_messages({"choices": [{"message": {"content": "hi"}}]})["content"])
 
 print()
 print("[4] streaming text event order")
@@ -153,7 +154,7 @@ chunks = [
     b'data: {"id":"chatcmpl_2","model":"m","choices":[{"finish_reason":"stop","delta":{}}],"usage":{"prompt_tokens":2,"completion_tokens":2,"total_tokens":4}}\n\n',
     b'data: [DONE]\n\n',
 ]
-events = parse_events(list(P.stream_messages_events(iter(chunks), "m")))
+events = parse_events(list(Q.stream_messages_events(iter(chunks), "m")))
 types = [e[0] for e in events]
 check("starts with message_start", types and types[0] == "message_start", types)
 check("ends with message_stop", types and types[-1] == "message_stop", types)
@@ -172,7 +173,7 @@ tool_chunks = [
     b'data: {"id":"chatcmpl_3","model":"m","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"ls\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n',
     b'data: [DONE]\n\n',
 ]
-tool_events = parse_events(list(P.stream_messages_events(iter(tool_chunks), "m")))
+tool_events = parse_events(list(Q.stream_messages_events(iter(tool_chunks), "m")))
 tool_types = [e[0] for e in tool_events]
 check("tool stream emits tool_use start", "content_block_start" in tool_types, tool_types)
 check("tool stream emits input_json_delta", "content_block_delta" in tool_types, tool_types)
@@ -187,7 +188,7 @@ check("tool stop reason is tool_use", tool_final["delta"]["stop_reason"] == "too
 
 print()
 print("[6] streaming error event")
-err_events = parse_events(list(P.stream_messages_events(iter([
+err_events = parse_events(list(Q.stream_messages_events(iter([
     b'data: {"error":{"message":"boom"}}\n\n']), "m")))
 check("error event is emitted", err_events and err_events[-1][0] == "error", err_events)
 check("error payload has a native type",
@@ -202,7 +203,7 @@ think_chunks = [
     b'data: {"id":"chatcmpl_4","model":"m","choices":[{"finish_reason":"stop","delta":{}}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}\n\n',
     b'data: [DONE]\n\n',
 ]
-t_events = parse_events(list(P.stream_messages_events(iter(think_chunks), "m")))
+t_events = parse_events(list(Q.stream_messages_events(iter(think_chunks), "m")))
 t_types = [e[0] for e in t_events]
 starts = [e[1] for e in t_events if e[0] == "content_block_start"]
 check("thinking block opens before the text block",

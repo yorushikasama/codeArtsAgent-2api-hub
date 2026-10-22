@@ -921,9 +921,9 @@ check("未知值兜底 end_turn",
       Q.anthropic_stop_reason("whatever") == "end_turn", None)
 check("这一层不 import socket（真的纯）",
       "import socket" not in open(Q.__file__, encoding="utf-8").read(), None)
-check("ca_proxy 用的是同一函数对象（接线生效）",
-      P.anthropic_sse_frame is Q.anthropic_sse_frame
-      and P._anthropic_stop_reason is Q.anthropic_stop_reason, None)
+check("ca_proxy 里不再保留这两个别名（第十刀已拆桥）",
+      not hasattr(P, "anthropic_sse_frame")
+      and not hasattr(P, "_anthropic_stop_reason"), None)
 
 
 _obj = {"function_call": {}, "tool_calls": [], "keep": 1}
@@ -996,16 +996,13 @@ def _messages(chunks, model="m", holder=None):
     return _events(Q.stream_messages_events(_sse_lines(*chunks), model, holder))
 
 
-check("六个别名都指向 ca_protocol 的同一对象",
-      P.stream_messages_events is Q.stream_messages_events
-      and P.iter_sse_lines is Q.iter_sse_lines
-      and P.strip_data_prefix is Q.strip_data_prefix
-      and P.anthropic_error_type is Q.anthropic_error_type
-      and P._anthropic_message_id is Q.anthropic_message_id
-      and P._new_id is Q.new_id, None)
+check("六个旧名字在 ca_proxy 里都已消失",
+      not any(hasattr(P, n) for n in (
+          "stream_messages_events", "iter_sse_lines", "strip_data_prefix",
+          "anthropic_error_type", "_anthropic_message_id", "_new_id")), None)
 check("_new_id 前缀与随机尾巴还在",
-      P._new_id("call_").startswith("call_") and len(P._new_id("call_")) > 8, None)
-check("SSE_READ_BLOCK 是同一整数", P.SSE_READ_BLOCK == Q.SSE_READ_BLOCK == 65536, None)
+      Q.new_id("call_").startswith("call_") and len(Q.new_id("call_")) > 8, None)
+check("SSE_READ_BLOCK 是同一整数", Q.SSE_READ_BLOCK == Q.SSE_READ_BLOCK == 65536, None)
 
 _holder = {}
 _ev = _messages([
@@ -1138,9 +1135,8 @@ _MOVED6 = {
     "anthropic_effort_from_messages": "anthropic_effort_from_messages",
     "_anthropic_blocks_to_messages": "anthropic_blocks_to_messages",
 }
-_bad_alias = [old for old, new in _MOVED6.items()
-              if getattr(P, old, None) is not getattr(Q, new, None)]
-check("十个别名都指向 ca_protocol 的同一对象", not _bad_alias, _bad_alias)
+_bad_alias = [old for old, new in _MOVED6.items() if hasattr(P, old)]
+check("十个旧名字在 ca_proxy 里都已消失", not _bad_alias, _bad_alias)
 check("messages_to_chat 是 ca_proxy 的包装（不直接别名）",
       P.messages_to_chat is not Q.messages_to_chat, None)
 
@@ -1289,9 +1285,8 @@ _MOVED7 = {
     "web_tools_active": "web_tools_active",
     "_responses_usage": "responses_usage",
 }
-_bad7 = [old for old, new in _MOVED7.items()
-         if getattr(P, old, None) is not getattr(Q, new, None)]
-check("十七个依赖别名都指向 ca_protocol 的同一对象", not _bad7, _bad7)
+_bad7 = [old for old, new in _MOVED7.items() if hasattr(P, old)]
+check("十七个旧名字在 ca_proxy 里都已消失", not _bad7, _bad7)
 check("stream_responses_events 是包装（依赖 ca_webtools 注入）",
       P.stream_responses_events is not Q.stream_responses_events, None)
 
@@ -1426,9 +1421,9 @@ check("ca_proxy 同样干净（这条能兜住所有搬家漏别名）", not _ba
 
 section("17. 非流式回包（chat_to_messages）")
 
-check("两个别名都指向 ca_protocol 的同一对象",
-      P.chat_to_messages is Q.chat_to_messages
-      and P._anthropic_parse_tool_input is Q.anthropic_parse_tool_input, None)
+check("两个旧名字在 ca_proxy 里都已消失",
+      not hasattr(P, "chat_to_messages")
+      and not hasattr(P, "_anthropic_parse_tool_input"), None)
 
 _msg = Q.chat_to_messages({
     "id": "cmpl-1", "model": "glm-5.3",

@@ -16,6 +16,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ca_proxy as proxy
+import ca_protocol
 
 
 class BestCachedTokensTests(unittest.TestCase):
@@ -29,17 +30,17 @@ class BestCachedTokensTests(unittest.TestCase):
             {"completion_tokens_details": {"cached_tokens": 12}},
         ]
         for usage in cases:
-            self.assertEqual(proxy._best_cached_tokens(usage), 12, usage)
+            self.assertEqual(ca_protocol.best_cached_tokens(usage), 12, usage)
 
     def test_zero_aliases_do_not_shadow_a_real_hit(self):
         usage = {"prompt_tokens_details": {"cached_tokens": 0},
                  "cache_read_input_tokens": 5}
-        self.assertEqual(proxy._best_cached_tokens(usage), 5)
+        self.assertEqual(ca_protocol.best_cached_tokens(usage), 5)
 
     def test_missing_or_broken_usage_is_zero(self):
-        self.assertEqual(proxy._best_cached_tokens(None), 0)
-        self.assertEqual(proxy._best_cached_tokens({}), 0)
-        self.assertEqual(proxy._best_cached_tokens({"cached_tokens": "x"}), 0)
+        self.assertEqual(ca_protocol.best_cached_tokens(None), 0)
+        self.assertEqual(ca_protocol.best_cached_tokens({}), 0)
+        self.assertEqual(ca_protocol.best_cached_tokens({"cached_tokens": "x"}), 0)
 
 
 class NormalizeAliasesTests(unittest.TestCase):

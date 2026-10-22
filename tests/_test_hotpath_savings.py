@@ -27,7 +27,8 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 
 _TMP = isolated_data_dirs("wb-hotpath-")
 
-import ca_proxy as P  # noqa: E402
+import ca_proxy as P
+import ca_protocol as Q  # noqa: E402
 import ca_settings  # noqa: E402
 
 # 指纹基串从模块常量派生，而不是手抄一份字面量：手抄两份必然漂移，
@@ -219,14 +220,14 @@ class EstimateTokensTests(unittest.TestCase):
             "x" * 4096, "汉" * 4096, "abc中文def" * 1000,
         ]
         for s in samples:
-            self.assertEqual(P.estimate_tokens(s), old_estimate_tokens(s),
+            self.assertEqual(Q.estimate_tokens(s), old_estimate_tokens(s),
                              repr(s)[:60])
 
     def test_cjk_re_covers_exactly_the_loop_ranges(self):
         inside = "\u3400\u4dbf\u4e00\u9fff"
         outside = "\u33ff\u4dc0\ua000 ab"
-        self.assertEqual(len(P.CJK_RE.sub("", inside)), 0)
-        self.assertEqual(P.CJK_RE.sub("", outside), outside)
+        self.assertEqual(len(Q.CJK_RE.sub("", inside)), 0)
+        self.assertEqual(Q.CJK_RE.sub("", outside), outside)
 
 
 class UsageCounterTests(unittest.TestCase):

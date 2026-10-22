@@ -30,7 +30,8 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # Its own directories, removed when this process exits.
 _TMP = isolated_data_dirs("wb-sse-read-batching-")
 
-import ca_proxy as P  # noqa: E402
+import ca_proxy as P
+import ca_protocol as Q  # noqa: E402
 
 PASS = 0
 FAIL = 0
@@ -77,7 +78,7 @@ def same_as_plain_iteration(data, chunk_size):
     """Read `data` in `chunk_size` chunks; return (yielded, read1_calls)."""
     wire = [data[i:i + chunk_size] for i in range(0, len(data), chunk_size)] or [b""]
     src = FakeStream(wire)
-    got = list(P.iter_sse_lines(src))
+    got = list(Q.iter_sse_lines(src))
     return got, src.read1_calls, len(wire)
 
 
@@ -106,20 +107,20 @@ for label, data in CASES:
 
 print("-- the same bytes through the real io.BytesIO read1() --")
 for label, data in CASES:
-    got = list(P.iter_sse_lines(io.BytesIO(data)))
+    got = list(Q.iter_sse_lines(io.BytesIO(data)))
     check("%s via BytesIO" % label, got == list(io.BytesIO(data)),
           "got=%r" % (got[:4],))
 
 print("-- a line is emitted as soon as it is complete, not when a block fills --")
 src = FakeStream([b"data: one\n"])
-gen = P.iter_sse_lines(src)
+gen = Q.iter_sse_lines(src)
 check("first complete line arrives on the first read1",
       next(gen) == b"data: one\n")
 check("no second read1 was needed to emit it", src.read1_calls == 1,
       "%d calls" % src.read1_calls)
 
 src = FakeStream([b"data: par", b"tial\n"])
-got = list(P.iter_sse_lines(src))
+got = list(Q.iter_sse_lines(src))
 check("a line straddling two chunks is reassembled", got == [b"data: partial\n"],
       repr(got))
 
@@ -143,19 +144,19 @@ check("at least an order of magnitude fewer syscalls",
 
 print("-- objects without read1 fall back to plain iteration --")
 check("a list iterates unchanged",
-      list(P.iter_sse_lines([b"a\n", b"b\n"])) == [b"a\n", b"b\n"])
+      list(Q.iter_sse_lines([b"a\n", b"b\n"])) == [b"a\n", b"b\n"])
 check("an iterator iterates unchanged",
-      list(P.iter_sse_lines(iter([b"a\n", b"b"]))) == [b"a\n", b"b"])
+      list(Q.iter_sse_lines(iter([b"a\n", b"b"]))) == [b"a\n", b"b"])
 
 src = FakeStream([b"y" * 100])
-list(P.iter_sse_lines(src, block_size=16))
+list(Q.iter_sse_lines(src, block_size=16))
 check("a custom block_size is passed to read1",
       src.read1_calls >= 7, "%d calls for 100 bytes at 16" % src.read1_calls)
 
 print("-- strip_data_prefix still sees the shape it expects --")
-got = list(P.iter_sse_lines(FakeStream([b"data: {\"a\": 1}\n\n", b"data: [DONE]\n\n"])))
+got = list(Q.iter_sse_lines(FakeStream([b"data: {\"a\": 1}\n\n", b"data: [DONE]\n\n"])))
 check("prefix stripping works on the yielded lines",
-      [P.strip_data_prefix(l.decode("utf-8", "replace")) for l in got]
+      [Q.strip_data_prefix(l.decode("utf-8", "replace")) for l in got]
       == ['{"a": 1}', "", "[DONE]", ""],
       repr(got))
 
@@ -163,7 +164,7 @@ print("-- before_read: the hook that lets a caller batch its writes --")
 
 calls = [0]
 src = FakeStream([b"a\n", b"b\n", b"c\n"])
-got = list(P.iter_sse_lines(src, before_read=lambda: calls.__setitem__(0, calls[0] + 1)))
+got = list(Q.iter_sse_lines(src, before_read=lambda: calls.__setitem__(0, calls[0] + 1)))
 check("lines still come out intact with a hook attached",
       got == [b"a\n", b"b\n", b"c\n"], repr(got))
 check("the hook fires exactly once per read1",
@@ -171,7 +172,7 @@ check("the hook fires exactly once per read1",
       "%d hook calls vs %d read1 calls" % (calls[0], src.read1_calls))
 
 src = FakeStream([b"a\n", b"b\n"])
-list(P.iter_sse_lines(src))
+list(Q.iter_sse_lines(src))
 check("read1_calls is 3 for 2 chunks (the last one returns b'')",
       src.read1_calls == 3, src.read1_calls)
 
@@ -197,7 +198,7 @@ def before_read():
     drained.append(len(buf))
 
 
-for line in P.iter_sse_lines(src, before_read=before_read):
+for line in Q.iter_sse_lines(src, before_read=before_read):
     buf.append(line)
 flush_out()
 check("the write buffer is empty whenever a blocking read begins",
@@ -218,7 +219,7 @@ def batched(data, chunk_size):
             writes.append(b"".join(pending))
             del pending[:]
 
-    for line in P.iter_sse_lines(src, before_read=flush):
+    for line in Q.iter_sse_lines(src, before_read=flush):
         pending.append(b"data: " + line)
     flush()
     return writes, len(wire)

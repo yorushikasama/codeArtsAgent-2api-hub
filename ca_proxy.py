@@ -69,51 +69,6 @@ import ca_ipintel
 import ca_logstore
 import ca_settings
 
-# 纯函数层（见 ca_protocol）：保留旧名字，调用点一行都不用改。
-anthropic_sse_frame = ca_protocol.anthropic_sse_frame
-_anthropic_stop_reason = ca_protocol.anthropic_stop_reason
-_strip_empty_fc = ca_protocol.strip_empty_function_calls
-clean_responses_frame = ca_protocol.clean_responses_frame
-normalize_roles = ca_protocol.normalize_roles
-_anthropic_text = ca_protocol.anthropic_text
-_anthropic_usage = ca_protocol.anthropic_usage
-SSE_READ_BLOCK = ca_protocol.SSE_READ_BLOCK
-strip_data_prefix = ca_protocol.strip_data_prefix
-iter_sse_lines = ca_protocol.iter_sse_lines
-anthropic_error_type = ca_protocol.anthropic_error_type
-_anthropic_message_id = ca_protocol.anthropic_message_id
-_new_id = ca_protocol.new_id
-stream_messages_events = ca_protocol.stream_messages_events
-_anthropic_json_text = ca_protocol.anthropic_json_text
-_anthropic_block_text = ca_protocol.anthropic_block_text
-_anthropic_image_part = ca_protocol.anthropic_image_part
-_anthropic_document_text = ca_protocol.anthropic_document_text
-_anthropic_content_to_text = ca_protocol.anthropic_content_to_text
-_anthropic_system_text = ca_protocol.anthropic_system_text
-_anthropic_tool_choice = ca_protocol.anthropic_tool_choice
-anthropic_tools_to_chat = ca_protocol.anthropic_tools_to_chat
-anthropic_effort_from_messages = ca_protocol.anthropic_effort_from_messages
-_anthropic_blocks_to_messages = ca_protocol.anthropic_blocks_to_messages
-_anthropic_parse_tool_input = ca_protocol.anthropic_parse_tool_input
-chat_to_messages = ca_protocol.chat_to_messages
-TAG_START = ca_protocol.TAG_START
-DSML_CALLS_RE = ca_protocol.DSML_CALLS_RE
-DSML_INVOKE_RE = ca_protocol.DSML_INVOKE_RE
-DSML_PARAM_RE = ca_protocol.DSML_PARAM_RE
-parse_dsml_tool_calls = ca_protocol.parse_dsml_tool_calls
-CJK_RE = ca_protocol.CJK_RE
-estimate_tokens = ca_protocol.estimate_tokens
-is_truncated_arguments = ca_protocol.is_truncated_arguments
-_NS_SEP = ca_protocol.NS_SEP
-resolve_namespaced_name = ca_protocol.resolve_namespaced_name
-stamp_namespace = ca_protocol.stamp_namespace
-apply_namespace_to_calls = ca_protocol.apply_namespace_to_calls
-_unwrap_custom_input = ca_protocol.unwrap_custom_input
-_CITATION_MD_RE = ca_protocol.CITATION_MD_RE
-build_citations = ca_protocol.build_citations
-web_tools_active = ca_protocol.web_tools_active
-_responses_usage = ca_protocol.responses_usage
-_best_cached_tokens = ca_protocol.best_cached_tokens
 import ca_upstream_pool
 import ca_webtools
 import ca_identity
@@ -500,7 +455,7 @@ def normalize_usage_cache_aliases(usage):
     """
     if not isinstance(usage, dict):
         return usage
-    best = _best_cached_tokens(usage)
+    best = ca_protocol.best_cached_tokens(usage)
     if best <= 0:
         return usage
     usage["cache_read_input_tokens"] = best
@@ -531,7 +486,7 @@ def _extract_usage(usage):
         "prompt_tokens": usage.get("prompt_tokens") or 0,
         "completion_tokens": usage.get("completion_tokens") or 0,
         "reasoning_tokens": details.get("reasoning_tokens") or 0,
-        "cached_tokens": _best_cached_tokens(usage),
+        "cached_tokens": ca_protocol.best_cached_tokens(usage),
         "total_tokens": usage.get("total_tokens") or 0,
         "credit": usage.get("credit") or 0,
     }
@@ -12612,7 +12567,7 @@ def drop_truncated_tool_calls(calls):
             kept.append(call)
             continue
         fn = call.get("function")
-        if isinstance(fn, dict) and is_truncated_arguments(fn.get("arguments")):
+        if isinstance(fn, dict) and ca_protocol.is_truncated_arguments(fn.get("arguments")):
             continue
         kept.append(call)
     return kept
@@ -12783,7 +12738,7 @@ def normalize_stop(obj):
 #      <parameter name="description">...</|DSML| parameter>
 #      </run_code></invoke></|DSML| parameter></|DSML| invoke></|DSML| calls>
 #
-# parse_dsml_tool_calls() above only matches (1): it wants a DSML opening tag
+# ca_protocol.parse_dsml_tool_calls() above only matches (1): it wants a DSML opening tag
 # for the calls block, which (2) never has. The parser below is driven by the
 # <parameter> elements instead, because those are spelled the same way in both
 # shapes and a parameter name is the one thing a call cannot do without.
@@ -12837,7 +12792,7 @@ def parse_leaked_tool_calls(text):
     """Recover a tool call the model printed instead of emitting.
 
     Returns (calls, clean_text) with calls in the same shape as
-    parse_dsml_tool_calls(), or (None, text) when nothing was recognised.
+    ca_protocol.parse_dsml_tool_calls(), or (None, text) when nothing was recognised.
     """
     if not text or "<" not in text:
         return None, text
@@ -12909,7 +12864,7 @@ def parse_leaked_tool_calls(text):
             leftover.append(m.span())
     clean = _strip_spans(clean, leftover)
     return [{
-        "id": _new_id("call_"),
+        "id": ca_protocol.new_id("call_"),
         "name": call["name"],
         "arguments": json.dumps(call["params"], ensure_ascii=False),
     } for call in calls], clean
@@ -12932,7 +12887,7 @@ def repair_leaked_tool_calls(message):
         return False
     calls, clean = parse_leaked_tool_calls(content)
     if not calls:
-        calls, clean = parse_dsml_tool_calls(content)
+        calls, clean = ca_protocol.parse_dsml_tool_calls(content)
     if not calls:
         return False
     message["content"] = clean
@@ -13000,7 +12955,7 @@ class LeakedToolCallStreamFilter:
         buf, self.buf = self.buf, ""
         calls, clean = parse_leaked_tool_calls(buf)
         if not calls:
-            calls, clean = parse_dsml_tool_calls(buf)
+            calls, clean = ca_protocol.parse_dsml_tool_calls(buf)
         if not calls:
             return [("text", buf)]
         out = []
@@ -13355,7 +13310,7 @@ def build_upstream_body(payload):
             thinking_enabled = True
         elif thinking_type != "disabled" and str(effort or "").strip().lower() != "none":
             thinking_enabled = True
-    messages = normalize_roles(payload.get("messages") or [])
+    messages = ca_protocol.normalize_roles(payload.get("messages") or [])
     # Prompt mode runs before sanitize/backfill so the gateway prompt is the
     # one the upstream sees, with the client's fingerprint-y system text gone.
     messages = apply_prompt_mode(messages)
@@ -14588,8 +14543,8 @@ def aggregate_stream(raw_iter, model, resp_id):
     started = time.time()
     first_chunk_at = None
     saw_done = False
-    for line in iter_sse_lines(raw_iter):
-        data = strip_data_prefix(line.decode("utf-8", "replace"))
+    for line in ca_protocol.iter_sse_lines(raw_iter):
+        data = ca_protocol.strip_data_prefix(line.decode("utf-8", "replace"))
         if not data or data == "[DONE]":
             if data == "[DONE]":
                 saw_done = True
@@ -14624,7 +14579,7 @@ def aggregate_stream(raw_iter, model, resp_id):
                 fn_args = fn.get("arguments") or ""
                 if idx not in tool_calls_map:
                     tool_calls_map[idx] = {
-                        "id": call_id or _new_id("call_"),
+                        "id": call_id or ca_protocol.new_id("call_"),
                         "type": tc.get("type") or "function",
                         "function": {
                             "name": fn_name,
@@ -14649,7 +14604,7 @@ def aggregate_stream(raw_iter, model, resp_id):
                 idx = 0
                 if idx not in tool_calls_map:
                     tool_calls_map[idx] = {
-                        "id": _new_id("call_"),
+                        "id": ca_protocol.new_id("call_"),
                         "type": "function",
                         "function": {
                             "name": fc.get("name") or "",
@@ -14686,7 +14641,7 @@ def aggregate_stream(raw_iter, model, resp_id):
     if tool_calls_map and (finish == "length" or not saw_done):
         tool_calls_map = {
             k: v for k, v in tool_calls_map.items()
-            if not is_truncated_arguments((v.get("function") or {}).get("arguments"))
+            if not ca_protocol.is_truncated_arguments((v.get("function") or {}).get("arguments"))
         }
     if tool_calls_map:
         ordered_tcs = [tool_calls_map[k] for k in sorted(tool_calls_map.keys())]
@@ -14705,13 +14660,13 @@ def aggregate_stream(raw_iter, model, resp_id):
         full_c = "".join(content)
         full_r = "".join(reasoning)
         if full_c or full_r:
-            comp = estimate_tokens(full_c) + estimate_tokens(full_r)
+            comp = ca_protocol.estimate_tokens(full_c) + ca_protocol.estimate_tokens(full_r)
             prompt_est = max(1, comp // 2)
             usage = {
                 "prompt_tokens": prompt_est,
                 "completion_tokens": comp,
                 "total_tokens": prompt_est + comp,
-                "completion_tokens_details": {"reasoning_tokens": estimate_tokens(full_r)},
+                "completion_tokens_details": {"reasoning_tokens": ca_protocol.estimate_tokens(full_r)},
                 "prompt_tokens_details": {"cached_tokens": 0},
             }
     out = {
@@ -15038,7 +14993,7 @@ def _tools_for_chat(tools):
 # Turning it on means the gateway itself fetches URLs a model asks for, so the
 # egress policy is the operator's call.
 #
-# web_tools_active()（本次请求的工具是不是网关换进去的）已搬到 ca_protocol。
+# ca_protocol.web_tools_active()（本次请求的工具是不是网关换进去的）已搬到 ca_protocol。
 def local_web_tools_enabled():
     """Panel switch: does this gateway run web_search / web_fetch itself?
 
@@ -15424,7 +15379,7 @@ def anthropic_error_obj(status, message, error_type=None):
     return {
         "type": "error",
         "error": {
-            "type": error_type or anthropic_error_type(status),
+            "type": error_type or ca_protocol.anthropic_error_type(status),
             "message": str(message or "upstream error"),
         },
     }
@@ -15440,13 +15395,13 @@ def _anthropic_estimate_chat_tokens(chat):
     if isinstance(chat, dict):
         for msg in chat.get("messages") or []:
             if isinstance(msg, dict):
-                values.append(_anthropic_json_text(msg.get("content")))
+                values.append(ca_protocol.anthropic_json_text(msg.get("content")))
                 for call in msg.get("tool_calls") or []:
                     if isinstance(call, dict):
-                        values.append(_anthropic_json_text(call))
+                        values.append(ca_protocol.anthropic_json_text(call))
         for tool in chat.get("tools") or []:
-            values.append(_anthropic_json_text(tool))
-    return sum(estimate_tokens(value) for value in values if value)
+            values.append(ca_protocol.anthropic_json_text(tool))
+    return sum(ca_protocol.estimate_tokens(value) for value in values if value)
 
 
 def chat_to_response(chat_obj, model, custom_names=None, request_meta=None, namespace_map=None, sources=None):
@@ -15469,27 +15424,27 @@ def chat_to_response(chat_obj, model, custom_names=None, request_meta=None, name
     output = []
     if reasoning:
         output.append({
-            "id": _new_id("rs_"),
+            "id": ca_protocol.new_id("rs_"),
             "type": "reasoning",
             "status": "completed",
             "summary": [{"type": "summary_text", "text": reasoning}],
         })
     for tc in msg.get("tool_calls") or []:
         fn = tc.get("function") or {}
-        call_id = tc.get("id") or _new_id("call_")
+        call_id = tc.get("id") or ca_protocol.new_id("call_")
         name = fn.get("name") or ""
         if name and name in custom_names:
             output.append({
-                "id": _new_id("ctc_"),
+                "id": ca_protocol.new_id("ctc_"),
                 "type": "custom_tool_call",
                 "status": "completed",
                 "call_id": call_id,
                 "name": name,
-                "input": _unwrap_custom_input(fn.get("arguments") or ""),
+                "input": ca_protocol.unwrap_custom_input(fn.get("arguments") or ""),
             })
         else:
             output.append({
-                "id": _new_id("fc_"),
+                "id": ca_protocol.new_id("fc_"),
                 "type": "function_call",
                 "status": "completed",
                 "call_id": call_id,
@@ -15498,30 +15453,30 @@ def chat_to_response(chat_obj, model, custom_names=None, request_meta=None, name
             })
     # DeepSeek DSML tool calls fallback
     if not (msg.get("tool_calls")):
-        dsml_calls, clean_t = parse_dsml_tool_calls(text)
+        dsml_calls, clean_t = ca_protocol.parse_dsml_tool_calls(text)
         if dsml_calls:
             for dc in dsml_calls:
                 output.append({
-                    "id": _new_id("fc_"),
+                    "id": ca_protocol.new_id("fc_"),
                     "type": "function_call",
                     "status": "completed",
-                    "call_id": dc.get("id") or _new_id("call_"),
+                    "call_id": dc.get("id") or ca_protocol.new_id("call_"),
                     "name": dc.get("name") or "",
                     "arguments": dc.get("arguments") or "{}",
                 })
             text = clean_t
     if text or not output:
         output.append({
-            "id": _new_id("msg_"),
+            "id": ca_protocol.new_id("msg_"),
             "type": "message",
             "status": "completed",
             "role": "assistant",
             "content": [{"type": "output_text", "text": text,
-                         "annotations": build_citations(text, sources)}] if text else [],
+                         "annotations": ca_protocol.build_citations(text, sources)}] if text else [],
         })
     finish = choice.get("finish_reason") or "stop"
     obj = {
-        "id": _new_id("resp_"),
+        "id": ca_protocol.new_id("resp_"),
         "object": "response",
         "created_at": int(time.time()),
         "status": "completed" if finish != "length" else "incomplete",
@@ -15531,13 +15486,13 @@ def chat_to_response(chat_obj, model, custom_names=None, request_meta=None, name
         "metadata": {},
     }
     if namespace_map:
-        output, _ns_fixed = apply_namespace_to_calls(output, namespace_map)
+        output, _ns_fixed = ca_protocol.apply_namespace_to_calls(output, namespace_map)
         obj["output"] = output
     meta = request_meta or {}
     obj["parallel_tool_calls"] = meta.get("parallel_tool_calls", True)
     obj["tool_choice"] = meta.get("tool_choice", "auto")
     obj["tools"] = meta.get("tools") or []
-    u = _responses_usage(chat_obj.get("usage"))
+    u = ca_protocol.responses_usage(chat_obj.get("usage"))
     if u:
         obj["usage"] = u
     if finish == "length":
@@ -18664,7 +18619,7 @@ class Handler(BaseHTTPRequestHandler):
                 for frame in stream_responses_events(upstream, model, holder):
                     if first_ms is None:
                         first_ms = int((time.time() - t_start) * 1000)
-                    self.wfile.write(clean_responses_frame(frame))
+                    self.wfile.write(ca_protocol.clean_responses_frame(frame))
                     self.wfile.flush()
                 # 每一轮的 token 都是真的花掉的，记帐要加总
                 total_usage = sum_usage(total_usage, holder.get("usage"))
@@ -18726,7 +18681,7 @@ class Handler(BaseHTTPRequestHandler):
         sources = []
         rounds = 0
         # 开关关闭时不拦同名呼叫：那是客户端自己的工具。
-        web_tools = web_tools_active(base_body)
+        web_tools = ca_protocol.web_tools_active(base_body)
         while True:
             try:
                 chat_obj = aggregate_stream(upstream, model, None)
@@ -18876,7 +18831,7 @@ class Handler(BaseHTTPRequestHandler):
                                      effort=None):
         try:
             chat_obj = aggregate_stream(upstream, model, None)
-            result = chat_to_messages(chat_obj)
+            result = ca_protocol.chat_to_messages(chat_obj)
             wall = int((time.time() - t_start) * 1000)
             record_upstream_usage(upstream, model, chat_obj.get("usage"), stream=False, elapsed_ms=wall,
                          fp=fp, account=account.uid, key=self._key_id(), effort=effort)
@@ -18905,7 +18860,7 @@ class Handler(BaseHTTPRequestHandler):
         holder = {"usage": None}
         first_ms = None
         try:
-            for frame in stream_messages_events(upstream, model, holder):
+            for frame in ca_protocol.stream_messages_events(upstream, model, holder):
                 if first_ms is None:
                     first_ms = int((time.time() - t_start) * 1000)
                 self.wfile.write(frame)
@@ -18926,7 +18881,7 @@ class Handler(BaseHTTPRequestHandler):
                          ttft_ms=first_ms, fp=fp, outcome="upstream_aborted",
                          key=self._key_id())
             try:
-                self.wfile.write(anthropic_sse_frame("error", {
+                self.wfile.write(ca_protocol.anthropic_sse_frame("error", {
                     "error": {"type": "api_error", "message": str(exc)}}))
                 self.wfile.flush()
             except Exception:
@@ -19129,7 +19084,7 @@ class Handler(BaseHTTPRequestHandler):
         # WorkBuddy 那条路走 build_upstream_body 时已经归一过一次，码道这条
         # 路是直通的，漏掉就会整条 400。正文一律不动 —— 多模态模型靠
         # content 里的图片分片表达。
-        messages = normalize_roles(payload.get("messages") or [])
+        messages = ca_protocol.normalize_roles(payload.get("messages") or [])
         if want_stream is None:
             want_stream = bool(payload.get("stream"))
         max_tokens = (payload.get("max_tokens")
@@ -19511,7 +19466,7 @@ class Handler(BaseHTTPRequestHandler):
         那就是「半截回答 + 连接凭空消失」。
         """
         model = str(payload.get("model") or "")
-        messages = normalize_roles(payload.get("messages") or [])
+        messages = ca_protocol.normalize_roles(payload.get("messages") or [])
         max_tokens = _codearts_max_tokens(payload)
         created = int(time.time())
         cid = "chatcmpl-codearts-%s" % uuid.uuid4().hex[:24]
@@ -19879,7 +19834,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             for frame in stream_responses_events(
                     _BufferedSSELines(result["raw"]), model, holder):
-                self.wfile.write(clean_responses_frame(frame))
+                self.wfile.write(ca_protocol.clean_responses_frame(frame))
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             return
@@ -19904,7 +19859,7 @@ class Handler(BaseHTTPRequestHandler):
         （``lease.byte_lines``）就变成真转发 —— 翻译器不用改一行。
         """
         model = str(chat_req.get("model") or "")
-        messages = normalize_roles(chat_req.get("messages") or [])
+        messages = ca_protocol.normalize_roles(chat_req.get("messages") or [])
         error, lease = self._codearts_open_lease(
             chat_req, model, messages, _codearts_max_tokens(chat_req))
         if error is not None:
@@ -19936,7 +19891,7 @@ class Handler(BaseHTTPRequestHandler):
                         _tap_codearts_sse(
                             lease.byte_lines(self._client_disconnected), tap),
                         model, holder):
-                    self.wfile.write(clean_responses_frame(frame))
+                    self.wfile.write(ca_protocol.clean_responses_frame(frame))
                     self.wfile.flush()
             except ca_codearts.ChatAborted:
                 log("responses/codearts aborted: client gone model=%s" % model)
@@ -19948,7 +19903,7 @@ class Handler(BaseHTTPRequestHandler):
                     % (model, int((time.time() - lease.started_at) * 1000), exc))
                 try:
                     rid = holder.get("response_id") or "resp_%s" % uuid.uuid4().hex[:24]
-                    self.wfile.write(clean_responses_frame((
+                    self.wfile.write(ca_protocol.clean_responses_frame((
                         "event: response.failed\ndata: " + json.dumps({
                             "type": "response.failed",
                             "response": {"id": rid, "object": "response",
@@ -20024,7 +19979,7 @@ class Handler(BaseHTTPRequestHandler):
                              "finish_reason": "stop"}],
                 "usage": result["usage"],
             }
-            return self._json(200, chat_to_messages(chat_obj))
+            return self._json(200, ca_protocol.chat_to_messages(chat_obj))
 
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -20035,7 +19990,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         holder = {"usage": None}
         try:
-            for frame in stream_messages_events(
+            for frame in ca_protocol.stream_messages_events(
                     _BufferedSSELines(result["raw"]), model, holder):
                 self.wfile.write(frame)
                 self.wfile.flush()
@@ -20044,7 +19999,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:                 # noqa: BLE001
             log("messages/codearts stream aborted: %s" % exc)
             try:
-                self.wfile.write(anthropic_sse_frame("error", {
+                self.wfile.write(ca_protocol.anthropic_sse_frame("error", {
                     "error": {"type": "api_error", "message": str(exc)}}))
                 self.wfile.flush()
             except Exception:
@@ -20055,7 +20010,7 @@ class Handler(BaseHTTPRequestHandler):
     def _messages_codearts_stream(self, chat_req, anthropic_error):
         """Anthropic Messages 协议的码道流式（Claude Code 走这条）。"""
         model = str(chat_req.get("model") or "")
-        messages = normalize_roles(chat_req.get("messages") or [])
+        messages = ca_protocol.normalize_roles(chat_req.get("messages") or [])
         error, lease = self._codearts_open_lease(
             chat_req, model, messages, _codearts_max_tokens(chat_req),
             fail=anthropic_error, anthropic=True)
@@ -20077,7 +20032,7 @@ class Handler(BaseHTTPRequestHandler):
             holder = {"usage": None}
             tap = {"usage": None, "error": ""}
             try:
-                for frame in stream_messages_events(
+                for frame in ca_protocol.stream_messages_events(
                         _tap_codearts_sse(
                             lease.byte_lines(self._client_disconnected), tap),
                         model, holder):
@@ -20092,7 +20047,7 @@ class Handler(BaseHTTPRequestHandler):
                 log("messages/codearts upstream broken: model=%s after %dms %s"
                     % (model, int((time.time() - lease.started_at) * 1000), exc))
                 try:
-                    self.wfile.write(anthropic_sse_frame("error", {
+                    self.wfile.write(ca_protocol.anthropic_sse_frame("error", {
                         "error": {"type": "api_error",
                                   "message": "upstream closed the stream: %s"
                                              % exc}}))
@@ -20106,7 +20061,7 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:                 # noqa: BLE001
                 log("messages/codearts stream aborted: %s" % exc)
                 try:
-                    self.wfile.write(anthropic_sse_frame("error", {
+                    self.wfile.write(ca_protocol.anthropic_sse_frame("error", {
                         "error": {"type": "api_error", "message": str(exc)}}))
                     self.wfile.flush()
                 except Exception:
@@ -20285,8 +20240,8 @@ class Handler(BaseHTTPRequestHandler):
                             write_chunk(payload)
 
             try:
-                for line in iter_sse_lines(upstream, before_read=flush_out):
-                    data = strip_data_prefix(line.decode("utf-8", "replace"))
+                for line in ca_protocol.iter_sse_lines(upstream, before_read=flush_out):
+                    data = ca_protocol.strip_data_prefix(line.decode("utf-8", "replace"))
                     if not data or data == "[DONE]" or data.startswith(":"):
                         continue
                     maybe = None
@@ -20364,7 +20319,7 @@ class Handler(BaseHTTPRequestHandler):
             if last_usage is None or (last_usage.get("total_tokens") or 0) == 0:
                 full_s = "".join(streamed_text)
                 if full_s:
-                    comp = estimate_tokens(full_s)
+                    comp = ca_protocol.estimate_tokens(full_s)
                     last_usage = {
                         "prompt_tokens": max(1, comp // 2),
                         "completion_tokens": comp,

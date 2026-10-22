@@ -32,6 +32,7 @@ from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ca_proxy as proxy
+import ca_protocol
 import ca_webtools as W
 
 PASS = FAIL = 0
@@ -342,7 +343,7 @@ check("the title comes along", found and found[0]["title"] == "All About Cats", 
 check("an error string yields no sources", W.sources_from_result("Error: nope") == [])
 
 answer = "See [All About Cats](https://example.com/cats) and https://example.com/other plus https://evil.example/x"
-anns = proxy.build_citations(answer, found)
+anns = ca_protocol.build_citations(answer, found)
 urls = sorted(a["url"] for a in anns)
 check("a markdown link is cited", "https://example.com/cats" in urls, anns)
 check("a bare url is cited too", "https://example.com/other" in urls, anns)

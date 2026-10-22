@@ -21,6 +21,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 _TMP = isolated_data_dirs("wb-upstream-repairs-")
 
 import ca_proxy as P
+import ca_protocol as Q
 
 PASS = FAIL = 0
 
@@ -273,13 +274,13 @@ _, changed13 = P.merge_adjacent_tool_calls(copy.deepcopy(separated))
 check("non-adjacent batches are never merged", not changed13)
 
 check("an empty string is a legal no-argument call",
-      not P.is_truncated_arguments(""))
+      not Q.is_truncated_arguments(""))
 check("whitespace is a legal no-argument call",
-      not P.is_truncated_arguments("   "))
-check("valid JSON object is complete", not P.is_truncated_arguments('{"a":1}'))
-check("valid JSON scalar is complete", not P.is_truncated_arguments("null"))
-check("half-written JSON is truncated", P.is_truncated_arguments('{"a":'))
-check("plain text is not silently accepted", P.is_truncated_arguments("not json"))
+      not Q.is_truncated_arguments("   "))
+check("valid JSON object is complete", not Q.is_truncated_arguments('{"a":1}'))
+check("valid JSON scalar is complete", not Q.is_truncated_arguments("null"))
+check("half-written JSON is truncated", Q.is_truncated_arguments('{"a":'))
+check("plain text is not silently accepted", Q.is_truncated_arguments("not json"))
 
 mixed_calls = [{"id": "ok", "function": {"name": "f", "arguments": '{"a":1}'}},
                {"id": "cut", "function": {"name": "f", "arguments": '{"a":'}},

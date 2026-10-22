@@ -17,6 +17,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 _TMP = isolated_data_dirs("wb-namespace-tools-")
 
 import ca_proxy as P
+import ca_protocol as Q
 
 PASS = FAIL = 0
 
@@ -150,11 +151,11 @@ for wire_name, bare, ns in (("js", "js", "node_repl"),
                             ("codex_apps__github__line", "line", "codex_apps__github"),
                             ("codex_apps__github::line", "line", "codex_apps__github"),
                             ("js2", "js2", "")):
-    got_bare, got_ns = P.resolve_namespaced_name(wire_name, NS_MAP)
+    got_bare, got_ns = Q.resolve_namespaced_name(wire_name, NS_MAP)
     check("%s -> (%s, %s)" % (wire_name, bare, ns or "no namespace"),
           (got_bare, got_ns) == (bare, ns), (got_bare, got_ns))
 check("__ inside a namespace is not split at the wrong place",
-      P.resolve_namespaced_name("codex_apps__github__line", {"line": "codex_apps__github"})
+      Q.resolve_namespaced_name("codex_apps__github__line", {"line": "codex_apps__github"})
       == ("line", "codex_apps__github"))
 
 print()
@@ -165,7 +166,7 @@ items = [
     {"type": "function_call", "name": "node_repl__js", "call_id": "c3"},
     {"type": "message", "role": "assistant"},
 ]
-fixed_items, fixed = P.apply_namespace_to_calls(items, {"js": "node_repl"})
+fixed_items, fixed = Q.apply_namespace_to_calls(items, {"js": "node_repl"})
 check("only the namespaced calls are touched", fixed == 2, fixed)
 check("bare call gets its namespace", fixed_items[0].get("namespace") == "node_repl"
       and fixed_items[0].get("name") == "js")
@@ -174,7 +175,7 @@ check("prefixed call is rewritten to the bare name",
       fixed_items[2].get("name") == "js" and fixed_items[2].get("namespace") == "node_repl",
       fixed_items[2])
 already = [{"type": "function_call", "name": "js", "namespace": "node_repl", "call_id": "c9"}]
-_, fixed_again = P.apply_namespace_to_calls(already, {"js": "node_repl"})
+_, fixed_again = Q.apply_namespace_to_calls(already, {"js": "node_repl"})
 check("an already stamped call is not double counted", fixed_again == 0)
 
 print()
