@@ -55,6 +55,7 @@ import json
 import os
 import re
 import secrets
+import select
 import threading
 import time
 import urllib.error
@@ -1966,6 +1967,41 @@ def _stream_socket(resp):
     return getattr(raw, "_sock", None)
 
 
+def _wait_readable(sock, timeout):
+    """等 socket 变可读，**不碰 socket 自己的读超时**。
+
+    返回 True（有数据）/ False（等满了 timeout，上游静默）/ None（这个 socket
+    等不了，调用方应放弃心跳、退回阻塞读）。
+
+    为什么不用 ``sock.settimeout()`` 做空闲检测 —— 2026-10-22 线上事故：
+    CPython 的 ``socket.SocketIO`` 只要碰到过一次读超时就会置
+    ``_timeout_occurred``，此后每次 ``read`` 都直接抛
+    ``OSError: cannot read from timed out object``。而 ``HTTPResponse`` 读的
+    正是 ``sock.makefile()`` 出来的那个 SocketIO —— 一旦拿短超时去「探」静默，
+    这根连接就永久废了。所以空闲只能靠 select 看 fd，读写超时交还给
+    open_chat 的兜底值。
+    """
+    try:
+        # TLS 把明文解在内存里时，fd 上可能暂时没有新字节，select 会误判成
+        # 静默；pending() 是「还有没交付的明文」的先手判断。
+        pending = getattr(sock, "pending", None)
+        if callable(pending) and pending() > 0:
+            return True
+    except Exception:
+        pass
+    try:
+        fd = sock.fileno()
+    except Exception:
+        return None
+    if not isinstance(fd, int) or fd < 0:
+        return None
+    try:
+        ready, _, _ = select.select([sock], [], [], max(0.0, float(timeout)))
+        return bool(ready)
+    except (OSError, ValueError):
+        return None
+
+
 def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
              idle_timeout=None, max_idle=None):
     """逐行吐出上游 SSE 文本（含行尾换行）。resp 的生命周期由调用方管。
@@ -1980,10 +2016,10 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
     是可选的可变字典，回填 ``bytes``（已收字节数）与 ``truncated``（是否
     异常中断），供上层区分「上游没给内容就断」和「吐到一半断」。
 
-    给了 ``idle_timeout`` 就把底层 socket 的读超时压到这个秒数：**超时不是
-    失败**，而是 yield 一次 ``KEEPALIVE`` 让调用方去给客户端发心跳，然后接着
-    读同一根连接。``max_idle`` 次连续空等之后才认定为上游卡死（抛
-    ``UpstreamBroken``），避免一条死连接把账号名额挂到天荒地老。
+    给了 ``idle_timeout`` 就**每读一块之前先 select 等这么久**：等不到数据
+    就 yield 一次 ``KEEPALIVE``，让调用方给客户端发心跳，然后接着等同一根
+    连接。``max_idle`` 次连续空等之后才认定上游卡死（抛 ``UpstreamBroken``）。
+    **注意这里绝不动 socket 的读超时** —— 原因见 ``_wait_readable``。
     """
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     buf = ""
@@ -1993,71 +2029,59 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
     stats.setdefault("bytes", 0)
 
     sock = _stream_socket(resp) if idle_timeout else None
-    saved_timeout = None
-    if sock is not None:
-        try:
-            saved_timeout = sock.gettimeout()
-            sock.settimeout(float(idle_timeout))
-        except OSError:
-            sock = None
     idle_streak = 0
     limit = max_idle if max_idle is not None else STREAM_MAX_IDLE
 
-    try:
-        while True:
-            if abort_check is not None and abort_check():
-                raise ChatAborted("client gone")
-            failed = None
+    while True:
+        if abort_check is not None and abort_check():
+            raise ChatAborted("client gone")
+        if sock is not None and idle_timeout:
+            ready = _wait_readable(sock, idle_timeout)
+            if ready is None:
+                # 等不了（假对象 / 已关闭 / 没 fileno）：放弃心跳，退回阻塞读。
+                # 宁可少一条心跳，也不要在这里抛错把好好的流弄断。
+                sock = None
+            elif not ready:
+                idle_streak += 1
+                if limit and idle_streak > limit:
+                    stats["truncated"] = True
+                    raise UpstreamBroken(
+                        "upstream silent for %ss (%d idle reads)"
+                        % (idle_timeout, idle_streak), total)
+                yield KEEPALIVE
+                continue
+        failed = None
+        try:
             try:
-                try:
-                    piece = resp.read1(read_size)
-                except AttributeError:      # 老版本 http.client 没有 read1
-                    piece = resp.read(read_size)
-            except TimeoutError:
-                # 我们自己压短的读超时到期，不是上游断流。把控制权交回去发
-                # 一条心跳，然后从同一根连接继续读。
-                if sock is None:
-                    failed = TimeoutError("upstream stalled")
-                    piece = b""
-                else:
-                    idle_streak += 1
-                    if limit and idle_streak > limit:
-                        stats["truncated"] = True
-                        raise UpstreamBroken(
-                            "upstream silent for %ss (%d idle reads)"
-                            % (idle_timeout, idle_streak), total)
-                    yield KEEPALIVE
-                    continue
-            except (http.client.HTTPException, OSError) as exc:
-                # IncompleteRead 带着已读到的 partial；其余（ConnectionResetError、
-                # socket.timeout…）没有，按 0 处理。注意 IncompleteRead 是
-                # HTTPException 但不是 OSError，两个都要接。
-                piece = getattr(exc, "partial", b"") or b""
-                failed = exc
-            if piece:
-                idle_streak = 0
-                total += len(piece)
-                stats["bytes"] = total
-                buf += decoder.decode(piece)
-                while True:
-                    cut = buf.find("\n")
-                    if cut < 0:
-                        break
-                    line, buf = buf[:cut + 1], buf[cut + 1:]
-                    yield line
-            if failed is not None:
-                stats["truncated"] = True
-                raise UpstreamBroken(
-                    "upstream closed early: %s" % (str(failed) or type(failed).__name__),
-                    total)
-            if not piece:
-                break
-    finally:
-        if sock is not None and saved_timeout is not None:
-            try:
-                sock.settimeout(saved_timeout)
-            except OSError:
-                pass
+                piece = resp.read1(read_size)
+            except AttributeError:      # 老版本 http.client 没有 read1
+                piece = resp.read(read_size)
+        except (http.client.HTTPException, OSError) as exc:
+            # 走到这里说明连接真的坏了，或者撞上了 open_chat 设的兜底读超时
+            # （默认 300s，只在半帧里卡住时才会触发）。**不能在这里发心跳
+            # 接着读**：SocketIO 一次超时就永久拒绝再读（见 _wait_readable）。
+            # IncompleteRead 带着已读到的 partial；其余按 0 处理。注意
+            # IncompleteRead 是 HTTPException 但不是 OSError，两个都要接。
+            piece = getattr(exc, "partial", b"") or b""
+            failed = exc
+        if piece:
+            idle_streak = 0
+            total += len(piece)
+            stats["bytes"] = total
+            buf += decoder.decode(piece)
+            while True:
+                cut = buf.find("\n")
+                if cut < 0:
+                    break
+                line, buf = buf[:cut + 1], buf[cut + 1:]
+                yield line
+        if failed is not None:
+            stats["truncated"] = True
+            raise UpstreamBroken(
+                "upstream closed early: %s" % (str(failed) or type(failed).__name__),
+                total)
+        if not piece:
+            break
     buf += decoder.decode(b"", True)
     if buf:
         yield buf

@@ -351,14 +351,24 @@ section("6. 上游静默的空关心跳")
 
 
 class _Sock:
-    def __init__(self, timeout=None):
+    """记录「有没有人改过它的读超时」—— 这是 2026-10-22 线上事故的回归护栏。"""
+
+    def __init__(self, timeout=300.0):
         self.timeout = timeout
+        self.set_calls = []
 
     def gettimeout(self):
         return self.timeout
 
     def settimeout(self, value):
+        self.set_calls.append(value)
         self.timeout = value
+
+    def fileno(self):
+        return 3
+
+    def pending(self):
+        return 0
 
 
 class _Raw:
@@ -371,13 +381,13 @@ class _FP:
         self.raw = _Raw(sock)
 
 
-class _IdleResp:
-    """read1 按剧本演：抛 TimeoutError 就是「上游静默」，b"" 是正常结束。"""
+class _DataResp:
+    """read1 按剧本吐字节；空闲改由 _wait_readable 的脚本控制。"""
 
-    def __init__(self, script, sock=True):
+    def __init__(self, script, sock):
         self.script = list(script)
         self.closed = False
-        self.fp = _FP(_Sock(180.0)) if sock else None
+        self.fp = _FP(sock) if sock is not None else None
 
     def read1(self, _n):
         item = self.script.pop(0) if self.script else b""
@@ -389,37 +399,87 @@ class _IdleResp:
         self.closed = True
 
 
-_script = [TimeoutError("timed out"), b'data: {"choices":[{"delta":{"content":"a"}}]}\n\n', b""]
-_seen = list(C.iter_sse(_IdleResp(_script), idle_timeout=15))
-check("静默时吐 KEEPALIVE 哨兵", any(x is C.KEEPALIVE for x in _seen), _seen)
-check("静默之后照常读出后续行",
-      any(isinstance(x, str) and x.startswith("data:") for x in _seen), _seen)
-check("KEEPALIVE 不是字符串（不能混进 SSE 正文）",
-      all(not isinstance(x, str) for x in _seen if x is C.KEEPALIVE), _seen)
+_wait_script = []
 
-# 心跳期间 socket 超时被压短，读完恢复原值（不然下一次读又变成 180s）
-_probe = _IdleResp([TimeoutError("t"), b"", b""])
-_sock = _probe.fp.raw._sock
-list(C.iter_sse(_probe, idle_timeout=15))
-check("读完恢复原来的 socket 超时", _sock.timeout == 180.0, _sock.timeout)
 
-# 连续静默到上限：判上游卡死，抛 UpstreamBroken 而不是永远挂着
-_stuck = _IdleResp([TimeoutError("t")] * 10)
-_broken = None
+def _fake_wait(_sock, _timeout):
+    return _wait_script.pop(0) if _wait_script else True
+
+
+_saved_wait = C._wait_readable
+C._wait_readable = _fake_wait
 try:
-    list(C.iter_sse(_stuck, idle_timeout=15, max_idle=3))
-except C.UpstreamBroken as exc:
-    _broken = exc
-check("连续静默超过上限 → UpstreamBroken", _broken is not None, _broken)
+    # 第 1 条：静默一次 → 吐 KEEPALIVE，然后照常读同一根连接
+    _sock = _Sock()
+    _resp = _DataResp(
+        [b'data: {"choices":[{"delta":{"content":"a"}}]}\n\n', b""], _sock)
+    _wait_script[:] = [False, True]
+    _seen = list(C.iter_sse(_resp, idle_timeout=15))
+    check("静默时吐 KEEPALIVE 哨兵", any(x is C.KEEPALIVE for x in _seen), _seen)
+    check("静默之后照常读出后续行",
+          any(isinstance(x, str) and x.startswith("data:") for x in _seen), _seen)
+    check("KEEPALIVE 不是字符串（不能混进 SSE 正文）",
+          all(not isinstance(x, str) for x in _seen if x is C.KEEPALIVE), _seen)
+    # 事故根因：以前把 socket 读超时压到 15s，超时后 SocketIO 被标记
+    # timed_out，之后每次 read 都抛 "cannot read from timed out object"，
+    # 好好的流被自己弄断。心跳只能用 select 看 fd，绝不能碰超时。
+    check("心跳路径绝不改 socket 读超时", _sock.set_calls == [], _sock.set_calls)
 
-# 拿不到 socket（假对象 / 老版本）时不能误发心跳：超时按真断流处理
-_nosock = _IdleResp([TimeoutError("t")] * 3, sock=False)
-_broken2 = None
+    # 第 2 条：连续静默到上限 → UpstreamBroken，而不是永远挂着
+    _wait_script[:] = [False] * 10
+    _broken = None
+    try:
+        list(C.iter_sse(_DataResp([b""], _Sock()), idle_timeout=15, max_idle=3))
+    except C.UpstreamBroken as exc:
+        _broken = exc
+    check("连续静默超过上限 → UpstreamBroken", _broken is not None, _broken)
+
+    # 第 3 条：拿不到 socket（假对象 / 老版本 http.client）→ 不发心跳，
+    # 此时真撞上读超时说明连接已经废了，按断流处理
+    _wait_script[:] = []
+    _broken2 = None
+    try:
+        list(C.iter_sse(_DataResp([TimeoutError("timed out"), b""], None),
+                        idle_timeout=15))
+    except C.UpstreamBroken as exc:
+        _broken2 = exc
+    check("拿不到 socket 时不假装心跳，超时按断流处理",
+          _broken2 is not None, _broken2)
+
+    # 第 4 条：select 不可用（返回 None）时退回阻塞读，不能把好流弄断
+    _wait_script[:] = [None]
+    _fallback = _DataResp([b"data: ok\n\n", b""], _Sock())
+    check("等不了的时候照样把流读完",
+          "".join(list(C.iter_sse(_fallback, idle_timeout=15))) == "data: ok\n\n",
+          None)
+finally:
+    C._wait_readable = _saved_wait
+
+# 第 5 条：真实的 _wait_readable —— socketpair 验「有数据 / 没数据」
+import socket as _socket
+
+_left, _right = _socket.socketpair()
 try:
-    list(C.iter_sse(_nosock, idle_timeout=15))
-except C.UpstreamBroken:
-    _broken2 = True
-check("拿不到 socket 时不假装心跳", _broken2 is True, _broken2)
+    check("没数据 → 超时返回 False", C._wait_readable(_left, 0.05) is False, None)
+    _right.sendall(b"x")
+    check("有数据 → 返回 True", C._wait_readable(_left, 0.5) is True, None)
+finally:
+    _left.close()
+    _right.close()
+
+
+class _PendingSock:
+    def pending(self):
+        return 3
+
+    def fileno(self):
+        raise AssertionError("pending()>0 时不该再去 select")
+
+
+check("TLS 已解密未交付的字节算「可读」",
+      C._wait_readable(_PendingSock(), 0.01) is True, None)
+check("拿不到 fileno 的对象 → None（调用方退回阻塞读）",
+      C._wait_readable(object(), 0.05) is None, None)
 
 # 哨兵在 _tap_codearts_sse 里翻成 SSE 注释行
 _tapped = list(P._tap_codearts_sse([C.KEEPALIVE, b'data: {"usage":{"total_tokens":7}}\n\n'], {}))

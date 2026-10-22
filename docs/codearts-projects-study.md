@@ -358,14 +358,27 @@ if chunk.get("error_code") or chunk.get("error_msg"):
 所以 keepalive 仍是**待办**，优先级从 P1 降到 P2 —— 上游首 token 通常 1~3s，
 且 reasoning 一直在吐字节，触发概率低但不是零。
 
-**2026-10-22 已实现**（口径与上面「阻塞读」的设想不同）：`iter_sse` 在开始读
-之前把底层 socket 的读超时压到 15s，超时**不当作失败**，而是 yield 一个
-`KEEPALIVE` 哨兵、接着读同一根连接；调用方把它翻成 SSE 注释行 `: keepalive`。
-拿不到 socket（假对象、老版本 http.client）时退回原行为，绝不假装发过心跳。
-连续 40 次空等（10 分钟）才判上游卡死，抛 `UpstreamBroken`。
+**2026-10-22 已实现**（口径与上面「阻塞读」的设想不同）：`iter_sse` 每读一块
+之前先 `select` 等 15s，等不到就 yield 一个 `KEEPALIVE` 哨兵、接着等同一根
+连接；调用方把它翻成 SSE 注释行 `: keepalive`。拿不到 socket（假对象、老版本
+http.client）时退回阻塞读，绝不假装发过心跳。连续 40 次空等（10 分钟）才判
+上游卡死，抛 `UpstreamBroken`。
 
-这套做法的关键是**心跳不是往上游发，是往客户端发** —— 中间层掐的是我们到
-客户端那一段，而上游那条连接有自己的 180s 读超时。
+**第一版踩的坑（当天下午就炸了，值得记住）**：第一版是「把 socket 读超时压到
+15s，超时就发心跳再接着读」。**这条路根本走不通** —— CPython 的
+`socket.SocketIO` 只要碰到过一次读超时就会置 `_timeout_occurred`，之后每次
+`read` 都直接抛 `OSError: cannot read from timed out object`，而
+`HTTPResponse` 读的正是 `sock.makefile()` 出来的那个 SocketIO。于是上游一
+思考超过 15s，连接就被我们自己永久废掉：客户端看到
+`codearts upstream closed the stream: ... cannot read from timed out object`
+（20:38–20:40 连炸 5 次，`tokens=0`）。
+
+**结论：空闲检测只能看 fd（select / `pending()`），绝不能动 socket 的读写
+超时。** 读超时只有一个用途 —— `open_chat` 那个 300s 的兜底，专门收拾「半帧
+卡住」，一旦触发就按断流处理，不再抢救。
+
+这套做法的另一半关键：**心跳不是往上游发，是往客户端发** —— 中间层掐的是我们
+到客户端那一段，而上游那条连接有自己的读超时兜底。
 
 ---
 
@@ -389,7 +402,7 @@ if chunk.get("error_code") or chunk.get("error_msg"):
 | P0 | 会话心跳 busy/idle + `user-session-id` 参签 | ✅ 已上线 |
 | P0 | 断流不再冒到 socketserver；首帧前不发头；断流发 error 帧 | ✅ 已上线 |
 | P1 | 零内容断流换号重开一次 | ✅ 已上线 |
-| P1 | SSE keepalive（防 nginx 60s 空闲断流） | ✅ 已上线（`iter_sse` 空闲 15s yield 哨兵） |
+| P1 | SSE keepalive（防 nginx 60s 空闲断流） | ✅ 已上线（`select` 等 15s → `KEEPALIVE` 哨兵；**不动 socket 超时**） |
 | P1 | 会话粘性（多账号时） | ✅ 已上线（首条 user 消息指纹兜底） |
 | P1 | **模型名大小写归一** | ✅ 已上线（线上实测：小写 glm-5.2 曾掉进空池回 503） |
 | P1 | 未知模型回 404（而不是空池的 503） | ✅ 已上线 |
