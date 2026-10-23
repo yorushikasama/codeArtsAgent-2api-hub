@@ -230,7 +230,8 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 **模型清单补上上游新出现的 `kimi-k3`**
 
 - 逐条对过：上游 `/v1/model/builtin` 返回 **9** 个内置模型，网关只广告 **8** 个，缺 `kimi-k3`（上游 `display_enabled=true`，官方 IDE 的模型选择器里看得到）。原因不是取数失败，而是它不在 `CHAT_MODELS` 这张「实测可路由」白名单里 —— 后果很隐蔽：`is_codearts_model("kimi-k3")` 为假，请求掉进 WorkBuddy 池，只配码道账号的部署回 `503 no usable account`，报错和模型名毫无关系。
-- 输出上限是**实测**的，不是抄兄弟模型：`65536` → 200 正常出字；`81920` / `100000` / `131072` / `262144` → 全部 `InferHub.001001005.400 The request param is invalid`。所以 `BUILTIN_MODEL_LIMITS["kimi-k3"] = (0, 65536)`：输出 65536，输入窗口留 0（上游不返回、远端目录也没给，按本项目口径不拿同厂的 1M 顶替；`codearts_model_meta` 对 0 是**整个字段不输出**，不会显示成假值）。
+- 输出上限是**实测**的，不是抄兄弟模型：`65536` → 200 正常出字；`81920` / `100000` / `131072` / `262144` → 全部 `InferHub.001001005.400 The request param is invalid`。所以 `BUILTIN_MODEL_LIMITS["kimi-k3"] = (0, 65536)`：输出 65536，输入窗口留 0（上游不返回，本项目自己不编数字）。
+- 这件事顺带证明「实测表必须压过模型知识库」：`ca_modelsdev.CONTEXT_FALLBACK` 里 `kimi-k3` 是 `(1048576, 131072)`，而 **131072 上游必拒**。`lookup()` 的优先级是 `remote > table > cache > default`，我们这条 65536 作为 remote 值生效，清单上的 `max_output_tokens` 才是对的；没这条就会给客户端报一个上游不认的数。上下文 1M 仍由 knowledge table 提供，`context_source` 标成 `table`（面板据此区分「上游说了」和「按 1M 兜底」）。
 - 顺带核对了其余 8 条的字段：`count` 与清单一致（8 条码道模型 + 2 条别名 `gpt-5-codex → glm-5.2`、`claude-sonnet-4-5-20250929 → glm-5.3`，目标都在清单里）；`codearts.errors.benefit = [4000] invalid channel` 是这条账号没有福利渠道，属预期（福利组那 3 个模型因此不广告）；`GLM-5.2` 这类大写 id 与小写请求之间由 `resolve_model` 做大小写无关归一，分流不受影响。
 - 未修的一条：`kimi-k2.6-vl` 不在 `BUILTIN_MODEL_LIMITS` 里，清单上 `max_output_tokens` 是 null，客户端发大 `max_tokens` 不会被夹。它是上游 `display_enabled=false` 的视觉模型，实测上限还没测到干净值，等有需要再补。
 
