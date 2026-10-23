@@ -210,6 +210,37 @@ check("断流不伪装成正常结束（不补 finish_reason=stop）",
 check("断流发明确的 error 帧", '"upstream_error"' in _sse, _sse[-300:])
 check("断点补 [DONE]", _sse.endswith("data: [DONE]\n\n"), _sse[-40:])
 
+# 2c-2. 断流的记账：一次失败只落一行，而且这一行要带上已经收到的 usage。
+# 以前先 record_error 再 record_usage，同一次失败在 usage.jsonl 里出现两次
+# （failed + upstream_aborted，同 iso 同 elapsed），总量被放大一倍。
+_usage_line = ('data: {"choices":[{"delta":{}}],'
+               '"usage":{"prompt_tokens":7,"completion_tokens":3}}\n\n')
+_rows = []
+_orig_err, _orig_use = P.record_error, P.record_usage
+
+
+def _spy_error(*args, **kwargs):
+    _rows.append(("error", args[1] if len(args) > 1 else kwargs.get("status"),
+                  kwargs.get("outcome"), kwargs.get("usage")))
+
+
+def _spy_usage(*args, **kwargs):
+    _rows.append(("usage", None, kwargs.get("outcome"), None))
+
+
+P.record_error, P.record_usage = _spy_error, _spy_usage
+try:
+    _run([_Lease([_role, _usage_line], 2), _Lease([_tail], None)])
+finally:
+    P.record_error, P.record_usage = _orig_err, _orig_use
+check("断流只落一行账（不再额外记一条 usage）", len(_rows) == 1, _rows)
+check("断流行记为 upstream_aborted、状态码 502",
+      _rows and _rows[0][0] == "error" and _rows[0][1] == 502
+      and _rows[0][2] == "upstream_aborted", _rows)
+check("断流时已收到的 usage 跟着这一行一起落库",
+      _rows and isinstance(_rows[0][3], dict)
+      and _rows[0][3].get("prompt_tokens") == 7, _rows)
+
 # 2d. 上游在流里回错误帧（不是断流）：首帧前仍能回真错误码，
 #     而且状态码要按错误码映射 —— 1041 是「等会儿重试」的 429，不是 502。
 _err_frame = ('data: {"error_code":"TM.00001041",'
@@ -353,6 +384,17 @@ check("后端超时（APIG.0203）→ 504，不是含糊的 502",
 check("后端超时在 Anthropic 侧是 overloaded_error",
       _spec(502, "APIG.0203", "Backend timeout", anthropic=True)[1]
       == "overloaded_error", None)
+
+# 记账必须和回给客户端的状态码同源。_codearts_open_lease 里曾经写死
+# record_error(model, 502, ...)，而对外走 _codearts_fail 把 0203 映射成
+# 504 —— 日志与用量记 502、客户端收 504。用静态检查钉住这一处。
+_src = io.open(P.__file__, encoding="utf-8").read()
+_open_seg = _src[_src.index("def _codearts_open_lease"):]
+_open_seg = _open_seg[:_open_seg.index("\n    def ", 10)]
+check("建连失败记账与响应同源（映射失败用 st，网络异常仍 502）",
+      "record_error(model, st," in _open_seg
+      and "_codearts_fail_spec(status, code, detail, anthropic)" in _open_seg
+      and "record_error(model, 502, str(last_exc)" in _open_seg, None)
 check("鉴权失败（401）→ 502 + credentials_error",
       _spec(401, "APIG.0301", "access key not found")
       == (502, "credentials_error"), _spec(401, "APIG.0301", ""))

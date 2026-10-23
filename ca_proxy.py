@@ -19071,7 +19071,11 @@ class Handler(BaseHTTPRequestHandler):
                 log("codearts model %s has no benefit entitlement; "
                     "hiding it from /v1/models for %ds"
                     % (model, int(CODEARTS_BENEFIT_MISSING_TTL)))
-        record_error(model, 502, ("%s %s" % (code, detail))[:200],
+        # 记账必须和回给客户端的状态码同源：以前这里写死 502，而
+        # _codearts_fail 会按表把 APIG.0203 映射成 504 —— gw.log 与
+        # usage.jsonl 记 502、客户端收 504，同一个失败两个答案。
+        st, _et = _codearts_fail_spec(status, code, detail, anthropic)
+        record_error(model, st, ("%s %s" % (code, detail))[:200],
                      elapsed_ms=elapsed_ms, account=account_label,
                      key=self._key_id())
         # 按语义映射，见 _codearts_fail_spec：限流 429（带 Retry-After）、
@@ -19302,8 +19306,12 @@ class Handler(BaseHTTPRequestHandler):
             # ——那等于给半截回答盖一个「正常结束」的章，客户端会当成完整结果
             # （CodeArts2api 的 routes/chat.py 也是这个口径）。发一条明确的
             # error 帧再 [DONE]，要不要重试交给客户端决定。
+            # 一次失败只写一行：usage 跟着 record_error 一起落，别在下面再
+            # record_usage 一次 —— 那会让同一个请求既算失败又算一条用量，
+            # 总量被放大一倍（record_error 的 docstring 写的就是这个约定）。
             record_error(model, 502, truncated[:200], elapsed_ms=elapsed_ms,
-                         account=account_label, key=self._key_id())
+                         account=account_label, usage=usage, stream=True,
+                         outcome="upstream_aborted", key=self._key_id())
             try:
                 emit({"error": {
                     "message": "codearts upstream closed the stream: %s"
@@ -19314,13 +19322,6 @@ class Handler(BaseHTTPRequestHandler):
             except (BrokenPipeError, ConnectionResetError,
                     ConnectionAbortedError):
                 pass
-            if content_parts or reasoning_parts:
-                try:
-                    record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
-                                 account=account_label, key=self._key_id(),
-                                 outcome="upstream_aborted")
-                except Exception:
-                    pass
             return None
 
         try:

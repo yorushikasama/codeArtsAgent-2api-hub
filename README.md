@@ -227,6 +227,12 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+**失败记账与响应同源，一次失败只落一行**
+
+- `_codearts_open_lease`（流式建连）以前 `record_error(model, 502, …)` 写死 502，而对外走 `_codearts_fail()` 把 `APIG.0203` 映射成 504：同一个失败，`gw.log` / `usage.jsonl` 记 502、客户端收 504。现在记账用 `_codearts_fail_spec()` 算出的同一个状态码（网络异常仍记 502）。
+- 流式断流分支以前先 `record_error` 再 `record_usage(..., outcome="upstream_aborted")`，一次失败在 `usage.jsonl` 里落**两行**（同 `iso`、同 `elapsed_ms`，一行 `failed`、一行 `upstream_aborted`）。这违背了 `record_error` 自己的约定（docstring 写明「usage 随行带上，不再单独记一条」，`usage=` 参数此前零调用）。现在 usage 跟着 `record_error` 一起落，只写一行；token 不丢。
+- 影响：总量不再被放大一倍；成功率口径不再分裂（矩阵口径把 aborted 算 err 得 34/31≈52%，而按 `outcome=="failed"` 数错误会得 45/20≈69%，同一份数据两个答案）。
+
 **断流归因与续期改造（`IncompleteRead(0 bytes read)`）**
 
 - 2026-10-23 09:11–09:29 出现 11 次 `upstream closed early: IncompleteRead(0 bytes read)`，同一时段还有 APIG 的 `APIG.0203 Backend timeout`（实测约 60 秒一刀）。两者指向同一件事：**上游后端长时间没有输出**——0203 发生在建连阶段（响应头都没来），`IncompleteRead` 发生在流中途的 chunk 边界。
