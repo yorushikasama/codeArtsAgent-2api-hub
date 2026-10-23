@@ -147,18 +147,23 @@ class _Lease:
     account_label = "stub-label"
     account_key = "stub-key"
 
-    def __init__(self, lines, broken_after=None):
+    def __init__(self, lines, broken_after=None, silent_s=None):
         self._lines = list(lines)
         self._broken_after = broken_after
+        self._silent_s = silent_s
         self.started_at = time.time()
         self.closed = False
 
     def lines(self, _abort_check=None, _stats=None):
         for i, line in enumerate(self._lines):
             if self._broken_after is not None and i >= self._broken_after:
+                if _stats is not None and self._silent_s is not None:
+                    _stats["silent_s"] = self._silent_s
                 raise C.UpstreamBroken("upstream closed early", 0)
             yield line
         if self._broken_after is not None:
+            if _stats is not None and self._silent_s is not None:
+                _stats["silent_s"] = self._silent_s
             raise C.UpstreamBroken("upstream closed early", 0)
 
     def byte_lines(self, _abort_check=None, _stats=None):
@@ -209,6 +214,22 @@ check("断流不伪装成正常结束（不补 finish_reason=stop）",
       '"finish_reason": "stop"' not in _sse, _sse[-200:])
 check("断流发明确的 error 帧", '"upstream_error"' in _sse, _sse[-300:])
 check("断点补 [DONE]", _sse.endswith("data: [DONE]\n\n"), _sse[-40:])
+
+# 2c-1. 「静默 60 秒被切」和「网络抖动」不是一回事：上游对没有输出的连接按
+# 空闲超时收掉，同一个请求会一直在同一处被切，客户端自动重试就表现成
+# 「反复回复同一句话」。错误文案必须直接给出改法，否则上层只会原样重试。
+check("提示只在接近 60 秒静默时才出现",
+      P._codearts_break_hint({"silent_s": 12.0}) == ""
+      and P._codearts_break_hint({}) == "", None)
+_hint = P._codearts_break_hint({"silent_s": 59.8})
+check("60 秒静默的提示写明「拆小 / 降思考预算」",
+      "split" in _hint and "thinking budget" in _hint, _hint)
+_h, _sse = _run([_Lease([_role], 1, silent_s=59.8)])
+check("断流错误帧带上这条提示",
+      "split this turn into smaller steps" in _sse, _sse[-400:])
+_h, _sse = _run([_Lease([_role], 1, silent_s=3.0)])
+check("普通断流不塞这条提示（别把抖动说成超时）",
+      "split this turn" not in _sse, _sse[-400:])
 
 # 2c-2. 断流的记账：一次失败只落一行，而且这一行要带上已经收到的 usage。
 # 以前先 record_error 再 record_usage，同一次失败在 usage.jsonl 里出现两次
@@ -296,6 +317,12 @@ check("responses 断流仍以 [DONE] 收尾",
 
 section("4. 会话名额心跳")
 
+# 会话登记表落在 ACCOUNTS_DIR 下（重启后补发 idle 用）。整套心跳测试改到
+# 临时目录跑：线上跑测试时，别在真实的账号目录里留下一份假登记。
+_saved_acct_dir = P.ACCOUNTS_DIR
+_acct_tmp = tempfile.mkdtemp(prefix="ca-sess-")
+P.ACCOUNTS_DIR = _acct_tmp
+
 check("new_session_id 是 32 位十六进制", len(C.new_session_id()) == 32
       and all(ch in "0123456789abcdef" for ch in C.new_session_id()),
       C.new_session_id())
@@ -361,6 +388,138 @@ try:
           _calls)
 finally:
     C.heartbeat = _saved_hb
+
+
+# ---------------------------------------------------------------------------
+# 4b. 会话登记表：重启后把没来得及 idle 的名额还回去
+# ---------------------------------------------------------------------------
+
+section("4b. 重启后的会话清理")
+
+_sess_path = P._sessions_path()
+check("登记表就在临时账号目录里（不碰真实目录）",
+      os.path.dirname(_sess_path) == _acct_tmp, _sess_path)
+
+P.track_codearts_session("aaa", "acct-a")
+P.track_codearts_session("bbb", "acct-b")
+_raw = P._sessions_read()
+check("busy 之后登记两条", sorted(_raw) == ["aaa", "bbb"], _raw)
+check("记了账号标签（重启时靠它找凭据）",
+      _raw["aaa"].get("acct") == "acct-a", _raw.get("aaa"))
+check("原子写不留 .tmp 残骸",
+      not os.path.exists(_sess_path + ".tmp"), os.listdir(_acct_tmp))
+
+P.untrack_codearts_session("aaa")
+check("idle 成功就销账", sorted(P._sessions_read()) == ["bbb"],
+      P._sessions_read())
+P.untrack_codearts_session("不存在的 id")     # 不该抛，也不该写坏
+check("销一条不存在的账是空操作", sorted(P._sessions_read()) == ["bbb"],
+      P._sessions_read())
+
+# 上限：正常远到不了，但「idle 一直失败 + 长期不重启」不能让它无限长。
+for _i in range(P.CODEARTS_SESSION_MAX + 8):
+    P.track_codearts_session("x%03d" % _i, "acct-a")
+_capped = P._sessions_read()
+check("登记表有长度上限", len(_capped) == P.CODEARTS_SESSION_MAX, len(_capped))
+check("截断时留最新的", "x%03d" % (P.CODEARTS_SESSION_MAX + 7) in _capped,
+      sorted(_capped)[-1:])
+
+# reap：有凭据的那条补发 idle，没有凭据的留在表里（等下一次启动）
+P._sessions_write({
+    "r1": {"acct": "acct-a", "at": time.time()},
+    "r2": {"acct": "已删除的账号", "at": time.time()},
+    "r3": {"acct": "acct-a", "at": time.time() - P.CODEARTS_SESSION_TTL - 60},
+})
+_saved_load = C.load_sessions
+_calls_r = []
+
+
+def _fake_load(_dir):
+    return [{"account": {"label": "acct-a"}, "accessKey": "AK",
+             "secretKey": "SK", "securitytoken": "TK"}]
+
+
+def _fake_hb(*a, **k):
+    _calls_r.append((a[3], a[4]))
+    # r3 老到该被丢弃，但它照样会被尝试；让它的 idle 失败以验证「超龄就不再留」
+    return (a[3] != "r3"), "stub"
+
+
+C.load_sessions = _fake_load
+C.heartbeat = _fake_hb
+try:
+    P.reap_codearts_sessions()
+finally:
+    C.load_sessions = _saved_load
+    C.heartbeat = _saved_hb
+
+check("重启后补发 idle（有凭据的都试了）",
+      sorted(c[0] for c in _calls_r) == ["r1", "r3"], _calls_r)
+check("补发的是 idle 不是 busy",
+      all(c[1] == "idle" for c in _calls_r), _calls_r)
+_left = P._sessions_read()
+check("注销成功的销账", "r1" not in _left, _left)
+check("没凭据的留着等下次启动（不静默丢账）", "r2" in _left, _left)
+check("超龄且注销失败的丢弃（上游早该回收了）", "r3" not in _left, _left)
+
+# 清理期间的并发请求：它新登记的那条不能被收尾的写盘覆盖掉 —— 那正好是
+# 下一次重启会泄漏的那批。
+P._sessions_write({"c1": {"acct": "acct-a", "at": time.time()}})
+_calls_c = []
+
+
+def _fake_hb_track(*a, **k):
+    if not _calls_c:
+        P.track_codearts_session("fresh", "acct-a")   # 模拟另一个请求登记
+    _calls_c.append((a[3], a[4]))
+    return True, "stub"
+
+
+C.load_sessions = _fake_load
+C.heartbeat = _fake_hb_track
+try:
+    P.reap_codearts_sessions()
+finally:
+    C.load_sessions = _saved_load
+    C.heartbeat = _saved_hb
+_after = P._sessions_read()
+check("清理期间新登记的会话不被覆盖",
+      "fresh" in _after and "c1" not in _after, _after)
+
+# 表是空的就别去打扰上游
+P._sessions_write({})
+_calls_r.clear()
+C.load_sessions = _fake_load
+C.heartbeat = _fake_hb
+try:
+    P.reap_codearts_sessions()
+finally:
+    C.load_sessions = _saved_load
+    C.heartbeat = _saved_hb
+check("空表不发任何心跳", _calls_r == [], _calls_r)
+
+# busy 封装：登记成功才记账（没登记上的 id，上游不认，重启后 idle 只会 404）
+_calls_r.clear()
+C.heartbeat = lambda *a, **k: (_calls_r.append((a[3], a[4])), (True, "ok"))[1]
+try:
+    _sid, _ok, _detail = P.codearts_session_busy(("AK", "SK", "TK"), "acct-a")
+finally:
+    C.heartbeat = _saved_hb
+check("busy 封装返回新会话 id 且登记成功",
+      _ok and len(_sid) == 32 and _sid in P._sessions_read(), (_sid, _ok))
+check("busy 封装发的是 busy", _calls_r and _calls_r[0][1] == "busy", _calls_r)
+
+C.heartbeat = lambda *a, **k: (False, "HTTP 401")
+try:
+    _sid2, _ok2, _d2 = P.codearts_session_busy(("AK", "SK", "TK"), "acct-a")
+finally:
+    C.heartbeat = _saved_hb
+_pending = P._sessions_read()
+check("busy 失败不记账",
+      _ok2 is False and _sid2 not in _pending
+      and len(_pending) == len(set(_pending)), (_sid2, sorted(_pending)))
+
+P.ACCOUNTS_DIR = _saved_acct_dir
 
 
 # ---------------------------------------------------------------------------

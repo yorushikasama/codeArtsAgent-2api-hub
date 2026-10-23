@@ -10640,6 +10640,163 @@ class _CodeartsAccountPool:
 _CODEARTS_POOL = _CodeartsAccountPool()
 
 
+#: 我们自己造过、还没注销的上游会话（user-session-id）落盘一份。
+#:
+#: 为什么非落盘不可：idle 注销写在 ``finally`` 里，它只挡得住**异常**，挡不住
+#: ``systemctl restart`` / OOM / 断电 —— 进程一死，那几条 busy 就永远挂在上游，
+#: 直到它自己按超时回收。账号只有 3 个名额，一次部署就能全占掉，之后一律
+#: ``TM.00001041 并发会话数已达上限(3个)``，而我们的退避是等「别人释放」，
+#: 等的是永远不会来的东西（2026-10-23 15:00–15:03 连着重启五次，那一小时的
+#: 1041 全出自这里）。
+#:
+#: 文件本身很小（稳态下最多 = 账号数 × 并发数 条），和 ``codearts_affinity``
+#: 一样放在 accounts/ 下（已被 ``accounts/*.json`` 忽略，不会进仓库）。
+CODEARTS_SESSIONS_FILE = "codearts_sessions.json"
+_SESSION_REGISTRY_LOCK = threading.Lock()
+#: 没注销成功的条目最多留这么久：超过就认为上游早已按超时回收，别再拿它去
+#: 打扰上游（也免得文件随失败累积无限长）。
+CODEARTS_SESSION_TTL = 3600.0
+#: 文件长度上限。正常远到不了；只是防「idle 一直失败 + 长期不重启」把它撑大。
+CODEARTS_SESSION_MAX = 64
+
+
+def _sessions_path():
+    """每次现算：测试会改 ``ACCOUNTS_DIR``，模块级常量会被钉死在旧路径上。"""
+    return os.path.join(ACCOUNTS_DIR, CODEARTS_SESSIONS_FILE)
+
+
+def _sessions_read():
+    """读登记表；坏文件/不存在都当空表 —— 这是记账，不是前置条件。"""
+    try:
+        with open(_sessions_path(), encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError):
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _sessions_write(data):
+    """原子写（临时文件 + replace）：半截 JSON 会让启动时的清理读出空表。"""
+    path = _sessions_path()
+    tmp = path + ".tmp"
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError as exc:
+        # 写不进去只影响「重启后的清理」，不影响这条请求本身，所以不抛。
+        log("codearts session registry write failed: %r" % (exc,))
+
+
+def track_codearts_session(session_id, account_label):
+    """记下一条刚 busy 登记成功的会话。"""
+    if not session_id:
+        return
+    with _SESSION_REGISTRY_LOCK:
+        data = _sessions_read()
+        data[session_id] = {"acct": account_label or "",
+                            "at": round(time.time(), 1)}
+        if len(data) > CODEARTS_SESSION_MAX:
+            # 留最近的：老的更可能已经被上游回收了。
+            keep = sorted(data.items(), key=lambda kv: kv[1].get("at") or 0)
+            data = dict(keep[-CODEARTS_SESSION_MAX:])
+        _sessions_write(data)
+
+
+def untrack_codearts_session(session_id):
+    """idle 成功注销一条，把它从登记表里去掉。"""
+    if not session_id:
+        return
+    with _SESSION_REGISTRY_LOCK:
+        data = _sessions_read()
+        if data.pop(session_id, None) is not None:
+            _sessions_write(data)
+
+
+def codearts_session_busy(cred, account_label, timeout=6):
+    """``heartbeat busy`` + 记账，返回 ``(session_id, ok, detail)``。
+
+    记账只在**登记成功**时做：没登记上的 id 上游不认，重启后拿它 idle 只会
+    换来一个 404，白跑一趟。
+    """
+    session_id = ca_codearts.new_session_id()
+    ok, detail = ca_codearts.heartbeat(*(cred + (session_id, "busy")),
+                                       timeout=timeout)
+    if ok:
+        track_codearts_session(session_id, account_label)
+    return session_id, ok, detail
+
+
+def codearts_session_idle(cred, session_id, timeout=6):
+    """``heartbeat idle`` + 销账。失败**保留**登记：下次启动还能补一次。"""
+    ok, detail = ca_codearts.heartbeat(*(cred + (session_id, "idle")),
+                                       timeout=timeout)
+    if ok:
+        untrack_codearts_session(session_id)
+    return ok, detail
+
+
+def reap_codearts_sessions():
+    """启动后补发 idle：把上一次进程没来得及注销的会话还回去。
+
+    三条设计取舍：
+      · **best-effort**：凭据可能已经换过、会话可能早被回收，失败只记日志，
+        绝不让启动失败；
+      · **成功后销账、失败留 1 小时**：上游对不存在的会话 idle 是幂等的，
+        重复补发无害；但真的失败（比如 STS 过期）留一会儿还能再试；
+      · 后台线程跑，不拖启动：每条最坏 6 秒超时，攒几条就能感觉到慢。
+    """
+    with _SESSION_REGISTRY_LOCK:
+        data = _sessions_read()
+    if not data:
+        return
+    now = time.time()
+    try:
+        creds = {}
+        for sess in ca_codearts.load_sessions(ACCOUNTS_DIR):
+            label = (sess.get("account") or {}).get("label")
+            creds[label] = (sess.get("accessKey"), sess.get("secretKey"),
+                            sess.get("securitytoken"))
+    except Exception as exc:                     # noqa: BLE001
+        log("codearts session reap: cannot load accounts: %r" % (exc,))
+        return
+    released = stale = 0
+    left = {}
+    for session_id, item in data.items():
+        item = item if isinstance(item, dict) else {}
+        age = now - float(item.get("at") or 0)
+        cred = creds.get(item.get("acct"))
+        if not cred or not cred[0]:
+            # 账号可能只是暂时读不出来（凭据在续期、面板刚删）。留到超龄为止：
+            # 下次启动还能再试一次，但不会为一个已经不存在的账号永久保账。
+            if age < CODEARTS_SESSION_TTL:
+                left[session_id] = item
+            else:
+                stale += 1
+            continue
+        ok, _detail = ca_codearts.heartbeat(*(cred + (session_id, "idle")),
+                                            timeout=6)
+        if ok:
+            released += 1
+        elif age < CODEARTS_SESSION_TTL:
+            left[session_id] = item
+        else:
+            stale += 1
+    # 收尾要**合并**而不是覆盖：清理期间可能已经有新请求登记了新会话，直接
+    # 写 left 会把它们抹掉 —— 那正好是下一次重启要泄漏的那批。
+    with _SESSION_REGISTRY_LOCK:
+        current = _sessions_read()
+        for session_id in data:
+            if session_id in left:
+                current[session_id] = left[session_id]
+            else:
+                current.pop(session_id, None)     # 已注销 / 超龄丢弃
+        _sessions_write(current)
+    log("codearts session reap: %d released, %d left (accounts=%d)"
+        % (released, len(left) + stale, len(creds)))
+
+
 class _CodeartsLease:
     """一次码道上游连接的持有凭证。
 
@@ -10711,6 +10868,10 @@ class _CodeartsLease:
             self._last_ping = time.time()
             ok, detail = ca_codearts.heartbeat(
                 *(self._session_cred + (self.session_id, "busy")))
+            if ok:
+                # 顺手把登记表里的时间戳刷新：一条跑了两小时的流如果崩在
+                # 第 90 分钟，启动清理不能因为「at 太老」就跳过它。
+                track_codearts_session(self.session_id, self.account_label)
         if not ok:
             # 续期失败**不释放名额**：一次网络抖动不等于对话结束，急着 idle
             # 会把还活着的对话踢掉。收尾时照常 idle。
@@ -10753,8 +10914,8 @@ class _CodeartsLease:
             pass
         _CODEARTS_POOL.release(self.account_key)
         if self.session_id and self._session_cred:
-            ok, detail = ca_codearts.heartbeat(
-                *(self._session_cred + (self.session_id, "idle")))
+            ok, detail = codearts_session_idle(
+                self._session_cred, self.session_id)
             if not ok:
                 log("codearts session idle failed: %s" % detail)
 
@@ -11406,6 +11567,29 @@ def _codearts_error_detail(text):
         return str(code), str(detail)
     except Exception:
         return "", (text or "")[:200]
+
+
+def _codearts_break_hint(stats):
+    """断流时附一句「为什么、该怎么办」，给客户端/agent 看。
+
+    ``silent_s`` 是**一个字节都没到**的时长（SSE 注释也算字节，见
+    ``ca_codearts.iter_sse``），不是「没解析出 data 帧」的时长。线上同一条
+    请求连撞三次，静默分别是 59.8 / 59.8 / 60.0 秒 —— 这不是随机抖动，而是
+    上游（APIG 的「后端超时」，默认 60 s）对**没有输出**的连接按空闲收掉。
+
+    所以这类失败有个很坑的性质：**同一个请求会一直在同一处被切**。客户端
+    自动重试时，表现就是「反复回复同一句话」（2026-10-23 15:15–15:18 三次
+    同形状请求，各吐 5.4/6.4/7.1 KB 后静默 60 s）。只报
+    ``IncompleteRead(0 bytes read)`` 会让上层以为是网络抖动、继续原样重试，
+    所以要把「这一轮该拆小」直接写在错误里。
+    """
+    silent = (stats or {}).get("silent_s") or 0.0
+    if silent < 50:
+        return ""
+    return (" (upstream sent no bytes for %.0fs and was cut by its ~60s idle "
+            "limit; the same request fails at the same point, so split this "
+            "turn into smaller steps or lower the thinking budget)"
+            % silent)
 
 
 def _codearts_frame_status(text, anthropic=False):
@@ -18825,9 +19009,8 @@ class Handler(BaseHTTPRequestHandler):
             # → 读完 idle 注销。聚合路径也要走，否则非流式请求照样漏名额。
             cred = (session.get("accessKey"), session.get("secretKey"),
                     session.get("securitytoken"))
-            session_id = ca_codearts.new_session_id()
-            hb_ok, hb_detail = ca_codearts.heartbeat(
-                *(cred + (session_id, "busy")), timeout=6)
+            session_id, hb_ok, hb_detail = codearts_session_busy(
+                cred, account_label)
             if not hb_ok:
                 log("codearts session busy failed: %s" % hb_detail)
             try:
@@ -18863,10 +19046,9 @@ class Handler(BaseHTTPRequestHandler):
             finally:
                 # 先注销会话、再还本地名额：反过来的话，下一个拿到名额的请求
                 # 可能在上游还没收到 idle 时就开始 busy，两个会话撞在一起。
-                ca_codearts.heartbeat(*(cred + (session_id, "idle")), timeout=6)
+                codearts_session_idle(cred, session_id)
                 # 名额只包住「向上游要结果」这一段，读完了立刻还。
                 _CODEARTS_POOL.release(account_key)
-
             retryable = last_exc is not None or _codearts_retryable(status, text)
             if retryable and last_exc is None:
                 if _codearts_concurrency_full(status, text):
@@ -19032,9 +19214,8 @@ class Handler(BaseHTTPRequestHandler):
             # 连接早断了，上游那边的会话还挂着）。
             cred = (session.get("accessKey"), session.get("secretKey"),
                     session.get("securitytoken"))
-            session_id = ca_codearts.new_session_id()
-            hb_ok, hb_detail = ca_codearts.heartbeat(
-                *(cred + (session_id, "busy")), timeout=6)
+            session_id, hb_ok, hb_detail = codearts_session_busy(
+                cred, account_label)
             if not hb_ok:
                 # 登记失败**不阻断**：心跳是保命手段，不是前置条件。真拿不到
                 # 名额时 open_chat 会回 1041，走下面的重试 / 换号。
@@ -19063,7 +19244,7 @@ class Handler(BaseHTTPRequestHandler):
                                             session_cred=cred)
             # 没拿到句柄：刚 busy 的那个 id 要立刻注销（哪怕 busy 本身没成）。
             # 不注销，上游可能已经记成半开会话，白占一个名额。
-            ca_codearts.heartbeat(*(cred + (session_id, "idle")), timeout=6)
+            codearts_session_idle(cred, session_id)
 
             # 这一轮失败：先把名额还掉，再决定是换号重试还是放弃。
             _CODEARTS_POOL.release(key)
@@ -19386,8 +19567,9 @@ class Handler(BaseHTTPRequestHandler):
                          outcome="upstream_aborted", key=self._key_id())
             try:
                 emit({"error": {
-                    "message": "codearts upstream closed the stream: %s"
-                               % truncated,
+                    "message": "codearts upstream closed the stream: %s%s"
+                               % (truncated,
+                                  _codearts_break_hint(stream_stats)),
                     "type": "upstream_error", "code": 502}})
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
@@ -19610,10 +19792,14 @@ class Handler(BaseHTTPRequestHandler):
                 "base_messages": chat_req.get("messages"),
             }
             tap = {"usage": None, "error": ""}
+            # 断流归因（silent_s / bytes / pings）：另外两个入口原来不传 stats，
+            # 于是「静默 60 秒被切」在它们的错误里看不出是同一件事。
+            _break_stats = {}
             try:
                 for frame in stream_responses_events(
                         _tap_codearts_sse(
-                            lease.byte_lines(self._client_disconnected), tap),
+                            lease.byte_lines(self._client_disconnected,
+                                             _break_stats), tap),
                         model, holder):
                     self.wfile.write(ca_protocol.clean_responses_frame(frame))
                     self.wfile.flush()
@@ -19633,7 +19819,10 @@ class Handler(BaseHTTPRequestHandler):
                             "response": {"id": rid, "object": "response",
                                          "status": "failed",
                                          "error": {"code": "upstream_closed",
-                                                   "message": str(exc)}}},
+                                                   "message": "%s%s" % (
+                                                       exc,
+                                                       _codearts_break_hint(
+                                                           _break_stats))}}},
                             ensure_ascii=False) + "\n\n").encode("utf-8")))
                     self.wfile.write(b"data: [DONE]\n\n")
                     self.wfile.flush()
@@ -19760,10 +19949,12 @@ class Handler(BaseHTTPRequestHandler):
 
             holder = {"usage": None, "stop_sequences": chat_req.get("stop")}
             tap = {"usage": None, "error": ""}
+            _break_stats = {}
             try:
                 for frame in ca_protocol.stream_messages_events(
                         _tap_codearts_sse(
-                            lease.byte_lines(self._client_disconnected), tap),
+                            lease.byte_lines(self._client_disconnected,
+                                             _break_stats), tap),
                         model, holder):
                     self.wfile.write(frame)
                     self.wfile.flush()
@@ -19778,8 +19969,10 @@ class Handler(BaseHTTPRequestHandler):
                 try:
                     self.wfile.write(ca_protocol.anthropic_sse_frame("error", {
                         "error": {"type": "api_error",
-                                  "message": "upstream closed the stream: %s"
-                                             % exc}}))
+                                  "message": "upstream closed the stream: %s%s"
+                                             % (exc,
+                                                _codearts_break_hint(
+                                                    _break_stats))}}))
                     self.wfile.flush()
                 except Exception:
                     pass
@@ -20425,6 +20618,10 @@ def _serve_forever(args):
         _key_state = "off"
     log(f"listening  : http://{args.host}:{args.port}/v1  (api key: {_key_state})")
     log(f"dashboard  : http://{args.host}:{args.port}/")
+    # 上一次进程被杀/重启时，finally 里的 idle 没机会执行，那几条 busy 还挂在
+    # 上游占着名额。后台补发一次（不拖启动，见 reap_codearts_sessions）。
+    threading.Thread(target=reap_codearts_sessions,
+                     name="codearts-session-reap", daemon=True).start()
     if _panel_keys and API_KEY and all(k.get("key") != API_KEY for k in _panel_keys):
         log("api key   : --api-key ignored (panel keys take precedence)")
     # Keep the handler referenced for the process lifetime: SetConsoleCtrlHandler

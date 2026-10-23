@@ -227,6 +227,19 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+**「静默 60 秒被切」是上游的空闲超时，不是网络抖动**
+
+- 15:15–15:20 同一条请求（`msgs=33 chars=32568 tchars=92258 tools=55`）连撞四次，每次先吐 5.4 / 6.4 / 7.1 / 9.1 KB，然后**一个字节都没有** 59.8 / 59.8 / 60.0 / 60.0 秒，被掐。心跳三条全发出去（`pings=3`）、socket 也在（`sock=True`）—— 与续期无关；同一账号上有 **616 秒成功**的请求，所以也不是「总时长超 60 秒」的限制。结论：上游（APIG 的「后端超时」，默认 60 s）只按**有没有输出**计时。
+- 这类失败有个很坑的性质：**同一个请求会一直在同一处被切**。客户端自动重试，表现就是「反复回复同一句话」（用户看到的正是这个）。所以错误帧不再只给 `IncompleteRead(0 bytes read)`，静默 ≥50 s 时补一句 `upstream sent no bytes for 60s and was cut by its ~60s idle limit; … split this turn into smaller steps or lower the thinking budget`，让上层改策略而不是原样重试。
+- 三个入口都带上这句（`chat` 用 `stream_stats`；`messages` / `responses` 原来根本不传 stats，现在也传了，于是它们的断流错误里同样看得到 `silent_s`）。
+- 诊断口径：`silent_s` 按**任何字节**（含 SSE 注释）更新（见 `ca_codearts.iter_sse`），所以 `silent=60.0` 是真的零字节，不是「没解析出 data 帧」。我们自己的静默上限（`STREAM_IDLE_TIMEOUT` 15 s × `STREAM_MAX_IDLE` 40 = 600 s）比上游宽 10 倍，永远轮不到它先触发。
+
+**重启不再把会话名额丢在上游**
+
+- `idle` 注销写在 `finally` 里，只挡得住异常，挡不住 `systemctl restart` / OOM / 断电。进程一死，那几条 `busy` 就挂在上游直到它自己超时；账号只有 3 个名额，**一次部署就能全占掉**，之后一律 `TM.00001041`，而我们的退避等的是「别人释放」（2026-10-23 15:00–15:03 连着重启五次，那一小时的 1041 全出自这里）。
+- 现在把自造过的 `user-session-id` 落盘（`accounts/codearts_sessions.json`，与 `codearts_affinity.json` 同目录、已被 `accounts/*.json` 忽略），`busy` 成功才记、`idle` 成功就销账；启动后由后台线程逐条补发 `idle`，best-effort，不拖启动。
+- 三条保守设定：没凭据的条目留到超龄（1 小时）为止，别静默丢账；`idle` 失败的留一会还能再试；清理收尾是**合并写**而不是覆盖 —— 清理期间新登记的会话不会被抹掉（那正好是下一次重启要泄漏的那批）。
+
 **`APIG.0203` 的请求形状可归因，建连预算按「预估下一轮」判断**
 
 - 建连预算的判断时机是错的：原来只看「已经花了多久」，第 1 轮 60 秒 `<` 75 秒预算 → 放行第 2 轮 → 再跑 60 秒，客户端要等 **130 秒**才拿到 504（线上 15:02 实测 129 975 ms）。改成用「再来一轮至少需要一个首字节窗口」预估（`elapsed + min(header_timeout, 60) > CODEARTS_OPEN_BUDGET`），第 1 轮失败后就停；预算日志同时打出 `another attempt needs ~60s, budget 75s`，不用再倒推。

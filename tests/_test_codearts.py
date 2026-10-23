@@ -1482,7 +1482,9 @@ class _StubLease:
         for line in self._text.splitlines(keepends=True):
             yield line
 
-    def byte_lines(self, abort_check=None):
+    def byte_lines(self, abort_check=None, stats=None):
+        # 签名要与真租约一致：线上调用会带一个 stats 字典回来填断流归因
+        # （silent_s / bytes / pings），这里只接住、不填。
         for line in self.lines(abort_check):
             yield line.encode("utf-8")
 
