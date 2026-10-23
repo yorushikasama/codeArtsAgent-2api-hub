@@ -48,9 +48,15 @@ MODEL_ID = "injected-panel-route-model"
 LATEST = "1.6.18"
 
 
-def injected_models(realm=None):
-    """The model listing, without walking anything upstream."""
-    return [(MODEL_ID, {"name": "Injected"})]
+def injected_catalog():
+    """The model listing, without walking anything upstream.
+
+    WorkBuddy 池删除后清单只来自码道目录，所以桩换成了 codearts_catalog。
+    """
+    return {"models": [{"id": MODEL_ID, "name": "Injected", "group": "builtin",
+                        "supportsImages": False, "supportsReasoning": True,
+                        "supportsToolCall": True}],
+            "errors": {}}
 
 
 class StubUpdates(object):
@@ -120,17 +126,15 @@ class BoundaryCase(unittest.TestCase):
     """One management surface, one isolated settings directory per test."""
 
     # Management reads the panel draws, none of which is a model API.
-    PANEL_ONLY_GET = ("/settings", "/updates", "/logs", "/tasks", "/scheduler",
-                      "/accounts", "/usage", "/pricing",
-                      "/activity/history", "/accounts/credits/grants")
+    PANEL_ONLY_GET = ("/settings", "/updates", "/logs", "/scheduler",
+                      "/usage", "/pricing", "/activity/history")
     # The same boundary on a reply that is a file rather than a document.
     PANEL_ONLY_DOWNLOAD = ("/logs/export",)
     # The management writes, each guarded by its own panel check in do_POST.
     # /updates/check is the half of the update pair that was already correct;
     # the two pricing writes are the ones the panel's own buttons post to.
     PANEL_ONLY_POST = ("/updates/check", "/pricing/refresh",
-                       "/pricing/mapping", "/settings/save",
-                       "/catalog/refresh")
+                       "/pricing/mapping", "/settings/save")
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory(prefix="panel-route-")
@@ -144,7 +148,10 @@ class BoundaryCase(unittest.TestCase):
         request = DispatchRequest(path, headers=headers, command=command, body=body)
         with mock.patch.multiple(proxy, ACCOUNTS_DIR=self.directory, API_KEY=None,
                                  POOL=None, PRICING=None, UPDATES=self.updates,
-                                 SCHEDULER=None, fetch_models=injected_models):
+                                 SCHEDULER=None,
+                                 codearts_catalog=injected_catalog,
+                                 codearts_deployed=lambda: True,
+                                 model_aliases=lambda: {}):
             return request.dispatch()
 
     def assert_refused(self, path, headers, command="GET", body=b""):

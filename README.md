@@ -65,7 +65,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 130 个套件：105 个 Python + 25 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 124 个套件：99 个 Python + 25 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_test_protocol_pure.py` 只 import `ca_protocol`，用来钉住「协议层不依赖 ca_proxy、不碰 I/O」。
 - `tests/_test_protocol_golden.py` 对拍两种流式协议的**逐字节帧序列**（`tests/golden/*.json`）。
   只有确认行为变化是想要的才重录：`python tests/record_protocol_golden.py`，录完 review diff。
@@ -145,10 +145,9 @@ glm-5.3                  glm-5.2-sft-harmony
 其中 `Qwen3-VL-235B` 与 `kimi-k2.6-vl` 支持读图。清单按「这个部署实际能服务谁」生成：
 有码道账号就只列码道模型，不会拿内置快照凑一批调不通的名字。
 
-**重名模型归谁**：`deepseek-v4.1-flash` / `glm-5.3` / `glm-5.3-flash` 两边都有，
-按**码道优先**分流 —— 但前提是**这个部署真的配了码道账号**：没配时这些名字仍走
-WorkBuddy 账号池，不会因为「模型名在码道清单里」就拐去一个不存在的出口。
-清单里的 `owned_by` 永远跟实际分流一致，不会出现「清单说是 WorkBuddy、请求却去了码道」。
+**只有一条上游**：WorkBuddy 账号池已整体移除（2026-10-23），清单里的每一条都
+`owned_by=codearts`，不在清单里的模型名一律回 404 `model_not_found`，不会再有
+「清单说是 A、请求却去了 B」的分裂。
 
 ### 6. 推理超时
 
@@ -226,6 +225,17 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 <!-- 发版时：把下面的 Unreleased 段落整理成新版本号（## vX.Y.Z），整体移入 docs/CHANGELOG.md 顶部 -->
 
 ### Unreleased
+
+**移除 WorkBuddy 账号池：网关只服务码道**
+
+- `POOL` 不再创建（恒为 `None`），启动不再读 `accounts/*.json` 的 WorkBuddy 凭据、不再扫桌面端会话、不再有 `--info` / `--import-desktop` / `--user-agent` 三个参数；`/health` 的 `accounts` 语义改成「码道会话数」。
+- `/v1/models` 只从码道目录生成：不再合并 WorkBuddy 目录，也不再拿内置快照兜底（没有码道账号就回空清单，并在 `codearts.errors.sessions` 里说明原因）。每条都是 `owned_by=codearts`。
+- 三个协议入口（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）非码道模型一律 **404 `model_not_found`**，不再有「转发到 WorkBuddy 上游」的分支。
+- 面板删掉 WorkBuddy 那一整套接口：`/accounts`、`/accounts/export`、`/accounts/credits*`、`/accounts/login/*`、`/accounts/import*`、`/accounts/refresh`、`/accounts/sync-profile`、`/accounts/test`、`/accounts/set*`、`/accounts/delete`、`/accounts/product`、`/tasks*`、`/realm`、`/catalog/refresh`。
+- 关键顺序：码道那组 `/accounts/codearts/*` 路由必须排在任何「账号池」判断**之前**。以前那段 `if POOL is None: 503` 会把「加一个码道账号」也一起打死，报错文案还写着 `account pool unavailable` —— 跟码道毫无关系，极难查。
+- 随功能一起退场的 7 个套件（它们测的路径已经不存在）：`_test_anthropic_http.py`（mock 的 WorkBuddy 上游 HTTP 面）、`_test_breaker_fairness.py`、`_test_credit_grants.py`、`_test_pool_backoff.py`、`_test_product_switch.py`、`_test_profile_sync.py`、`_test_tasks_cache.py`。Anthropic 的协议面仍由 `_test_protocol_golden.py` + `_test_codearts.py` 覆盖。
+- **还没做完**：`ca_accounts.py` / `ca_identity.py` / `ca_atrest.py` / `ca_tasks.py` / `ca_fingerprint.py` 与 `ca_scheduler` 的 WB 循环还在（已不可达），`dashboard.html` 里对应的孤儿 JS 与两个区块也还在；这些是纯删除，下一步做。
+
 
 **模型清单补上上游新出现的 `kimi-k3`**
 

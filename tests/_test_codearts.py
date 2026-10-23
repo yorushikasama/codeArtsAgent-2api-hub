@@ -1082,6 +1082,7 @@ print()
 print("== 接进 /v1/models 的形状适配 ==")
 
 import ca_proxy as P  # noqa: E402  (需要它才能验 model_entry 契约)
+import ca_stream as S2  # noqa: E402
 
 _META = {
     "id": "deepseek-v4.1-flash", "name": "deepseek-v4.1-flash",
@@ -1250,14 +1251,15 @@ P.ACCOUNTS_DIR = _ROUTE_DIR
 
 
 # ---------------------------------------------------------------------------
-# /v1/models 合并：重名条目的码道字段必须盖过 WorkBuddy 的
+# /v1/models：只列码道（WorkBuddy 池已移除）
 # ---------------------------------------------------------------------------
 #
-# deepseek-v4.1-flash / glm-5.3 两边都有，请求实际拐去码道。WorkBuddy 那份
-# 的倍率、采样默认值和思考档位都不适用，清单必须展示码道这一套。
+# 以前这里要验证「重名条目以码道为准」的合并规则。池删掉之后没有重名可合，
+# 清单只可能来自码道目录 —— 于是要钉的是三件事：只出码道、没账号时回空表
+# （不拿内置快照凑数）、别名照常展开。
 
 print()
-print("== /v1/models 合并重名条目 ==")
+print("== /v1/models 只列码道 ==")
 
 
 class _CatalogHandler(P.Handler):
@@ -1274,14 +1276,6 @@ class _CatalogHandler(P.Handler):
         self.captured = (code, obj)
 
 
-_WB_META = {
-    "contextWindow": {"supportedLengths": [1000000]},
-    "maxInputTokens": 1000000, "maxOutputTokens": 65536,
-    "supportsReasoning": True,
-    "reasoning": {"supportedEfforts": ["low", "high"],
-                  "defaultEffort": "low", "canDisableThinking": True},
-    "temperature": 0.7, "top_p": 0.9, "credits": "0.50",
-}
 _CA_DS = {
     "id": "deepseek-v4.1-flash", "name": "deepseek-v4.1-flash",
     "group": C.GROUP_BENEFIT, "supportsImages": False,
@@ -1296,54 +1290,54 @@ _CA_GLM = dict(_CA_DS, id="glm-5.3", name="glm-5.3",
                creditRatio="0.79x",
                thinkingStrengths=["high", "max"], thinkingDefault="high")
 
-_saved_merge = (P.workbuddy_accounts_available, P.fetch_models,
-                P.codearts_catalog, P.codearts_deployed,
-                P.ca_modelsdev.refresh_async)
+_saved_list = (P.codearts_catalog, P.codearts_deployed, P.model_aliases,
+               P.ca_modelsdev.refresh_async)
 try:
-    P.workbuddy_accounts_available = lambda: True
-    P.fetch_models = lambda realm=None: [
-        ("deepseek-v4.1-flash", dict(_WB_META)),
-        ("glm-5.3", dict(_WB_META)),
-        ("hy4-preview", {"contextWindow": {"supportedLengths": [200000]}}),
-    ]
     P.codearts_catalog = lambda: {"models": [dict(_CA_DS), dict(_CA_GLM)],
                                   "errors": {}}
     P.codearts_deployed = lambda: True
+    P.model_aliases = lambda: {}
     P.ca_modelsdev.refresh_async = lambda *a, **k: None
-    _merge_handler = _CatalogHandler()
-    _merge_handler._get_v1_models()
-finally:
-    (P.workbuddy_accounts_available, P.fetch_models,
-     P.codearts_catalog, P.codearts_deployed,
-     P.ca_modelsdev.refresh_async) = _saved_merge
+    _list_handler = _CatalogHandler()
+    _list_handler._get_v1_models()
+    _list_code, _list_payload = _list_handler.captured
+    _ids = [e["id"] for e in _list_payload["data"]]
+    check("清单只出码道模型", sorted(_ids) == ["deepseek-v4.1-flash", "glm-5.3"],
+          _ids)
+    check("每条都标 owned_by=codearts",
+          all(e.get("owned_by") == "codearts" for e in _list_payload["data"]),
+          [e.get("owned_by") for e in _list_payload["data"]])
+    check("codearts 段带出条数", _list_payload["codearts"]["count"] == 2,
+          _list_payload.get("codearts"))
+    check("不再有 WorkBuddy 目录来源字段",
+          "catalog" not in _list_payload, sorted(_list_payload))
 
-_merge_code, _merge_payload = _merge_handler.captured
-_by_id = {e["id"]: e for e in _merge_payload["data"]}
-_ds_entry = _by_id["deepseek-v4.1-flash"]
-check("重名条目保留 WorkBuddy 的上下文",
-      _ds_entry.get("context_length") == 1000000, _ds_entry)
-check("重名条目归属路由都标成码道",
-      _ds_entry.get("owned_by") == "codearts"
-      and _ds_entry.get("routed_via") == "codearts", _ds_entry)
-check("重名条目倍率取码道", _ds_entry.get("credits") == "0.18", _ds_entry)
-check("重名条目计费规则取码道",
-      (_ds_entry.get("credit_pricing") or {}).get("ratio_display") == "0.18x",
-      _ds_entry)
-check("重名条目采样默认值取码道",
-      (_ds_entry.get("temperature"), _ds_entry.get("top_p")) == (0.5, 0.0),
-      _ds_entry)
-check("码道没有档位时清掉 WorkBuddy 的档位",
-      not any(k in _ds_entry for k in ("reasoning_efforts",
-                                       "reasoning_default_effort",
-                                       "reasoning_fixed_effort",
-                                       "reasoning_can_disable")), _ds_entry)
-_glm_entry = _by_id["glm-5.3"]
-check("码道有档位时用码道的列表",
-      _glm_entry.get("reasoning_efforts") == ["high", "max"]
-      and _glm_entry.get("reasoning_default_effort") == "high"
-      and _glm_entry.get("reasoning_can_disable") is False, _glm_entry)
-check("不归码道的条目不动", _by_id["hy4-preview"].get("owned_by") == "workbuddy",
-      _by_id["hy4-preview"])
+    # 别名：目标在本清单里才展开，且 ownership 跟着目标走。
+    P.model_aliases = lambda: {"gpt-5-codex": "glm-5.3",
+                               "claude-sonnet-4-5-20250929": "不存在的模型"}
+    _alias_handler = _CatalogHandler()
+    _alias_handler._get_v1_models()
+    _alias_by_id = {e["id"]: e for e in _alias_handler.captured[1]["data"]}
+    check("别名指向清单里的模型时展开成独立条目",
+          "gpt-5-codex" in _alias_by_id
+          and _alias_by_id["gpt-5-codex"].get("alias_of") == "glm-5.3",
+          sorted(_alias_by_id))
+    check("别名指向不存在的模型时不出现",
+          "claude-sonnet-4-5-20250929" not in _alias_by_id, sorted(_alias_by_id))
+
+    # 没有码道账号：回空清单并说明原因，绝不拿 WorkBuddy 快照兜底。
+    P.codearts_deployed = lambda: False
+    _empty_handler = _CatalogHandler()
+    _empty_handler._get_v1_models()
+    _empty_payload = _empty_handler.captured[1]
+    check("没有码道账号时清单为空", _empty_payload["data"] == [],
+          _empty_payload.get("data"))
+    check("空清单要说明原因",
+          _empty_payload["codearts"]["errors"].get("sessions") is not None,
+          _empty_payload.get("codearts"))
+finally:
+    (P.codearts_catalog, P.codearts_deployed, P.model_aliases,
+     P.ca_modelsdev.refresh_async) = _saved_list
 
 
 # ---------------------------------------------------------------------------
@@ -1963,7 +1957,7 @@ _SSE_TOOL = (
     '{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}\n\n'
     'data: [DONE]\n\n'
 )
-_c, _r, _u, _e, _tc = P._collect_codearts_sse(_SSE_TOOL)
+_c, _r, _u, _e, _tc = S2.collect_sse(_SSE_TOOL)
 check("tool_calls 被聚合出来", len(_tc) == 1, _tc)
 check("工具名正确", _tc and _tc[0]["function"]["name"] == "get_date", _tc)
 check("id 正确", _tc and _tc[0]["id"] == "call_1", _tc)
@@ -1971,7 +1965,7 @@ check("分片的 arguments 被拼接",
       _tc and _tc[0]["function"]["arguments"] == '{"day":3}',
       _tc[0]["function"]["arguments"] if _tc else None)
 check("usage 照样收到", _u.get("total_tokens") == 15, _u)
-check("无 tool 调用时返回空列表", P._collect_codearts_sse(
+check("无 tool 调用时返回空列表", S2.collect_sse(
     'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')[4] == [], "应为空")
 
 
@@ -2459,19 +2453,19 @@ check("open_chat 失败时返回状态码+错误体、不给句柄",
 
 # 并发判定：1041 走短退避，别混进 82 秒的 TPM 节奏
 check("TM.00001041 认作并发已满",
-      P._codearts_concurrency_full(400, '{"error_code":"TM.00001041"}'))
+      S2.concurrency_full(400, '{"error_code":"TM.00001041"}'))
 check("TPM 81114 不算并发已满",
-      not P._codearts_concurrency_full(429, '{"error_code":"ModelArts.81114"}'))
+      not S2.concurrency_full(429, '{"error_code":"ModelArts.81114"}'))
 # 81111 和 81114 是同一种瞬时限流（前者按 TPM，后者按请求数），
 # 上游有时把它塞在 HTTP 400 的 body 里，只看状态码会掉进「参数错」分支
 # 回 400 —— 客户端于是把一条本来等几秒就好的请求当成坏请求丢掉。
 check("81114 映射成 429",
-      P._codearts_fail_spec(429, "ModelArts.81114", "")[0] == 429,
-      P._codearts_fail_spec(429, "ModelArts.81114", ""))
+      S2.fail_spec(429, "ModelArts.81114", "")[0] == 429,
+      S2.fail_spec(429, "ModelArts.81114", ""))
 check("81111 即使包在 400 里也映射成 429",
-      P._codearts_fail_spec(400, "InferHub.ModelArts.81111.429",
+      S2.fail_spec(400, "InferHub.ModelArts.81111.429",
                             "TPM limit")[0] == 429,
-      P._codearts_fail_spec(400, "InferHub.ModelArts.81111.429", "TPM limit"))
+      S2.fail_spec(400, "InferHub.ModelArts.81111.429", "TPM limit"))
 check("并发满的退避明显短于 TPU 限流",
       sum(P.CODEARTS_BUSY_DELAYS) < sum(P.CODEARTS_RETRY_DELAYS),
       (P.CODEARTS_BUSY_DELAYS, P.CODEARTS_RETRY_DELAYS))

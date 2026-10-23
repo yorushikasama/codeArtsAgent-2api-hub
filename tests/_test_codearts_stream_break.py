@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import ca_codearts as C  # noqa: E402
 import ca_settings as S   # noqa: E402
 import ca_proxy as P     # noqa: E402
+import ca_stream as S2  # noqa: E402
 
 PASS = FAIL = 0
 
@@ -219,9 +220,9 @@ check("断点补 [DONE]", _sse.endswith("data: [DONE]\n\n"), _sse[-40:])
 # 空闲超时收掉，同一个请求会一直在同一处被切，客户端自动重试就表现成
 # 「反复回复同一句话」。错误文案必须直接给出改法，否则上层只会原样重试。
 check("提示只在接近 60 秒静默时才出现",
-      P._codearts_break_hint({"silent_s": 12.0}) == ""
-      and P._codearts_break_hint({}) == "", None)
-_hint = P._codearts_break_hint({"silent_s": 59.8})
+      S2.break_hint({"silent_s": 12.0}) == ""
+      and S2.break_hint({}) == "", None)
+_hint = S2.break_hint({"silent_s": 59.8})
 check("60 秒静默的提示写明「拆小 / 降思考预算」",
       "split" in _hint and "thinking budget" in _hint, _hint)
 _h, _sse = _run([_Lease([_role], 1, silent_s=59.8)])
@@ -528,7 +529,7 @@ P.ACCOUNTS_DIR = _saved_acct_dir
 
 section("5. 上游错误 → 对外状态码")
 
-_spec = P._codearts_fail_spec
+_spec = S2.fail_spec
 check("并发会话满（HTTP 400 + TM.00001041）→ 429 而不是 502",
       _spec(400, "TM.00001041", "并发会话数已达上限(3个)")[0] == 429,
       _spec(400, "TM.00001041", ""))
@@ -552,8 +553,11 @@ _open_seg = _src[_src.index("def _codearts_open_lease"):]
 _open_seg = _open_seg[:_open_seg.index("\n    def ", 10)]
 check("建连失败记账与响应同源（映射失败用 st，网络异常仍 502）",
       "record_error(model, st," in _open_seg
-      and "_codearts_fail_spec(status, code, detail, anthropic)" in _open_seg
+      and "ca_stream.fail_spec(status, code, detail, anthropic)" in _open_seg
       and "record_error(model, 502, str(last_exc)" in _open_seg, None)
+check("状态码映射只有一张表（ca_proxy 里不许再抄一份）",
+      "def _codearts_fail_spec" not in _src
+      and "def _codearts_frame_status" not in _src, None)
 check("鉴权失败（401）→ 502 + credentials_error",
       _spec(401, "APIG.0301", "access key not found")
       == (502, "credentials_error"), _spec(401, "APIG.0301", ""))
@@ -720,9 +724,15 @@ check("TLS 已解密未交付的字节算「可读」",
 check("拿不到 fileno 的对象 → None（调用方退回阻塞读）",
       C._wait_readable(object(), 0.05) is None, None)
 
-# 哨兵在 _tap_codearts_sse 里翻成 SSE 注释行
-_tapped = list(P._tap_codearts_sse([C.KEEPALIVE, b'data: {"usage":{"total_tokens":7}}\n\n'], {}))
+# 哨兵在 tap_lines 里翻成 SSE 注释行
+_sink725 = {}
+_tapped = list(S2.tap_lines([C.KEEPALIVE, b'data: {"usage":{"total_tokens":7}}\n\n'],
+                             _sink725, keepalive=C.KEEPALIVE))
 check("哨兵翻成 SSE 注释行", _tapped[0] == b": keepalive\n\n", _tapped[:1])
+check("tap 顺手记下 usage", _sink725.get("usage", {}).get("total_tokens") == 7,
+      _sink725)
+check("不传 keepalive 时哨兵按普通行透传（旧调用点不会凭空多一帧）",
+      list(S2.tap_lines([C.KEEPALIVE], {})) == [C.KEEPALIVE], None)
 
 
 # ---------------------------------------------------------------------------
@@ -955,15 +965,15 @@ check("思考参数与采样参数合到一份 extra",
 check("两者都没有时返回 None", P._codearts_extra({}) is None,
       P._codearts_extra({}))
 
-_spec2 = P._codearts_fail_spec
+_spec2 = S2.fail_spec
 check("图片发给纯文本模型（001001020.406）→ 400，不是 502",
       _spec2(200, "InferHub.001001020.406",
              "The request model is not multimodal")
       == (400, "invalid_request_error"),
       _spec2(200, "InferHub.001001020.406", "not multimodal"))
 check("帧内映射同样走这张表",
-      P._codearts_frame_status("InferHub.001001020.406 not multimodal")[0] == 400,
-      P._codearts_frame_status("InferHub.001001020.406"))
+      S2.frame_status("InferHub.001001020.406 not multimodal")[0] == 400,
+      S2.frame_status("InferHub.001001020.406"))
 
 check("n=2 被明确拒绝",
       "n=2" in (P._codearts_choice_count_error({"n": 2}) or ""),

@@ -215,14 +215,23 @@ class CatalogEntryTests(unittest.TestCase):
                 self.captured = (code, obj)
 
         handler = Handler()
-        with mock.patch.object(ca_proxy, "fetch_models",
-                               return_value=[("glm-5.2", {})]), \
+        # 清单只来自码道目录（WorkBuddy 池已移除），桩换成 codearts_catalog。
+        catalog = {"models": [{"id": "glm-5.2", "name": "glm-5.2",
+                               "group": "builtin", "supportsImages": False,
+                               "supportsReasoning": True,
+                               "supportsToolCall": True}],
+                   "errors": {}}
+        with mock.patch.object(ca_proxy, "codearts_catalog",
+                               return_value=catalog), \
+                mock.patch.object(ca_proxy, "codearts_deployed",
+                                  return_value=True), \
+                mock.patch.object(ca_proxy, "model_aliases", return_value={}), \
                 mock.patch.object(ca_modelsdev, "refresh_async") as refresh:
             handler._get_v1_models()
         code, obj = handler.captured
         self.assertEqual(code, 200)
         refresh.assert_called_once()
-        self.assertEqual(obj["data"][0]["context_length"], 1000000)
+        self.assertEqual(obj["data"][0]["id"], "glm-5.2")
 
 
 

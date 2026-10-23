@@ -64,6 +64,7 @@ import ca_atrest
 import ca_catalog
 import ca_codearts
 import ca_protocol
+import ca_stream
 import ca_egress
 import ca_logstore
 import ca_settings
@@ -10985,35 +10986,6 @@ def _codearts_choice_count_error(payload):
             "you really need independent samples." % n)
 
 
-def _tap_codearts_sse(lines, sink):
-    """把 usage / 帧内错误顺手记进 sink，再把行原样交给翻译器。
-
-    事件翻译器只负责出事件、不管记账；流式路径没有聚合结果，用量只能在这里捞。
-
-    上游静默产生的 ``KEEPALIVE`` 哨兵在这里翻成一条 SSE 注释行：协议允许
-    以 ``:`` 开头的噪声，翻译器与客户端都该忽略它。放在这一层而不是每个
-    翻译器里，是为了让 Chat / Responses / Messages 三条路共用一个口径。
-    """
-    for line in lines:
-        if line is ca_codearts.KEEPALIVE:
-            yield b": keepalive\n\n"
-            continue
-        text = line.decode("utf-8", "replace") if isinstance(line, bytes) else line
-        stripped = text.strip()
-        if stripped.startswith("data:"):
-            raw = stripped[5:].strip()
-            if raw and raw != "[DONE]":
-                try:
-                    piece = json.loads(raw)
-                except Exception:
-                    piece = None
-                if isinstance(piece, dict):
-                    if isinstance(piece.get("usage"), dict):
-                        sink["usage"] = piece["usage"]
-                    if piece.get("error_code") and not sink.get("error"):
-                        sink["error"] = "%s %s" % (
-                            piece.get("error_code"), piece.get("error_msg") or "")
-        yield line
 
 _CODEARTS_CATALOG = {"at": 0.0, "models": [], "errors": {}}
 _CODEARTS_CATALOG_TTL = 300.0
@@ -11535,78 +11507,12 @@ def codearts_model_entry(m):
     return entry
 
 
-def _codearts_retryable(status, text):
-    """这个失败值得等一下重试吗？
-
-    码道有两种**瞬时限流**，看起来像「模型不可用」其实不是：
-      · 429 ModelArts.81111 / 81114  —— TPM 打满（日额度 1000 万，瞬时限流）
-      · 400 TM.00001041              —— 并发会话数已达上限（账号只给 3 个，
-                                        上一个请求还没从上游释放就会撞上）
-    网关连着发几个请求必然撞第二种，所以必须自己退避重试，
-    否则用户侧看到的是「这个模型坏了」。
-    """
-    if status == 429:
-        return True
-    if status and status >= 500:
-        return True
-    body = text or ""
-    return ("TM.00001041" in body or "ModelArts.811" in body
-            or "rate limit" in body.lower()
-            or "too many requests" in body.lower()
-            or "并发会话数已达上限" in body)
 
 
-def _codearts_error_detail(text):
-    """从码道的错误体里抠出 (错误码, 人能看的说明)。"""
-    try:
-        d = json.loads(text or "")
-        detail = (d.get("error_msg") or d.get("message")
-                  or (d.get("error") or {}).get("message") or "")
-        code = (d.get("error_code")
-                or (d.get("error") or {}).get("code") or "")
-        return str(code), str(detail)
-    except Exception:
-        return "", (text or "")[:200]
 
 
-def _codearts_break_hint(stats):
-    """断流时附一句「为什么、该怎么办」，给客户端/agent 看。
-
-    ``silent_s`` 是**一个字节都没到**的时长（SSE 注释也算字节，见
-    ``ca_codearts.iter_sse``），不是「没解析出 data 帧」的时长。线上同一条
-    请求连撞三次，静默分别是 59.8 / 59.8 / 60.0 秒 —— 这不是随机抖动，而是
-    上游（APIG 的「后端超时」，默认 60 s）对**没有输出**的连接按空闲收掉。
-
-    所以这类失败有个很坑的性质：**同一个请求会一直在同一处被切**。客户端
-    自动重试时，表现就是「反复回复同一句话」（2026-10-23 15:15–15:18 三次
-    同形状请求，各吐 5.4/6.4/7.1 KB 后静默 60 s）。只报
-    ``IncompleteRead(0 bytes read)`` 会让上层以为是网络抖动、继续原样重试，
-    所以要把「这一轮该拆小」直接写在错误里。
-    """
-    silent = (stats or {}).get("silent_s") or 0.0
-    if silent < 50:
-        return ""
-    return (" (upstream sent no bytes for %.0fs and was cut by its ~60s idle "
-            "limit; the same request fails at the same point, so split this "
-            "turn into smaller steps or lower the thinking budget)"
-            % silent)
 
 
-def _codearts_frame_status(text, anthropic=False):
-    """帧内错误（HTTP 200 + error_code）→ 该回给客户端的 ``(状态码, type)``。
-
-    上游把很多错误塞在 SSE 帧里而不是 HTTP 状态码上。首帧之前我们还来得及
-    回一个真正的状态码，就别一律当 502 —— 客户端靠它决定「等一会儿重试」
-    还是「这个请求本身就错了，改了再发」。
-
-    **不要再维护第二张表**：这里以前自己写了一份（只认 1041 和参数错），
-    于是「模型不存在」「没有福利权益」这类帧内错误全部落成 502，和
-    ``_codearts_fail_spec`` 的说法不一致。现在统一走那张表 —— 帧内错误拿不到
-    HTTP 状态码，就传 200 让 body 去匹配。
-    """
-    body = str(text or "")
-    code, _sep, detail = body.partition(" ")
-    return _codearts_fail_spec(200, code or body, detail or body, anthropic)
 
 
 class _CodeartsRateLimit(Exception):
@@ -11619,135 +11525,12 @@ class _CodeartsRateLimit(Exception):
         self.detail = ""
 
 
-def _codearts_fail_spec(status, code, detail, anthropic=False):
-    """上游失败 → ``(HTTP 状态码, error.type)``。
-
-    这张表照 CodeArts2API-Go 的 ``internal/apierr``（README 里也有一份）：
-
-      | 情况 | 状态码 | OpenAI type | Anthropic type |
-      |---|---|---|---|
-      | 账号池为空 | 503 | server_error | overloaded_error |
-      | **凭据失效（无法续期）** | 502 | **credentials_error** | authentication_error |
-      | 上游并发上限 / 429 | 429 | rate_limit_error | rate_limit_error |
-      | 参数 / 模型名不合法 | 400 | invalid_request_error | invalid_request_error |
-      | 模型不存在 | 404 | invalid_request_error | invalid_request_error |
-      | 上游 5xx / 网络 | 502 | upstream_error | overloaded_error |
-
-    关键是**别把「重试没意义」的错报成 502**：以前我们把 max_tokens 超限
-    （`InferHub.001001005.400`）也回 502 upstream_error，客户端当成网关抖动
-    反复重试同一条错误请求，日志里每次都是同一个 400。
-    """
-    text = "%s %s" % (code or "", detail or "")
-    low = text.lower()
-    # 1041 在 HTTP 上是 400，但语义是「等会儿再来」，所以先于参数错判断
-    if (status == 429 or "tm.00001041" in low or "modelarts.811" in low
-            or "rate limit" in low or "too many requests" in low
-            or "并发会话数已达上限" in text):
-        return 429, "rate_limit_error"
-    if (status in (401, 403) or "apig.0301" in low or "apig.0303" in low
-            or "sts5.18" in low or "security token" in low
-            or "authentication" in low or "authorization" in low):
-        return 502, ("authentication_error" if anthropic else "credentials_error")
-    if (status == 404 or "002002009" in low or "model is not registered" in low
-            or "model not found" in low or "模型不存在" in text):
-        return 404, "invalid_request_error"
-    # InferHub.001001020.406 "The request model is not multimodal"：客户端把
-    # 图片发给了纯文本模型。这是**请求本身**的问题（换模型就好），回 400；
-    # 以前落进 502，客户端当成网关抖动一遍遍重试同一张图。
-    if ("001001020" in low or "not multimodal" in low
-            or "不支持多模态" in text):
-        return 400, "invalid_request_error"
-    # InferHub.4004.200 benefit not found：这是**限时福利渠道**的回复 ——
-    # 账号没有该模型的权益（没领、领完了、或这个账号本来就不在白名单里）。
-    # 它不是网关故障，重试同一条请求也不会变；回 502 只会让客户端反复退避。
-    if "4004.200" in low or "benefit not found" in low:
-        return 404, "invalid_request_error"
-    # APIG.0203 Backend timeout：APIG 等后端等超时了（实测约 60s 一刀）。
-    # 这不是网关自己挂了，重试同一条请求只会再等一个 60s —— 回 504，让客户端
-    # 看到「上游算太久」而不是一个含糊的 502。
-    if "apig.0203" in low or "backend timeout" in low:
-        return 504, ("overloaded_error" if anthropic else "upstream_error")
-    if (status == 400 or "001001005" in low or "param is invalid" in low
-            or "malformed_json" in low or "参数" in text):
-        return 400, "invalid_request_error"
-    return 502, ("overloaded_error" if anthropic else "upstream_error")
 
 
-def _codearts_concurrency_full(status, text):
-    """这一发是不是撞了「账号并发会话已满」（TM.00001041）？
-
-    单独认这个码，是因为它该用**短退避**：名额在别人（或上一轮没释放的会话）
-    手里，通常几秒就让出来；按通用限流的 5/12/25/40 退避，82 秒全花在等一个
-    早就没人要的答案上，客户端早就自己重试了。
-    """
-    body = text or ""
-    return ("TM.00001041" in body or "并发会话数已达上限" in body)
 
 
-def _collect_codearts_sse(text):
-    """把码道的 SSE 流聚合成 (正文, 推理, usage, 帧内错误, tool_calls)。
-
-    码道回的是 OpenAI 形状的 chunk，但错误可能藏在帧里而 HTTP 仍是 200，
-    所以必须逐帧扫 error_code —— 只看状态码会把失败读成成功。
-
-    tool_calls（2026-10-21 补）：上游 function calling 是原生支持的，会以
-    `delta.tool_calls` 逐帧下发（同一个 index 的 arguments 分片续接），外加
-    `finish_reason="tool_calls"`。**以前这里只收 content / reasoning_content，
-    tool_calls 被整段丢掉** —— 上游明明正确地请求了工具，网关聚合完就把
-    delta 清空，于是渲染层永远看不到调用，模型自己编的 `<tool_call>` 文本
-    反而被当成正文发出去。
-    """
-    content, reasoning, usage, err = "", "", {}, ""
-    tool_calls = []
-    for line in (text or "").splitlines():
-        if not line.startswith("data:"):
-            continue
-        chunk = line[5:].strip()
-        if not chunk or chunk == "[DONE]":
-            continue
-        try:
-            piece = json.loads(chunk)
-        except Exception:
-            continue
-        if piece.get("error_code"):
-            err = "%s %s" % (piece.get("error_code"),
-                             piece.get("error_msg") or piece.get("error") or "")
-            continue
-        if isinstance(piece.get("usage"), dict):
-            usage = piece["usage"]
-        for choice in piece.get("choices") or []:
-            delta = choice.get("delta") or {}
-            content += delta.get("content") or ""
-            reasoning += delta.get("reasoning_content") or ""
-            for call in delta.get("tool_calls") or []:
-                _merge_tool_call(tool_calls, call)
-    return content, reasoning, usage, err, tool_calls
 
 
-def _merge_tool_call(calls, call):
-    """把一帧 delta.tool_calls 并进累积列表。
-
-    同一个 index 会分多帧到达：第一帧带 id/type/name，后面的帧只带 arguments
-    的增量片段。按 index 归并，缺失字段沿用已有值。
-    """
-    if not isinstance(call, dict):
-        return
-    try:
-        index = int(call.get("index") or 0)
-    except (TypeError, ValueError):
-        index = len(calls)
-    while len(calls) <= index:
-        calls.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-    slot = calls[index]
-    for key in ("id", "type"):
-        if call.get(key):
-            slot[key] = call[key]
-    fn = call.get("function") or {}
-    target = slot.setdefault("function", {"name": "", "arguments": ""})
-    if fn.get("name"):
-        target["name"] = fn["name"]
-    if fn.get("arguments"):
-        target["arguments"] = (target.get("arguments") or "") + fn["arguments"]
 
 
 class _BufferedSSELines:
@@ -16040,7 +15823,7 @@ class Handler(BaseHTTPRequestHandler):
         429 走 `_rate_limited`（带 Retry-After，客户端才知道等多久），
         其余走 `_error` / `_anthropic_error`。
         """
-        st, et = _codearts_fail_spec(status, code, detail, anthropic)
+        st, et = ca_stream.fail_spec(status, code, detail, anthropic)
         text = "%s %s" % (code or "", detail or "")
         msg = "codearts %s: %s" % (code or "error", detail or "")
         if ("001001020" in text or "not multimodal" in text.lower()):
@@ -16260,26 +16043,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_panel_status()
         if path == "/health":
             return self._get_health()
-        if path == "/realm":
-            return self._get_realm()
         if path in ("/v1/models", "/models"):
             return self._get_v1_models()
         if path in ("/usage", "/v1/usage"):
             return self._get_v1_usage(query)
         if path == "/usage/recent":
             return self._get_usage_recent(query)
-        if path == "/accounts/credits/detail":
-            return self._get_account_credits_detail(query)
-        if path == "/accounts/credits":
-            return self._get_accounts_credits()
-        if path == "/accounts/credits/grants":
-            return self._get_account_credits_grants()
-        if path == "/accounts":
-            return self._get_accounts(query)
-        if path == "/accounts/export":
-            return self._get_accounts_export(query)
-        if path == "/accounts/login/poll":
-            return self._get_accounts_login_poll(query)
         if path == "/accounts/codearts":
             return self._get_codearts_accounts()
         if path == "/accounts/codearts/login/poll":
@@ -16296,8 +16065,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_usage_timeseries(query)
         if path == "/activity/history":
             return self._get_activity_history(query)
-        if path == "/tasks":
-            return self._get_tasks(query)
         if path == "/scheduler":
             return self._get_scheduler()
         if path == "/pricing":
@@ -16332,30 +16099,35 @@ class Handler(BaseHTTPRequestHandler):
     def _get_health(self):
         # Always answer (the launcher uses this to detect a running copy),
         # but only expose account identity to an authorised caller.
-        rep = current_account()
+        sessions = []
+        try:
+            sessions = ca_codearts.load_sessions(ACCOUNTS_DIR)
+        except Exception:
+            pass
         info = {
             "ok": True,
+            "service": "codearts-hub",
             # Report the realm actually in use (a hard-coded literal here
             # used to drift from the panel switch).
             "realm": CURRENT_REALM,
-            "accounts": len(POOL.accounts) if POOL else 0,
-            "accounts_ready": POOL.count_ready() if POOL else 0,
+            # 「accounts」这两个字段是老启动器/老面板的探测标记，保留下来但
+            # 语义改成码道会话数 —— 删掉会让 `_probe_running_instance` 把
+            # 自己认成「别的程序」。
+            "accounts": len(sessions),
+            "accounts_ready": sum(1 for s in sessions if not _codearts_left(s)[1]),
+            "codearts": len(sessions),
             "api_key_required": auth_required(),
         }
         if self._key_ok():
+            labels = [(s.get("account") or {}).get("label") for s in sessions]
             info.update({
-                "uid": rep.uid if rep else None,
-                "domain": rep.domain if rep else None,
-                "issuer": ca_accounts.jwt_issuer(rep.access_token) if rep else None,
-                "credential_file": os.path.basename(rep.path) if rep and rep.path else None,
-                "expires_at": rep.expires_at if rep else None,
+                "account": labels[0] if labels else None,
+                "accounts_all": [l for l in labels if l],
             })
         return self._json(200, info)
     # Accept the conventional /v1 prefix and the bare path, because clients
     # differ in whether they append "/v1" themselves.
 
-    def _get_realm(self):
-        return self._json(200, {"current": CURRENT_REALM, "options": ["cn"]})
 
     def _get_v1_models(self):
         if not self._authorized():
@@ -16371,87 +16143,33 @@ class Handler(BaseHTTPRequestHandler):
         # 判据必须是「有没有码道账号」，不能是「目录取没取到模型」：后者在上游
         # 抖动 / refresh_token 彻底失效时也是空的，那时拿内置快照兜底，等于向
         # 客户端宣告一批必然 503 的模型。
-        has_codearts_account = codearts_deployed()
-        if workbuddy_accounts_available() or not has_codearts_account:
-            try:
-                entries = fetch_models(realm=req_realm)
-            except Exception as exc:
-                return self._error(502, str(exc))
-        else:
-            entries = []
-        # Level 4 is best effort: warm the local cache in the background at
-        # most once per cooldown; offline deployments just keep the fallback.
+        # 清单只列码道：WorkBuddy 池已移除（2026-10-23），没有第二条上游。
+        # 没有码道账号时**回空清单**，不再拿内置快照兜底 —— 列一批必然 503 的
+        # 模型只会让人以为网关坏了。
         try:
             ca_modelsdev.refresh_async(ACCOUNTS_DIR, log=log)
         except Exception:
             pass
-        data = [model_entry(mid, meta) for mid, meta in entries]
-        known = {mid for mid, _ in entries}
-        # 码道模型并进同一份清单：客户端只认这个端点，不该为另一套凭证体系
-        # 学一个新地址。取数失败（没账号 / 上游抖动）就不加，不影响原有目录。
-        try:
-            cs = codearts_catalog()
-            # 按 id 建索引：有些模型名两边都有（glm-5.3 / glm-5.3-flash /
-            # deepseek-v4.1-flash），**分流时码道优先**，所以清单也必须这么标 ——
-            # 否则条目说 owned_by=workbuddy，请求其实去了码道，清单在撒谎。
-            # 但不整条替换：WorkBuddy 那份带更准的上下文窗口，保留它、只改归属。
-            index = {m.get("id"): m for m in data}
-            for item in cs.get("models") or []:
-                existing = index.get(item["id"])
-                if existing is None:
-                    entry = codearts_model_entry(item)
-                    data.append(entry)
-                    index[item["id"]] = entry
-                else:
-                    existing["owned_by"] = "codearts"
-                    existing["group"] = item.get("group") or ""
-                    existing["routed_via"] = "codearts"
-                    if item.get("creditRatio"):
-                        existing["credit_ratio"] = item["creditRatio"]
-                    # 重名条目也补上码道的计费规则与思考档位：请求实际是拐去
-                    # 码道的，窗口/单价必须以码道为准，否则面板展示的是另一套账。
-                    pricing = item.get("creditPricing")
-                    if pricing:
-                        existing["credit_pricing"] = pricing
-                        existing["credits"] = str(
-                            item.get("creditRatio") or pricing.get("ratio") or ""
-                        ).rstrip("xX").strip() or existing.get("credits")
-                    # 重名模型的采样默认值也以码道为准：请求实际拐去了码道，
-                    # 展示成 WorkBuddy 那套默认值等于说错话。
-                    for key in ("temperature", "top_p"):
-                        if item.get(key) is not None:
-                            existing[key] = item[key]
-                    strengths = item.get("thinkingStrengths") or []
-                    if strengths:
-                        existing["reasoning_efforts"] = list(strengths)
-                        existing["reasoning_default_effort"] = (
-                            item.get("thinkingDefault") or strengths[0])
-                        existing["reasoning_can_disable"] = False
-                    else:
-                        # 码道对这几个重名模型没有可选档位（实测只有
-                        # GLM-5.2 / glm-5.2-sft-harmony 有）。请求实际走码道，
-                        # 留着 WorkBuddy 的档位列表会让面板展示一组上游根本
-                        # 不认的档位；清掉后按「原生」显示。
-                        for key in ("reasoning_efforts", "reasoning_default_effort",
-                                    "reasoning_fixed_effort",
-                                    "reasoning_can_disable"):
-                            existing.pop(key, None)
-                known.add(item["id"])
-            # 始终带出码道这一段的诊断信息：清单里没出现码道模型时，
-            # 调用方/面板要能一眼看出是「没账号」还是「取数失败」。
-            payload_extra = {"codearts": {
-                "count": len(cs.get("models") or []),
-                "errors": cs.get("errors") or {},
-            }}
-        except Exception as exc:
-            payload_extra = {"codearts": {"count": 0,
-                                          "errors": {"catalog": str(exc)}}}
-        # 归属必须跟分流一致：分流看的是「模型名在码道清单里 + 这个部署配了
-        # 码道账号」（routes_to_codearts），不依赖码道目录能不能取到。上面的
-        # 循环只在目录非空时才会把重名条目标成 codearts，目录取空时（上游抖动 /
-        # STS 过期且 refresh_token 也失效）条目会留在 workbuddy 上，而请求其实
-        # 拐去了码道 —— 清单在撒谎，客户端会以为打不通的是 WorkBuddy 那边。
-        mark_codearts_ownership(data)
+        data = []
+        payload_extra = {"codearts": {
+            "count": 0,
+            "errors": {"sessions": "no codearts account configured"}}}
+        if codearts_deployed():
+            try:
+                cs = codearts_catalog()
+                # 以前这里要跟 WorkBuddy 目录按 id 合并且「重名以码道为准」，
+                # 删掉池之后没有重名可合，直接建条目。
+                data = [codearts_model_entry(item)
+                        for item in cs.get("models") or []]
+                # 始终带出码道这一段的诊断信息：清单里没出现码道模型时，
+                # 调用方/面板要能一眼看出是「没账号」还是「取数失败」。
+                payload_extra = {"codearts": {
+                    "count": len(cs.get("models") or []),
+                    "errors": cs.get("errors") or {},
+                }}
+            except Exception as exc:
+                payload_extra = {"codearts": {"count": 0,
+                                              "errors": {"catalog": str(exc)}}}
         # 别名条目：客户端用 `claude-sonnet-4-5-20250929` / `gpt-5-codex` 这类名字
         # 时，清单里得看得见它们，否则「配了别名却列不出来」会让人以为没生效。
         # 只列 target 真在本清单里的别名 —— 指向不存在模型的别名，列出来也调不通。
@@ -16532,114 +16250,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(400, str(exc), "invalid_request_error")
         return self._json(200, payload)
 
-    def _get_accounts_credits(self):
-        if not self._authorized():
-            return
-        # Refresh credits for all accounts
-        for a in (POOL.accounts if POOL else []):
-            a.fetch_credits()
-        return self._json(200, {"accounts": account_views()})
 
-    def _get_account_credits_grants(self):
-        """积分获取历史：只读账号积分快照，不发上游请求。
-
-        要更新的数字先走「一键刷新积分」（POST /accounts/credits），这里只把
-        最近一次快照里的积分包摊平成一张表；载荷带上快照时刻，面板据此提醒
-        数据有多旧。
-        """
-        if not self._authorized():
-            return
-        return self._json(200, credit_grants())
-
-    def _get_account_credits_detail(self, query):
-        if not self._authorized():
-            return
-        uid = (query.get("uid") or [""])[0]
-        refresh = (query.get("refresh") or ["0"])[0] in ("1", "true", "yes")
-        if not POOL:
-            return self._json(200, {"ok": False, "error": "账号池未初始化"})
-        account = POOL.get(uid) if uid else None
-        if not account:
-            if POOL.accounts:
-                account = POOL.accounts[0]
-            else:
-                return self._json(200, {"ok": False, "error": "未找到指定账号"})
-
-        if refresh or not account.credits or not account.credits.get("packages"):
-            res = account.fetch_credits()
-            if not res.get("ok"):
-                return self._json(200, {
-                    "ok": False,
-                    "uid": account.uid,
-                    "nickname": account.nickname,
-                    "realm": account.realm,
-                    "credits": account.credits,
-                    "error": res.get("error", "获取积分明细失败")
-                })
-
-        return self._json(200, {
-            "ok": True,
-            "uid": account.uid,
-            "nickname": account.nickname,
-            "realm": account.realm,
-            "credits": account.credits
-        })
-
-    def _get_accounts(self, query):
-        if not self._authorized():
-            return
-        # Fold the usage log before building the view, so the 日限额 badge and
-        # the parked count describe right now instead of the last request.
-        apply_daily_guards()
-        return self._json(200, {
-            "accounts": account_views(realm=query.get('realm', [None])[0] or CURRENT_REALM),
-            "storage": ACCOUNTS_DIR,
-            "usable": POOL.count_ready() if POOL else 0,
-        })
-
-    def _get_accounts_export(self, query):
-        if not self._authorized():
-            return
-        # ?download=1 makes the browser save it as a file; without it the
-        # document is returned inline so the dashboard can show a summary.
-        # ?uid= narrows it to specific accounts (repeatable, comma-joined),
-        # which is how the per-row "export" button works.
-        realm = (query.get("realm") or [None])[0] or None
-        if realm != "cn":
-            realm = None
-        include_secrets = (query.get("secrets") or ["1"])[0] not in ("0", "false", "no")
-        uids = []
-        for raw in query.get("uid") or []:
-            uids.extend(part.strip() for part in str(raw).split(",") if part.strip())
-        if uids:
-            known = {a.uid for a in (POOL.accounts if POOL else [])}
-            missing = [u for u in uids if u not in known]
-            if missing:
-                return self._error(404, "no such account: %s" % ", ".join(missing[:5]),
-                                   "invalid_request_error")
-        doc = ca_accounts.build_export_document(
-            POOL.accounts if POOL else [],
-            realm=realm,
-            include_secrets=include_secrets,
-            uids=uids or None,
-        )
-        if (query.get("download") or ["0"])[0] in ("1", "true", "yes"):
-            stamp = time.strftime("%Y%m%d-%H%M%S")
-            if len(uids) == 1:
-                # Name a single-account export after the account, so a
-                # folder of them stays readable.
-                label = uids[0][:8]
-            else:
-                label = realm + "-" if realm else ""
-            name = "workbuddy-accounts-%s%s.json" % (label, stamp)
-            return self._download(name, doc)
-        return self._json(200, doc)
-
-    def _get_accounts_login_poll(self, query):
-        if not self._authorized():
-            return
-        state = (query.get("state") or [""])[0]
-        return self._json(200, POOL.poll_login(state))
 
     # -- 码道 CodeArts（华为云）账号 ------------------------------------
     #
@@ -17001,28 +16612,6 @@ class Handler(BaseHTTPRequestHandler):
             lambda: perf_stats_etag(sample, realm=req_realm, range=req_range,
                                     since=req_since, until=req_until))
 
-    def _get_tasks(self, query):
-        if not self._authorized():
-            return
-        cn_accounts = [a for a in (POOL.accounts if POOL else []) if a.realm == "cn" and a.enabled]
-        if not cn_accounts:
-            return self._json(200, {"tasks": [], "summary": {}, "accounts": [], "msg": "未找到可用的国内版账号"})
-        uid = (query.get("uid") or [None])[0]
-        acc = None
-        if uid and uid != "all":
-            target = POOL.get(uid) if POOL else None
-            if target and target.realm == "cn":
-                acc = target
-        if not acc:
-            acc = cn_accounts[0]
-        tasks, summary = growth_snapshot(acc)
-        acct_list = [{"uid": a.uid, "nickname": a.nickname or a.uid[:8]} for a in cn_accounts]
-        return self._json(200, {
-            "tasks": tasks,
-            "summary": summary,
-            "account": acc.public(),
-            "accounts": acct_list,
-        })
 
     def _get_scheduler(self):
         if not self._authorized():
@@ -17728,25 +17317,27 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"ok": True, "synced_env": bool(synced)})
         return self._error(404, "not found", "invalid_request_error")
     def _handle_accounts(self, path, payload):
-        """Account-management endpoints (dashboard uses these)."""
-        if POOL is None:
-            return self._error(503, "account pool unavailable")
-        if path == "/accounts/import" and isinstance(payload, list):
-            # A bare array is only meaningful for import; wrap it so the rest
-            # of this handler can keep assuming a dict.
-            payload = {"data": payload}
+        """Account-management endpoints (dashboard uses these).
+
+        WorkBuddy 池已移除（2026-10-23）：这里只剩码道的账号管理与几个与账号
+        无关的面板动作（调度器、价格占位接口、日志清理）。
+        """
+        if path == "/accounts/codearts/login/start":
+            return self._route_codearts_login_start(payload or {})
+        if path == "/accounts/codearts/login/cancel":
+            return self._route_codearts_login_cancel(payload or {})
+        if path == "/accounts/codearts/refresh":
+            return self._route_codearts_refresh(payload or {})
+        if path == "/accounts/codearts/refresh-catalog":
+            return self._route_codearts_refresh_catalog(payload or {})
+        if path == "/accounts/codearts/claim":
+            return self._route_codearts_claim(payload or {})
+        if path == "/accounts/codearts/welfare/claim":
+            return self._route_codearts_welfare_claim(payload or {})
+        if path == "/accounts/codearts/delete":
+            return self._route_codearts_delete(payload or {})
         if not isinstance(payload, dict):
             return self._error(400, "expected a JSON object", "invalid_request_error")
-        if path in ("/accounts/credits", "/accounts/credits/fetch"):
-            return self._route_accounts_credits_fetch(payload)
-        if path == "/accounts/credits/detail":
-            return self._route_account_credits_detail(payload)
-        if path == "/tasks/run":
-            return self._route_tasks_run(payload)
-        if path == "/tasks/travel":
-            return self._route_tasks_travel(payload)
-        if path == "/tasks/streak-bonus":
-            return self._route_tasks_streak_bonus(payload)
         if path == "/scheduler/trigger":
             return self._route_scheduler_trigger(payload)
         if path == "/scheduler/toggle":
@@ -17755,248 +17346,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_pricing_refresh(payload)
         if path == "/logs/clear":
             return self._route_logs_clear(payload)
-        if path == "/realm":
-            return self._route_realm(payload)
-        if path == "/accounts/login/start":
-            return self._route_accounts_login_start(payload)
-        if path == "/accounts/login/cancel":
-            return self._route_accounts_login_cancel(payload)
-        if path == "/accounts/codearts/login/start":
-            return self._route_codearts_login_start(payload)
-        if path == "/accounts/codearts/login/cancel":
-            return self._route_codearts_login_cancel(payload)
-        if path == "/accounts/codearts/refresh":
-            return self._route_codearts_refresh(payload)
-        if path == "/accounts/codearts/refresh-catalog":
-            return self._route_codearts_refresh_catalog(payload)
-        if path == "/accounts/codearts/claim":
-            return self._route_codearts_claim(payload)
-        if path == "/accounts/codearts/welfare/claim":
-            return self._route_codearts_welfare_claim(payload)
-        if path == "/accounts/codearts/delete":
-            return self._route_codearts_delete(payload)
-        if path == "/accounts/import/desktop":
-            return self._route_accounts_import_desktop(payload)
-        if path == "/accounts/refresh":
-            return self._route_accounts_refresh(payload)
-        if path == "/accounts/sync-profile":
-            return self._route_accounts_sync_profile(payload)
-        if path == "/accounts/test":
-            return self._route_accounts_test(payload)
-        if path == "/accounts/set":
-            return self._route_accounts_set(payload)
-        if path == "/accounts/product":
-            return self._route_accounts_product(payload)
-        if path == "/accounts/set-all":
-            return self._route_accounts_set_all(payload)
-        if path == "/accounts/delete":
-            return self._route_accounts_delete(payload)
-        if path == "/accounts/import":
-            return self._route_accounts_import(payload)
         return self._error(404, "unknown account endpoint", "invalid_request_error")
-    def _route_accounts_product(self, payload):
-        """切换出站身分（cli <-> workbuddy），并即时回传结果。
 
-        官方有两套身分、两条配额线。某条满了可以切到另一条继续用。
-        """
-        target = str(payload.get("product") or "").strip().lower()
-        uid = payload.get("uid")
-        realm = payload.get("realm")
 
-        if target not in ca_identity.VALID_PRODUCTS:
-            return self._error(400, "product must be 'workbuddy', 'vscode', or 'cli'",
-                               "invalid_request_error")
 
-        if uid:
-            targets = [POOL.get(uid)]
-        elif realm and realm != "all":
-            targets = [a for a in POOL.accounts
-                       if a.realm == ca_accounts.match_realm(realm)]
-        else:
-            targets = list(POOL.accounts)
 
-        changed = []
-        for account in targets:
-            if account is None:
-                continue
-            try:
-                if account.set_product(target):
-                    # 立刻落盘：set_product() 只改记忆体，而面板上这一下是操作者
-                    # 的明确选择，不能等到别的路径（refresh / 签到 / 查积分）刚好
-                    # 存档才生效——切完就重启容器的人会白白丢掉这次切换。
-                    try:
-                        account.save(ACCOUNTS_DIR)
-                    except Exception as exc:
-                        log("product save failed for %s: %s" % (account.uid[:8], exc),
-                            level="WARN")
-                    changed.append(account.uid[:8])
-                    log("account %s: 面板手動切換身分 -> %s"
-                        % (account.uid[:8], target), level="INFO")
-            except Exception as exc:
-                log("product switch failed for %s: %s" % (account.uid[:8], exc),
-                    level="WARN")
 
-        return self._json(200, {
-            "ok": True,
-            "product": target,
-            "changed": changed,
-            "accounts": account_views(),
-        })
-
-    def _route_accounts_credits_fetch(self, payload):
-        uid = payload.get("uid")
-        realm = payload.get("realm")
-        if uid:
-            targets = [POOL.get(uid)]
-        elif realm and realm != "all":
-            targets = [a for a in POOL.accounts
-                       if a.realm == ca_accounts.match_realm(realm)]
-        else:
-            targets = list(POOL.accounts)
-        results = []
-        for account in targets:
-            if account is None:
-                continue
-            res = account.fetch_credits()
-            results.append({"uid": account.uid, "ok": res.get("ok", False),
-                            "credits": account.credits, "error": res.get("error", "")})
-        return self._json(200, {"results": results, "accounts": account_views()})
-
-    def _route_account_credits_detail(self, payload):
-        if not self._authorized():
-            return
-        uid = payload.get("uid")
-        refresh = payload.get("refresh", True)
-        if not POOL:
-            return self._json(200, {"ok": False, "error": "账号池未初始化"})
-        account = POOL.get(uid) if uid else None
-        if not account:
-            return self._json(200, {"ok": False, "error": "未找到指定账号"})
-
-        if refresh or not account.credits or not account.credits.get("packages"):
-            res = account.fetch_credits()
-            if not res.get("ok"):
-                return self._json(200, {
-                    "ok": False,
-                    "uid": account.uid,
-                    "nickname": account.nickname,
-                    "realm": account.realm,
-                    "credits": account.credits,
-                    "error": res.get("error", "获取积分明细失败")
-                })
-
-        return self._json(200, {
-            "ok": True,
-            "uid": account.uid,
-            "nickname": account.nickname,
-            "realm": account.realm,
-            "credits": account.credits
-        })
-
-    def _route_tasks_run(self, payload):
-        if not POOL:
-            return self._json(200, {"ok": False, "msg": "账号池不可用"})
-        invalidate_tasks_cache()          # 跑完任务状态就变了，别再端旧快照
-        uid = payload.get("uid")
-        if uid and uid != "all":
-            target = POOL.get(uid)
-            if not target or target.realm != "cn":
-                return self._json(200, {"ok": False, "msg": "未找到指定的国内版账号"})
-            targets = [target]
-        else:
-            targets = [a for a in POOL.accounts if a.realm == "cn" and a.enabled]
-        if not targets:
-            return self._json(200, {"ok": False, "msg": "未找到已启用的国内版账号"})
-        from ca_tasks import run_growth_tasks
-        combined_logs = []
-        total_credit = 0
-        for i, acc in enumerate(targets):
-            uid_str = acc.uid[:8] if acc.uid else "?"
-            nick = acc.nickname or uid_str
-            combined_logs.append(f"====== 正在为账号 [{nick} ({acc.uid})] 执行全自动成长任务 ({i+1}/{len(targets)}) ======")
-            res = run_growth_tasks(acc, gap=1.0)
-            # run_growth_tasks() reports its total as "earned_credit";
-            # reading the old "credit_added" name silently summed zeros
-            # and the dashboard always showed "+0 积分".
-            total_credit += res.get("earned_credit") or 0
-            for l in res.get("logs") or []:
-                combined_logs.append(f"  {l}")
-            if i < len(targets) - 1:
-                time.sleep(1.5)
-        combined_logs.append(f"====== 全部 {len(targets)} 个账号任务执行完毕，累计新增积分: +{total_credit} ======")
-        add_log_entry(f"[任务福利] 批量成长任务执行完成，共 {len(targets)} 个账号，新增积分 +{total_credit}", tag="tasks")
-        return self._json(200, {
-            "ok": True,
-            "credit_added": total_credit,
-            "logs": combined_logs,
-            "accounts_count": len(targets)
-        })
-
-    def _route_tasks_streak_bonus(self, payload):
-        if not POOL:
-            return self._json(200, {"ok": False, "msg": "账号池不可用"})
-        invalidate_tasks_cache()
-        uid = payload.get("uid")
-        if uid and uid != "all":
-            target = POOL.get(uid)
-            if not target or target.realm != "cn":
-                return self._json(200, {"ok": False, "msg": "未找到指定的国内版账号"})
-            targets = [target]
-        else:
-            targets = [a for a in POOL.accounts if a.realm == "cn" and a.enabled]
-        if not targets:
-            return self._json(200, {"ok": False, "msg": "未找到已启用的国内版账号"})
-        from ca_tasks import run_streak_bonus
-        results = []
-        for i, acc in enumerate(targets):
-            uid_str = acc.uid[:8] if acc.uid else "?"
-            nick = acc.nickname or uid_str
-            res = run_streak_bonus(acc)
-            results.append(f"{nick}: {res.get('msg')}")
-            add_log_entry(f"[任务福利] 账号 [{nick}] 连登管家与抽奖: {res.get('msg')}", tag="tasks")
-            if i < len(targets) - 1:
-                time.sleep(1.0)
-        return self._json(200, {"ok": True, "msg": chr(10).join(results)})
-
-    def _route_tasks_travel(self, payload):
-        if not POOL:
-            return self._json(200, {"ok": False, "msg": "账号池不可用"})
-        invalidate_tasks_cache()          # 同上：旅行会改任务/体力状态
-        uid = payload.get("uid")
-        if uid and uid != "all":
-            target = POOL.get(uid)
-            if not target or target.realm != "cn":
-                return self._json(200, {"ok": False, "msg": "未找到指定的国内版账号"})
-            targets = [target]
-        else:
-            targets = [a for a in POOL.accounts if a.realm == "cn" and a.enabled]
-        if not targets:
-            return self._json(200, {"ok": False, "msg": "未找到已启用的国内版账号"})
-        from ca_tasks import do_cat_travel
-        results = []
-        for i, acc in enumerate(targets):
-            uid_str = acc.uid[:8] if acc.uid else "?"
-            nick = acc.nickname or uid_str
-            res = do_cat_travel(acc)
-            results.append({
-                "uid": acc.uid,
-                "nickname": nick,
-                "action": res.get("action"),
-                "msg": res.get("msg") or "",
-                # do_cat_travel() returns the amount as "credit".
-                "reward_credit": res.get("credit", 0)
-            })
-            if i < len(targets) - 1:
-                time.sleep(1.0)
-        summary_msg = chr(10).join([f"{r['nickname']}: {r['msg']}" for r in results])
-        for r in results:
-            add_log_entry(f"[任务福利] 账号 [{r['nickname']}] 猫猫旅行: {r['msg']}", tag="tasks")
-        return self._json(200, {
-            "ok": True,
-            "results": results,
-            "msg": summary_msg,
-            "accounts_count": len(targets)
-        })
 
     def _route_update_check(self):
         """Run one release check now, on the operator's explicit request.
@@ -18028,17 +17383,6 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"ok": False, "running": False,
                                 "msg": "价格估算体系已移除，本网关只记积分"})
 
-    def _route_catalog_refresh(self, payload):
-        """面板「刷新模型清单」：强制向上游拉一次指定版本的目录。
-
-        版本（realm）由面板显式传当前视图的 cn：每个版本只用自己的
-        代表账号与该版本的端点，绝不跨区。拉取同步执行（通常 1~3 秒；
-        上游丢包时两次 10s 尝试封顶），同一版本有 30s 冷却；无论成败都
-        以 200 + ok 标志回答，msg 给面板直接展示（与 /pricing/refresh
-        同一条面板惯例）。
-        """
-        realm = str((payload or {}).get("realm") or "").strip().lower()
-        return self._json(200, refresh_catalog(realm))
 
     def _route_logs_clear(self, payload):
         clear_logs()
@@ -18054,307 +17398,17 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {"ok": False,
                                 "msg": "价格估算体系已移除，本网关只记积分"})
 
-    def _route_realm(self, payload):
-        # Changing the exit affects every key that is not realm-bound, so
-        # it is an admin action: the panel session is required. GET /realm
-        # stays open to API keys because it only reports the current exit.
-        if not self._panel_ok():
-            return self._error(403, "changing the upstream exit requires the "
-                                    "panel session, not an API key",
-                               "invalid_request_error")
-        new_realm = payload.get("realm")
-        if new_realm == "cn":
-            save_persisted_realm(new_realm)
-        return self._json(200, {"ok": True, "current": CURRENT_REALM, "persisted": True})
 
-    def _route_accounts_login_start(self, payload):
-        platform = payload.get("platform") or "CLI"
-        target_realm = payload.get("realm") or CURRENT_REALM
-        try:
-            started = POOL.start_login(realm=target_realm, platform=platform)
-        except Exception as exc:
-            return self._error(502, "could not start login: %s" % exc)
-        log("oauth login started (realm=%s, platform=%s, state=%s)" % (target_realm, platform, started["state"][:8]))
-        return self._json(200, started)
 
-    def _route_accounts_login_cancel(self, payload):
-        state = payload.get("state") or ""
-        return self._json(200, {"cancelled": POOL.cancel_login(state)})
 
-    def _route_accounts_import_desktop(self, payload):
-        # Two ways to call this:
-        #   {}                     -> scan only (read-only, nothing imported)
-        #   {"path": "..."}        -> import that credential
-        #   {"all": true}          -> import everything the scan found
-        #   {"recoverKey": true}   -> recover the at-rest key from the desktop client
-        target_path = payload.get("path")
-        if payload.get("recoverKey"):
-            try:
-                key = ca_accounts.desktop_atrest_key(
-                    force=bool(payload.get("force")), log=lambda m: log(m, tag="accounts"))
-            except Exception as exc:
-                log("at-rest key recovery failed: %s" % exc, level="WARN", tag="accounts")
-                return self._json(200, {"ok": False, "msg": str(exc),
-                                        "atrest": ca_atrest.status()})
-            return self._json(200, {
-                "ok": True,
-                "keyId": ca_atrest.derive_key_id(key),
-                "msg": "已从桌面客户端进程回收密钥（只留在内存里）",
-                "atrest": ca_atrest.status(),
-            })
-        if payload.get("keyText") is not None:
-            # 手工导入解码密钥：macOS / Linux 上无法回收进程内存，只能让用户贴一次。
-            # 与回收同一道闸——过不了 keyblob 自检就原样报错，不落内存。
-            try:
-                key = ca_atrest.adopt_key(payload.get("keyText"),
-                                          log=lambda m: log(m, tag="accounts"))
-            except Exception as exc:
-                log("at-rest key import rejected: %s" % exc, level="WARN", tag="accounts")
-                return self._json(200, {"ok": False, "msg": str(exc),
-                                        "atrest": ca_atrest.status()})
-            return self._json(200, {
-                "ok": True,
-                "keyId": ca_atrest.derive_key_id(key),
-                "msg": "已导入解码密钥（只留在内存里）",
-                "atrest": ca_atrest.status(),
-            })
-        if payload.get("forgetKey"):
-            ca_atrest.forget_key()
-            return self._json(200, {"ok": True, "atrest": ca_atrest.status()})
-        if target_path:
-            realm = payload.get("realm")
-            try:
-                account = POOL.import_desktop_credential(
-                    path=target_path, realm=realm, source="desktop-app")
-            except Exception as exc:
-                return self._error(400, "import failed: %s" % exc)
-            log("imported %s from %s (user confirmed)" % (account.uid[:8], os.path.basename(target_path)))
-            return self._json(200, {
-                "imported": [account.public()],
-                "accounts": account_views(),
-            })
-        if payload.get("all"):
-            imported = import_desktop_accounts(payload.get("realm"))
-            return self._json(200, {
-                "imported": [a.public() for a in imported],
-                "accounts": account_views(),
-            })
-        return self._json(200, {
-            "detected": desktop_credential_scan(),
-            "accounts": account_views(),
-            "pool_uids": [a.uid for a in POOL.accounts],
-            "atrest": ca_atrest.status(),
-        })
 
-    def _route_accounts_refresh(self, payload):
-        uid = payload.get("uid")
-        targets = [POOL.get(uid)] if uid else list(POOL.accounts)
-        results = []
-        for account in targets:
-            if account is None:
-                continue
-            ok = account.refresh()
-            account.save(ACCOUNTS_DIR)
-            results.append({"uid": account.uid, "ok": ok, "error": account.last_error})
-        return self._json(200, {"results": results})
 
-    def _route_accounts_sync_profile(self, payload):
-        """Manual nickname refresh from the web console.
 
-        Opt-in by nature: only runs when the operator asks for it. The
-        upstream response carries phone numbers and other personal fields;
-        ca_accounts.fetch_account_profile parses only uid/nickname.
-        """
-        uid = str(payload.get("uid") or "").strip()
-        realm = payload.get("realm")
-        if uid:
-            targets = [POOL.get(uid)]
-        elif realm and realm != "all":
-            targets = [a for a in POOL.accounts
-                       if a.realm == ca_accounts.match_realm(realm)]
-        else:
-            targets = list(POOL.accounts)
-        updated = []
-        failed = []
-        for account in targets:
-            if account is None:
-                continue
-            try:
-                nickname = account.sync_nickname()
-            except Exception as exc:
-                failed.append({"uid": account.uid, "error": str(exc)[:200]})
-                log("profile sync failed for %s: %s" % (account.uid[:8], exc),
-                    level="WARN")
-                continue
-            updated.append({"uid": account.uid, "nickname": nickname})
-            log("account %s: nickname synced from the web console"
-                % account.uid[:8], level="INFO")
-        return self._json(200, {"updated": updated, "failed": failed,
-                                "accounts": account_views()})
 
-    def _route_accounts_test(self, payload):
-        uid = payload.get("uid")
-        if not uid:
-            # 不带 uid 就是「一键测试」：一次看全区域里每个账号 + 本机连通性。
-            return self._route_accounts_test_all(payload)
-        account = POOL.get(uid)
-        if not account:
-            return self._error(404, "no such account")
-        model = payload.get("model") or TEST_MODEL_DEFAULT
-        row = probe_account(account, model)
-        log("account test: uid=%s model=%s wall=%sms ok=%s%s"
-            % (account.uid[:8], model, row.get("elapsed_ms"), row.get("ok"),
-               "" if row.get("ok") else " error=%s" % (row.get("error") or "")),
-            level="INFO" if row.get("ok") else "WARN", tag="accounts")
-        # 单账号测试的返回体保持原样（面板与客户端都在用），只在失败时多带一个
-        # network 标记：提示这是本机网络的问题，不是账号的问题。
-        result = {"ok": row["ok"], "uid": row["uid"], "model": row["model"],
-                  "elapsed_ms": row["elapsed_ms"]}
-        if row["ok"]:
-            result["reply"] = row["reply"]
-        else:
-            result["status"] = row["status"] if row["status"] is not None else 500
-            result["error"] = row["error"]
-            if row["network"]:
-                result["network"] = True
-        return self._json(200, result)
 
-    def _route_accounts_test_all(self, payload):
-        """一键测试：该区域每个已启用账号各打一条最小请求，外加一条本机连通性。
 
-        面板上的「测试」原先只能一个个点，而池子出问题时最需要的偏偏是一次看全：
-        哪个账号真不行、哪个只是被本地窗口（熔断 / 降权 / 软限流）关着——测试成功
-        会顺手把这些计数清掉——以及本机网络通不通。断网时每个账号都会失败，只报
-        「账号全挂了」的话，用户只能看着一屏红点猜。
-        """
-        realm = str(payload.get("realm") or "").strip().lower()
-        if realm != "cn":
-            realm = CURRENT_REALM
-        model = payload.get("model") or TEST_MODEL_DEFAULT
-        targets = [a for a in (POOL.accounts if POOL else [])
-                   if a.realm == realm and a.enabled]
-        started = time.time()
-        network = probe_local_network(realm)
-        rows = []
-        if targets:
-            from concurrent.futures import ThreadPoolExecutor
-            with ThreadPoolExecutor(max_workers=min(PROBE_CONCURRENCY, len(targets))) as pool:
-                rows = list(pool.map(lambda acc: probe_account(acc, model), targets))
-        passed = [r for r in rows if r.get("ok")]
-        failed = [r for r in rows if not r.get("ok")]
-        summary = {"realm": realm, "model": model, "tested": len(rows),
-                   "passed": len(passed), "failed": len(failed),
-                   "networkDown": not network.get("ok"),
-                   "elapsed_ms": int((time.time() - started) * 1000)}
-        log("test all: realm=%s model=%s tested=%d passed=%d failed=%d network=%s"
-            % (realm, model, len(rows), len(passed), len(failed),
-               "ok" if network.get("ok") else "DOWN"), tag="accounts")
-        return self._json(200, {"ok": True, "summary": summary, "network": network,
-                                "results": rows, "accounts": account_views()})
 
-    def _route_accounts_set(self, payload):
-        uid = payload.get("uid")
-        if not uid:
-            return self._error(400, "uid required")
-        # Each field is applied on its own so a caller can change one thing
-        # without restating the others; at least one must be present.
-        updated = None
-        if "proxy" in payload:
-            updated = POOL.set_proxy(uid, payload.get("proxy"))
-            if updated is None:
-                return self._error(404, "no such account")
-            log("account %s proxy set to %s"
-                % (uid[:8], updated.get("proxy") or "(direct)"))
-        if "enabled" in payload:
-            updated = POOL.set_enabled(uid, bool(payload.get("enabled")))
-            if updated is None:
-                return self._error(404, "no such account")
-            log("account %s %s"
-                % (uid[:8], "enabled" if payload.get("enabled") else "disabled"))
-        if "weight" in payload:
-            try:
-                weight = int(payload.get("weight"))
-            except (TypeError, ValueError):
-                return self._error(400, "weight must be an integer between 1 and 100")
-            if not 1 <= weight <= 100:
-                return self._error(400, "weight out of range (1-100)")
-            updated = POOL.set_weight(uid, weight)
-            if updated is None:
-                return self._error(404, "no such account")
-            log("account %s weight set to %d" % (uid[:8], weight))
-        if "note" in payload:
-            updated = POOL.set_note(uid, payload.get("note"))
-            if updated is None:
-                return self._error(404, "no such account")
-            log("account %s note set (%d chars)"
-                % (uid[:8], len(updated.get("note") or "")))
-        if updated is None:
-            return self._error(
-                400,
-                "nothing to update: pass 'enabled', 'proxy', 'weight' or 'note'"
-            )
-        return self._json(200, {"account": updated})
 
-    def _route_accounts_set_all(self, payload):
-        POOL.set_all_enabled(bool(payload.get("enabled")))
-        return self._json(200, {"accounts": account_views()})
-
-    def _route_accounts_delete(self, payload):
-        uid = payload.get("uid")
-        if not uid:
-            return self._error(400, "uid required")
-        removed = POOL.remove(uid)
-        log("account %s deleted" % uid[:8])
-        return self._json(200, {"deleted": removed, "accounts": account_views()})
-
-    def _route_accounts_import(self, payload):
-        # Import a previously exported document (or any hand-written list
-        # of accounts). Body shapes accepted, see ca_accounts._coerce_account_rows:
-        #   {"format":"workbuddy-accounts","accounts":[...]}   <- our export
-        #   [...]                                              <- bare list
-        #   {"accessToken": ...}                               <- single account
-        #   {"account":{...},"auth":{...}}                     <- desktop credential
-        #
-        # Options:
-        #   dryRun    (bool) - validate and report, write nothing
-        #   overwrite (bool) - replace accounts whose uid already exists
-        #   realm     ("cn") - force a realm instead of detecting it
-        #
-        # `data` carries the document. It is preferred over the bare body so
-        # the body can also hold the options above.
-        blob = payload.get("data") if "data" in payload else payload
-        if not isinstance(blob, (dict, list)):
-            return self._error(400, "the document must be a JSON object or array",
-                               "invalid_request_error")
-        rows, problem = ca_accounts._coerce_account_rows(blob)
-        if problem:
-            return self._error(400, "cannot read the document: %s" % problem,
-                               "invalid_request_error")
-        dry_run = bool(payload.get("dryRun"))
-        overwrite = bool(payload.get("overwrite"))
-        forced_realm = (payload.get("realm") or "").strip().lower() or None
-        if forced_realm and forced_realm != "cn":
-            return self._error(400, "realm must be cn", "invalid_request_error")
-        if dry_run:
-            # Validate every row without touching the pool so the caller can
-            # see exactly what an import would do before committing to it.
-            # Shares its rules with the real import, so the preview cannot
-            # disagree with what would actually happen.
-            return self._json(200, {
-                "dryRun": True,
-                "count": len(rows),
-                "result": POOL.preview_import_rows(rows, realm=forced_realm, overwrite=overwrite),
-                "accounts": account_views(),
-            })
-        report = POOL.import_rows(rows, realm=forced_realm, overwrite=overwrite)
-        log("account import: %d added, %d updated, %d skipped, %d invalid"
-            % (len(report["added"]), len(report["updated"]),
-               len(report["skipped"]), len(report["invalid"])))
-        return self._json(200, {
-            "count": len(rows),
-            "result": report,
-            "accounts": account_views(),
-        })
 
     def _handle_responses(self, payload):
         """Serve /v1/responses by translating to chat completions upstream."""
@@ -18409,13 +17463,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(400, key_blocked, "invalid_request_error")
             # 码道没有原生 Responses 端点（逆向本地客户端确认它只发
             # chat/completions 形状），这里用同一套翻译层桥接。
-            if routes_to_codearts(chat_req.get("model")):
+            if is_codearts_model(chat_req.get("model")):
                 return self._responses_codearts(
                     chat_req, want_stream, custom_names, request_meta, ns_map)
-            if workbuddy_pool_empty():
-                return self._error(404,
-                                   unserved_model_message(chat_req.get("model")),
-                                   "model_not_found")
+            # WorkBuddy 池已移除（2026-10-23）：非码道模型这个网关一个都不服务。
+            return self._error(404,
+                               unserved_model_message(chat_req.get("model")),
+                               "model_not_found")
             upstream, account, effort = open_upstream(
                 chat_req, session_key=session_key, target_realm=req_realm)
         except ContentRejected as exc:
@@ -18638,12 +17692,12 @@ class Handler(BaseHTTPRequestHandler):
             if key_blocked:
                 return self._anthropic_error(400, key_blocked, "invalid_request_error")
             # 与 /v1/responses 同一个缺口：码道模型不能落进 WorkBuddy 空池。
-            if routes_to_codearts(chat_req.get("model")):
+            if is_codearts_model(chat_req.get("model")):
                 return self._messages_codearts(chat_req, want_stream)
-            if workbuddy_pool_empty():
-                return self._anthropic_error(
-                    404, unserved_model_message(chat_req.get("model")),
-                    "not_found_error")
+            # WorkBuddy 池已移除（2026-10-23）：非码道模型这个网关一个都不服务。
+            return self._anthropic_error(
+                404, unserved_model_message(chat_req.get("model")),
+                "not_found_error")
             upstream, account, effort = open_upstream(
                 chat_req, session_key=session_key, target_realm=req_realm)
         except ContentRejected as exc:
@@ -19049,9 +18103,9 @@ class Handler(BaseHTTPRequestHandler):
                 codearts_session_idle(cred, session_id)
                 # 名额只包住「向上游要结果」这一段，读完了立刻还。
                 _CODEARTS_POOL.release(account_key)
-            retryable = last_exc is not None or _codearts_retryable(status, text)
+            retryable = last_exc is not None or ca_stream.retryable(status, text)
             if retryable and last_exc is None:
-                if _codearts_concurrency_full(status, text):
+                if ca_stream.concurrency_full(status, text):
                     # 这个号的名额满了：晾几秒，下一轮换号
                     _CODEARTS_POOL.penalize(
                         account_key,
@@ -19091,13 +18145,13 @@ class Handler(BaseHTTPRequestHandler):
                         "upstream_error"), None
 
         if status not in (200, 201):
-            code, detail = _codearts_error_detail(text)
+            code, detail = ca_stream.error_detail(text)
             if "4004.200" in (code or "") or "benefit not found" in (detail or ""):
                 if mark_benefit_missing(model):
                     log("codearts model %s has no benefit entitlement; "
                         "hiding it from /v1/models for %ds"
                         % (model, int(CODEARTS_BENEFIT_MISSING_TTL)))
-            st, _et = _codearts_fail_spec(status, code, detail, anthropic)
+            st, _et = ca_stream.fail_spec(status, code, detail, anthropic)
             # 参数错（001001005）不说清是哪个参数，把形状留在日志里，
             # 下次才能区分「上下文太长 / max_tokens 越界 / 图片给了非多模态」。
             log("codearts request shape on failure: model=%s %s"
@@ -19110,14 +18164,24 @@ class Handler(BaseHTTPRequestHandler):
             return self._codearts_fail(status, code, detail, account_label,
                                        anthropic), None
 
-        content, reasoning, usage, frame_err, tool_calls = _collect_codearts_sse(text)
-        if frame_err and not content and not reasoning and not tool_calls:
-            _st, _et = _codearts_frame_status(frame_err, anthropic)
+        content, reasoning, usage, frame_err, tool_calls = ca_stream.collect_sse(text)
+        if frame_err:
+            # 有错误帧就是失败，**不看已经聚合出多少正文**。以前这里带了
+            # `and not content and not reasoning and not tool_calls`：上游吐
+            # 半截正文再塞一个错误帧时，会把拼出来的残句当正常结果回 200，
+            # 客户端当完整回答用，账上记 completed。错误帧的意思只有一个 ——
+            # 这一轮废了；半截正文留着只会让人误以为拿到了完整答案。
+            _st, _et = ca_stream.frame_status(frame_err, anthropic)
             if "4004.200" in frame_err or "benefit not found" in frame_err:
                 mark_benefit_missing(model)
+            dump_failed_request(payload, messages, max_tokens)
+            log("codearts stream finished with an error frame after %d chars: "
+                "model=%s %s" % (len(content) + len(reasoning), model,
+                                 frame_err[:160]))
             record_error(model, _st, frame_err[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=account_label, key=self._key_id())
+                         account=account_label, usage=usage, stream=want_stream,
+                         outcome="upstream_aborted", key=self._key_id())
             return fail(_st, "codearts error: %s" % frame_err, _et), None
 
         elapsed_ms = int((time.time() - t_start) * 1000)
@@ -19249,9 +18313,9 @@ class Handler(BaseHTTPRequestHandler):
             # 这一轮失败：先把名额还掉，再决定是换号重试还是放弃。
             _CODEARTS_POOL.release(key)
 
-            retryable = last_exc is not None or _codearts_retryable(status, text)
+            retryable = last_exc is not None or ca_stream.retryable(status, text)
             if retryable and last_exc is None:
-                if _codearts_concurrency_full(status, text):
+                if ca_stream.concurrency_full(status, text):
                     _CODEARTS_POOL.penalize(
                         key, _codearts_seconds("busy_cooldown",
                                                CODEARTS_BUSY_COOLDOWN))
@@ -19307,7 +18371,7 @@ class Handler(BaseHTTPRequestHandler):
             return fail(502, "codearts unreachable: %s" % last_exc,
                         "upstream_error"), None
 
-        code, detail = _codearts_error_detail(text)
+        code, detail = ca_stream.error_detail(text)
         log("codearts request shape on failure: model=%s %s"
             % (model, _codearts_request_shape(payload, messages, max_tokens)))
         if "4004.200" in (code or "") or "benefit not found" in (detail or ""):
@@ -19318,7 +18382,7 @@ class Handler(BaseHTTPRequestHandler):
         # 记账必须和回给客户端的状态码同源：以前这里写死 502，而
         # _codearts_fail 会按表把 APIG.0203 映射成 504 —— gw.log 与
         # usage.jsonl 记 502、客户端收 504，同一个失败两个答案。
-        st, _et = _codearts_fail_spec(status, code, detail, anthropic)
+        st, _et = ca_stream.fail_spec(status, code, detail, anthropic)
         dump_failed_request(payload, messages, max_tokens)
         record_error(model, st, ("%s %s" % (code, detail))[:200],
                      elapsed_ms=elapsed_ms, account=account_label,
@@ -19445,9 +18509,11 @@ class Handler(BaseHTTPRequestHandler):
                             piece = json.loads(raw)
                         except Exception:
                             continue
-                        if piece.get("error_code"):
-                            frame_err = "%s %s" % (piece.get("error_code"),
-                                                   piece.get("error_msg") or "")
+                        # 两种错误形状都认：error_code（码道）与 {"error":…}
+                        # （OpenAI 兼容层）。判据只有一个 —— 这一轮已经废了。
+                        frame_bad = ca_stream.frame_error(piece)
+                        if frame_bad:
+                            frame_err = frame_bad
                             break
                         if isinstance(piece.get("usage"), dict):
                             usage = piece["usage"]
@@ -19463,19 +18529,31 @@ class Handler(BaseHTTPRequestHandler):
                             except (BrokenPipeError, ConnectionResetError,
                                     ConnectionAbortedError):
                                 return None
+                        bad_finish = False
                         for choice in piece.get("choices") or []:
                             delta = choice.get("delta") or {}
                             if delta.get("content"):
                                 content_parts.append(delta["content"])
                             if delta.get("reasoning_content"):
                                 reasoning_parts.append(delta["reasoning_content"])
-                            if choice.get("finish_reason"):
-                                finish_reason = choice["finish_reason"]
+                            # finish_reason=error 也是失败。以前只有 WorkBuddy
+                            # 那条路认（#389），码道这侧会把它原样转发、再补一个
+                            # 同样的 finish_reason 并记成 completed。
+                            choice_finish = choice.get("finish_reason")
+                            if ca_stream.finish_error(choice):
+                                bad_finish = True
+                                choice_finish = None
+                            elif choice_finish:
+                                finish_reason = choice_finish
                             if delta:
                                 # 原样转发 delta：reasoning_content 与
                                 # tool_calls（含各自的 index）都在里面，
                                 # 自己重拼反而容易漏字段。
-                                emit(frame(delta, choice.get("finish_reason")))
+                                emit(frame(delta, choice_finish))
+                        if bad_finish:
+                            frame_err = frame_err or \
+                                "upstream finished with finish_reason=error"
+                            break
                 except ca_codearts.ChatAborted:
                     log("codearts stream aborted: client gone model=%s" % model)
                     return None
@@ -19529,21 +18607,41 @@ class Handler(BaseHTTPRequestHandler):
             # 头还没发出去，能回干净的错误码让客户端按正常失败重试 ——
             # 比「200 + 半截流」诚实得多。
             reason = frame_err or truncated or "upstream returned no frames"
-            code, err_type = _codearts_frame_status(reason)
+            code, err_type = ca_stream.frame_status(reason)
             if "4004.200" in reason or "benefit not found" in reason:
                 mark_benefit_missing(model)
             record_error(model, code, reason[:200], elapsed_ms=elapsed_ms,
                          account=account_label, key=self._key_id())
             return self._error(code, "codearts error: %s" % reason, err_type)
 
-        if frame_err and not content_parts and not reasoning_parts:
-            # 一个字都没出就报错：头已经承诺 200 了，只能按帧内错误告知。
-            record_error(model, 502, frame_err[:200],
-                         elapsed_ms=elapsed_ms,
-                         account=account_label, key=self._key_id())
+        if frame_err:
+            # 错误帧压过一切：不管之前吐没吐过内容，都不能再补 finish_reason
+            # 收尾。以前这里只有 "and not content_parts and not reasoning_parts"
+            # 一个分支，**出过内容时没有任何分支接住 frame_err** —— 直接落到
+            # 下面的 `finish_reason or "stop"` + [DONE]，客户端把半截回答当完整
+            # 结果，账上记成 completed（2026-10-23 复现：先发 content 再发
+            # ModelArts.81101，客户端收到 200 + stop + [DONE]，usage.jsonl 只有
+            # 一条 completed）。正是注释里说要避免的「给半截回答盖章」。
+            #
+            # 状态码仍过 `frame_status` 那张表：真被限流（1041 / 811xx）就该让
+            # 客户端看到 429，而不是一个笼统的 502。
+            code, err_type = ca_stream.frame_status(frame_err)
+            if "4004.200" in frame_err or "benefit not found" in frame_err:
+                mark_benefit_missing(model)
+            partial = bool(content_parts or reasoning_parts)
+            if partial:
+                # 断在半路：和断流一样留一份请求形状，否则这条失败无从归因。
+                dump_failed_request(payload, messages, max_tokens)
+            # 一次失败只写一行：usage 跟着 record_error 落，别在下面再
+            # record_usage 一次（那会让同一请求既算失败又算用量，总量翻倍）。
+            record_error(model, code, frame_err[:200], elapsed_ms=elapsed_ms,
+                         account=account_label, usage=usage, stream=True,
+                         outcome="upstream_aborted", key=self._key_id())
             try:
-                emit({"error": {"message": "codearts error: %s" % frame_err,
-                                "type": "upstream_error", "code": 502}})
+                emit({"error": {
+                    "message": ("codearts error after partial output: %s"
+                                if partial else "codearts error: %s") % frame_err,
+                    "type": err_type, "code": code}})
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
             except (BrokenPipeError, ConnectionResetError,
@@ -19569,7 +18667,7 @@ class Handler(BaseHTTPRequestHandler):
                 emit({"error": {
                     "message": "codearts upstream closed the stream: %s%s"
                                % (truncated,
-                                  _codearts_break_hint(stream_stats)),
+                                  ca_stream.break_hint(stream_stats)),
                     "type": "upstream_error", "code": 502}})
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
@@ -19797,12 +18895,20 @@ class Handler(BaseHTTPRequestHandler):
             _break_stats = {}
             try:
                 for frame in stream_responses_events(
-                        _tap_codearts_sse(
+                        ca_stream.tap_lines(
                             lease.byte_lines(self._client_disconnected,
-                                             _break_stats), tap),
+                                             _break_stats), tap,
+                            keepalive=ca_codearts.KEEPALIVE),
                         model, holder):
                     self.wfile.write(ca_protocol.clean_responses_frame(frame))
                     self.wfile.flush()
+            except ca_stream.UpstreamErrorFrame as exc:
+                # 上游在流里给了错误帧。翻译器不知道这件事，会照它的正常终态
+                # 补 response.completed —— 客户端于是拿到「半截回答 + 完成」。
+                # 这里接管：发 response.failed，并按失败记账。
+                return self._responses_codearts_failed(
+                    model, lease, holder, tap, exc.message,
+                    "upstream_error_frame")
             except ca_codearts.ChatAborted:
                 log("responses/codearts aborted: client gone model=%s" % model)
                 return None
@@ -19811,24 +18917,10 @@ class Handler(BaseHTTPRequestHandler):
                 # Codex 只看到「流没了」而摸不着头脑。
                 log("responses/codearts upstream broken: model=%s after %dms %s"
                     % (model, int((time.time() - lease.started_at) * 1000), exc))
-                try:
-                    rid = holder.get("response_id") or "resp_%s" % uuid.uuid4().hex[:24]
-                    self.wfile.write(ca_protocol.clean_responses_frame((
-                        "event: response.failed\ndata: " + json.dumps({
-                            "type": "response.failed",
-                            "response": {"id": rid, "object": "response",
-                                         "status": "failed",
-                                         "error": {"code": "upstream_closed",
-                                                   "message": "%s%s" % (
-                                                       exc,
-                                                       _codearts_break_hint(
-                                                           _break_stats))}}},
-                            ensure_ascii=False) + "\n\n").encode("utf-8")))
-                    self.wfile.write(b"data: [DONE]\n\n")
-                    self.wfile.flush()
-                except Exception:
-                    pass
-                return None
+                return self._responses_codearts_failed(
+                    model, lease, holder, tap,
+                    "%s%s" % (exc, ca_stream.break_hint(_break_stats)),
+                    "upstream_closed")
             except (BrokenPipeError, ConnectionResetError,
                     ConnectionAbortedError):
                 log("responses/codearts closed by client model=%s" % model)
@@ -19845,10 +18937,14 @@ class Handler(BaseHTTPRequestHandler):
 
             elapsed_ms = int((time.time() - lease.started_at) * 1000)
             usage = tap["usage"] or holder.get("usage") or {}
-            if tap.get("error") and not usage:
+            if tap.get("error"):
+                # 走到这里还带着 error，说明错误帧没能打断翻译器（见
+                # tap_lines 的契约）。宁可多记一条失败，也不能记成成功。
                 record_error(model, 502, tap["error"][:200],
-                             elapsed_ms=elapsed_ms,
-                             account=lease.account_label, key=self._key_id())
+                             elapsed_ms=elapsed_ms, account=lease.account_label,
+                             usage=usage, stream=True,
+                             outcome="upstream_aborted", key=self._key_id())
+                return None
             try:
                 record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
                              account=lease.account_label, key=self._key_id(),
@@ -19858,6 +18954,40 @@ class Handler(BaseHTTPRequestHandler):
             return None
         finally:
             lease.close()
+
+    def _responses_codearts_failed(self, model, lease, holder, tap, message,
+                                   error_code):
+        """Responses 流式的失败收尾：response.failed + [DONE]，并按失败记账。
+
+        **一次失败只落一行**：usage 跟着 record_error 走，不再额外记一条
+        completed。以前这里 `record_error` 之后无条件 `record_usage(...,
+        outcome="completed")`，同一个请求既算失败又算成功。
+        """
+        elapsed_ms = int((time.time() - lease.started_at) * 1000)
+        usage = (tap or {}).get("usage") or (holder or {}).get("usage") or {}
+        status, _et = ca_stream.frame_status(message)
+        log("responses/codearts failed: model=%s %s" % (model, str(message)[:160]))
+        dump_failed_request(holder.get("base_body") or {},
+                            (holder or {}).get("base_messages") or [], 0)
+        record_error(model, status, str(message)[:200], elapsed_ms=elapsed_ms,
+                     account=lease.account_label, usage=usage, stream=True,
+                     outcome="upstream_aborted", key=self._key_id())
+        try:
+            rid = ((holder or {}).get("response_id")
+                   or "resp_%s" % uuid.uuid4().hex[:24])
+            self.wfile.write(ca_protocol.clean_responses_frame((
+                "event: response.failed\ndata: " + json.dumps({
+                    "type": "response.failed",
+                    "response": {"id": rid, "object": "response",
+                                 "status": "failed",
+                                 "error": {"code": error_code,
+                                           "message": str(message)}}},
+                    ensure_ascii=False) + "\n\n").encode("utf-8")))
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except Exception:
+            pass
+        return None
 
     def _messages_codearts(self, chat_req, want_stream):
         """用 Anthropic Messages 协议服务码道模型。
@@ -19952,12 +19082,36 @@ class Handler(BaseHTTPRequestHandler):
             _break_stats = {}
             try:
                 for frame in ca_protocol.stream_messages_events(
-                        _tap_codearts_sse(
+                        ca_stream.tap_lines(
                             lease.byte_lines(self._client_disconnected,
-                                             _break_stats), tap),
+                                             _break_stats), tap,
+                            keepalive=ca_codearts.KEEPALIVE),
                         model, holder):
                     self.wfile.write(frame)
                     self.wfile.flush()
+            except ca_stream.UpstreamErrorFrame as exc:
+                # 上游在流里给了错误帧。翻译器会照正常终态补 message_stop，
+                # 客户端于是把半截回答当完整结果。这里接管，发 event: error。
+                log("messages/codearts error frame: model=%s %s"
+                    % (model, exc.message[:160]))
+                dump_failed_request(chat_req, messages,
+                                    _codearts_max_tokens(chat_req))
+                status, err_type = ca_stream.frame_status(exc.message,
+                                                          anthropic=True)
+                record_error(model, status, exc.message[:200],
+                             elapsed_ms=int((time.time() - lease.started_at) * 1000),
+                             account=lease.account_label,
+                             usage=(tap["usage"] or holder.get("usage") or {}),
+                             stream=True, outcome="upstream_aborted",
+                             key=self._key_id())
+                try:
+                    self.wfile.write(ca_protocol.anthropic_sse_frame("error", {
+                        "error": {"type": err_type,
+                                  "message": "codearts error: %s" % exc.message}}))
+                    self.wfile.flush()
+                except Exception:
+                    pass
+                return None
             except ca_codearts.ChatAborted:
                 log("messages/codearts aborted: client gone model=%s" % model)
                 return None
@@ -19966,13 +19120,20 @@ class Handler(BaseHTTPRequestHandler):
                 # 静默断连反而会被当成「回答就这么短」。
                 log("messages/codearts upstream broken: model=%s after %dms %s"
                     % (model, int((time.time() - lease.started_at) * 1000), exc))
+                message = "upstream closed the stream: %s%s" % (
+                    exc, ca_stream.break_hint(_break_stats))
+                # 断流同样只落一行账（usage 跟着 record_error）。
+                dump_failed_request(chat_req, messages,
+                                    _codearts_max_tokens(chat_req))
+                record_error(model, 502, message[:200],
+                             elapsed_ms=int((time.time() - lease.started_at) * 1000),
+                             account=lease.account_label,
+                             usage=(tap["usage"] or holder.get("usage") or {}),
+                             stream=True, outcome="upstream_aborted",
+                             key=self._key_id())
                 try:
                     self.wfile.write(ca_protocol.anthropic_sse_frame("error", {
-                        "error": {"type": "api_error",
-                                  "message": "upstream closed the stream: %s%s"
-                                             % (exc,
-                                                _codearts_break_hint(
-                                                    _break_stats))}}))
+                        "error": {"type": "api_error", "message": message}}))
                     self.wfile.flush()
                 except Exception:
                     pass
@@ -19992,10 +19153,14 @@ class Handler(BaseHTTPRequestHandler):
 
             elapsed_ms = int((time.time() - lease.started_at) * 1000)
             usage = tap["usage"] or holder.get("usage") or {}
-            if tap.get("error") and not usage:
+            if tap.get("error"):
+                # 走了到这里还带着 error：说明错误帧没能打断翻译器。宁可
+                # 多记一条失败，也不能把失败记成成功。
                 record_error(model, 502, tap["error"][:200],
-                             elapsed_ms=elapsed_ms,
-                             account=lease.account_label, key=self._key_id())
+                             elapsed_ms=elapsed_ms, account=lease.account_label,
+                             usage=usage, stream=True,
+                             outcome="upstream_aborted", key=self._key_id())
+                return None
             try:
                 record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
                              account=lease.account_label, key=self._key_id(),
@@ -20033,16 +19198,14 @@ class Handler(BaseHTTPRequestHandler):
         key_blocked = self._key_model_error(payload.get("model"))
         if key_blocked:
             return self._error(400, key_blocked, "invalid_request_error")
-        # 码道模型走另一套凭证体系，先按模型名分流，
-        # 别进 WorkBuddy 账号池的选路。
-        if routes_to_codearts(payload.get("model")):
+        # 码道模型走另一套凭证体系，先按模型名分流。
+        if is_codearts_model(payload.get("model")):
             return self._handle_codearts_chat(payload)
-        # 剩下的只有 WorkBuddy 路径。这个部署一个 WorkBuddy 账号都没有时，
-        # 任何非码道模型都必然打不通 —— 回 404 说清「这个网关不服务这个名字」，
-        # 别让它掉进空池回一句 503「没有可用账号」，那看起来像网关坏了。
-        if workbuddy_pool_empty():
-            return self._error(404, unserved_model_message(payload.get("model")),
-                               "model_not_found")
+        # WorkBuddy 池已移除（2026-10-23）：非码道模型这个网关一个都不服务。
+        # 回 404 说清「这个网关不服务这个名字」，别回 503（那看起来像网关坏了）。
+        return self._error(404, unserved_model_message(payload.get("model")),
+                           "model_not_found")
+        # ---- 以下为 WorkBuddy 转发路径，已不再可达（下一轮删除）----
         # Diagnostics: what the client actually asked for, and what we forward.
         # Only the knobs that change behaviour are logged - never message text.
         forwarded = build_upstream_body(payload)
@@ -20302,7 +19465,6 @@ def main():
 
 def _parse_cli_args():
     ap = argparse.ArgumentParser(description="CodeArts Agent（华为云码道）-> OpenAI-compatible proxy")
-    ap.add_argument("--info", help="path to the WorkBuddy *.info credential file")
     ap.add_argument("--host", default=os.environ.get("HOST") or "127.0.0.1")
     ap.add_argument("--port", type=int, default=int(os.environ.get("PORT") or "8788"))
     ap.add_argument("--lan", action="store_true",
@@ -20313,15 +19475,10 @@ def _parse_cli_args():
                          "the panel has ever held a key)")
     ap.add_argument("--system-prompt", default=DEFAULT_SYSTEM_PROMPT,
                     help="system message injected when the request has none (required upstream)")
-    ap.add_argument("--user-agent", default=None,
-                    help="override the upstream User-Agent (default: mirror the official "
-                         "WorkBuddy AI client)")
     ap.add_argument("--usage-dir", default=None,
                     help="where to store usage.jsonl (default: ./usage)")
     ap.add_argument("--accounts-dir", default=os.environ.get("ACCOUNTS_DIR") or None,
                     help="where the per-account credential files live (default: ./accounts)")
-    ap.add_argument("--import-desktop", action="store_true",
-                    help="import the desktop app credential as an account, then exit")
     ap.add_argument("--panel-password", default=None,
                     help="set the web panel password on startup (default: admin). "
                          "Ignored once the password has been changed in the panel, "
@@ -20340,9 +19497,6 @@ def _apply_cli_overrides(args):
     # ACCOUNTS_DIR is resolved, so it can be persisted and reused.
     if args.lan and args.host == "127.0.0.1":
         args.host = "0.0.0.0"
-    if args.user_agent:
-        ca_accounts.USER_AGENT = args.user_agent.strip()
-        log("user-agent : %s (override)" % ca_accounts.USER_AGENT)
     if args.usage_dir:
         USAGE_DIR = os.path.abspath(args.usage_dir)
         USAGE_LOG = os.path.join(USAGE_DIR, "usage.jsonl")
@@ -20446,18 +19600,13 @@ def _bootstrap_runtime(args):
         # 'same' 什么都不用说：这是正常重启
     elif ca_settings.panel_password_is_default(ACCOUNTS_DIR):
         log("panel      : password is still the default 'admin' - change it in the panel")
-    POOL = ca_accounts.AccountPool(ACCOUNTS_DIR, log=log)
-    POOL.load()
+    # WorkBuddy 账号池已移除（2026-10-23）：网关只服务码道，POOL 保持 None。
+    # 所有仍然带 `if POOL` 判断的地方自动走「没有 WorkBuddy 账号」那一支。
     CODEARTS_LOGIN = ca_codearts.LoginManager(ACCOUNTS_DIR, log=log)
-    # WB_MAX_CONCURRENT_CHAT=auto: size the chat ceiling from the pool that was
-    # just loaded. Runs before the listener exists, so no request can hold a
-    # slot yet and the semaphore swap is safe.
-    resize_chat_slots(POOL.count_ready())
-    apply_daily_guards()
     load_persisted_realm()
     global SCHEDULER
     from ca_scheduler import Scheduler
-    SCHEDULER = Scheduler(POOL)
+    SCHEDULER = Scheduler(None)
     # 码道每日领取要自己读 accounts/codearts/，调度器拿不到账号池之外的目录。
     SCHEDULER.accounts_dir = ACCOUNTS_DIR
     SCHEDULER.start()
@@ -20479,50 +19628,27 @@ def _bootstrap_runtime(args):
     return api_key_generated
 
 def _report_first_run(args):
-    if args.info:
-        account = POOL.import_desktop_credential(args.info, source="file")
-        log("imported account %s from %s" % (account.uid[:8], args.info))
-    first_run = not POOL.accounts
-    if first_run:
-        # Never adopt the desktop client's login silently: just report what is
-        # available and let the user import it from the dashboard.
-        detected = desktop_credential_scan()
-        usable = [d for d in detected if d.get("valid")]
-        if usable:
-            log("no accounts yet - detected %d desktop credential(s), NOT importing" % len(usable))
-            for d in usable:
-                log("  available: %s  %s  %s" % (
-                    (d.get("uid") or "?")[:8], d.get("nickname") or "(no name)",
-                    d.get("realmName") or d.get("realm")))
-            log("open the dashboard and click [Scan desktop app] to import")
-        else:
-            log("no accounts yet - no desktop credentials found on this machine")
-    if first_run and not POOL.accounts:
-        # Do NOT exit here: the dashboard has to stay reachable so a new
-        # account can be added through the browser login flow.
-        log("still no accounts - starting anyway so you can log in via the dashboard")
-    if args.import_desktop:
-        for account in POOL.accounts:
-            print("  %s  %s  %s" % (account.uid[:8], account.nickname, account.domain))
+    """首次启动提示。WorkBuddy 池移除后只剩一件事：没有码道账号就说清楚。"""
+    if codearts_deployed():
         return
+    # Do NOT exit here: the dashboard has to stay reachable so the first
+    # codearts account can be added through the browser login flow.
+    log("no codearts account yet - starting anyway so you can log in via the dashboard")
 
 def _log_startup_summary(args, api_key_generated):
-    rep = current_account()
-    log("accounts   : %d total, %d usable" % (len(POOL.accounts), POOL.count_ready()))
-    for account in POOL.accounts:
-        log("  - %s  %s  %s  %s" % (account.uid[:8], account.nickname or "(no name)",
-                                    account.domain, ca_accounts._human_delta(
-                                        (account.expires_at or 0) - time.time()) or "?"))
+    try:
+        sessions = ca_codearts.load_sessions(ACCOUNTS_DIR)
+    except Exception:
+        sessions = []
+    log("accounts   : %d codearts session(s)" % len(sessions))
+    for sess in sessions:
+        left, expired, renewable = _codearts_left(sess)
+        label = (sess.get("account") or {}).get("label") or "?"
+        state = ("expired (renewable=%s)" % bool(renewable) if expired
+                 else "%.1fh left" % (left / 3600.0))
+        log("  - %s  %s" % (label, state))
     log("store      : %s" % ACCOUNTS_DIR)
-    log(f"credential : {rep.path if rep else chr(45)}")
-    if os.path.exists(PRODUCT_CONFIG_CACHE):
-        log(f"catalog    : {PRODUCT_CONFIG_CACHE}")
-    else:
-        log("catalog    : app cache not found - will use the model API instead")
-    log(f"account    : {rep.uid if rep else chr(45)} @ {rep.domain if rep else chr(45)}")
-    log(f"issuer     : {ca_accounts.jwt_issuer(rep.access_token) if rep else chr(45)}")
-    log("realm      : %s (%s)" % (CURRENT_REALM, "copilot.tencent.com"))
-    log("user-agent : %s" % ca_accounts.USER_AGENT)
+    log("realm      : %s (codearts)" % CURRENT_REALM)
     if args.host == "0.0.0.0":
         ips = local_ip_addresses() or ["<this-pc-ip>"]
         print()
@@ -20559,12 +19685,12 @@ def _log_startup_summary(args, api_key_generated):
         print("  " + "=" * 62)
         print()
         sys.stdout.flush()
-    if not POOL.accounts:
+    if not codearts_deployed():
         print()
         print("  " + "=" * 62)
-        print("  NO ACCOUNTS YET")
+        print("  NO CODEARTS ACCOUNT YET")
         print()
-        print("  Open the dashboard and click [Login new account]:")
+        print("  Open the dashboard and click [Login with Huawei Cloud]:")
         print("      http://127.0.0.1:%s/" % args.port)
         print()
         print("  The browser flow adds the account automatically.")
