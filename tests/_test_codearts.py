@@ -821,12 +821,18 @@ check("两个分组都定义了",
 #   · 限时福利 4 个全 404/429 → 被判「不在推理入口注册」，其实是限流不是不支持
 #   · glm-5.3 连续 400 且响应体为空 → 被判「真的不通」，其实它只收 stream=true
 # 所以不只钉「谁在清单里」，还要把这两个判据本身钉住。
-check("清单 11 个模型，两组都在",
-      len(C.CHAT_MODELS) == 11
+check("清单 12 个模型，两组都在",
+      len(C.CHAT_MODELS) == 12
       and "deepseek-v4.1-flash" in C.CHAT_MODELS
       and "GLM-5.2" in C.CHAT_MODELS
-      and "glm-5.3" in C.CHAT_MODELS,
+      and "glm-5.3" in C.CHAT_MODELS
+      and "kimi-k3" in C.CHAT_MODELS,
       C.CHAT_MODELS)
+# kimi-k3 是 2026-10-23 才补的：上游内置目录里有、`display_enabled=true`，
+# 但没进这张表 —— 表现不是「少一个可选模型」，而是请求被判成「不是码道模型」
+# 掉进 WorkBuddy 池，只配码道账号的部署回 503，报错和模型名毫无关系。
+check("kimi-k3 在可推理名单里（上游展示它，网关不能装作没有）",
+      "kimi-k3" in C.CHAT_MODELS, C.CHAT_MODELS)
 check("限时福利 4 个全在清单里（限流不等于不支持）",
       all(m in C.CHAT_MODELS for m in
           ("deepseek-v4.1-flash", "glm-5.3", "deepseek-v4-flash-0731",
@@ -1876,6 +1882,14 @@ check("128000 被夹到 glm-5.3 的 65536（模型最大输出）",
 check("正好等于模型上限的值不动（65536 是能力，不是错值）",
       C.clamp_max_tokens("glm-5.3", 65536) == (65536, False),
       C.clamp_max_tokens("glm-5.3", 65536))
+# kimi-k3 的 65536 是实测出来的：65536 → 200，81920 / 100000 / 131072 /
+# 262144 → 全是 001001005。没有这条会退化成「ZCode 发 128000 一律 400」。
+check("kimi-k3 的 128000 也夹到 65536",
+      C.clamp_max_tokens("kimi-k3", 128000) == (65536, True),
+      C.clamp_max_tokens("kimi-k3", 128000))
+check("kimi-k3 输入窗口不编数字（上游没给，留 0）",
+      C.BUILTIN_MODEL_LIMITS["kimi-k3"][0] == 0,
+      C.BUILTIN_MODEL_LIMITS["kimi-k3"])
 check("表里没有的模型不夹（别用猜的数改坏本来能过的请求）",
       C.clamp_max_tokens("kimi-k2.6-vl", 128000) == (128000, False),
       C.clamp_max_tokens("kimi-k2.6-vl", 128000))

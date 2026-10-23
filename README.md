@@ -227,6 +227,13 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+**模型清单补上上游新出现的 `kimi-k3`**
+
+- 逐条对过：上游 `/v1/model/builtin` 返回 **9** 个内置模型，网关只广告 **8** 个，缺 `kimi-k3`（上游 `display_enabled=true`，官方 IDE 的模型选择器里看得到）。原因不是取数失败，而是它不在 `CHAT_MODELS` 这张「实测可路由」白名单里 —— 后果很隐蔽：`is_codearts_model("kimi-k3")` 为假，请求掉进 WorkBuddy 池，只配码道账号的部署回 `503 no usable account`，报错和模型名毫无关系。
+- 输出上限是**实测**的，不是抄兄弟模型：`65536` → 200 正常出字；`81920` / `100000` / `131072` / `262144` → 全部 `InferHub.001001005.400 The request param is invalid`。所以 `BUILTIN_MODEL_LIMITS["kimi-k3"] = (0, 65536)`：输出 65536，输入窗口留 0（上游不返回、远端目录也没给，按本项目口径不拿同厂的 1M 顶替；`codearts_model_meta` 对 0 是**整个字段不输出**，不会显示成假值）。
+- 顺带核对了其余 8 条的字段：`count` 与清单一致（8 条码道模型 + 2 条别名 `gpt-5-codex → glm-5.2`、`claude-sonnet-4-5-20250929 → glm-5.3`，目标都在清单里）；`codearts.errors.benefit = [4000] invalid channel` 是这条账号没有福利渠道，属预期（福利组那 3 个模型因此不广告）；`GLM-5.2` 这类大写 id 与小写请求之间由 `resolve_model` 做大小写无关归一，分流不受影响。
+- 未修的一条：`kimi-k2.6-vl` 不在 `BUILTIN_MODEL_LIMITS` 里，清单上 `max_output_tokens` 是 null，客户端发大 `max_tokens` 不会被夹。它是上游 `display_enabled=false` 的视觉模型，实测上限还没测到干净值，等有需要再补。
+
 **「静默 60 秒被切」是上游的空闲超时，不是网络抖动**
 
 - 15:15–15:20 同一条请求（`msgs=33 chars=32568 tchars=92258 tools=55`）连撞四次，每次先吐 5.4 / 6.4 / 7.1 / 9.1 KB，然后**一个字节都没有** 59.8 / 59.8 / 60.0 / 60.0 秒，被掐。心跳三条全发出去（`pings=3`）、socket 也在（`sock=True`）—— 与续期无关；同一账号上有 **616 秒成功**的请求，所以也不是「总时长超 60 秒」的限制。结论：上游（APIG 的「后端超时」，默认 60 s）只按**有没有输出**计时。
