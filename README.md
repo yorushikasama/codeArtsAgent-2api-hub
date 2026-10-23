@@ -65,7 +65,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 94 个套件：71 个 Python + 23 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 95 个套件：72 个 Python + 23 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_test_protocol_pure.py` 只 import `ca_protocol`，用来钉住「协议层不依赖 ca_proxy、不碰 I/O」。
 - `tests/_test_protocol_golden.py` 对拍两种流式协议的**逐字节帧序列**（`tests/golden/*.json`）。
   只有确认行为变化是想要的才重录：`python tests/record_protocol_golden.py`，录完 review diff。
