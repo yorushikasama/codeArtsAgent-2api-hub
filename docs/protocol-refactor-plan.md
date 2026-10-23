@@ -8,18 +8,17 @@
 
 ---
 
-## 0. 现状（2026-10-23 早，全部十刀 + 遗留项 + 死代码清理都收工）
+## 0. 现状（2026-10-23 早，十刀 + 遗留项 + 两轮清理都收工）
 
 | 项 | 数字 |
 |---|---|
-| `ca_proxy.py` | 20 752 行（起点 22 119） |
+| `ca_proxy.py` | 20 706 行（起点 22 119） |
 | `ca_protocol.py` | 1 693 行，40 个函数 |
 | 测试套件 | 133 个（107 Python + 26 JS） |
 | `_test_codearts_stream_break.py` | 226 项 |
 | `_test_protocol_pure.py` | 41 项（只 import ca_protocol） |
 | `_test_protocol_golden.py` | 19 项（逐字节帧序列） |
-| 线上 | `codearts-hub` active，跑的是 `85d1293` |
-| 远端 | `origin/main` = `85d1293` |
+| 线上 / 远端 | 与本地 `main` 同步（具体 sha 以 `git log -1` 为准） |
 
 已完成十刀：
 
@@ -67,9 +66,9 @@
 | `iter_sse_lines` / `strip_data_prefix` | 56 | ✅ 第 5 刀顺手 |
 | 别名桥 | 44 条 | ✅ 第 10 刀拆掉 |
 
-最终：`ca_proxy.py` 20 752 行（-1 367），`ca_protocol.py` 1 693 行。
+最终：`ca_proxy.py` 20 706 行（-1 413），`ca_protocol.py` 1 693 行。
 （第十刀结束时是 20 729 / 1 620；之后 stop_sequence 回填、面板并发涨了几十行，
-死代码清理又减了 79 行，净数如上。）
+死代码清理减了 79 行、价格设置收口减了 46 行，净数如上。）
 
 **依赖顺序（必须按这个顺序，否则会拖出循环导入）**
 
@@ -265,7 +264,7 @@
 
 **完成标志（全部达成）**
 
-- ✅ `ca_proxy.py` 20 752 行（≤ 21 000），`ca_protocol.py` 覆盖全部协议转换；
+- ✅ `ca_proxy.py` 20 706 行（≤ 21 000），`ca_protocol.py` 覆盖全部协议转换；
 - ✅ `_test_protocol_pure.py`（41 项）全绿，只 import `ca_protocol`；
 - ✅ `ca_proxy` 顶部不再有别名桥（只剩两个注入包装）；
 - ✅ golden 套件钉住两种流式协议的逐字节帧序列（19 项）；
