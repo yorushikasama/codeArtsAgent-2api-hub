@@ -144,7 +144,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
 
 (async () => {
   // 2a. 服务端没存过这个字段：按默认 640px 限高。
-  SETTINGS = {pricing_enabled: false, version: 'v1.6.19'};
+  SETTINGS = {version: 'v1.6.19'};
   await api.loadSettings(true);
   await settle();
   check('字段缺失时挂上限高类', body().classList.contains('win-capped') === true);
@@ -156,7 +156,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
     element('setWinMaxHeightState').textContent);
 
   // 2b. 存过 500：恢复。
-  SETTINGS = {pricing_enabled: false, section_max_height: 500};
+  SETTINGS = {section_max_height: 500};
   await api.loadSettings(true);
   await settle();
   check('恢复已存的限高', rootVar() === '500px', rootVar());
@@ -168,7 +168,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
     element('setWinMaxHeightState').textContent);
 
   // 2c. 0 = 不限：类摘掉、变量撤掉，版式回到从前。
-  SETTINGS = {pricing_enabled: false, section_max_height: 0};
+  SETTINGS = {section_max_height: 0};
   await api.loadSettings(true);
   await settle();
   check('0 时不挂限高类', body().classList.contains('win-capped') === false);
@@ -182,7 +182,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   // 2d. 存坏了：回落默认 640px（与页签显示、账号折叠的坏值口径一致），
   //     而不是「不限」——那样坏一次文件就静默把功能关了。
   for (const bad of ['garbage', null, -5, NaN, Infinity, {}, []]) {
-    SETTINGS = {pricing_enabled: false, section_max_height: bad};
+    SETTINGS = {section_max_height: bad};
     await api.loadSettings(true);
     await settle();
     check('坏值应回落默认限高: ' + JSON.stringify(bad),
@@ -204,7 +204,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
     body().classList.contains('win-capped') === false && rootVar() === '', rootVar());
 
   // 2f. 保存：输入框的值发给服务端，回包与页面按它重放。
-  SETTINGS = {pricing_enabled: false, section_max_height: 500};
+  SETTINGS = {section_max_height: 500};
   await api.loadSettings(true);
   await settle();
   element('setWinMaxHeight').value = '800';
@@ -223,7 +223,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   check('保存成功的 toast', lastToast() === '已限高：窗口最高 800px', lastToast());
 
   // 2g. 服务端夹取（4000 上限）：页面听服务端的，不听输入框的。
-  SETTINGS = {pricing_enabled: false, section_max_height: 4000};
+  SETTINGS = {section_max_height: 4000};
   SAVE_REPLY = {section_max_height: 4000};
   element('setWinMaxHeight').value = '99999';
   await api.saveWinMaxHeight(null);
@@ -254,7 +254,7 @@ const settle = () => new Promise(resolve => setImmediate(resolve));
   }
 
   // 2j. 保存失败：toast 报错，页面保持原样。
-  SETTINGS = {pricing_enabled: false, section_max_height: 500};
+  SETTINGS = {section_max_height: 500};
   await api.loadSettings(true);
   await settle();
   SAVE_STATUS = 500;

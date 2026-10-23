@@ -36,8 +36,6 @@ const SETTINGS = {
   api_keys: [],
   deleted_api_keys: [],
   limits: {},
-  pricing_enabled: false,
-  pricing_refresh_minutes: 5,
   auto_switch_product: false,
   daily_chat_web: false,
   local_web_tools: false,

@@ -9725,13 +9725,9 @@ def runtime_settings_view():
         "daily_token_limit": ca_settings.daily_token_limit(ACCOUNTS_DIR),
         "daily_credit_limit": ca_settings.daily_credit_limit(ACCOUNTS_DIR),
         "model_daily_token_limit": ca_settings.model_daily_token_limit(ACCOUNTS_DIR),
-        "pricing_refresh_minutes": 0,
         "credits_refresh_hours": ca_settings.credits_refresh_hours(ACCOUNTS_DIR),
         "section_max_height": ca_settings.section_max_height(ACCOUNTS_DIR),
         "ui_language": ca_settings.ui_language(ACCOUNTS_DIR),
-        # 价格估算体系已下线：这两个开关不再存在，恒 False。
-        "pricing_variant_inherit": False,
-        "pricing_enabled": False,
         "auto_switch_product": ca_settings.auto_switch_product(ACCOUNTS_DIR),
         "enable_anthropic_messages": ca_settings.enable_anthropic_messages(ACCOUNTS_DIR),
         "local_web_tools": ca_settings.local_web_tools(ACCOUNTS_DIR),
@@ -17420,40 +17416,6 @@ class Handler(BaseHTTPRequestHandler):
             if "expiring_window_days" in touched and POOL:
                 POOL.apply_expiring_window()
 
-        if "pricing_enabled" in payload:
-            raw = payload.get("pricing_enabled")
-            if not isinstance(raw, bool):
-                return self._error(400, "pricing_enabled must be true or false",
-                                   "invalid_request_error")
-            ca_settings.set_pricing_enabled(ACCOUNTS_DIR, raw)
-            reply["pricing_enabled"] = raw
-            if PRICING:
-                PRICING.wake()
-        if "pricing_refresh_minutes" in payload or "pricing_refresh_hours" in payload:
-            # The interval is in minutes. The old field name is still accepted
-            # (x60) so a panel page cached from the previous build cannot set
-            # the wrong unit; it is answered under the new name.
-            field = "pricing_refresh_minutes" \
-                if "pricing_refresh_minutes" in payload else "pricing_refresh_hours"
-            raw = payload.get(field)
-            if isinstance(raw, bool) or raw is None:
-                return self._error(400, "%s must be a number" % field,
-                                   "invalid_request_error")
-            try:
-                minutes = float(raw)
-            except (TypeError, ValueError):
-                return self._error(400, "%s must be a number" % field,
-                                   "invalid_request_error")
-            if field == "pricing_refresh_hours":
-                minutes *= 60.0
-            if minutes < 0:
-                return self._error(400, "pricing_refresh_minutes cannot be negative",
-                                   "invalid_request_error")
-            stored = ca_settings.set_pricing_refresh_minutes(ACCOUNTS_DIR, minutes)
-            if PRICING:
-                # A running wait picks the new interval up on the spot.
-                PRICING.set_interval(stored)
-            reply["pricing_refresh_minutes"] = stored
         if "credits_refresh_hours" in payload:
             # How stale a credit balance may get before the background refresher
             # updates it. Zero turns the refresher off.
@@ -17508,14 +17470,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(400, "ui_language must be zh, zh-Hant or en",
                                    "invalid_request_error")
             reply["ui_language"] = ca_settings.set_ui_language(ACCOUNTS_DIR, raw)
-        if "pricing_variant_inherit" in payload:
-            # 价格估算体系已下线（2026-10-22）：开关还认得，但不再有任何效果。
-            raw = payload.get("pricing_variant_inherit")
-            if not isinstance(raw, bool):
-                return self._error(400, "pricing_variant_inherit must be true or false",
-                                   "invalid_request_error")
-            reply["pricing_variant_inherit"] = raw
-            reply["pricing_removed"] = True
         if "enable_anthropic_messages" in payload:
             raw = payload.get("enable_anthropic_messages")
             if not isinstance(raw, bool):

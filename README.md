@@ -227,6 +227,13 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+**价格系统的设置面收干净（面板 + `/settings` + `ca_settings`）**
+
+- 价格估算 2026-10-22 下线时，设置页的控件删了，但配套 JS（约 230 行）、`/settings/save` 的三个分支、`ca_settings` 的四个读写函数都还留着：面板每次加载都在操作不存在的 DOM，服务端每次保存都在写一个没人读的键。
+- 现在这条链只留「只读答复」：面板不再读写 `pricing_*`；`/settings/save` 收到这三个键按未知键忽略（老页面不报错，只是不再有效果）；`ca_settings` 里的键常量、小时→分钟迁移函数与 getter/setter 一并删除。老 `settings.json` 里的残留键不读不写，保存时原样保留，回滚旧版本仍能读到。
+- `/pricing`、`/pricing/refresh`、`/pricing/mapping` 三个接口**保留**：仍在运行的老页面加载时还会去拉一次，返回 404 会让它弹网络错误。它们本来就只有「已移除」这一种答复。
+- 成本列继续按 `PRICING_ON = false` 恒隐藏；该常量现在没有赋值点，只为让历史渲染分支短路。
+
 **重构后遗留的死代码清理**
 
 - `ca_proxy`：删掉 `exclusive_realm` + `CN_EXCLUSIVE` 清单（国际版移除后没有任何调用点，模型到出口的映射已恒等于 `CURRENT_REALM`；改那份清单不会影响行为）、namespace「直接拒绝」分支的 `REJECT_NAMESPACE_TOOLS` / `NAMESPACE_TOOL_MESSAGE` / `find_namespace_tool`（正解是展开 + 还原），以及价格体系下线时留下的 `_EMPTY_POLICIES` / `_EMPTY_TIMELINE` / `_cost_from_memo`。

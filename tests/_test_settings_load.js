@@ -3,7 +3,8 @@
  * loadSettings 是「一个 try 包住全部」的写法：中间任何一行抛异常都会被末尾的
  * catch 吞掉，只弹一条 toast，然后它后面的所有区块一起静默留空——价估算状态、
  * 总开关复选框、API Key 列表、版本号与目录。页面上只看得出「某块没内容」，
- * 看不出是异常；v1.6.14 合并 #130 时冲突处理掉了一行 `const pricingOn = ...`，
+ * 看不出是异常；v1.6.14 合并 #130 时冲突处理掉了一行 `const pricingOn = ...`
+ * （那一块后来随价格系统一起删除了，但「一次往返填满每一块」的契约仍然成立），
  * 正好造成这个后果：API Key 列表整个消失，而「(3 个生效)」的计数照常显示，
  * 于是最容易被当成显示问题而不是报错。
  *
@@ -40,8 +41,6 @@ const SETTINGS = {
     daily_credit_limit: {global: 0, cn: null},
     model_daily_token_limit: {global: 0, cn: null},
   },
-  pricing_enabled: false,
-  pricing_refresh_minutes: 5,
   section_max_height: 640,
   auto_switch_product: true,
   daily_chat_web: false,
@@ -139,15 +138,22 @@ global.__toasts = toasts;
   // 3. 空列表时给的是提示语，不是一片空白。
   assert.ok(element('keyList').innerHTML.length > 0, 'keyList 被留空了');
 
-  // 4. 价估算总开关：复选框要跟着后端值，关掉时 body 挂 pricing-off。
-  assert.equal(element('setPricingEnabled').checked, false, '总开关复选框没写回');
-  assert.equal(element('setPricingEnabledState').textContent, '(已关闭)');
-  assert.ok(document.body.classList.contains('pricing-off'), '关闭时 body 应挂 pricing-off');
+  // 4. 价格估算的设置控件已随该功能删除：脚本不该再去找这些元素，也不该再读
+  //    /settings 里的 pricing_* 字段。dom stub 只记录脚本真正碰过的 id，
+  //    所以这里等于「谁把这些控件加回来，这条就红」。
+  for(const gone of ['setPricingEnabled', 'setPricingEnabledState',
+                     'setPricingMinutes', 'setPricingState', 'setPricingVariant',
+                     'setPricingMeta', 'setPricingCurrent', 'setPricingGaps']){
+    assert.equal(element(gone), null, gone + ' 应已从设置页删除');
+  }
+  for(const key of ['pricing_enabled', 'pricing_refresh_minutes',
+                    'pricing_variant_inherit']){
+    assert.ok(!script.includes(key), '脚本里不该再出现 ' + key);
+  }
 
   // 5. 异常后面那些区块也得填上：漏填说明执行又提前断了。
   assert.equal(element('setVersion').textContent, 'v1.6.14');
   assert.equal(element('setAccountsDir').textContent, '/data/accounts');
-  assert.equal(element('setPricingState').textContent, '(每 5 分钟)');
   assert.equal(element('setAutoSwitch').checked, true);
   // 国际版每日活跃（含它的网页通道与重试设置）已随该区域删除：
   // 这批控件不该再出现在设置页里。
