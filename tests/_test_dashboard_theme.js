@@ -23,7 +23,7 @@ const path = require('path');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard.html'), 'utf8');
 
-const START = "var THEME_KEY = 'wb-theme';";
+const START = "var THEME_KEY = 'ca-theme';";
 const END = '// 3. Tab 初始化';
 const start = html.indexOf(START);
 const end = html.indexOf(END);
@@ -74,7 +74,7 @@ function makeHarness(seed) {
   const docListeners = {};
   const mediaListeners = [];
   const media = { matches: !!seed.systemDark, addEventListener(type, fn) { mediaListeners.push(fn); } };
-  const store = new Map(seed.stored === undefined ? [] : [['wb-theme', seed.stored]]);
+  const store = new Map(seed.stored === undefined ? [] : [['ca-theme', seed.stored]]);
 
   const documentElement = makeElement('html');
   documentElement.style = {};
@@ -141,7 +141,7 @@ h.win.selectTheme('dark', evt());
 assert.strictEqual(h.documentElement.getAttribute('data-theme'), 'dark', '选深色后 data-theme 应为 dark');
 assert.strictEqual(h.documentElement.getAttribute('data-theme-pref'), 'dark', '偏好应记为 dark');
 assert.strictEqual(h.documentElement.style.colorScheme, 'dark', 'color-scheme 要同步，否则原生控件还是浅色');
-assert.strictEqual(h.store.get('wb-theme'), 'dark', '偏好必须持久化到 localStorage');
+assert.strictEqual(h.store.get('ca-theme'), 'dark', '偏好必须持久化到 localStorage');
 assert.strictEqual(menu.classList.contains('open'), false, '选完应当收起菜单');
 assert.strictEqual(h.el('themeOptDark').classList.contains('active'), true, '深色那一档要标成当前项');
 assert.strictEqual(h.el('themeOptLight').classList.contains('active'), false, '其它档不能残留 active');

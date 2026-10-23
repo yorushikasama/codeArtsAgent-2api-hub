@@ -65,7 +65,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 133 个套件：107 个 Python + 26 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 130 个套件：105 个 Python + 25 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_test_protocol_pure.py` 只 import `ca_protocol`，用来钉住「协议层不依赖 ca_proxy、不碰 I/O」。
 - `tests/_test_protocol_golden.py` 对拍两种流式协议的**逐字节帧序列**（`tests/golden/*.json`）。
   只有确认行为变化是想要的才重录：`python tests/record_protocol_golden.py`，录完 review diff。
@@ -227,12 +227,19 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+**断流归因与续期改造（`IncompleteRead(0 bytes read)`）**
+
+- 2026-10-23 09:11–09:29 出现 11 次 `upstream closed early: IncompleteRead(0 bytes read)`，同一时段还有 APIG 的 `APIG.0203 Backend timeout`（实测约 60 秒一刀）。两者指向同一件事：**上游后端长时间没有输出**——0203 发生在建连阶段（响应头都没来），`IncompleteRead` 发生在流中途的 chunk 边界。
+- **会话续期改成独立线程**：原来挂在读循环上（每收一行试一次、按 30 秒节流），模型思考期间上游不吐字节时只能靠 `KEEPALIVE` 哨兵带动；哨兵拿不到 socket 就完全没续期。另外带签名的 HTTP PUT 塞在收帧路径上，一次慢心跳会让读停住，反过来顶满上游写缓冲。现在线程每 5 秒醒一次、到点续 busy，`close()` 先等可能在途的 busy 落地再发 idle。
+- 断流日志带归因：`bytes`（收了多少）、`silent`（断前静默多久）、`pings`（心跳发了几次）、`sock`（socket 拿没拿到）、`shape`（消息数 / 字符数 / 工具数 / max_tokens）。
+- `APIG.0203` 映射为 **504**（不再含糊地报 502）；流式请求的建连重试增加 **75 秒总预算**——一次 0203 就花掉 60 秒，再重试时客户端早已离开（线上实测 `open retry 1/3 → 2/3 → client gone`），继续试只是替没人要的回答占着会话。非流式不受这条限制。
+
 **价格系统的设置面收干净（面板 + `/settings` + `ca_settings`）**
 
 - 价格估算 2026-10-22 下线时，设置页的控件删了，但配套 JS（约 230 行）、`/settings/save` 的三个分支、`ca_settings` 的四个读写函数都还留着：面板每次加载都在操作不存在的 DOM，服务端每次保存都在写一个没人读的键。
 - 现在这条链只留「只读答复」：面板不再读写 `pricing_*`；`/settings/save` 收到这三个键按未知键忽略（老页面不报错，只是不再有效果）；`ca_settings` 里的键常量、小时→分钟迁移函数与 getter/setter 一并删除。老 `settings.json` 里的残留键不读不写，保存时原样保留，回滚旧版本仍能读到。
 - `/pricing`、`/pricing/refresh`、`/pricing/mapping` 三个接口**保留**：仍在运行的老页面加载时还会去拉一次，返回 404 会让它弹网络错误。它们本来就只有「已移除」这一种答复。
-- 成本列继续按 `PRICING_ON = false` 恒隐藏；该常量现在没有赋值点，只为让历史渲染分支短路。
+- 成本列与 `PRICING_ON` 开关已随本轮看板重构整体删除；旧分支不再残留。
 
 **重构后遗留的死代码清理**
 

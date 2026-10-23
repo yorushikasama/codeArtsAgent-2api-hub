@@ -55,7 +55,7 @@ def build_fixtures():
     os.makedirs(acc)
     os.makedirs(use)
 
-    def account(uid, nick, realm, enabled=True, slot="", cooldown=0, err=""):
+    def account(uid, nick, realm, enabled=True, cooldown=0, err=""):
         return {
             "uid": uid,
             "nickname": nick,
@@ -71,16 +71,12 @@ def build_fixtures():
             "enabled": enabled,
             "lastError": err,
             "cooldownUntil": cooldown,
-            "proxySlot": slot,
-            "proxy": "",
             "credits": {"remain": 42, "used": 8, "size": 50, "packages": []},
             "lastActivityReport": None,
         }
 
     accounts = [
-        account(
-            "11111111-1111-1111-1111-111111111111", "test-user-a", "intl", slot="slot-1"
-        ),
+        account("11111111-1111-1111-1111-111111111111", "test-user-a", "intl"),
         account(
             "22222222-2222-2222-2222-222222222222",
             "test-user-b",
@@ -101,24 +97,8 @@ def build_fixtures():
         with open(os.path.join(acc, a["uid"] + ".json"), "w", encoding="utf-8") as fh:
             json.dump(a, fh, ensure_ascii=False, indent=2)
 
-    settings = {
-        "proxy_slots": [
-            {
-                "id": "slot-1",
-                "name": "槽 1",
-                "url": "http://test-proxy:17901",
-                "enabled": True,
-            },
-            {
-                "id": "slot-2",
-                "name": "槽 2",
-                "url": "http://test-proxy:17902",
-                "enabled": True,
-            },
-        ]
-    }
     with open(os.path.join(acc, "settings.json"), "w", encoding="utf-8") as fh:
-        json.dump(settings, fh, ensure_ascii=False, indent=2)
+        json.dump({}, fh, ensure_ascii=False, indent=2)
 
     now = time.time()
     with open(os.path.join(use, "usage.jsonl"), "w", encoding="utf-8") as fh:
@@ -469,13 +449,13 @@ def run_checks(filter_name):
                 path=os.path.join(SHOTS, "phone-analytics.png"), full_page=True
             )
 
-        if "slots" in filter_name or filter_name == "":
+        if "limits" in filter_name or filter_name == "":
             goto_tab(page, "settings")
             page.wait_for_timeout(800)
             disp = page.evaluate(
-                "document.querySelector('#slotList tbody tr') ? getComputedStyle(document.querySelector('#slotList tbody tr')).display : 'none'"
+                "document.querySelector('table.limits-cards tbody tr') ? getComputedStyle(document.querySelector('table.limits-cards tbody tr')).display : 'none'"
             )
-            check("slots-cards", disp == "grid", disp)
+            check("limits-cards", disp == "grid", disp)
             kv = page.evaluate(
                 "getComputedStyle(document.querySelector('#pageSettings table:not(.data-cards)')).display"
             )

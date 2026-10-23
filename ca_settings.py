@@ -23,16 +23,6 @@ SESSION_TTL = 7 * 24 * 3600
 # 价格估算体系已下线（2026-10-22）：pricing_refresh_minutes / pricing_variant_inherit /
 # pricing_enabled 三个键连同读写函数一起删除。老 settings.json 里残留的键不读不写，
 # 保存时原样留在文件里（load/save 不会丢未知键），回滚旧版本仍能读到它们。
-# How stale an account's credit balance may get before the background
-# refresher updates it, in hours. Only the sign-in / daily-activity tasks used
-# to refresh balances, so a dispatch decision could rest on a balance days old.
-# 12 hours is deliberately slack: the preference is measured in days, so half a
-# day of drift moves an account by at most half a day inside a 7-day window,
-# and the wider TTL keeps the refresher from spending upstream billing calls it
-# does not need.
-DEFAULT_CREDITS_REFRESH_HOURS = 12.0
-MAX_CREDITS_REFRESH_HOURS = 24 * 30
-CREDITS_REFRESH_HOURS_KEY = "credits_refresh_hours"
 # Panel window height cap, in pixels: a dashboard window (section) taller than
 # this scrolls internally with its title row pinned, instead of stretching the
 # whole page. 0 turns the cap off. The default sits just above the log
@@ -90,11 +80,6 @@ UPDATE_CHECK_ENABLED_KEY = "update_check_enabled"
 # general update-state store: see update_check_state().
 UPDATE_CHECK_STATE_KEY = "update_check"
 
-# 剩余用量优先调度：把「估计剩余快耗尽」的 (账号, 模型) 先交出去（剩余越少
-# 权重越高）。缺失键读作关：估算本身是从撞线样本反推的，优先它是一次刻意的
-# 取舍（那些组合会明显多接流量），所以老安装保持原样的纯轮询。
-REMAINING_PRIORITY_ENABLED_KEY = "remaining_priority_enabled"
-
 # 出口级瞬时失败退避（issue #271）：传输类失败与 502/503/504 不再进账号级熔断
 # 计数，改记在出口上、退避降到秒级（见 ca_egress）。缺失键读作关：它改变的是
 # 派发路径上的失败归账与退避尺度，老安装保持原样（传输错误仍喂账号熔断）。
@@ -134,7 +119,7 @@ def _digest(password, salt_hex, rounds=PBKDF2_ROUNDS):
 
 
 # settings.json 的解析结果按 (path, mtime, size) 缓存：请求热路径上它被读约 10
-# 次（prompt_config×2 / api_keys×2 / limits_data×3 / auto_switch_product /
+# 次（prompt_config×2 / api_keys×2 / limits_data×3 /
 # upstream_config×2），单次 156~273µs，合计 1.6~2.7ms/请求。所有写入都走 save()
 # 的 os.replace 原子替换，mtime/size 必变，所以面板改动仍然即时生效；save() 里
 # 再主动失效一次，连 mtime 精度粗（FAT 只有 2s）的同尺寸改写也不会读到旧值。
@@ -373,10 +358,6 @@ def ensure_launcher_key(accounts_dir):
 
 
 # --------------------------------------------------------------- API keys
-# Each key can be bound to one upstream realm. 国际版已移除，只剩国内版一个出口，
-# 但绑定字段与校验机制保留，方便后续换上游。
-
-REALMS = ("", "cn")
 
 
 def _clean_model_patterns(value):
@@ -436,9 +417,6 @@ def _clean_key_entry(entry):
     deleted_at = str(entry.get("deleted_at") or "").strip()
     if not key and not deleted_at:
         return None
-    realm = str(entry.get("realm") or "").strip().lower()
-    if realm not in REALMS:
-        realm = ""
     try:
         concurrency = int(entry.get("concurrency_limit") or entry.get("max_concurrency") or 0)
     except (TypeError, ValueError):
@@ -448,7 +426,6 @@ def _clean_key_entry(entry):
         "id": str(entry.get("id") or secrets.token_hex(6)),
         "name": str(entry.get("name") or "").strip() or "未命名",
         "key": key,
-        "realm": realm,
         "models": _clean_model_patterns(entry.get("models")),
         "concurrency_limit": concurrency,
         "enabled": False if deleted_at else entry.get("enabled", True) is not False,
@@ -525,9 +502,8 @@ def api_keys(accounts_dir, include_deleted=False):
         if legacy:
             return [{
                 "id": "legacy",
-                "name": "默认（跟随面板切换）",
+                "name": "默认",
                 "key": legacy,
-                "realm": "",
                 "models": [],
                 "enabled": True,
                 "created_at": "",
@@ -542,7 +518,6 @@ def _retired_key_entry(old):
         "id": old["id"],
         "name": old["name"],
         "key": "",
-        "realm": old.get("realm") or "",
         "models": old.get("models") or [],
         "enabled": False,
         "created_at": old.get("created_at") or "",
@@ -631,8 +606,8 @@ def set_api_keys(accounts_dir, keys, delete_ids=None):
 def match_api_key(accounts_dir, supplied, extra_keys=()):
     """Find which configured key a request presented, if any.
 
-    Returns a copy of the entry (with a `source` field) so the caller can read
-    the bound realm, or None when nothing matches.
+    Returns a copy of the entry (with a `source` field), or None when nothing
+    matches.
     """
     supplied = (supplied or "").strip()
     if not supplied:
@@ -652,7 +627,6 @@ def match_api_key(accounts_dir, supplied, extra_keys=()):
                 "id": "launcher",
                 "name": "启动参数",
                 "key": candidate,
-                "realm": "",
                 "models": [],
                 "enabled": True,
                 "source": "launcher",
@@ -673,21 +647,15 @@ def set_auth_disabled(accounts_dir, disabled):
 
 
 # ------------------------------------------------------------------ limits
-# The four guards share one shape: a global default, plus an optional
-# per-realm override. An override left empty inherits the global value, so an
-# install that never touches it behaves exactly as before, and one that does
-# only ever has to reason about a single number per guard.
-LIMIT_KEYS = ("reserve_credits", "daily_token_limit",
-              "daily_credit_limit", "model_daily_token_limit",
-              "expiring_window_days")
-LIMIT_REALMS = ("cn",)
-LIMIT_SCOPES = ("global",) + LIMIT_REALMS
+# Three daily guards, one global number each. They used to carry a per-realm
+# override from the two-egress era; only one egress exists now, so the panel
+# and the pool both read and write a single value per guard.
+LIMIT_KEYS = ("daily_token_limit", "daily_credit_limit",
+              "model_daily_token_limit")
+LIMIT_REALMS = ()
+LIMIT_SCOPES = ("global",)
 LIMITS_KEY = "limits"
-
-# Guards whose global default is not "off". Every key still reads 0 as off;
-# only the expiring-credits window ships enabled, because 0 would make the
-# preference a silent no-op until someone turned it on by hand.
-LIMIT_DEFAULTS = {"expiring_window_days": 7}
+LIMIT_DEFAULTS = {}
 
 
 def _default_global(key):
@@ -699,8 +667,8 @@ def _default_global(key):
 
 
 def _empty_limit_entry(key=None):
-    """One guard: a global default plus a slot per realm (None = inherit)."""
-    return {"global": _default_global(key), "cn": None}
+    """One guard: just the global default."""
+    return {"global": _default_global(key)}
 
 
 def _coerce_global(value):
@@ -713,20 +681,8 @@ def _coerce_global(value):
     return max(0, number)
 
 
-def _coerce_override(value):
-    """A per-realm override. None (or a blank form field) means "inherit the
-    global default", kept distinct from an explicit 0 ("off for this realm")."""
-    if value is None or value == "":
-        return None
-    try:
-        number = int(value)
-    except (TypeError, ValueError):
-        return None
-    return max(0, number)
-
-
 def _fold_legacy_limits(data):
-    """Move the four flat top-level guards into `limits`.
+    """Move the flat top-level guards into `limits`.
 
     Returns (changed, limits). The old keys are dropped as they are folded in,
     so a later rollback cannot resurrect a stale limit from beside the grouped
@@ -744,23 +700,20 @@ def _fold_legacy_limits(data):
 
 
 def _normalize_limits(raw):
-    """A copy of the stored map with every key and scope filled in, so a
-    partial or hand-edited settings.json still reads as a complete shape."""
+    """A copy of the stored map with every key filled in, so a partial or
+    hand-edited settings.json still reads as a complete shape."""
     limits = {}
     for key in LIMIT_KEYS:
         entry = raw.get(key)
         if not isinstance(entry, dict):
             entry = {}
         global_raw = entry.get("global")
-        # A missing global falls back to that guard's own default (0 for every
-        # guard but the expiring window); an explicit 0 is a real "off" and is
-        # kept as one, so a saved "off" never silently comes back on.
+        # A missing global reads as that guard's default; an explicit 0 is a
+        # real "off" and is kept as one, so a saved "off" never silently comes
+        # back on.
         global_value = (_default_global(key) if global_raw is None
                         else _coerce_global(global_raw))
-        limits[key] = {
-            "global": global_value,
-            "cn": _coerce_override(entry.get("cn")),
-        }
+        limits[key] = {"global": global_value}
     return limits
 
 
@@ -793,37 +746,19 @@ def limits_snapshot(accounts_dir):
     return limits_data(accounts_dir)
 
 
-def limit_scope_name(realm):
-    """把调用方给的区域收窄到真正存在的作用域。
-
-    已删区域（老调用方还会传 intl）与认不出来的值都归一到现存的出口，而不是
-    静默落回全局默认——那会让同一个账号在两条代码路径上读到不同的限额。
-    空值返回 None，表示「只要全局默认」。
-    """
-    text = str(realm or "").strip().lower()
-    if not text:
-        return None
-    return text if text in LIMIT_REALMS else LIMIT_REALMS[0]
-
-
 def limit_value(accounts_dir, key, realm=None):
-    """One guard's effective value for a realm.
+    """One guard's global value.
 
-    realm None (or "") returns the global default; a cn override wins when it
-    is set. An unknown key reads as 0 (off), so a typo cannot wedge the
+    ``realm`` is accepted and ignored: the per-realm override belonged to the
+    two-egress era. An unknown key reads as 0 (off), so a typo cannot wedge the
     request path.
     """
     entry = limits_data(accounts_dir).get(key) or _empty_limit_entry()
-    realm = limit_scope_name(realm)
-    if realm in LIMIT_REALMS:
-        override = entry.get(realm)
-        if override is not None:
-            return override
     return entry.get("global") or 0
 
 
 def limit_values_many(accounts_dir, keys):
-    """Several guards resolved for every realm, off one settings read.
+    """Several guards resolved once, off one settings read.
 
     limit_values() per key re-reads the file (cached by mtime/size, so a stat)
     and re-normalizes the whole grouped map every call; the daily guards all
@@ -834,31 +769,17 @@ def limit_values_many(accounts_dir, keys):
     out = {}
     for key in keys:
         entry = grouped.get(key) or _empty_limit_entry()
-        global_value = entry.get("global") or 0
-        values = {"global": global_value}
-        for realm in LIMIT_REALMS:
-            override = entry.get(realm)
-            values[realm] = global_value if override is None else override
-        out[key] = values
+        out[key] = {"global": entry.get("global") or 0}
     return out
 
 
 def limit_values(accounts_dir, key):
-    """One guard resolved for every realm plus the global it inherits.
-
-    {"global": g, "cn": ...}. The cn entry already carries the global value
-    when no override is set, so the pool can hand each account its own realm
-    without a second settings lookup.
-    """
+    """One guard resolved to {"global": g}. Kept for the pool's per-key view."""
     return limit_values_many(accounts_dir, (key,))[key]
 
 
 def set_limit(accounts_dir, key, scope, value):
-    """Persist one guard at one scope. Returns the stored entry.
-
-    scope is "global" or "cn"; a None/blank value clears a cn override back to
-    "inherit", while the global slot always stores a number.
-    """
+    """Persist one guard at the global scope. Returns the stored entry."""
     if key not in LIMIT_KEYS:
         raise ValueError("unknown limit: %s" % key)
     if scope not in LIMIT_SCOPES:
@@ -871,27 +792,10 @@ def set_limit(accounts_dir, key, scope, value):
         else:
             _changed, limits = _fold_legacy_limits(data)
         entry = limits[key]
-        if scope == "global":
-            entry["global"] = _coerce_global(value)
-        else:
-            entry[scope] = _coerce_override(value)
+        entry["global"] = _coerce_global(value)
         data[LIMITS_KEY] = limits
         save(accounts_dir, data)
     return entry
-
-
-def reserve_credits(accounts_dir, realm=None):
-    """Global low-credit guard: an account at or below this balance stays idle.
-
-    Zero disables the guard, which keeps installs that predate the setting
-    behaving exactly as before.
-    """
-    return limit_value(accounts_dir, "reserve_credits", realm)
-
-
-def set_reserve_credits(accounts_dir, value):
-    """Persist the guard threshold. Returns the stored value."""
-    return set_limit(accounts_dir, "reserve_credits", "global", value)["global"]
 
 
 def daily_token_limit(accounts_dir, realm=None):
@@ -940,58 +844,6 @@ def model_daily_token_limit(accounts_dir, realm=None):
 def set_model_daily_token_limit(accounts_dir, value):
     """Persist the per-model daily token threshold. Returns the stored value."""
     return set_limit(accounts_dir, "model_daily_token_limit", "global", value)["global"]
-
-
-def expiring_window_days(accounts_dir, realm=None):
-    """Window, in days, inside which an account's soonest-expiring credit
-    package makes the pool hand that account out first, so credits about to
-    lapse are spent before they are lost.
-
-    Zero disables the preference and dispatch falls back to a plain
-    round-robin; the shipped default is 7 days.
-    """
-    return limit_value(accounts_dir, "expiring_window_days", realm)
-
-
-def set_expiring_window_days(accounts_dir, value):
-    """Persist the window. Returns the stored value."""
-    return set_limit(accounts_dir, "expiring_window_days", "global", value)["global"]
-
-
-def credits_refresh_hours(accounts_dir):
-    """How stale a credit balance may get before the background refresher
-    updates it, in hours.
-
-    The dispatch preference reads the balance, and only the sign-in and
-    daily-activity tasks used to refresh it, so an account could be judged on a
-    balance days old - or on whatever was on disk when the process started.
-    Zero disables the refresher. Anything not a number falls back to the
-    default, so a hand-edited settings.json cannot wedge the loop.
-    """
-    with _lock:
-        data = load(accounts_dir)
-        raw = data.get(CREDITS_REFRESH_HOURS_KEY)
-    try:
-        value = float(raw)
-    except (TypeError, ValueError):
-        return DEFAULT_CREDITS_REFRESH_HOURS
-    if value < 0:
-        return DEFAULT_CREDITS_REFRESH_HOURS
-    return min(value, MAX_CREDITS_REFRESH_HOURS)
-
-
-def set_credits_refresh_hours(accounts_dir, value):
-    """Persist the refresh TTL. Returns the stored value."""
-    try:
-        hours = float(value)
-    except (TypeError, ValueError):
-        hours = 0.0
-    hours = max(0.0, min(MAX_CREDITS_REFRESH_HOURS, hours))
-    with _lock:
-        data = load(accounts_dir)
-        data[CREDITS_REFRESH_HOURS_KEY] = hours
-        save(accounts_dir, data)
-    return hours
 
 
 def section_max_height(accounts_dir):
@@ -1283,51 +1135,6 @@ def set_enable_anthropic_messages(accounts_dir, enabled):
     with _lock:
         data = load(accounts_dir)
         data["enable_anthropic_messages"] = enabled
-        save(accounts_dir, data)
-    return enabled
-
-
-def auto_switch_product(accounts_dir):
-    """Whether an upstream 429 may rotate an account's outbound identity.
-
-    Off unless the operator turns it on. Rotating identity spends the request's
-    retry budget and leaves the account on a channel nobody picked, so the
-    gateway does not decide that on its own - and an install that predates the
-    setting keeps behaving exactly as it did.
-    """
-    return load(accounts_dir).get("auto_switch_product") is True
-
-
-def set_auto_switch_product(accounts_dir, enabled):
-    """Persist the auto-switch toggle. Returns the stored boolean."""
-    enabled = bool(enabled)
-    with _lock:
-        data = load(accounts_dir)
-        data["auto_switch_product"] = enabled
-        save(accounts_dir, data)
-    return enabled
-
-
-def remaining_priority_enabled(accounts_dir):
-    """Whether pairs close to their estimated remaining quota are served first.
-
-    Off unless the operator turns it on. The remaining-usage estimate is
-    inferred from cap events and the usage log, and preferring the pairs that
-    are close to their estimated limit is a deliberate trade: they take a
-    visibly larger share of the traffic, which is the point of the preference
-    (spend the quota that would otherwise lapse with the window). An install
-    that predates the switch keeps the plain round-robin, so nothing changes
-    until it is explicitly turned on.
-    """
-    return load(accounts_dir).get(REMAINING_PRIORITY_ENABLED_KEY) is True
-
-
-def set_remaining_priority_enabled(accounts_dir, enabled):
-    """Persist the remaining-usage priority switch. Returns the stored boolean."""
-    enabled = bool(enabled)
-    with _lock:
-        data = load(accounts_dir)
-        data[REMAINING_PRIORITY_ENABLED_KEY] = enabled
         save(accounts_dir, data)
     return enabled
 
@@ -1687,185 +1494,6 @@ def record_update_check(accounts_dir, at=None, success=False, latest_version="")
         data[UPDATE_CHECK_STATE_KEY] = state
         save(accounts_dir, data)
     return update_check_state(accounts_dir)
-
-
-_SLOT_ID_RE = re.compile(r"^slot-(\d+)$")
-
-
-def _clean_slot_entry(entry, fallback_id=None):
-    """Normalize one stored slot; returns None when unusable.
-
-    The exit fields are written by a probe and stay empty until one runs. An
-    empty name means "label this slot by its exit", which is what the panel
-    shows; it is never silently replaced by the id here, or the operator could
-    not tell an auto-named slot from a renamed one.
-    """
-    if not isinstance(entry, dict):
-        return None
-    url = str(entry.get("url") or "").strip()
-    if not url:
-        return None
-    slot_id = str(entry.get("id") or "").strip()
-    if not slot_id:
-        slot_id = fallback_id or ""
-    try:
-        probed_at = int(entry.get("probed_at") or 0)
-    except (TypeError, ValueError):
-        probed_at = 0
-    return {
-        "id": slot_id,
-        "name": str(entry.get("name") or "").strip(),
-        "url": url,
-        "enabled": entry.get("enabled", True) is not False,
-        "ip": str(entry.get("ip") or "").strip(),
-        "country": str(entry.get("country") or "").strip(),
-        "country_code": str(entry.get("country_code") or "").strip().upper(),
-        "ip_type": str(entry.get("ip_type") or "").strip().lower(),
-        "isp": str(entry.get("isp") or "").strip(),
-        "asn": str(entry.get("asn") or "").strip(),
-        "probed_at": probed_at,
-    }
-
-
-def _next_slot_id(existing):
-    """Next unused `slot-<n>` id for a legacy list stored without ids."""
-    highest = 0
-    for entry in existing:
-        match = _SLOT_ID_RE.match(str(entry.get("id") or ""))
-        if match:
-            highest = max(highest, int(match.group(1)))
-    return "slot-%d" % (highest + 1)
-
-
-def _slot_seq(data):
-    """Highest slot number ever issued in this store."""
-    try:
-        return int(data.get("proxy_slot_seq") or 0)
-    except Exception:
-        return 0
-
-
-def proxy_slots(accounts_dir):
-    """Every configured proxy slot, in stored order."""
-    data = load(accounts_dir)
-    stored = data.get("proxy_slots")
-    if not isinstance(stored, list):
-        return []
-    out, seen = [], set()
-    for raw in stored:
-        entry = _clean_slot_entry(raw)
-        if entry and entry["url"] not in seen:
-            seen.add(entry["url"])
-            if not entry["id"]:
-                entry["id"] = _next_slot_id(out)
-            out.append(entry)
-    return out
-
-
-def set_proxy_slots(accounts_dir, slots):
-    """Replace the whole slot list. Returns the stored list.
-
-    Ids are drawn from a counter that only ever grows. Accounts persist the
-    id they are bound to, so recycling a freed id would silently re-point an
-    existing account at a newly added slot's exit IP.
-    """
-    with _lock:
-        data = load(accounts_dir)
-        stored = data.get("proxy_slots")
-        stored = stored if isinstance(stored, list) else []
-
-        seq = _slot_seq(data)
-        # Seed from both the incoming and the outgoing list, so an id that is
-        # being removed in this very save can never be handed to a new entry.
-        for entry in list(stored) + list(slots or []):
-            if not isinstance(entry, dict):
-                continue
-            match = _SLOT_ID_RE.match(str(entry.get("id") or ""))
-            if match:
-                seq = max(seq, int(match.group(1)))
-        # A legacy list stored without ids is displayed as slot-1..slot-N, so
-        # keep the counter above those too.
-        seq = max(seq, len(stored))
-
-        cleaned, seen = [], set()
-        for raw in slots or []:
-            entry = _clean_slot_entry(raw)
-            if not entry or entry["url"] in seen:
-                continue
-            seen.add(entry["url"])
-            if not entry["id"] or any(e["id"] == entry["id"] for e in cleaned):
-                seq += 1
-                entry["id"] = "slot-%d" % seq
-            cleaned.append(entry)
-        data["proxy_slots"] = cleaned
-        data["proxy_slot_seq"] = seq
-        save(accounts_dir, data)
-        return cleaned
-
-
-def update_proxy_slot(accounts_dir, slot_id, fields, defaults=None):
-    """Merge `fields` into one stored slot; returns the merged copy, or None.
-
-    Both the read and the write happen under the store lock. A plain
-    read-modify-write from the caller would race with a panel save and write
-    back a list that no longer matches what is on disk, silently reverting
-    whatever the other writer changed.
-
-    `defaults` are applied only to fields that are still empty at write time,
-    so a value the operator typed while the caller was working is never
-    overwritten by a derived one.
-    """
-    slot_id = str(slot_id or "").strip()
-    if not slot_id:
-        return None
-    with _lock:
-        out, found = [], None
-        for entry in proxy_slots(accounts_dir):
-            if entry["id"] == slot_id and found is None:
-                entry = dict(entry)
-                entry.update(fields)
-                for key, value in (defaults or {}).items():
-                    if not entry.get(key):
-                        entry[key] = value
-                found = entry
-            out.append(entry)
-        if found is None:
-            return None
-        data = load(accounts_dir)
-        data["proxy_slots"] = out
-        save(accounts_dir, data)
-        return found
-
-
-def drop_missing_bindings(pool, slots):
-    """Clear bindings that point at a slot which no longer exists.
-
-    Without this the stale id stays on the account, and a later slot that
-    happens to receive that id would capture the account.
-    """
-    valid = {entry["id"] for entry in slots}
-    changed = 0
-    for account in list(getattr(pool, "accounts", []) or []):
-        if account.proxy_slot and account.proxy_slot not in valid:
-            account.proxy_slot = ""
-            try:
-                account.save(pool.dir)
-            except Exception:
-                pass
-            changed += 1
-    if changed:
-        pool.apply_proxy_slots(slots)
-    return changed
-
-
-def find_proxy_slot(accounts_dir, slot_id):
-    slot_id = str(slot_id or "").strip()
-    if not slot_id:
-        return None
-    for entry in proxy_slots(accounts_dir):
-        if entry["id"] == slot_id:
-            return entry
-    return None
 
 
 class PanelSessions(object):

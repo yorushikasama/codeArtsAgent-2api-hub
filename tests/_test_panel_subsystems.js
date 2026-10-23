@@ -8,7 +8,7 @@
  *   1. 表头排序子系统（SORT_* / applyTableSort / inferColKind / 点击接线）；
  *   2. 签到记录：账号表入口 + 弹窗 + 筛选（#261）；
  *   3. 设置页的更新检查卡片（#262）；
- *   4. 剩余用量优先调度开关（#263/#264）；
+ *   4. 剩余用量（只读）与模型筛选（#263/#264；调度开关已删）；
  * 外加两条合并事故的直接教训：
  *   5. 「顶部页签显示」区块必须在 #pageSettings 里（#268 曾被挤到运行日志页）；
  *   6. 顶层同名函数只能有一个定义 —— #261 的弹窗与 #267 的页内看板撞名时，后声明的
@@ -56,12 +56,13 @@ for (const name of ['function loadUpdateStatus', 'function applyUpdateStatus',
   has('更新检查', name);
 }
 
-/* ---- 4. 剩余用量优先调度开关（#263/#264）---- */
-has('优先调度开关', 'id="setRemainingPriority"');
-has('优先调度保存', 'function saveRemainingPriority');
-has('优先调度设置键', 'remaining_priority_enabled');
+/* ---- 4. 剩余用量（只读）还留着，优先调度开关已随 WorkBuddy 面删除 ---- */
 has('剩余用量表体', 'id="remainingTbodyCn"');
 has('模型筛选', 'function toggleRemainingModelFilter');
+for (const gone of ['id="setRemainingPriority"', 'function saveRemainingPriority',
+                    'remaining_priority_enabled']) {
+  assert.ok(!html.includes(gone), 'dashboard.html 不该再残留优先调度：' + gone);
+}
 
 /* ---- 5. #268 的区块必须在设置页里 ---- */
 const settingsAt = html.indexOf('<div id="pageSettings"');

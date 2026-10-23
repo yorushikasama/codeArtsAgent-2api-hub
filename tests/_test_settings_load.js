@@ -21,34 +21,29 @@ const dom = require('./_dom_stub.js');
 dom.installDom();
 const element = id => dom.byId(id);
 
-/* 三把 Key：一把跟随面板切换、一把固定国内版出口并带模型白名单、一把禁用。
-   价估算总开关故意设成关，好顺带检查它有没有被写回复选框与 body 类。 */
+/* 三把 Key：一把普通 Key、一把带模型白名单、一把禁用。 */
 const SETTINGS = {
   panel_password_is_default: false,
   api_keys: [
-    {id: 'k1', name: 'Cursor', realm: '', models: [], enabled: true,
-     masked: 'wb-aaaa****1111', created_at: '2026-09-01'},
-    {id: 'k2', name: 'DSH', realm: 'cn', models: ['deepseek*'], enabled: true,
-     masked: 'wb-bbbb****2222', created_at: '2026-09-02'},
-    {id: 'k3', name: '本地测试', realm: '', models: [], enabled: false,
-     masked: 'wb-cccc****3333', created_at: '2026-09-03'},
+    {id: 'k1', name: 'Cursor', models: [], enabled: true,
+     masked: 'ca-aaaa****1111', created_at: '2026-09-01'},
+    {id: 'k2', name: 'DSH', models: ['deepseek*'], enabled: true,
+     masked: 'ca-bbbb****2222', created_at: '2026-09-02'},
+    {id: 'k3', name: '本地测试', models: [], enabled: false,
+     masked: 'ca-cccc****3333', created_at: '2026-09-03'},
   ],
   deleted_api_keys: [],
   limits: {
-    // 国内版单独设过值，所以「分别设置」应处于展开状态。
-    reserve_credits: {global: 10, cn: 3},
-    daily_token_limit: {global: 1000, cn: null},
-    daily_credit_limit: {global: 0, cn: null},
-    model_daily_token_limit: {global: 0, cn: null},
+    daily_token_limit: {global: 1000},
+    daily_credit_limit: {global: 0},
+    model_daily_token_limit: {global: 0},
   },
   section_max_height: 640,
-  auto_switch_product: true,
   daily_chat_web: false,
   daily_chat_web_timeout: 300,
   daily_chat_web_timeout_default: 120,
   daily_chat_web_attempts_default: 3,
   local_web_tools: true,
-  remaining_priority_enabled: true,
   version: 'v1.6.14',
   accounts_dir: '/data/accounts',
   usage_dir: '/data/usage',
@@ -115,22 +110,18 @@ global.__toasts = toasts;
   for(const name of ['Cursor', 'DSH', '本地测试']){
     assert.ok(cardOf(name), '缺少 ' + name + ' 的卡片');
   }
-  // Cursor：跟随面板切换的普通 Key，掩码在它自己那张卡上，且没有固定出口徽章。
-  assert.ok(onCard('Cursor', '跟随面板切换'), 'Cursor 卡应显示「跟随面板切换」');
-  assert.ok(onCard('Cursor', 'wb-aaaa****1111'), 'Cursor 卡上应显示掩码 Key');
-  assert.ok(!cardOf('Cursor').includes('固定国内版出口'), 'Cursor 卡不该有固定出口徽章');
-  // DSH：同一张卡上既是固定国内版出口，又带模型白名单。
-  assert.ok(onCard('DSH', '固定国内版出口'), 'DSH 卡上应有「固定国内版出口」');
+  // Cursor：普通 Key，掩码在它自己那张卡上。
+  assert.ok(onCard('Cursor', 'ca-aaaa****1111'), 'Cursor 卡上应显示掩码 Key');
+  // DSH：带模型白名单。
   assert.ok(onCard('DSH', '限 deepseek*'), 'DSH 卡上应有「限 deepseek*」');
-  // 本地测试：跟随面板切换 + 处于禁用状态。
-  assert.ok(onCard('本地测试', '跟随面板切换'), '本地测试 卡上应显示「跟随面板切换」');
+  // 本地测试：处于禁用状态。
   assert.ok(onCard('本地测试', '已禁用'), '本地测试 卡上应显示已禁用');
   assert.ok(cardIsDisabled('本地测试'), '本地测试 卡应带 disabled 状态');
-  assert.ok(!cardOf('本地测试').includes('固定国内版出口'), '本地测试 卡不该有固定出口徽章');
-  // 每枚徽章只出现在一张卡上：复制到每张卡也满足「在某张卡上」。
-  assert.equal(cardsWith('跟随面板切换'), 2, '跟随徽章只该出现在 Cursor / 本地测试 卡上');
-  assert.equal(cardsWith('固定国内版出口'), 1, '固定国内版出口 只该出现在 DSH 卡上');
   assert.equal(cardsWith('限 deepseek*'), 1, '模型白名单徽章只该出现在 DSH 卡上');
+  // 出口绑定已随双出口删除：卡片上不该再有出口徽章。
+  for(const gone of ['跟随面板切换', '固定国内版出口']){
+    assert.equal(cardsWith(gone), 0, gone + ' 徽章应已从 Key 卡片删除');
+  }
 
   assert.equal(element('setKeyState').textContent, '(2 个生效)',
     '计数只算启用中的 Key');
@@ -154,7 +145,16 @@ global.__toasts = toasts;
   // 5. 异常后面那些区块也得填上：漏填说明执行又提前断了。
   assert.equal(element('setVersion').textContent, 'v1.6.14');
   assert.equal(element('setAccountsDir').textContent, '/data/accounts');
-  assert.equal(element('setAutoSwitch').checked, true);
+  // 自动切换出站身份与剩余用量优先调度已随 WorkBuddy 专属面删除：
+  // 控件、设置键与脚本引用都不该再出现。
+  for(const gone of ['setAutoSwitch', 'setAutoSwitchState', 'setRemainingPriority',
+                     'setRemainingPriorityState', 'setLimitsPerRealm', 'setLimitRealms']){
+    assert.equal(element(gone), null, gone + ' 应已从设置页删除');
+  }
+  for(const key of ['auto_switch_product', 'remaining_priority_enabled',
+                    'autoSwitchProduct', 'remainingPriority']){
+    assert.ok(!script.includes(key), '脚本里不该再出现 ' + key);
+  }
   // 国际版每日活跃（含它的网页通道与重试设置）已随该区域删除：
   // 这批控件不该再出现在设置页里。
   for(const gone of ['setDailyChatWeb', 'setDailyChatWebRetry',
@@ -162,10 +162,11 @@ global.__toasts = toasts;
     assert.equal(element(gone), null, gone + ' 应已从设置页删除');
   }
   assert.equal(element('setLocalWebTools').checked, true);
-  assert.equal(element('setRemainingPriority').checked, true,
-    '剩余用量优先调度的复选框没写回');
-  assert.equal(element('setRemainingPriorityState').textContent, '(已启用)');
-  assert.equal(element('setLimitsPerRealm').checked, true, '有分版本覆盖时应勾上');
+  // 限额只剩三条全局护栏：值写回各自的输入框，区块状态跟着亮。
+  assert.equal(element('limitGlobalDailyToken').value, '1000', '每日 Token 限额没写回');
+  assert.equal(element('limitGlobalDailyCredit').value, '0', '每日积分限额没写回');
+  assert.equal(element('limitGlobalModelDailyToken').value, '0', '按模型限额没写回');
+  assert.equal(element('setLimitsState').textContent, '(已启用)');
   assert.equal(element('setWinMaxHeight').value, '640', '窗口限高输入框没写回');
   assert.equal(element('setWinMaxHeightState').textContent, '(当前 640px)',
     '窗口限高状态文案没写回');

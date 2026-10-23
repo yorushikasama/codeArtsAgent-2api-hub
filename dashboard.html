@@ -280,11 +280,6 @@ th.sortable:focus-visible .sort-arrow.idle{opacity:1}
 .cool-pill{display:inline-block;padding:1px 7px;border-radius:3px;font-size:10px;font-weight:600;
   color:#8a5f0a;background:rgba(179,135,47,.15);border:1px solid rgba(179,135,47,.4);white-space:nowrap}
 .empty{color:var(--dim);text-align:center;padding:28px 0;font-size:13px}
-/* 价格悬停气泡：自绘，才能对齐单价并截图验收；pointer-events:none 让它不会
-   抢走鼠标、把 hover 打断。 */
-.cost-cell{cursor:help}
-/* 价估算总开关关闭时，除开关本身外整块功能从界面上撤掉：价格列、KPI 卡片、
-   设置页的取价子控件与未定价清单一并隐藏，只留下开关，方便随时再打开。 */
 /* 胶囊式开关：原生 checkbox 管状态与键盘可达性，视觉交给 .switch-track。
    点一下即切换并立即保存，所以不再另配「保存」按钮。 */
 .switch{position:relative;display:inline-flex;align-items:center;gap:8px;font-size:13px;
@@ -298,16 +293,6 @@ th.sortable:focus-visible .sort-arrow.idle{opacity:1}
 .switch input:checked+.switch-track{background:var(--accent2);border-color:var(--accent2)}
 .switch input:checked+.switch-track::after{transform:translateX(18px);background:#fff}
 .switch input:focus-visible+.switch-track{outline:2px solid var(--accent2);outline-offset:2px}
-#costTip{position:fixed;z-index:80;display:none;max-width:min(480px,94vw);padding:10px 12px;
-  border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--fg);
-  font-size:12px;line-height:1.7;box-shadow:0 14px 34px rgba(45,36,22,.24);pointer-events:none}
-#costTip .ct-h{color:var(--dim);font-size:11px;letter-spacing:.02em}
-#costTip .ct-line{margin-top:2px}
-#costTip .ct-row{display:flex;gap:18px;justify-content:space-between;margin-top:2px}
-#costTip .ct-k{color:var(--dim)}
-#costTip .ct-v{font-variant-numeric:tabular-nums;white-space:nowrap}
-#costTip .ct-note{color:var(--dim);font-size:11px;margin-top:4px}
-#costTip .ct-sep{height:1px;background:var(--line);margin:7px 0}
 .legend{display:flex;gap:16px;color:var(--dim);font-size:11px;margin-top:12px;flex-wrap:wrap}
 .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
 .toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
@@ -334,14 +319,10 @@ button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,te
 .id-btn:hover{color:var(--fg)}
 .id-btn-label{color:var(--dim);font-size:11px;white-space:nowrap}
 .id-btn.active{background:var(--accent);color:#fdf7ea;font-weight:600;box-shadow:var(--shadow-sm)}
-.slot-select{background:var(--panel2);border:1px solid var(--line);border-radius:8px;
-  padding:5px 8px;color:var(--fg);font:inherit;font-size:12px;max-width:140px}
-/* 表格行内的小号选择器（账号权重）：与 slot-select 同一家族，尺寸收到能放进
-   单元格。原生 select 的直角白框在暖色表里显得突兀，这里补齐主题样式。 */
+/* 表格行内的小号选择器（账号权重）：原生 select 的直角白框在暖色表里显得
+   突兀，这里补齐主题样式。 */
 .mini-select{background:var(--panel2);border:1px solid var(--line);border-radius:7px;
   padding:3px 6px;color:var(--fg);font:inherit;font-size:11px;font-variant-numeric:tabular-nums}
-.slot-input{width:100%;background:var(--panel2);border:1px solid var(--line);
-  border-radius:8px;padding:6px 10px;color:var(--fg);font:inherit;font-size:13px}
 .acct-actions-col{display:flex;flex-direction:column;gap:5px;align-items:center;justify-content:center}
 .acct-actions-row{display:flex;gap:4px;justify-content:center}
 .modal-mask{display:none;position:fixed;inset:0;background:rgba(30,25,18,.48);
@@ -641,7 +622,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 /* 细分出来的模块标签各有配色；catalog/auth 早先就被推断出来，只是一直没有
    自己的颜色，和 system 的灰底混在一起。 */
 .log-tag.tag-catalog{background:rgba(147,184,173,.18);color:#93b8ad}
-.log-tag.tag-pricing{background:rgba(217,160,107,.18);color:#d9a06b}
 .log-tag.tag-egress{background:rgba(143,188,200,.18);color:#8fbcc8}
 .log-tag.tag-upstream{background:rgba(210,160,184,.18);color:#d2a0b8}
 .log-tag.tag-update{background:rgba(156,182,216,.18);color:#9cb6d8}
@@ -682,7 +662,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   table.data-cards td::before{content:attr(data-label);color:var(--dim);font-size:11px;
     font-weight:600;flex-shrink:0}
   table.data-cards td:not([data-label])::before{content:none}
-  /* 限额表：护栏名与说明占整块，三个作用域各一行 */
+  /* 限额表：护栏名与说明占整块，限值另起一行 */
   table.limits-cards td.limit-name{display:block;padding-bottom:6px}
   table.data-cards td[colspan]{grid-column:span 6;justify-content:center;text-align:center!important}
   table.data-cards td[colspan]::before{content:none}
@@ -710,11 +690,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     justify-content:flex-start;gap:6px}
   table.account-cards .acct-actions-row{flex-wrap:wrap;gap:6px}
   table.account-cards .acct-actions button.mini{min-height:32px;padding:6px 12px}
-  table.account-cards .slot-select{max-width:none;width:100%;min-height:40px}
   /* Forms stack */
   #pageSettings section > div[style*="display:flex"]{flex-wrap:wrap}
   #pageSettings input:not([type=checkbox]), #pageSettings select{min-height:40px;font-size:13px}
-  #pageSettings .slot-input{font-size:13px}
   table.data-cards td[data-label="启用"]{justify-content:space-between}
   table.data-cards td[data-label="启用"] input[type=checkbox]{width:20px;height:20px}
   /* Logs */
@@ -1077,7 +1055,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
    first one painted. Kept inline and dependency-free on purpose: an
    external or deferred script would run too late to avoid the flash. */
 (function(){
-  var THEME_KEY = 'wb-theme';
+  var THEME_KEY = 'ca-theme';
   var mq = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
   function getPref(){
     try { return localStorage.getItem(THEME_KEY) || 'system'; } catch(e){ return 'system'; }
@@ -1207,7 +1185,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 </script>
 <script>
 (function(){
-  var LANG_KEY = 'wb-lang';
+  var LANG_KEY = 'ca-lang';
   var HAN = /[\u4e00-\u9fff]/;
   var WS = /\s+/g;
   var ATTRS = ['title', 'placeholder', 'aria-label', 'data-label', 'alt'];
@@ -1237,7 +1215,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '(连续': '(streak',
     '(选填，留空 = 不限制)': '(optional, empty = no limit)',
     '+ 添加 API Key': '+ Add API Key',
-    '+ 添加槽位': '+ Add slot',
     '+ 添加账号 (OAuth)': '+ Add account (OAuth)',
     '「设置」是页面显示开关自己的入口，收起来就放不回去了，固定保留。': 'Settings is where this switch lives, so it cannot be unticked - there would be no way back.',
     '取消勾选就把该页签从顶部收起来，勾回来即恢复；清单按顶部现有的页签现场生成，上游增删页面这里自动跟上；偏好存在本网关，换浏览器、重启服务都记得。「设置」是这一页自己的入口，固定保留。': 'Unticking a tab takes it out of the top bar; tick it again to bring it back. The list is built from the tabs the panel actually has, so a page added or removed upstream shows up here on its own. The choice is stored on this gateway, so it survives a different browser and a restart. Settings stays: it is where this switch lives.',
@@ -1245,10 +1222,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '0 个 Key': '0 keys',
     '0 个 Key 生效': '0 keys active',
     '0 次': '0 calls',
-    '7天内到期': 'expiring within 7 days',
     'API Key 不能为空': 'API Key cannot be empty',
     'API Key 内容': 'API Key value',
-    'CNY（策略记录的汇率，': 'CNY (rate recorded with the policy,',
     'GitHub 项目仓库': 'GitHub repository',
     'Key 维度只从本次升级之后开始记录：更早的请求没有这个字段，会一直留在「(切换前)」里且不会再增长。': 'Per-key attribution starts only with this upgrade: earlier requests have no such field, so they stay under (before switch) and never grow.',
     '收起「(切换前)」': 'Collapse "(before switch)"',
@@ -1268,15 +1243,12 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '· 共': '· total',
     '· 到期': '· expires',
     '· 剩余': '· remaining',
-    '· 原始价，未折算': '· raw price, unconverted',
     '· 周期已过': '· period over',
     '· 失败': '· failed',
     '· 已筛选': '· filtered',
     '· 积分明细': '· credit details',
     '· 耗时': '· duration',
-    '⇄ 切换默认出口为【国内版】': '⇄ Switch the default exit to China',
     '。名字带渠道后缀（如': '. Names carrying a channel suffix (such as',
-    '「绑定账号」只统计已启用账号；停用账号会自动释放槽位，重新启用后需重新绑定。在网关页账号表的「出口」下拉中调整绑定。名称留空时按出口自动显示「国家 类型」，点「测试」会补全出口信息并据此命名。': 'Bound accounts counts enabled accounts only; disabling an account releases its slot automatically and you must bind it again after re-enabling. Adjust the binding in the Exit dropdown of the account table on the gateway page. With an empty name the slot shows Country Type from the exit; clicking Test fills in the exit info and names the slot accordingly.',
     '一键做任务领积分': 'Run all tasks and claim credits',
     '上一页': 'Previous',
     '上下文': 'Context',
@@ -1286,7 +1258,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '上次失败：': 'Last failure:',
     '上游按 24 小时窗口给每个账号、每个模型配额；预算 = 撞线账号在窗口内用量的平均值（上游不给这个数字，只能撞线时反推），已用从各账号自己的重置时刻起算。没有撞线记录（或记录已过期）的组合按最近 24 小时保守估计（标「按 24h 估算」）。': 'The upstream grants each account a per-model quota inside a 24h window. The budget is the average window usage of the accounts that hit the cap (the upstream never publishes it, so it is inferred when one does), and each account\'s used amount counts from its own reset clock. Pairs with no cap on record (or a stale one) are estimated from the last 24h and marked "est. from last 24h".',
     '上游中断': 'Upstream interrupted',
-    '上面的美元单价按它折算成人民币）': ', converted to CNY at that rate)',
     '下一页': 'Next',
     '下次': 'Next',
     '下载为 .log 文件': 'Download as a .log file',
@@ -1297,12 +1268,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '个 Key 生效': 'keys active',
     '个)': ')',
     '个·共': '· total',
-    '个代理槽': 'proxy slots',
-    '个保留积分': 'reserved credits',
     '个停用': 'disabled',
-    '个可用出口': 'reachable exits',
-    '个未绑定账号分配代理出口': 'unbound accounts assigned a proxy exit',
-    '个槽位，记得点「保存槽位」': 'slots, remember to click Save slots',
     '个模型 ·': 'models ·',
     '个模型）': 'models)',
     '个生效)': 'active)',
@@ -1317,7 +1283,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '个）': ')',
     '个，启用': ', enabled',
     '临期': 'Expiring',
-    '为每个 Key 绑定专属出口。客户端使用该 Key 请求将固定走对应区域，实现双出口并发。': 'Bind a dedicated exit to each key. Requests made with that key always take the matching region, so both exits run concurrently.',
     '人工映射表 OVERRIDES': 'Manual mapping table OVERRIDES',
     '今日': 'Today',
     '今日已签到': 'Checked in today',
@@ -1328,8 +1293,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '今日请求数': 'Requests today',
     '今日领取:': 'Claimed today:',
     '付费用户': 'Paid user',
-    '代理地址': 'Proxy address',
-    '代理槽': 'Proxy slots',
     '任务': 'Task',
     '任务名称 / 代码': 'Task name / code',
     '任务执行中...': 'Running tasks...',
@@ -1341,8 +1304,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '住宅': 'Residential',
     '保存': 'Save',
     '保存失败:': 'Save failed:',
-    '保存槽位': 'Save slots',
-    '保留积分': 'Reserved credits',
     '修改失败:': 'Update failed:',
     '修改密码': 'Change password',
     '候选：': 'Candidates:',
@@ -1361,7 +1322,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '全部模块': 'All modules',
     '全部模型': 'All models',
     '全部模型合计 (Total)': 'All models total',
-    '全部模型都有价。': 'Every model has a price.',
     '全部级别': 'All levels',
     '全部结果': 'All results',
     '全部账号': 'All accounts',
@@ -1372,20 +1332,12 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '冷却': 'Cooling',
     '冷却至 ': 'Cooling until ',
     '出口': 'Exit',
-    '出口已更新': 'Exit updated',
-    '出口更新失败:': 'Updating the exit failed:',
-    '出口绑定': 'Exit binding',
-    '出站身份：': 'Outbound identity:',
-    '分配代理出口给未绑定账号': 'Assign proxy exits to unbound accounts',
-    '一键分配代理': 'Assign proxy exits',
-    '一键切换所有出站身份：': 'Switch all outbound identities: ',
     '混合': 'mixed',
     '分钟': 'minutes',
     '分钟)': 'min)',
     '秒': 'seconds',
     '切换失败:': 'Switch failed:',
     '切换颜色主题': 'Switch color theme',
-    '切换默认出口为【国内版】': 'Switch the default exit to China',
     '列表，点击上方选项卡即可查看': 'list; click the tab above to view it',
     '刚刚': 'just now',
     '创建': 'Created',
@@ -1411,7 +1363,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '刷新积分': 'Refresh credits',
     '一键刷新积分': 'Refresh all credits',
     '刷新积分失败:': 'Refreshing credits failed:',
-    '刷新间隔（分钟）': 'Fetch interval (minutes)',
     '剥掉的后缀：': 'Stripped suffix:',
     '剩': 'left',
     '剩余可用': 'Remaining',
@@ -1428,12 +1379,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '剩余额度最大': 'Most quota left',
     '加载中...': 'Loading...',
     '加载更多': 'Load more',
-    '勾选要导入为槽位的出口：': 'Tick the exits to import as slots:',
     '匹配来源：': 'Match source:',
     '区域': 'Region',
     '区间': 'range',
-    '单价 · USD /': 'unit price · USD /',
-    '单价（USD /': 'unit price (USD /',
     '即将到期': 'Expiring soon',
     '原生': 'Native',
     '发现': 'Found',
@@ -1448,7 +1396,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '后台调度器已': 'Background scheduler is now',
     '启动参数': 'Launcher args',
     '启用': 'Enable',
-    '启用自动切换': 'Enable auto-switch',
     '启用调度': 'Enable scheduler',
     '回到顶部': 'Back to top',
     '回收失败': 'Recovery failed',
@@ -1456,7 +1403,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '回收失败：': 'Recovery failed:',
     '回收密钥': 'Recover key',
     '导入密钥': 'Import key',
-    '固定国内版出口': 'China exit only',
     '国内版': 'China',
     '顶部页签显示': 'Top tab visibility',
     '（国内版）': '(China)',
@@ -1493,7 +1439,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '对话': 'Chat',
     '导入': 'Import',
     '导入中...': 'Importing...',
-    '导入勾选的出口': 'Import the ticked exits',
     '导入失败:': 'Import failed:',
     '导入完成：新增': 'Import finished: added',
     '导入账号': 'Import accounts',
@@ -1505,10 +1450,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '将新增': 'Will add',
     '将覆盖': 'Will overwrite',
     '将覆盖同 UID 的现有账号（含其凭证），确定继续？': 'Existing accounts with the same UID, including their credentials, will be overwritten. Continue?',
-    '将该账号的出站身份切换为': 'Switch the outbound identity of this account to',
-    '将把全部账号的出站身份切换为 ': 'Switch the outbound identity of ALL accounts to ',
     '？（含另一个版本）': '? (including the other version)',
-    '把全部账号（含另一个版本）的出站身份切到下一个：WB → VSC → CLI': 'Switch every account (both versions) to the next outbound identity: WB → VSC → CLI',
     '将跳过': 'Will skip',
     '尚未选择文件。': 'No file selected yet.',
     '就绪': 'Ready',
@@ -1522,11 +1464,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '已保存': 'Saved',
     '已停用': 'Disabled',
     '已全部停用所有账号': 'All accounts disabled',
-    '已把全部账号的出站身份切换为 ': 'Switched the outbound identity of ALL accounts to ',
     '已全部启用所有账号': 'All accounts enabled',
-    '已关闭保留积分': 'Reserved credits off',
     '已关闭每日积分限额': 'Daily credit limit off',
-    '已关闭自动切换出站身份': 'Outbound identity auto-switch off',
     '已关闭：工具声明原样透传': 'Off: tool declarations pass through untouched',
     '已切换为': 'Switched to',
     '已删除 API Key': 'Deleted API key',
@@ -1534,7 +1473,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '已加入': 'Added',
     '已加入账号池': 'Added to the account pool',
     '已启用': 'Enabled',
-    '已启用：429 时自动切换出站身份': 'On: switch the outbound identity automatically on 429',
     '已启用：余额低于': 'On: when the balance drops below',
     '失败重试': 'Retry on failure',
     '最多尝试次数': 'Max attempts',
@@ -1601,7 +1539,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '签到记录已刷新': 'Activity log refreshed',
     '网关': 'Gateway',
     '网关与账号': 'Gateway & accounts',
-    '管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。': 'Manage the account pool and proxy exits; review call volume, estimated cost, success rate, recent requests and the gateway model list.',
     '账号独立成一个页签': 'Accounts as a separate tab',
     '账号单独一页': 'Accounts on their own page',
     '(已开启)': '(on)',
@@ -1637,8 +1574,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '成功率 100% · 失败 0': 'Success rate 100% · 0 failures',
     '成长任务流水执行完成': 'Growth task pipeline finished',
     '成长能量余额': 'Growth energy balance',
-    '所属区域': 'Region',
-    '所有已启用账号都已绑定代理出口': 'Every enabled account already has a proxy exit',
     '打卡中...': 'Checking in...',
     '打卡失败:': 'Check-in failed:',
     '执行出错:': 'Execution error:',
@@ -1648,14 +1583,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '扫描桌面客户端': 'Scan desktop client',
     '批量操作失败:': 'Batch operation failed:',
     '把)': ')',
-    '把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响': 'Assign enabled accounts with no exit to enabled proxy slots in order; accounts that are already bound are left alone',
     '拉取积分明细失败:': 'Fetching credit details failed:',
     '按 24h 估算': 'est. from last 24h',
     '按 API Key 的消耗归属': 'Usage attributed by API key',
-    '按 OpenRouter 公布的模型价折算的等价 token 花费': 'Equivalent token cost converted from the model prices OpenRouter publishes',
-    '按 OpenRouter 模型价折算的等价 token 花费': 'Equivalent token cost converted from OpenRouter model prices',
     '按模型每日 Token 限额': 'Daily token limit per model',
-    '按需补价': 'price on demand',
     '探测中...': 'Probing...',
     '推理': 'Reasoning',
     '提示词前缀命中复用比': 'Share of prompt-prefix reuse',
@@ -1686,10 +1617,11 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '无调用': 'No calls',
     '无需登记': 'No mapping needed',
     '日限额': 'Daily limit',
-    '旧代理：': 'Old proxy:',
     '时间': 'Time',
     '明细': 'Details',
     '显示条数:': 'Rows:',
+    '显示密码': 'Show password',
+    '隐藏密码': 'Hide password',
     '显示密码': 'Show password',
     '隐藏密码': 'Hide password',
     '普通/体验用户': 'Free/trial user',
@@ -1709,7 +1641,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '暂无预算样本：等某个账号把某个模型的窗口用满（撞线）后自动出现。': 'No budget samples yet: they appear once an account fills a model\'s window (hits the cap).',
     '更新时间:': 'Updated:',
     '更新时间: -': 'Updated: -',
-    '最低保留积分': 'Minimum reserved credits',
     '最大输出': 'Max output',
     '最快到期优先': 'Expiring soonest first',
     '出口级瞬时失败退避': 'Egress-level transient backoff',
@@ -1733,7 +1664,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '总剩余积分：全部账号（含停用）之和；「可用」只算启用且未触发限额护栏的账号': 'Total remaining credits: the sum over every account, disabled included; "available" counts only accounts that are enabled and not parked by a limit guard.',
     '总计（全部历史）': 'Total (all time)',
     '权重': 'Weight',
-    '权重 >1 的账号优先接单，多个高权重账号按权重比分流量；它们都接不了单时其他账号照常顶上。1 = 不干预，临期积分优先等自动规则照旧。': 'Accounts with weight >1 are dispatched first; several weighted accounts split traffic by weight, and when none of them can take requests the others serve as usual. 1 = no override, automatic rules such as expiring-credits-first apply as before.',
     '备注': 'Note',
     '+ 备注': '+ note',
     '点击编辑备注': 'Click to edit the note',
@@ -1745,7 +1675,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '有效期': 'Valid until',
     '服务运行平稳': 'Service running smoothly',
     '未保存': 'Not saved',
-    '未公布，按未命中价计': 'not published, charged at the unmatched price',
     '未发现国内版账号': 'No China account found',
     '未命名': 'Unnamed',
     '未在本机检测到桌面客户端登录凭证。': 'No desktop client credentials found on this machine.',
@@ -1758,7 +1687,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '未知原因': 'Unknown reason',
     '未知错误': 'Unknown error',
     '未设置': 'Not set',
-    '本出口累计消耗': 'Total used through this exit',
     '本周': 'This week',
     '本周 (This Week)': 'This week',
     '本周消耗 Token': 'Tokens used this week',
@@ -1799,7 +1727,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '桌面客户端把 token 加密存储了，需要从正在运行的客户端进程内存里回收静态密钥': 'The desktop client now stores tokens encrypted, so the static key has to be recovered from the memory of a running client process',
     '档': 'tier',
     '检测到加密凭据': 'Encrypted credentials detected',
-    '槽位还没有填写代理地址': 'The slot has no proxy address yet',
     '模型': 'Model',
     '模型 ID': 'Model ID',
     '模型名称': 'Model name',
@@ -1821,7 +1748,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '正常': 'Healthy',
     '正常可用': 'Available',
     '每 5 秒自动刷新 · 数据来自本机反代': 'Auto-refreshes every 5 seconds · data comes from the local reverse proxy',
-    '每个账号固定绑定一个出口代理槽。槽位地址变化时绑定账号自动跟随；禁用或删除后回退直连。': 'Every account is pinned to one exit proxy slot. When the slot address changes the bound accounts follow automatically; disabling or deleting the slot falls back to a direct connection.',
     '每日 Token 限额': 'Daily token limit',
     '每日活跃:': 'Daily activity:',
     '未活跃打卡一键打卡': 'Check in the not-yet-active accounts',
@@ -1829,15 +1755,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '未活跃打卡失败:': 'Inactive check-in failed: ',
     '今日未打卡账号': 'Accounts not checked in today',
     '每日积分限额': 'Daily credit limit',
-    '临期积分优先': 'Expiring credits first',
     '读取签到记录失败:': 'Failed to read the activity log:',
-    '账号「最早到期的积分包」（还有剩余、且到期会真正作废的那些）距今不超过该天数时，分派优先使用临期积分的账号——分到的流量更多、越接近到期份额越大，但不会全压在一个账号上（到期日相同或相近的账号彼此等权）；这些账号暂时都不可用（冷却、达日限额等）时，其他账号照常顶上。填 0 表示关闭；天数取自各账号最近一次刷新的积分数据。': 'When the soonest-expiring credit package of an account (one that still has credits and would really lapse) is within this many days, dispatch prefers the accounts with expiring credits - they get a larger share, and the closer to expiry the bigger - but never all of it in one account (accounts expiring on or around the same day carry equal weight); when none of them is usable (cooling down, over a daily limit), the other accounts serve as usual. 0 turns it off; the day counts come from the most recent credit refresh of each account.',
-    '启用临期优先': 'Enable expiring-credits first',
-    '已开启临期积分优先': 'Expiring-credits priority on',
-    '已关闭临期积分优先': 'Expiring-credits priority off',
-    '积分数据刷新间隔（小时）': 'Credit refresh interval (hours)',
-    '已保存积分数据刷新间隔': 'Credit refresh interval saved',
-    '积分数据刷新间隔请填 0 或正整数（0 = 关闭后台刷新）': 'Credit refresh interval must be 0 or a positive integer (0 turns the background refresh off)',
     '积分获取历史': 'Credit grants',
     '积分获取历史已刷新': 'Credit grants refreshed',
     '积分获取历史加载失败: ': 'Loading the credit grants failed: ',
@@ -1864,10 +1782,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '每账号每日上限（token）': 'Daily cap per account (tokens)',
     '每账号每日上限（积分）': 'Daily cap per account (credits)',
     '每账号每模型每日上限（token）': 'Daily cap per account per model (tokens)',
-    '汇率：1 USD =': 'Rate: 1 USD =',
-    '没有勾选任何出口': 'No exits ticked',
     '没有可导入的账号。': 'No accounts to import.',
-    '没有启用的代理槽，请先在「设置 → 账号代理槽」添加并保存': 'No proxy slot is enabled; add and save one under Settings → Account proxy slots first',
     '注意：切换后的身分会被保存，重启后继续沿用，不会自动回到 WB。': 'Note: the switched identity is saved and kept after a restart; it does not go back to WB on its own.',
     '注意：开启后网关会主动出网抓取模型给出的 URL（字面私网地址与解析进内网的域名都会被挡），且每轮代跑都会多跑一次上游、多消耗该账号的额度；某个搜寻引擎被限流时会自动轮换到下一家，全部不可用才把明确错误交给模型。': 'Note: with this on, the gateway goes out to fetch the URLs the model asks for (literal private addresses and hostnames resolving into a private network are both blocked), and every proxied round makes one extra upstream call and spends more of that account quota; when a search backend is rate-limited the gateway rotates to the next one automatically, and only hands the model a clear failure when every backend is unavailable.',
     '活跃打卡成功': 'Activity check-in succeeded',
@@ -1882,7 +1797,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '消耗 Token': 'Tokens used',
     '消耗总 Token': 'Total tokens used',
     '消耗积分': 'Credits spent',
-    '消耗积分 (全出口)': 'Credits spent (all exits)',
     '消费倍率': 'Rate',
     '消费倍率 / 优惠': 'Rate / discount',
     '深色': 'Dark',
@@ -1920,7 +1834,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '的账号暂停接单': 'pauses order taking',
     '直接匹配（归一化同名且唯一命中）': 'direct match (normalized same name, unique hit)',
     '直连': 'Direct',
-    '直连（清除旧代理）': 'Direct (clears the old proxy)',
     '相同：所选范围已覆盖日志中的全部请求': 'identical: the selected range covers every request in the log',
     '确定删除 API Key [': 'Delete API key [',
     '确定删除账号': 'Delete account',
@@ -1961,20 +1874,16 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '缓存命中率': 'Cache hit rate',
     '编辑': 'Edit',
     '编辑 API Key': 'Edit API key',
-    '管理代理出口与网关模型，查看当日调用量、估算花费、成功率与最近请求。': 'Manage proxy exits and the gateway model list; review call volume, estimated cost, success rate and recent requests.',
-    '管理账号池：添加/导入/导出、启用停用、凭证与积分刷新、代理出口绑定，以及签到与每日活跃记录。': 'Manage the account pool: add/import/export, enable/disable, credential and credit refresh, exit binding, plus check-in and daily activity records.',
     '网关平均生成速度': 'Gateway average generation speed',
     '网关日志已清空': 'Gateway logs cleared',
     '网关设置': 'Gateway settings',
     '积分消耗': 'Credits used',
     '积分消耗（国内版）': 'Credits used (China)',
-    '估算价值: ': 'Est. value: ',
     '估算剩余': 'Estimated left',
     '网关调用量': 'Gateway calls',
     '网关调用量（国内版）': 'Gateway calls (China)',
     '网关运行日志': 'Gateway logs',
     '网关默认上游已切换并永久保存为:': 'The default upstream is switched and permanently saved as:',
-    '网关默认出口': 'Default gateway exit',
     '网络异常:': 'Network error:',
     '网页通道打卡:': 'Web-channel check-in:',
     '网页通道打卡失败:': 'Web-channel check-in failed:',
@@ -1982,8 +1891,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '能力': 'Capabilities',
     '能量': 'energy',
     '自': 'from',
-    '自动切换出站身份': 'Auto-switch outbound identity',
-    '自动发现 mihomo 端口': 'Auto-discover mihomo ports',
     '自动发现失败:': 'Auto-discovery failed:',
     '自动滚屏: 关': 'Auto-scroll: off',
     '自动滚屏: 开': 'Auto-scroll: on',
@@ -1997,7 +1904,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '获得奖励 +': 'Reward earned +',
     '行日志': 'log lines',
     '行明细': 'detail rows',
-    '补算：这条请求发生在该策略取到之前，用之后第一次取到的价补算': 'back-filled: this request happened before the policy was fetched, so it is priced with the first price fetched afterwards',
     '覆盖': 'Overwrite',
     '覆盖同 UID 账号': 'Overwrite same-UID accounts',
     '视觉': 'Vision',
@@ -2023,13 +1929,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '网关地址': 'Gateway URL',
     '默认模型': 'Default Model',
     '默认采样参数': 'Default sampling',
-    '设置出口': 'Set exit',
     '设置已刷新': 'Settings refreshed',
     '设置文件': 'Settings file',
     '设置里还没有任何 API Key，全部流量都落在下面的未归属行里。': 'No API key is configured yet, so all traffic lands in the unattributed row below.',
-    '该槽位被': 'This slot is used by',
     '该模型今日已达限额，仅此模型受限（本地 0 点恢复）': 'This model reached the daily limit; only this model is restricted (resets at local midnight)',
-    '该模型暂无定价数据': 'No pricing data for this model yet',
     '该模型被上游临时限流（429），仅此模型受限，到点自动恢复': 'This model is temporarily rate-limited upstream (429); only this model is restricted and it recovers automatically',
     '该模型配额耗尽（code 6004），同账号其他模型不受影响': "This model's quota is exhausted (code 6004); the account's other models are unaffected",
     '当前窗口的起点未知（没有撞线记录，或记录已过期），已用按最近 24 小时统计，是剩余量的下界': 'The start of the current window is unknown (no cap on record, or a stale one); used counts the last 24h, a lower bound of what is left',
@@ -2069,7 +1972,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '账号 (昵称 / UID)': 'Account (nickname / UID)',
     '账号 Token 自动保活与凭证常驻 (每日 22:00 集中巡检)': 'Automatic account token keep-alive and persistent credentials (batch check daily at 22:00)',
     '账号不存在': 'Account does not exist',
-    '账号代理槽': 'Account proxy slots',
     '账号余额低于该值时不再接单，避免余额被用尽后触发上游的短信提醒。填 0 表示关闭。': 'An account stops taking orders once its balance drops below this, so the balance is never drained enough to trigger the upstream SMS alert. 0 turns it off.',
     '账号凭证刷新成功': 'Account credentials refreshed',
     '账号列表是空的': 'The account list is empty',
@@ -2078,8 +1980,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '账号存储目录': 'Account directory',
     '账号已停用': 'Account disabled',
     '账号已成功启用': 'Account enabled',
-    '账号当日消耗的 token 达到该值后暂停接单，请求自动切到其他账号；本地时间 0 点后自动恢复。填 0 表示不限（不限额）；与「保留积分」各自独立，任一命中都会暂停接单。': 'Once the token use of an account for the day reaches this, it stops taking orders and requests switch to other accounts; it recovers after local midnight. 0 means no limit; it is independent of Reserved credits, and either one pauses order taking.',
-    '账号当日消费的积分达到该值后，只允许请求免费模型（目录中标记为 x0.00 的模型），需要花费积分的模型自动切到其他账号；本地时间 0 点后自动恢复。填 0 表示关闭（默认）。': 'Once the credit spend of an account for the day reaches this, only free models are allowed (those marked x0.00 in the catalog) and models that cost credits switch to other accounts; it recovers after local midnight. 0 turns it off (default).',
     '账号，之后相关请求都会走该账号': 'account; requests will then go through it',
     '走网页通道': 'use the web channel',
     '活跃使用的模型': 'Model for the daily activity',
@@ -2112,8 +2012,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '运行信息': 'Runtime info',
     '运行日志': 'Logs',
     '返回内容不是 JSON': 'The response is not JSON',
-    '还没取过价，暂用出厂快照': 'No price fetched yet; using the factory snapshot for now',
-    '还没有代理槽。点击「自动发现 mihomo 端口」或「+ 添加槽位」。': 'No proxy slot yet. Click Auto-discover mihomo ports or + Add slot.',
     '还没有请求记录': 'No requests recorded yet',
     '还没有账号': 'No accounts yet',
     '还没有配置 API Key，点击右上角「+ 添加 API Key」创建。': 'No API key configured yet; click + Add API Key in the top right to create one.',
@@ -2180,7 +2078,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '首个 token 的平均等待时间': 'Average wait for the first token',
     '首次取到': 'first fetched',
     '首次取到）': 'first fetched)',
-    '默认出口': 'Default exit',
     '（停用）': '(disabled)',
     '（变体未命中': '(variant unmatched,',
     '（只读，密钥只留在网关内存里）。通常几秒钟，内存大时要十几秒。': '(read-only; the key stays in the memory of the gateway only). It usually takes a few seconds, or a dozen or so on a large process.',
@@ -2200,18 +2097,14 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '粘贴解码密钥：64 位 hex，或 44 字符 base64': 'Paste the decryption key: 64-hex, or 44-char base64',
     '）的模型默认按': ') are, by default,',
     '），加密凭据可直接导入。': '); encrypted credentials can be imported directly.',
-    '，OpenRouter 原始价，未折算）': ', OpenRouter raw price, unconverted)',
     '，共增加 +': ', plus',
     '，建议立即修改。': '. Please change it now.',
     '，无效': ', invalid',
-    '，本行按该档单价计': ', this row is charged at the unit price of that tier',
     '，留空表示不改)': ', leave empty to keep it)',
     '，登录后请在「设置」中修改。': '. After signing in, change it in Settings.',
     '，覆盖': ', overwritten',
     '，跳过': ', skipped',
     '；另有': '; plus',
-    '？ 不同身分对应不同的出站指纹、端点和配额通道。': '? Each identity has a different outbound fingerprint, endpoint and quota channel.',
-    '￥ 人民币': '￥ CNY',
     '$ 美元': '$ USD',
     '% · 失败': '% · failed',
     '如 deepseek* 或 gpt-6-astra；多个用逗号分隔，支持 * 通配': 'such as deepseek* or gpt-6-astra; separate several with commas, * works as a wildcard',
@@ -2240,8 +2133,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     " · 恢复 ": " · 恢復 ",
     "开始时间": "開始時間",
     "该账号仅此模型受限（上游判定额度用满）；撞线时间与恢复时间均为本地时间": "該帳號僅此模型受限（上游判定額度用滿）；撞線時間與恢復時間均為本地時間",
-    " 个未绑定账号分配代理出口": " 個未繫結帳號分配代理出口",
-    " 个槽位，记得点「保存槽位」": " 個槽位，記得點「儲存槽位」",
     " 个账号 → ": " 個帳號 → ",
     " 个账号)": " 個帳號)",
     " 个账号的积分": " 個帳號的積分",
@@ -2270,13 +2161,11 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "(每账号每天": "(每帳號每天",
     "(每账号每模型每天": "(每帳號每模型每天",
     "+ 添加 API Key": "+ 新增 API Key",
-    "+ 添加槽位": "+ 新增槽位",
     "+ 添加账号 (OAuth)": "+ 新增帳號 (OAuth)",
     "「设置」是页面显示开关自己的入口，收起来就放不回去了，固定保留。": "「設定」是頁面顯示開關自己的入口，收起來就放不回去了，固定保留。",
     "取消勾选就把该页签从顶部收起来，勾回来即恢复；清单按顶部现有的页签现场生成，上游增删页面这里自动跟上；偏好存在本网关，换浏览器、重启服务都记得。「设置」是这一页自己的入口，固定保留。": "取消勾選就把該頁籤從頂部收起來，勾回來即恢復；清單按頂部現有的頁籤現場生成，上游增刪頁面這裡自動跟上；偏好存在本閘道，換瀏覽器、重啟服務都記得。「設定」是這一頁自己的入口，固定保留。",
     "添加": "新增",
     "API Key 不能为空": "API Key 不能為空",
-    "API Key 与出口绑定": "API Key 與出口繫結",
     "GitHub 项目仓库": "GitHub 專案倉庫",
     "Key 维度只从本次升级之后开始记录：更早的请求没有这个字段，会一直留在「(切换前)」里且不会再增长。": "Key 維度只從本次升級之後開始記錄：更早的請求沒有這個欄位，會一直留在「(切換前)」裡且不會再增長。",
     "CodeArts 网关看板": "CodeArts 閘道看板",
@@ -2286,10 +2175,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "] 已启用": "] 已啟用",
     "· 周期已过": "· 週期已過",
     "—（需手动启用）": "—（需手動啟用）",
-    "⇄ 切换默认出口为【国内版】": "⇄ 切換預設出口為【國內版】",
     "。名字带渠道后缀（如": "。名字帶渠道字尾（如",
     "「上游限流」到点自动恢复；「本地停用」需手动启用；「日限额」次日零点恢复": "「上游限流」到點自動恢復；「本地停用」需手動啟用；「日限額」次日零點恢復",
-    "「绑定账号」只统计已启用账号；停用账号会自动释放槽位，重新启用后需重新绑定。在网关页账号表的「出口」下拉中调整绑定。名称留空时按出口自动显示「国家 类型」，点「测试」会补全出口信息并据此命名。": "「繫結帳號」只統計已啟用帳號；停用帳號會自動釋放槽位，重新啟用後需重新繫結。在閘道頁帳號表的「出口」下拉中調整繫結。名稱留空時按出口自動顯示「國家 型別」，點「測試」會補全出口資訊並據此命名。",
     "」的全局默认请填 0 或正整数": "」的全域性預設請填 0 或正整數",
     "一键刷新凭证": "一鍵重新整理憑證",
     "上下文窗口": "上下文視窗",
@@ -2301,14 +2188,11 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "上游限流": "上游限流",
     "下载为 .log 文件": "下載為 .log 檔案",
     "与' + rangeLabel() + '相同：所选范围已覆盖日志中的全部请求": "與' + rangeLabel() + '相同：所選範圍已覆蓋日誌中的全部請求",
-    "个未绑定账号分配代理出口": "個未繫結帳號分配代理出口",
-    "个槽位，记得点「保存槽位」": "個槽位，記得點「儲存槽位」",
     "个账号 →": "個帳號 →",
     "个账号)": "個帳號)",
     "个账号的积分": "個帳號的積分",
     "个账号绑定，删除后它们将回退直连。继续？": "個帳號繫結，刪除後它們將回退直連。繼續？",
     "个，启用": "個，啟用",
-    "为每个 Key 绑定专属出口。客户端使用该 Key 请求将固定走对应区域，实现双出口并发。": "為每個 Key 繫結專屬出口。客戶端使用該 Key 請求將固定走對應區域，實現雙出口併發。",
     "人工映射表 OVERRIDES": "人工對映表 OVERRIDES",
     "今日已签到": "今日已簽到",
     "今日数据 (Today)": "今日資料 (Today)",
@@ -2321,7 +2205,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "保存": "儲存",
     "保存失败:": "儲存失敗:",
     "保存失败: ": "儲存失敗: ",
-    "保存槽位": "儲存槽位",
     "保存限额": "儲存限額",
     "全局 ": "全域性 ",
     "全局默认": "全域性預設",
@@ -2333,14 +2216,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "全部模块": "全部模組",
     "全部账号": "全部帳號",
     "内置": "內建",
-    "出口绑定": "出口繫結",
-    "出站身份：": "出站身份：",
-    "分配代理出口给未绑定账号": "分配代理出口給未繫結帳號",
-    "一键分配代理": "一鍵分配代理",
-    "一键切换所有出站身份：": "一鍵切換所有出站身份：",
     "分钟": "分鐘",
     "分钟)": "分鐘)",
-    "切换默认出口为【国内版】": "切換預設出口為【國內版】",
     "列表，点击上方选项卡即可查看": "列表，點選上方選項卡即可檢視",
     "创建": "建立",
     "创建 ' + esc(k.created_at) + '": "建立 ' + esc(k.created_at) + '",
@@ -2361,10 +2238,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "一键刷新积分": "一鍵重新整理積分",
     "刷新积分失败:": "重新整理積分失敗:",
     "刷新积分失败: ": "重新整理積分失敗: ",
-    "刷新间隔（分钟）": "重新整理間隔（分鐘）",
     "剥掉的后缀：": "剝掉的字尾：",
     "加载中...": "載入中...",
-    "勾选要导入为槽位的出口：": "勾選要匯入為槽位的出口：",
     "可用账号池": "可用帳號池",
     "各账号用量透视与模型消耗分布": "各帳號用量透視與模型消耗分佈",
     "同一批请求按调用方使用的 API Key 再分一次组，用于把消耗归属到人 / 项目": "同一批請求按呼叫方使用的 API Key 再分一次組，用於把消耗歸屬到人 / 專案",
@@ -2373,8 +2248,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "后台调度器已": "後臺排程器已",
     "启动参数": "啟動引數",
     "启用": "啟用",
-    "启用临期优先": "啟用臨期優先",
-    "启用自动切换": "啟用自動切換",
     "启用调度": "啟用排程",
     "回收密钥": "回收金鑰",
     "导入密钥": "匯入金鑰",
@@ -2391,7 +2264,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "密钥已回收，正在重新扫描": "金鑰已回收，正在重新掃描",
     "导入": "匯入",
     "导入中...": "匯入中...",
-    "导入勾选的出口": "匯入勾選的出口",
     "导入失败:": "匯入失敗:",
     "导入失败: ": "匯入失敗: ",
     "导入完成：新增": "匯入完成：新增",
@@ -2405,11 +2277,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "导出日志失败: ": "匯出日誌失敗: ",
     "导出账号": "匯出帳號",
     "将覆盖同 UID 的现有账号（含其凭证），确定继续？": "將覆蓋同 UID 的現有帳號（含其憑證），確定繼續？",
-    "将该账号的出站身份切换为": "將該帳號的出站身份切換為",
-    "将该账号的出站身份切换为 ": "將該帳號的出站身份切換為 ",
-    "将把全部账号的出站身份切换为 ": "將把全部帳號的出站身份切換為 ",
     "？（含另一个版本）": "？（含另一個版本）",
-    "把全部账号（含另一个版本）的出站身份切到下一个：WB → VSC → CLI": "把全部帳號（含另一個版本）的出站身份切到下一個：WB → VSC → CLI",
     "尚未选择文件。": "尚未選擇檔案。",
     "展开查看每个模型当前生效的策略": "展開檢視每個模型目前生效的策略",
     "展示当前视图下官方对话大模型、上下文容量、推理/视觉能力、思考控制、默认采样参数及在售倍率": "展示目前檢視下官方對話大模型、上下文容量、推理/視覺能力、思考控制、預設取樣參數及在售倍率",
@@ -2418,16 +2286,13 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "已从桌面客户端进程回收密钥（只留在内存里）": "已從桌面客戶端程序回收金鑰（只留在記憶體裡）",
     "已保存": "已儲存",
     "已保存 ": "已儲存 ",
-    "已保存积分数据刷新间隔": "已儲存積分資料重新整理間隔",
     "已全部停用所有账号": "已全部停用所有帳號",
-    "已把全部账号的出站身份切换为 ": "已把全部帳號的出站身份切換為 ",
     "已全部启用所有账号": "已全部啟用所有帳號",
     "已关闭：工具声明原样透传": "已關閉：工具宣告原樣透傳",
     "已切换为": "已切換為",
     "已切换为 ": "已切換為 ",
     "已加入账号池": "已加入帳號池",
     "已启用": "已啟用",
-    "已启用：429 时自动切换出站身份": "已啟用：429 時自動切換出站身份",
     "已启用：余额低于": "已啟用：餘額低於",
     "失败重试": "失敗重試",
     "最多尝试次数": "最多嘗試次數",
@@ -2456,7 +2321,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "已导出 ": "已匯出 ",
     "已导出 1 个账号 →": "已匯出 1 個帳號 →",
     "已导出 1 个账号 → ": "已匯出 1 個帳號 → ",
-    "已开启临期积分优先": "已開啟臨期積分優先",
     "已成功删除账号": "已成功刪除帳號",
     "已成功删除账号 ": "已成功刪除帳號 ",
     "已成功刷新当前": "已成功重新整理目前",
@@ -2485,13 +2349,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "版本视图": "版本檢視",
     "当前账号正常": "目前帳號正常",
     "待解码的凭证（加密存储）": "待解碼的憑證（加密儲存）",
-    "所有已启用账号都已绑定代理出口": "所有已啟用帳號都已繫結代理出口",
     "扫描桌面客户端账号": "掃描桌面客戶端帳號",
     "扫描桌面客户端": "掃描桌面客戶端",
     "批量操作失败:": "批次操作失敗:",
     "批量操作失败: ": "批次操作失敗: ",
-    "把尚未绑定出口的已启用账号依次分配到已启用的代理槽；已有绑定的账号不受影响": "把尚未繫結出口的已啟用帳號依次分配到已啟用的代理槽；已有繫結的帳號不受影響",
-    "按 OpenRouter 公布的模型价折算的等价 token 花费": "按 OpenRouter 公佈的模型價折算的等價 token 花費",
     "按当前范围自动选择分钟/小时/天粒度；柱高为总 Token，折线为请求数。": "按目前範圍自動選擇分鐘/小時/天粒度；柱高為總 Token，折線為請求數。",
     "提示词前缀命中复用比": "提示詞字首命中複用比",
     "搜索包名/代码/来源…": "搜尋包名/程式碼/來源…",
@@ -2514,7 +2375,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "暂无账号用量数据": "暫無帳號用量資料",
     "服务运行平稳": "服務執行平穩",
     "未保存": "未儲存",
-    "未公布，按未命中价计": "未公佈，按未命中價計",
     "未发现国内版账号": "未發現國內版帳號",
     "未在本机检测到桌面客户端登录凭证。": "未在本機檢測到桌面客戶端登入憑證。",
     "未找到可用的国内版账号": "未找到可用的國內版帳號",
@@ -2539,7 +2399,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "正在检测本机桌面客户端账号…": "正在檢測本機桌面客戶端帳號…",
     "正在申请授权登录链接…": "正在申請授權登入連結…",
     "每 5 秒自动刷新 · 数据来自本机反代": "每 5 秒自動重新整理 · 資料來自本機反代",
-    "每个账号固定绑定一个出口代理槽。槽位地址变化时绑定账号自动跟随；禁用或删除后回退直连。": "每個帳號固定繫結一個出口代理槽。槽位地址變化時繫結帳號自動跟隨；禁用或刪除後回退直連。",
     "当前连续登录天数": "目前連續登入天數",
     "每日签到:": "每日簽到:",
     "每日签到: ": "每日簽到: ",
@@ -2547,7 +2406,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "每账号每日上限（积分）": "每帳號每日上限（積分）",
     "每账号每模型每日上限（token）": "每帳號每模型每日上限（token）",
     "没有可导入的账号。": "沒有可匯入的帳號。",
-    "没有启用的代理槽，请先在「设置 → 代理槽」添加并保存": "沒有啟用的代理槽，請先在「設定 → 代理槽」新增並儲存",
     "注意：切换后的身分会被保存，重启后继续沿用，不会自动回到 WB。": "注意：切換後的身分會被儲存，重啟後繼續沿用，不會自動回到 WB。",
     "注意：开启后网关会主动出网抓取模型给出的 URL（字面私网地址与解析进内网的域名都会被挡），且每轮代跑都会多跑一次上游、多消耗该账号的额度；某个搜寻引擎被限流时会自动轮换到下一家，全部不可用才把明确错误交给模型。": "注意：開啟後閘道會主動出網抓取模型給出的 URL（字面私網地址與解析進內網的網域都會被擋），且每輪代跑都會多跑一次上游、多消耗該帳號的額度；某個搜尋引擎被限流時會自動輪換到下一家，全部不可用才把明確錯誤交給模型。",
     "测试通过 (": "測試透過 (",
@@ -2575,8 +2433,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "确认导入": "確認匯入",
     "确认导入 ": "確認匯入 ",
     "积分扣减历史已刷新": "積分扣減歷史已重新整理",
-    "积分数据刷新间隔请填 0 或正整数（0 = 关闭后台刷新）": "積分資料重新整理間隔請填 0 或正整數（0 = 關閉後臺重新整理）",
-    "积分数据刷新间隔（小时）": "積分資料重新整理間隔（小時）",
     "窗口": "視窗",
     "立即保活刷新": "立即保活重新整理",
     "立即拉取最新日志": "立即拉取最新日誌",
@@ -2593,20 +2449,16 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "缓存": "快取",
     "缓存命中": "快取命中",
     "缓存命中率": "快取命中率",
-    "管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。": "管理帳號池與代理出口，查看當日呼叫量、估算花費、成功率、最近請求與閘道模型清單。",
     "网关与运维": "閘道與運維",
     "网关平均生成速度": "閘道平均生成速度",
     "网关日志已清空": "閘道日誌已清空",
-    "管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。": "管理帳號池與代理出口，查看當日呼叫量、估算花費、成功率、最近請求與閘道模型清單。",
     "网关设置": "閘道設定",
     "网关调用量": "閘道呼叫量",
     "网关运行日志": "閘道執行日誌",
     "网关默认上游已切换并永久保存为:": "閘道預設上游已切換並永久儲存為:",
     "网关默认上游已切换并永久保存为: ": "閘道預設上游已切換並永久儲存為: ",
-    "网关默认出口": "閘道預設出口",
     "网络异常:": "網路異常:",
     "网络异常: ": "網路異常: ",
-    "自动发现 mihomo 端口": "自動發現 mihomo 埠",
     "若要覆盖已存在的账号，请勾选下方「覆盖同 UID 账号」。": "若要覆蓋已存在的帳號，請勾選下方「覆蓋同 UID 帳號」。",
     "行日志": "行日誌",
     "覆盖同 UID 账号": "覆蓋同 UID 帳號",
@@ -2614,11 +2466,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "设备码:": "裝置碼:",
     "设备码: ' + esc(a.machineId.slice(0,14)) + '...": "裝置碼: ' + esc(a.machineId.slice(0,14)) + '...",
     "设置": "設定",
-    "设置出口": "設定出口",
     "设置已刷新": "設定已重新整理",
     "设置文件": "設定檔案",
     "设置里还没有任何 API Key，全部流量都落在下面的未归属行里。": "設定裡還沒有任何 API Key，全部流量都落在下面的未歸屬行裡。",
-    "该模型暂无定价数据": "該模型暫無定價資料",
     "该模型被上游临时限流（429），仅此模型受限，到点自动恢复": "該模型被上游臨時限流（429），僅此模型受限，到點自動恢復",
     "该模型配额耗尽（code 6004），同账号其他模型不受影响": "該模型配額耗盡（code 6004），同帳號其他模型不受影響",
     "该账号仅此模型受限；时间为本地时间": "該帳號僅此模型受限；時間為本地時間",
@@ -2649,9 +2499,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "账号存储目录": "帳號儲存目錄",
     "账号已停用": "帳號已停用",
     "账号已成功启用": "帳號已成功啟用",
-    "账号当日消耗的 token 达到该值后暂停接单，请求自动切到其他账号；本地时间 0 点后自动恢复。填 0 表示不限（不限额）；与「保留积分」各自独立，任一命中都会暂停接单。": "帳號當日消耗的 token 達到該值後暫停接單，請求自動切到其他帳號；本地時間 0 點後自動恢復。填 0 表示不限（不限額）；與「保留積分」各自獨立，任一命中都會暫停接單。",
-    "账号当日消费的积分达到该值后，只允许请求免费模型（目录中标记为 x0.00 的模型），需要花费积分的模型自动切到其他账号；本地时间 0 点后自动恢复。填 0 表示关闭（默认）。": "帳號當日消費的積分達到該值後，只允許請求免費模型（目錄中標記為 x0.00 的模型），需要花費積分的模型自動切到其他帳號；本地時間 0 點後自動恢復。填 0 表示關閉（預設）。",
-    "账号「最早到期的积分包」（还有剩余、且到期会真正作废的那些）距今不超过该天数时，分派优先使用临期积分的账号——分到的流量更多、越接近到期份额越大，但不会全压在一个账号上（到期日相同或相近的账号彼此等权）；这些账号暂时都不可用（冷却、达日限额等）时，其他账号照常顶上。填 0 表示关闭；天数取自各账号最近一次刷新的积分数据。": "帳號「最早到期的積分包」（還有剩餘、且到期會真正作廢的那些）距今不超過該天數時，分派優先使用臨期積分的帳號——分到的流量更多、越接近到期份額越大，但不會全壓在一個帳號上（到期日相同或相近的帳號彼此等權）；這些帳號暫時都不可用（冷卻、達日限額等）時，其他帳號照常頂上。填 0 表示關閉；天數取自各帳號最近一次重新整理的積分資料。",
     "剩余用量优先调度": "剩餘用量優先排程",
     "出口级瞬时失败退避": "出口級瞬時失敗退避",
     "启用出口级退避": "啟用出口級退避",
@@ -2673,7 +2520,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "请输入不小于 1 的整数秒": "請輸入不小於 1 的整數秒",
     "总剩余积分：全部账号（含停用）之和；「可用」只算启用且未触发限额护栏的账号": "總剩餘積分：全部帳號（含停用）之和；「可用」只算啟用且未觸發限額護欄的帳號",
     "总计（全部历史）": "總計（全部歷史）",
-    "权重 >1 的账号优先接单，多个高权重账号按权重比分流量；它们都接不了单时其他账号照常顶上。1 = 不干预，临期积分优先等自动规则照旧。": "權重 >1 的帳號優先接單，多個高權重帳號按權重比分流量；它們都接不了單時其他帳號照常頂上。1 = 不干預，臨期積分優先等自動規則照舊。",
     "点击编辑备注": "點擊編輯備註",
     "点击添加备注，比如「批量」/「自用」": "點擊新增備註，例如「批量」/「自用」",
     "按「剩余用量估算」优先调度：某 (账号 × 模型) 的估计剩余越接近耗尽，分到的请求越多——先把快用完的额度用掉，等它到点重置。剩余不到 30% 开始加权、5% 以内权重最高；没有预算样本、或剩余为 0 / 冷却中的组合不参与。默认关闭。": "按「剩餘用量估算」優先排程：某 (帳號 × 模型) 的估計剩餘越接近耗盡，分到的請求越多——先把快用完的額度用掉，等它到點重置。剩餘不到 30% 開始加權、5% 以內權重最高；沒有預算樣本、或剩餘為 0 / 冷卻中的組合不參與。預設關閉。",
@@ -2693,7 +2539,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "运行中 · ": "執行中 · ",
     "运行信息": "執行資訊",
     "运行日志": "執行日誌",
-    "还没有代理槽。点击「自动发现 mihomo 端口」或「+ 添加槽位」。": "還沒有代理槽。點選「自動發現 mihomo 埠」或「+ 新增槽位」。",
     "还没有账号": "還沒有帳號",
     "还没有配置 API Key，点击右上角「+ 添加 API Key」创建。": "還沒有配置 API Key，點選右上角「+ 新增 API Key」建立。",
     "连接中断:": "連線中斷:",
@@ -2718,7 +2563,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "已限高：窗口最高 ": "已限高：視窗最高 ",
     "已取消窗口限高（不限）": "已取消視窗限高（不限）",
     "请填写 0 或正数（像素）": "請填寫 0 或正數（像素）",
-    "默认出口": "預設出口",
     "默认开启": "預設開啟",
     "（只读，密钥只留在网关内存里）。通常几秒钟，内存大时要十几秒。": "（只讀，金鑰只留在閘道記憶體裡）。通常幾秒鐘，記憶體大時要十幾秒。",
     "（已导入）": "（已匯入）",
@@ -3336,7 +3180,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   <!-- 页面头部：标题 + 一行说明，与其它页面的头部结构保持一致 -->
   <div style="margin-bottom:16px">
     <h2 id="gatewayPageTitle" style="margin:0;font-size:19px;color:var(--fg);font-family:var(--brush);font-weight:700;letter-spacing:.08em">网关与账号</h2>
-    <div id="gatewayPageDesc" style="font-size:12px;color:var(--dim);margin-top:4px">管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。</div>
+    <div id="gatewayPageDesc" style="font-size:12px;color:var(--dim);margin-top:4px">管理账号池与网关模型，查看当日调用量、积分消耗、成功率与最近请求。</div>
   </div>
   <!-- 出口：只有一个（华为云码道），没有可切换的对象。
        原来这里是两张「版本中枢」卡片，点一下切出口/看默认出口 ——
@@ -3698,7 +3542,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   <div id="pageSettings" class="main-page">
     <div style="margin-bottom:16px">
       <h2 style="margin:0;font-size:19px;color:var(--fg);font-family:var(--brush);font-weight:700;letter-spacing:.08em">网关设置</h2>
-      <div style="font-size:12px;color:var(--dim);margin-top:4px">面板密码与界面语言、API Key 与出口绑定、代理槽与限额、价格估算、出站身份与本地网络工具。</div>
+      <div style="font-size:12px;color:var(--dim);margin-top:4px">面板密码与界面语言、页签布局、API Key、账号限额、Anthropic Messages、上游超时、本地网络工具、用量与日志、更新。</div>
     </div>
 
     <!-- 左侧导航由 initPageNav() 扫描本页的 section 自动生成，
@@ -3808,7 +3652,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <div>
           <h2 style="margin:0">API Key <em id="setKeyState"></em></h2>
           <div style="font-size:12px;color:var(--dim);margin-top:4px">
-            为每个 Key 绑定专属出口。客户端使用该 Key 请求将固定走对应区域，实现双出口并发。
+            客户端用这里的 Key 调用网关，用量按 Key 分别统计。
           </div>
         </div>
         <button onclick="addApiKeyRow()">+ 添加 API Key</button>
@@ -3822,35 +3666,12 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <section>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
         <div>
-          <h2 style="margin:0">账号代理槽 <em id="slotState"></em></h2>
-          <div style="font-size:12px;color:var(--dim);margin-top:4px">
-            每个账号固定绑定一个出口代理槽。槽位地址变化时绑定账号自动跟随；禁用或删除后回退直连。
-          </div>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <button class="sec" onclick="discoverProxySlots(this)">自动发现 mihomo 端口</button>
-          <button class="sec" onclick="addProxySlotRow()">+ 添加槽位</button>
-          <button onclick="saveProxySlots(this)">保存槽位</button>
-        </div>
-      </div>
-      <div id="slotList"></div>
-      <div id="slotDiscover"></div>
-    </section>
-
-    <section>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-        <div>
           <h2 style="margin:0">账号限额 <em id="setLimitsState"></em></h2>
           <div style="font-size:12px;color:var(--dim);margin-top:4px">
-            五条护栏默认按<b>全局默认</b>生效；需要时可单独给国内版设值，留空即<b>继承全局</b>。每条护栏填 0 表示关闭该项。
+            三条护栏对所有账号生效，每条填 0 表示关闭该项。
           </div>
         </div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-            <input id="setLimitsPerRealm" type="checkbox" style="width:16px;height:16px"
-                   onchange="toggleLimitRealms(this.checked)">
-            单独设置国内版
-          </label>
           <button onclick="saveLimits(this)">保存限额</button>
         </div>
 
@@ -3859,72 +3680,37 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <table class="data-cards limits-cards">
           <thead>
             <tr>
-              <th style="min-width:240px;width:46%">护栏</th>
-              <th style="width:18%">全局默认</th>
-              <th class="limit-realm-col" style="width:18%;display:none">国内版</th>
+              <th style="min-width:240px;width:60%">护栏</th>
+              <th style="width:40%">全局默认</th>
             </tr>
           </thead>
           <tbody>
             <tr>
               <td class="limit-name">
-                <div style="font-weight:600;color:var(--fg)">保留积分 <em id="setReserveState"></em></div>
-                <div style="font-size:12px;color:var(--dim);margin-top:2px">
-                  账号余额低于该值时不再接单，避免余额被用尽后触发上游的短信提醒。
-                </div>
-              </td>
-              <td data-label="全局默认"><input id="limitGlobalReserve" class="limit-input" type="number" min="0" step="1" value="0"></td>
-              <td class="limit-realm-col" style="display:none" data-label="国内版"><input id="limitCnReserve" class="limit-input" type="number" min="0" step="1" placeholder="继承全局"></td>
-            </tr>
-            <tr>
-              <td class="limit-name">
                 <div style="font-weight:600;color:var(--fg)">每日 Token 限额 <em id="setDailyTokenState"></em></div>
                 <div style="font-size:12px;color:var(--dim);margin-top:2px">
-                  账号当日消耗的 token 达到该值后暂停接单，请求自动切到其他账号；本地时间 0 点后自动恢复。与「保留积分」各自独立，任一命中都会暂停接单。
+                  账号当日消耗的 token 达到该值后暂停接单，由其他账号继续服务；全部账号都达到时请求返回 429。本地时间 0 点后自动恢复。
                 </div>
               </td>
               <td data-label="全局默认"><input id="limitGlobalDailyToken" class="limit-input" type="number" min="0" step="1000000" value="0"></td>
-              <td class="limit-realm-col" style="display:none" data-label="国内版"><input id="limitCnDailyToken" class="limit-input" type="number" min="0" step="1000000" placeholder="继承全局"></td>
             </tr>
             <tr>
               <td class="limit-name">
                 <div style="font-weight:600;color:var(--fg)">每日积分限额 <em id="setDailyCreditState"></em></div>
                 <div style="font-size:12px;color:var(--dim);margin-top:2px">
-                  账号当日消费的积分达到该值后，只允许请求免费模型（目录中标记为 x0.00 的模型），需要花费积分的模型自动切到其他账号；本地时间 0 点后自动恢复。
+                  账号当日消费的积分达到该值后暂停接单，由其他账号继续服务；全部账号都达到时请求返回 429。本地时间 0 点后自动恢复。
                 </div>
               </td>
               <td data-label="全局默认"><input id="limitGlobalDailyCredit" class="limit-input" type="number" min="0" step="1" value="0"></td>
-              <td class="limit-realm-col" style="display:none" data-label="国内版"><input id="limitCnDailyCredit" class="limit-input" type="number" min="0" step="1" placeholder="继承全局"></td>
             </tr>
             <tr>
               <td class="limit-name">
                 <div style="font-weight:600;color:var(--fg)">按模型每日 Token 限额 <em id="setModelDailyTokenState"></em></div>
                 <div style="font-size:12px;color:var(--dim);margin-top:2px">
-                  账号在单个模型上当日消耗的 token 达到该值后，该模型自动切到其他账号（同一账号的其他模型不受影响）；本地时间 0 点后自动恢复。
+                  账号在单个模型上当日消耗的 token 达到该值后，该模型暂停用这个账号接单（同一账号的其他模型不受影响）；本地时间 0 点后自动恢复。
                 </div>
               </td>
               <td data-label="全局默认"><input id="limitGlobalModelDailyToken" class="limit-input" type="number" min="0" step="1000000" value="0"></td>
-              <td class="limit-realm-col" style="display:none" data-label="国内版"><input id="limitCnModelDailyToken" class="limit-input" type="number" min="0" step="1000000" placeholder="继承全局"></td>
-            </tr>
-            <tr>
-              <td class="limit-name">
-                <div style="font-weight:600;color:var(--fg)">临期积分优先 <em id="setExpiringWindowState"></em></div>
-                <div style="font-size:12px;color:var(--dim);margin-top:2px">
-                  账号「最早到期的积分包」（还有剩余、且到期会真正作废的那些）距今不超过该天数时，分派优先使用临期积分的账号——分到的流量更多、越接近到期份额越大，但不会全压在一个账号上（到期日相同或相近的账号彼此等权）；这些账号暂时都不可用（冷却、达日限额等）时，其他账号照常顶上。填 0 表示关闭；天数取自各账号最近一次刷新的积分数据。
-                </div>
-                <label class="switch" style="margin-top:8px">
-                  <input id="setExpiringWindowToggle" type="checkbox" onchange="toggleExpiringWindow(this)">
-                  <span class="switch-track"></span>
-                  <span style="font-size:12px">启用临期优先</span>
-                </label>
-                <div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
-                  <span style="font-size:12px;color:var(--dim)">积分数据刷新间隔（小时）</span>
-                  <input id="setCreditsRefreshHours" type="number" min="0" step="1" value="12"
-                         style="width:90px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;color:var(--fg);font:inherit">
-                  <button class="sec" onclick="saveCreditsRefreshHours(this)">保存</button>
-                </div>
-              </td>
-              <td data-label="全局默认"><input id="limitGlobalExpiringWindow" class="limit-input" type="number" min="0" step="1" value="7"></td>
-              <td class="limit-realm-col" style="display:none" data-label="国内版"><input id="limitCnExpiringWindow" class="limit-input" type="number" min="0" step="1" placeholder="继承全局"></td>
             </tr>
           </tbody>
         </table>
@@ -3936,48 +3722,20 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <section>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
-        <section>
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-            <div>
-        <section>
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-            <div>
-              <h2 style="margin:0">启用 Anthropic Messages 接口 (Claude) <em id="setAnthropicMessagesState"></em></h2>
-              <div style="font-size:12px;color:var(--dim);margin-top:4px">
-                允许 Claude Code / Anthropic SDK 访问网关 /v1/messages。网关对内将其转换为 OpenAI Chat Completions 协议转发。
-              </div>
-              <div style="font-size:12px;color:var(--warn);margin-top:4px">
-                注意：转换层目前未保留 cache_control 语义，在长会话中可能因缓存命中率降低而导致积分消耗偏高。请知晓风险后再开启。默认关闭。
-              </div>
-            </div>
-            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-              <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-                <input id="setAnthropicMessages" type="checkbox" style="width:16px;height:16px">
-                启用 Messages 接口
-              </label>
-              <button onclick="saveAnthropicMessages(this)">保存</button>
-            </div>
-          </div>
-        </section>
-
-            </div>
-          </div>
-        </section>
-
-            <h2 style="margin:0">自动切换出站身份 <em id="setAutoSwitchState"></em></h2>
+            <h2 style="margin:0">启用 Anthropic Messages 接口 (Claude) <em id="setAnthropicMessagesState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              某账号在某模型上被上游限流（429）时，自动在 WB / VSC / CLI 之间换身分重试，每轮最多 4 次。三条身分走不同的配额通道，开启后 429 会少一些。默认关闭。
+              允许 Claude Code / Anthropic SDK 访问网关 /v1/messages。网关对内将其转换为 OpenAI Chat Completions 协议转发。
             </div>
             <div style="font-size:12px;color:var(--warn);margin-top:4px">
-              注意：切换后的身分会被保存，重启后继续沿用，不会自动回到 WB。
+              注意：转换层目前未保留 cache_control 语义，在长会话中可能因缓存命中率降低而导致积分消耗偏高。请知晓风险后再开启。默认关闭。
             </div>
           </div>
           <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
             <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-              <input id="setAutoSwitch" type="checkbox" style="width:16px;height:16px">
-              启用自动切换
+              <input id="setAnthropicMessages" type="checkbox" style="width:16px;height:16px">
+              启用 Messages 接口
             </label>
-            <button onclick="saveAutoSwitchProduct(this)">保存</button>
+            <button onclick="saveAnthropicMessages(this)">保存</button>
           </div>
         </div>
       </section>
@@ -3999,27 +3757,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
               由网关代跑
             </label>
             <button onclick="saveLocalWebTools(this)">保存</button>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-          <div>
-<h2 style="margin:0">剩余用量优先调度 <em id="setRemainingPriorityState"></em></h2>
-            <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              按「剩余用量估算」优先调度：某 (账号 × 模型) 的估计剩余越接近耗尽，分到的请求越多——先把快用完的额度用掉，等它到点重置。剩余不到 30% 开始加权、5% 以内权重最高；没有预算样本、或剩余为 0 / 冷却中的组合不参与。默认关闭。
-            </div>
-            <div style="font-size:12px;color:var(--warn);margin-top:4px">
-              注意：估算由撞线样本反推的预算与本地用量得出，本身有误差；开启后接近耗尽的账号会明显多接流量，也可能更早撞到上游限额（撞线后该模型停用到上游给出的恢复时刻）。
-            </div>
-          </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-              <input id="setRemainingPriority" type="checkbox" style="width:16px;height:16px">
-              启用优先调度
-            </label>
-            <button onclick="saveRemainingPriority(this)">保存</button>
           </div>
         </div>
       </section>
@@ -4863,10 +4600,6 @@ function updateUI(){
     if(el) el.textContent = sectionRealm;
   });
 
-  // 工具栏上「一键切换所有出站身份」的当前值：它作用于全部账号（含另一个
-  // 版本），所以不看视图、只看 window.ACCOUNTS。
-  updateProductAllButton();
-
   const dbCn = document.getElementById("tabCnDefaultBadge");
   if(dbCn) dbCn.style.display = "inline-block";
 
@@ -4885,25 +4618,23 @@ function updateUI(){
   }
 
 
-  // 计算当前绑定与生效的 Key 数量
+  // 计算当前生效的 Key 数量
   const keys = (typeof API_KEY_ROWS !== 'undefined' && API_KEY_ROWS.length) ? API_KEY_ROWS : (window.API_KEY_ROWS || []);
-  const cnKeys = keys.filter(k => k.enabled !== false && k.realm === 'cn').length;
-  const followKeys = keys.filter(k => k.enabled !== false && !k.realm).length;
-  const activeKeysTotal = cnKeys + followKeys;
+  const activeKeysTotal = keys.filter(k => k.enabled !== false).length;
 
   const elGwKeyBadge = document.getElementById("activeGatewayKeyCount");
   if(elGwKeyBadge) elGwKeyBadge.textContent = activeKeysTotal + ' 个 Key 生效';
 
   const elCnKey = document.getElementById("tabCnKeyBadge");
-  if(elCnKey) elCnKey.textContent = cnKeys + ' 个 Key';
+  if(elCnKey) elCnKey.textContent = activeKeysTotal + ' 个 Key';
 
   // 左侧卡片账号数与积分统计：大数字是「总剩余」（含停用账号），副行的
-  // 「可用」只算 isAcctActive（启用且未触发保留/限额护栏）的账号——与旁边
+  // 「可用」只算 isAcctActive（启用且未触发限额护栏）的账号——与旁边
   // 的 N/M 账号计数同一个口径，两个数字才有可比性。
   const allAccts = window.ACCOUNTS || [];
   const cnAccts = allAccts.filter(a => a.realm === 'cn');
 
-  const isAcctActive = a => a.enabled && !a.reserveBlocked && !a.dailyLimitBlocked && !a.creditLimitReached;
+  const isAcctActive = a => a.enabled && !a.dailyLimitBlocked && !a.creditLimitReached;
 
   let cnCred = 0, hasCnCred = false, cnAvailCred = 0, hasCnAvail = false;
   cnAccts.forEach(a => {
@@ -5424,48 +5155,6 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 const ms = v => v == null ? '—' : (v >= 1000 ? (v/1000).toFixed(2) + ' s' : Math.round(v) + ' ms');
 const pct = v => v == null ? '—' : v.toFixed(1) + '%';
 
-/* ---- OpenRouter 价估算（等价 token 花费） ---- */
-// 后端按权威定价快照把每条请求的 token 折算成人民币；这里只负责展示，
-// 展示货币默认人民币，可切美元（按接口返回的 usd_cny 折算，无需重新请求）。
-let costCurrency = 'CNY';
-try { if(localStorage.getItem('wb-cost-currency') === 'USD') costCurrency = 'USD'; } catch(e) {}
-// 汇率由 /usage、/usage/recent、/usage/analytics 的 usd_cny 字段更新。
-let costUsdRate = 7.1;
-// 价格估算体系已下线（2026-10-22）：本网关只按码道积分记账，不再把 token
-// 折算成人民币 / 美元，也不再向 OpenRouter 取价。恒为 false，相关列与卡片
-// 已从结构里删除，这里的常量只为让历史调用点短路。
-let PRICING_ON = false;
-function costSymbol(){ return costCurrency === 'USD' ? '$' : '￥'; }
-// 小额保留更多小数位，避免 0.00x 被显示成 0.00；与费用估算的展示口径一致。
-function fmtCostVal(val, sym){
-  const a = Math.abs(val);
-  if(a > 0 && a < 0.01) return sym + val.toFixed(4);
-  if(a < 1) return sym + val.toFixed(3);
-  if(a < 1000) return sym + val.toFixed(2);
-  return sym + val.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-}
-function fmtCost(cny){
-  if(cny == null || cny === '') return '—';
-  const raw = Number(cny) || 0;
-  const n = costCurrency === 'USD' ? raw / (costUsdRate || 1) : raw;
-  return fmtCostVal(n, costSymbol());
-}
-// size 是数值字号（默认 18px，网关页的卡片用）：KPI 卡片窄，调用方可以调小。
-// 中间那个「/」跟网关页「次」的处理保持一致：小一号、dim 色、左右各 4px。
-// 红/绿用主题变量而不是写死的色值：深色主题下要跟着变，而且旁边
-// 「请求成功率」的绿就是 --accent2，两张卡并排时是同一个绿。
-function fmtCostBoth(cny, size){
-  if(cny == null || cny === '') return '—';
-  const raw = Number(cny) || 0;
-  const fs = size || 18;
-  const sep = Math.max(10, Math.round(fs * 0.6));
-  const cnyStr = fmtCostVal(raw, '￥');
-  const usdStr = fmtCostVal(raw / (costUsdRate || 7.1), '$');
-  return '<span style="color:var(--bad);font-size:' + fs + 'px;font-weight:700">' + cnyStr + '</span> ' +
-         '<span style="color:var(--dim);font-weight:500;font-size:' + sep + 'px;margin:0 4px">/</span> ' +
-         '<span style="color:var(--accent2);font-size:' + fs + 'px;font-weight:700">' + usdStr + '</span>';
-}
-
 // ---- 表头点击排序 ---------------------------------------------------------
 // 默认对所有数据表生效：任何带 id 的表都会自动接上，新加一张表不用改这里。例外
 // 只有三处登记——SORT_DENY_TABLES（整表不排）、SORT_COL_KINDS（列类型 / 不可排）、
@@ -5503,14 +5192,11 @@ const SORT_COL_KINDS = {
   // 挂 data-sort 单独给（见 renderRemainingUsage / renderCreditGrants）。
   remainingUsageTable: ['text', 'text', 'text', 'text', 'num', 'num', 'num'],
   creditGrantsTable:   ['text', 'text', 'text', 'text', 'text', 'num', 'num', 'text', 'text'],
-  analyticsAccountTable: ['text', 'text', 'num', 'num', 'num', 'num', null],
-  analyticsKeyTable: ['text', 'text', 'num', 'num', 'num', 'num', 'num', null],
-  perfMatrix:       ['text', 'text', 'text', 'num', 'num', 'num', 'num', 'num',
+  analyticsAccountTable: ['text', 'num', 'num', 'num', 'num', null],
+  analyticsKeyTable: ['text', 'num', 'num', 'num', 'num', 'num', null],
+  perfMatrix:       ['text', 'text', 'num', 'num', 'num', 'num', 'num',
                      'num', 'num', 'num', 'num', 'num'],
   accounts:         ['text', 'text', 'text', null, 'num', 'num', 'num', 'num', null],
-  // 名称 / 代理地址是 <input>（textContent 恒为空串，按它排等于没排）、启用是复选框、
-  // 操作是按钮列——登记成 null，别让表头挂上一个点了没反应的箭头。
-  slotList:         [null, null, 'text', null, 'num', null],
   disabledList:     ['text', 'text', 'text', 'text', 'text', 'text'],
 };
 /* 表体开头有几行是汇总行、不是数据行：矩阵面板的「全部模型合计」钉在表体第一行，
@@ -5522,9 +5208,9 @@ const SORT_HINT = '按此列排序（再点一次反向）';
    截图里看不见、触屏上也没有 hover。它是「能排」的常驻声明，▼ / ▲ 是「正在按这一列
    排」的状态，两者互斥。 */
 const SORT_ARROW_IDLE = '⇅';
-const SORT_KEY_PREFIX = 'wb-sort-';
+const SORT_KEY_PREFIX = 'ca-sort-';
 
-/* 刷新后接着上次的选择排（键名照 wb-theme 的习惯）。读回来的列序号可能对不上
+/* 刷新后接着上次的选择排（键名照 ca-theme 的习惯）。读回来的列序号可能对不上
    表头——列增减、顺序调整都会让同一个序号指向别的字段，所以越界或那一列已经
    不可排就整条丢弃，退回该面板原本的默认顺序。
 
@@ -5764,169 +5450,6 @@ document.addEventListener('keydown', e => {
 });
 
 
-// 悬停里说清这个数是怎么来的：哪条定价策略算的、三档单价多少、落在哪个条件
-// 档、这条价是怎么匹配到 OpenRouter 条目的、是不是补算。
-//
-// 用自绘气泡而不是原生 title：单价要按列对齐才好读，而且原生 tooltip 由浏览器
-// 绘制，截图验收时根本截不到。内容全部来自 /usage/recent 每行自带的 cost_* 字
-// 段，前端一个价都不重算。
-const COST_VIA_TEXT = {
-  direct: '直接匹配（归一化同名且唯一命中）',
-  override: '人工映射表 OVERRIDES',
-  variant: '变体后缀继承'
-};
-// 变体继承剥掉的后缀：基准名是原始名去掉尾部一段（剥的是后缀，留下的基准名
-// 就成了前缀），差值就是被剥的那截。
-function costVariantSuffix(r){
-  const base = r.cost_inherited_from;
-  const name = String(r.model || '');
-  return (base && name.length > base.length && name.slice(0, base.length) === base)
-    ? name.slice(base.length) : '';
-}
-// 每百万 token 的美元原价：按原样显示，不折算、不补齐。
-function fmtRate(v){
-  if(v == null || v === '') return '—';
-  const n = Number(v);
-  if(!isFinite(n)) return '—';
-  return n.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 6});
-}
-function costUnitLabel(r){
-  const n = Number(r.cost_unit);
-  return (isFinite(n) && n > 0) ? fmt(n) + ' token' : '百万 token';
-}
-// 气泡的结构化内容：{lines: 纯文字行, rates: 三档单价, notes: 补充说明}。
-// 文本与 HTML 两种渲染共用这一份，口径不会两处走样。
-function costTipModel(r){
-  if(!r || r.cost_cny == null){
-    return {lines: [], rates: [], notes: ['该模型暂无定价数据']};
-  }
-  const sym = (r.cost_currency === 'CNY') ? '￥' : '$';
-  const lines = [];
-  if(r.cost_source === 'builtin'){
-    lines.push('定价依据：出厂快照（还没有取到策略）');
-  } else if(r.cost_source){
-    lines.push('定价策略：' + r.cost_source
-      + (r.cost_source_at ? '（' + new Date(r.cost_source_at * 1000).toLocaleString() + ' 首次取到）' : ''));
-  }
-  const via = r.cost_via || 'direct';
-  if(via === 'override'){
-    lines.push('匹配来源：' + COST_VIA_TEXT.override
-      + (r.cost_via_derived ? '（策略早于该字段，按当前映射表推断）' : '')
-      + '：' + (r.cost_override_from || r.model) + ' → ' + (r.cost_or_id || '—'));
-  } else if(via === 'variant'){
-    const cut = costVariantSuffix(r);
-    lines.push('匹配来源：' + COST_VIA_TEXT.variant + '：' + r.model
-      + ' → ' + (r.cost_inherited_from || '—') + '（基准） → ' + (r.cost_or_id || '—'));
-    if(cut) lines.push('剥掉的后缀：' + cut);
-  } else {
-    lines.push('匹配来源：' + COST_VIA_TEXT.direct + '：' + (r.cost_or_id || '—'));
-  }
-  const rates = r.cost_rates || {};
-  const hit = rates.input_cache_hit;
-  const rows = [
-    {k: '输入（缓存未命中）', v: sym + fmtRate(rates.input_cache_miss)},
-    {k: '输入（缓存命中）', v: hit == null ? '未公布，按未命中价计' : sym + fmtRate(hit)},
-    {k: '输出', v: sym + fmtRate(rates.output)}
-  ];
-  const notes = [];
-  if(r.cost_usd_cny != null){
-    notes.push('汇率：1 USD = ' + fmtRate(r.cost_usd_cny) + ' CNY（策略记录的汇率，'
-      + '上面的美元单价按它折算成人民币）');
-  }
-  if(r.cost_band != null){
-    notes.push('条件档位：第 ' + (r.cost_band + 1) + ' 档'
-      + (r.cost_band_note ? ' · ' + r.cost_band_note : '') + '，本行按该档单价计');
-  }
-  if(r.cost_backfilled){
-    notes.push('补算：这条请求发生在该策略取到之前，用之后第一次取到的价补算');
-  }
-  return {lines: lines, rates: rows, notes: notes};
-}
-// 纯文本版（多行），给无气泡的场合与单元测试用。
-
-function costTipHtml(r){
-  const m = costTipModel(r);
-  if(!m.rates.length && !m.lines.length){
-    return '<div class="ct-note">' + esc(m.notes.join('')) + '</div>';
-  }
-  let html = '<div class="ct-h">按 OpenRouter 公布的模型价折算的等价 token 花费</div>';
-  m.lines.forEach(line => {
-    html += '<div class="ct-line">' + esc(line) + '</div>';
-  });
-  html += '<div class="ct-sep"></div>'
-    + '<div class="ct-h">单价 · USD / ' + esc(costUnitLabel(r)) + ' · 原始价，未折算</div>';
-  m.rates.forEach(row => {
-    html += '<div class="ct-row"><span class="ct-k">' + esc(row.k)
-      + '</span><span class="ct-v">' + esc(row.v) + '</span></div>';
-  });
-  m.notes.forEach(note => {
-    html += '<div class="ct-note">' + esc(note) + '</div>';
-  });
-  return html;
-}
-// 气泡只此一个，挂在 body 上；行数据按本次渲染的 key 索引，重画后按 key 复位。
-let COST_TIP_EL = null;
-let COST_TIP_KEY = null;
-const COST_TIP_ROWS = new Map();
-function costRowKey(r, i){
-  return [r.at, r.model, r.account, r.prompt_tokens, r.completion_tokens,
-          r.cached_tokens, r.elapsed_ms, i].join('|');
-}
-function costTipEl(){
-  if(!COST_TIP_EL){
-    COST_TIP_EL = document.createElement('div');
-    COST_TIP_EL.id = 'costTip';
-    document.body.appendChild(COST_TIP_EL);
-  }
-  return COST_TIP_EL;
-}
-function hideCostTip(){
-  COST_TIP_KEY = null;
-  if(COST_TIP_EL) COST_TIP_EL.style.display = 'none';
-}
-function showCostTip(cell, r){
-  const el = costTipEl();
-  el.innerHTML = costTipHtml(r);
-  el.style.display = 'block';
-  const box = cell.getBoundingClientRect();
-  const w = el.offsetWidth, h = el.offsetHeight;
-  // 贴着列尾右对齐，越界就往回收；放不下就翻到单元格下面。
-  let left = Math.max(8, Math.min(box.right - w, window.innerWidth - w - 8));
-  let top = box.top - h - 8;
-  if(top < 8) top = Math.min(box.bottom + 8, window.innerHeight - h - 8);
-  el.style.left = left + 'px';
-  el.style.top = Math.max(8, top) + 'px';
-}
-// 表格每 5 秒整体重画一次，重画后把气泡复位到同一行，别让它悬在旧位置。
-function reanchorCostTip(){
-  if(!COST_TIP_KEY) return;
-  const cells = document.querySelectorAll('[data-cost-key]');
-  for(let i = 0; i < cells.length; i++){
-    if(cells[i].getAttribute('data-cost-key') === COST_TIP_KEY){
-      const r = COST_TIP_ROWS.get(COST_TIP_KEY);
-      if(r){ showCostTip(cells[i], r); return; }
-    }
-  }
-  hideCostTip();
-}
-document.addEventListener('mouseover', e => {
-  const cell = e.target && e.target.closest ? e.target.closest('[data-cost-key]') : null;
-  if(!cell) return;
-  const key = cell.getAttribute('data-cost-key');
-  if(!key || key === COST_TIP_KEY) return;
-  const r = COST_TIP_ROWS.get(key);
-  if(!r) return;
-  COST_TIP_KEY = key;
-  showCostTip(cell, r);
-});
-document.addEventListener('mouseout', e => {
-  const cell = e.target && e.target.closest ? e.target.closest('[data-cost-key]') : null;
-  if(!cell) return;
-  if(e.relatedTarget && cell.contains(e.relatedTarget)) return;
-  hideCostTip();
-});
-
-// CNY/USD 二选一的切换按钮组；用于费用卡片与表格标题区。
 
 // 输入 / 输出 / 思考 三个数字，各自一色，斜杠分隔。思考为 0 也写出来，
 // 列的形状因此固定，不会因某个模型不推理就缩短。
@@ -6304,7 +5827,7 @@ function openActivityHistory(uid){
 
 
 // 账号的手动调度权重提示：与 ca_accounts._pick_weighted_first 的行为一一对应。
-const WEIGHT_TIP = '权重 >1 的账号优先接单，多个高权重账号按权重比分流量；它们都接不了单时其他账号照常顶上。已开始的会话保持粘性不换号，权重对新会话生效。1 = 不干预，临期积分优先等自动规则照旧。';
+const WEIGHT_TIP = '权重 >1 的账号优先接单，多个高权重账号按权重比分流量；它们都接不了单时其他账号照常顶上。已开始的会话保持粘性不换号，权重对新会话生效。1 = 不干预。';
 
 
 
@@ -6634,7 +6157,6 @@ async function loadAccounts(){
     window.ACCOUNTS = acct.accounts || [];
     USAGE_BY_ACCOUNT = {};
     (byAcct.accounts || []).forEach(a => { USAGE_BY_ACCOUNT[a.account] = a; });
-    await loadProxySlots();
     updateUI();
     // 昵称刚到位，补画一次积分扣减历史：它和本请求是并行的，先渲染的那次只有 uid。
     if(LAST_CREDIT_DATA) renderCreditHistory();
@@ -6690,45 +6212,6 @@ async function editAccountNote(uid){
     toast('备注保存失败: ' + e.message, 'bad');
   }
 }
-async function setAccountProduct(uid, prod, btn){
-  const names = {
-    'vscode': '官方 VSCode 插件 (VSC)',
-    'cli': '官方 CodeBuddy CLI (CLI)'
-  };
-  const label = names[prod] || prod;
-  if(!confirm('将该账号的出站身份切换为 ' + label + '？\n\n不同身分对应不同的出站指纹、端点和配额通道。')) return;
-  if(btn){ btn.disabled = true; }
-  try {
-    const r = await postJSON('/accounts/product', {uid: uid, product: prod});
-    toast('已切换为 ' + label, 'ok');
-    await loadAccounts();
-  } catch(e) {
-    toast('切换失败: ' + e.message, 'bad');
-  } finally {
-    if(btn){ btn.disabled = false; }
-  }
-}
-
-// 一键切换所有出站身份：后端 /accounts/product 不带 uid / realm 就是全量
-// （含另一个版本），所以这里只负责挑下一个身分、并把当前身分显示在按钮上。
-const PRODUCT_ORDER = ['workbuddy', 'vscode', 'cli'];
-const PRODUCT_SHORT = {workbuddy: 'WB', vscode: 'VSC', cli: 'CLI'};
-function allProductsUniform(){
-  const list = window.ACCOUNTS || [];
-  if(!list.length) return null;
-  const first = list[0].product || 'workbuddy';
-  return list.every(a => (a.product || 'workbuddy') === first) ? first : null;
-}
-function updateProductAllButton(){
-  const label = document.getElementById('productAllLabel');
-  if(!label) return;
-  // 账号还没加载完时保持原样，别把按钮先写成「混合」再改回来。
-  if(!(window.ACCOUNTS || []).length) return;
-  const cur = allProductsUniform();
-  label.textContent = cur ? PRODUCT_SHORT[cur] : '混合';
-}
-
-
 async function refreshOne(uid, btn){
   if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
   try{
@@ -7354,7 +6837,7 @@ async function refreshInner(gen){
   const accts = window.ACCOUNTS || [];
   const cnAccts = accts.filter(a => a.realm === 'cn');
 
-  const isAcctActive = a => a.enabled && !a.reserveBlocked && !a.dailyLimitBlocked && !a.creditLimitReached;
+  const isAcctActive = a => a.enabled && !a.dailyLimitBlocked && !a.creditLimitReached;
   const cnActive = cnAccts.filter(isAcctActive).length;
 
   let cnRemain = 0;
@@ -7371,7 +6854,6 @@ async function refreshInner(gen){
     '</div>';
 
   const succStr = (perf.success_rate_pct != null ? pct(perf.success_rate_pct) : '100.0%');
-  if(t.usd_cny) costUsdRate = Number(t.usd_cny) || costUsdRate;
 
   // 这三张卡的数字都按当前视图区域取（/usage 等接口带 realm）。原先标题带
   // 「（国内版）」后缀，但这个部署只剩码道一个出口，加后缀反而让人以为还有
@@ -7381,11 +6863,7 @@ async function refreshInner(gen){
   // 显示一致）。网关自己的用量记账里没有积分口径（credit 恒为 0），照它显示
   // 永远是 0.00，看着像坏了。
   const creditUsed = (caAccountCredit != null) ? caAccountCredit : t.credit;
-  const costText = (PRICING_ON && t.cost_cny != null)
-    ? ('估算价值: ' + fmtCostBoth(t.cost_cny, 12)) : '';
-  const creditSub = caAccountCredit != null
-    ? ('账号累计已用' + (costText ? ' · ' + costText : ''))
-    : costText;
+  const creditSub = caAccountCredit != null ? '账号累计已用' : '';
   document.getElementById('cards').innerHTML =
     card('网关调用量' + realmTag, fmt(t.requests) + ' <span style="font-size:13px;font-weight:500;color:var(--dim);margin-left:4px">次</span>', '', '') +
     card('积分消耗' + realmTag, (creditUsed != null ? Number(creditUsed).toFixed(2) : '—') + ' <span style="font-size:13px;font-weight:500;color:var(--dim);margin-left:4px">积分</span>', creditSub, 'warn') +
@@ -7441,26 +6919,18 @@ async function refreshInner(gen){
   // ~10ms 解析 + 50~65ms 强制布局（每个 tick 一个 57~77ms 的长任务），而相邻两轮
   // 里有 1/4~1/2 的轮次数据逐字节相同——代价全白付。指纹覆盖所有会画进表格的
   // 输入：行数据本身（JSON 快照，任何字段变化都算）、页码/每页条数/区域、账号
-  // 昵称（来自 /usage 的 accounts_map，与行分开变化）、以及价格列的三个开关
-  // （PRICING_ON、CNY/USD 显示币种、汇率——它们和行数据分开变化，漏一个就会
-  // 让"切换币种"这类操作被指纹挡住、表格停在旧币种上）。相同就整段跳过：
-  // 不重拼 HTML、不重排、不重挂悬停明细。
+  // 昵称（来自 /usage 的 accounts_map，与行分开变化）。相同就整段跳过：
+  // 不重拼 HTML、不重排。
   const recentFp = [
     total, RECENT_PAGE, RECENT_LIMIT, window.VIEW_REALM,
-    PRICING_ON ? '1' : '0', costCurrency, costUsdRate,
     rows.map(r => acctName(r.account)).join('\u0001'),
     JSON.stringify(rows),
   ].join('\u0002');
   if(recentFp === lastRecentFp) return;
   lastRecentFp = recentFp;
-  COST_TIP_ROWS.clear();
   document.getElementById('recent').innerHTML = rows.length ?
     '<table class="data-cards"><thead><tr><th>时间</th><th>模型</th><th>推理强度</th><th>账号</th><th>模式</th><th>结果</th><th>耗时</th><th>首字</th><th>速度</th><th>输入</th><th>输出</th><th>思考</th><th>缓存</th><th>总 token</th><th>积分</th></tr></thead><tbody>'
     + rows.map((r, i) => {
-        // 关闭时不登记悬停明细，也不挂 data-cost-key：列还在（观感不变），
-        // 但没有任何可解释的价格，省掉整张表的明细构建与 hover 开销。
-        const costKey = PRICING_ON ? costRowKey(r, i) : '';
-        if(costKey) COST_TIP_ROWS.set(costKey, r);
         return '<tr>'
         + '<td class="mono" data-label="时间">' + esc((r.iso||'').replace('T',' ').slice(5)) + '</td>'
         + '<td class="mono" data-label="模型">' + esc(r.model) + '</td>'
@@ -7483,7 +6953,6 @@ async function refreshInner(gen){
       + '</tr>';
       }).join('') + '</tbody></table>'
     : '<div class="empty">还没有请求记录</div>';
-  reanchorCostTip();
 }
 
 (async function initDashboard(){
@@ -7751,7 +7220,7 @@ async function startDashboard(){
    .main-page 生效，所以新增页面、增删区块或调整顺序都不需要改这里。 */
 const PAGE_NAV_TOP_VAR = '--page-nav-top';
 /* 侧栏收起状态跨页面、跨刷新共用一份 */
-const PAGE_NAV_COLLAPSE_KEY = 'wb-page-nav-collapsed';
+const PAGE_NAV_COLLAPSE_KEY = 'ca-page-nav-collapsed';
 /* 只有一项的页面不给侧栏：白占一列宽度，也没什么可跳的 */
 const PAGE_NAV_MIN_SECTIONS = 2;
 let pageNavLock = 0;
@@ -8332,8 +7801,8 @@ function applyAccountsTabLayout(separate){
   const pageDesc = document.getElementById('gatewayPageDesc');
   if(pageDesc){
     pageDesc.textContent = _accountsSeparateTab
-      ? '管理代理出口与网关模型，查看当日调用量、估算花费、成功率与最近请求。'
-      : '管理账号池与代理出口，查看当日调用量、估算花费、成功率、最近请求与网关模型清单。';
+      ? '管理网关模型，查看当日调用量、积分消耗、成功率与最近请求。'
+      : '管理账号池与网关模型，查看当日调用量、积分消耗、成功率、最近请求与模型清单。';
   }
   return _accountsSeparateTab;
 }
@@ -8445,12 +7914,6 @@ async function loadSettings(showToast){
     const winMaxInput = document.getElementById('setWinMaxHeight');
     if(winMaxInput) winMaxInput.value = String(Math.round(winMax));
 
-      const creditsHoursInput = document.getElementById('setCreditsRefreshHours');
-      if(creditsHoursInput && data.credits_refresh_hours !== undefined){
-        creditsHoursInput.value = String(Number(data.credits_refresh_hours || 0));
-      }
-
-      const autoSwitch = data.auto_switch_product === true;
       const anthropicMsg = data.enable_anthropic_messages === true;
       const anthropicMsgInput = document.getElementById('setAnthropicMessages');
       if(anthropicMsgInput) anthropicMsgInput.checked = anthropicMsg;
@@ -8459,13 +7922,6 @@ async function loadSettings(showToast){
         anthropicMsgState.textContent = anthropicMsg ? '(已启用)' : '(未启用)';
         anthropicMsgState.style.color = anthropicMsg ? 'var(--accent2)' : 'var(--dim)';
       }
-      const autoSwitchInput = document.getElementById('setAutoSwitch');
-      if(autoSwitchInput) autoSwitchInput.checked = autoSwitch;
-      const autoSwitchState = document.getElementById('setAutoSwitchState');
-      if(autoSwitchState){
-        autoSwitchState.textContent = autoSwitch ? '(已启用)' : '(未启用)';
-        autoSwitchState.style.color = autoSwitch ? 'var(--accent2)' : 'var(--dim)';
-      }
       const localWeb = data.local_web_tools === true;
       const localWebInput = document.getElementById('setLocalWebTools');
       if(localWebInput) localWebInput.checked = localWeb;
@@ -8473,14 +7929,6 @@ async function loadSettings(showToast){
       if(localWebState){
         localWebState.textContent = localWeb ? '(已启用)' : '(直通)';
         localWebState.style.color = localWeb ? 'var(--accent2)' : 'var(--dim)';
-      }
-      const remainingPriority = data.remaining_priority_enabled === true;
-      const remainingPriorityInput = document.getElementById('setRemainingPriority');
-      if(remainingPriorityInput) remainingPriorityInput.checked = remainingPriority;
-      const remainingPriorityState = document.getElementById('setRemainingPriorityState');
-      if(remainingPriorityState){
-        remainingPriorityState.textContent = remainingPriority ? '(已启用)' : '(未启用)';
-        remainingPriorityState.style.color = remainingPriority ? 'var(--accent2)' : 'var(--dim)';
       }
       const egressBackoff = data.egress_backoff_enabled === true;
       const egressBackoffInput = document.getElementById('setEgressBackoff');
@@ -8536,7 +7984,6 @@ async function loadSettings(showToast){
       // leaving the field untouched will not wipe an existing key.
       stored_key: '',
       masked: k.masked || '',
-      realm: k.realm || '',
       models: Array.isArray(k.models) ? k.models.slice() : [],
       concurrency_limit: parseInt(k.concurrency_limit || 0, 10) || 0,
       enabled: k.enabled !== false,
@@ -8547,7 +7994,6 @@ async function loadSettings(showToast){
     DELETED_KEY_ROWS = (data.deleted_api_keys || []).map(k => ({
       id: k.id || '',
       name: k.name || '',
-      realm: k.realm || '',
       created_at: k.created_at || '',
       deleted_at: k.deleted_at || '',
     }));
@@ -8619,7 +8065,7 @@ async function saveUiLanguage(btn){
 }
 
 function clearUiLanguageOverride(btn){
-  try { localStorage.removeItem('wb-lang'); } catch(e){}
+  try { localStorage.removeItem('ca-lang'); } catch(e){}
   if(btn) btn.disabled = true;
   location.reload();
 }
@@ -8696,161 +8142,55 @@ async function savePanelPassword(btn){
   }
 }
 
-// ---- 限额（全局默认 + 可选分版本） -------------------------------------
-// 五个护栏共用一张表：一列一个作用域。国内版留空即继承全局默认，
-// 所以“不分版本”只是“两列都留空”的一个特例，不必再另存一套开关。
+// ---- 限额（全局生效） ---------------------------------------------------
 const LIMIT_FIELDS = [
-  {key:'reserve_credits',         id:'Reserve',         label:'保留积分'},
   {key:'daily_token_limit',       id:'DailyToken',      label:'每日 Token 限额'},
   {key:'daily_credit_limit',      id:'DailyCredit',     label:'每日积分限额'},
   {key:'model_daily_token_limit', id:'ModelDailyToken', label:'按模型每日 Token 限额'},
-  {key:'expiring_window_days',    id:'ExpiringWindow',  label:'临期积分优先'},
-];
-const LIMIT_SCOPES = [
-  {scope:'global', prefix:'Global', label:'全局默认'},
-  {scope:'cn',     prefix:'Cn',     label:'国内版'},
 ];
 
-function limitEl(prefix, id){
-  return document.getElementById('limit' + prefix + id);
-}
-
-function limitHasOverride(entry){
-  return LIMIT_SCOPES.slice(1).some(
-    ({scope}) => entry[scope] !== null && entry[scope] !== undefined);
-}
-
-// 括号里写清这条护栏当前生效的值：先全局，再任何被单独设置的版本。
-function limitBadge(entry){
-  const bits = [];
-  const globalValue = Number(entry.global || 0);
-  if(globalValue > 0) bits.push('全局 ' + fmt(globalValue));
-  for(const {scope, label} of LIMIT_SCOPES.slice(1)){
-    const value = entry[scope];
-    if(value !== null && value !== undefined) bits.push(label + ' ' + fmt(value));
-  }
-  return bits.length ? ('(' + bits.join(' · ') + ')') : '(全部关闭)';
-}
-
-function toggleLimitRealms(show){
-  document.querySelectorAll('.limit-realm-col').forEach(el => {
-    el.style.display = show ? '' : 'none';
-  });
+function limitEl(id){
+  return document.getElementById('limitGlobal' + id);
 }
 
 function applyLimits(data){
   const limits = data.limits || {};
-  const anyOverride = LIMIT_FIELDS.some(
-    field => limitHasOverride(limits[field.key] || {}));
+  let anyLimit = false;
   for(const field of LIMIT_FIELDS){
     const entry = limits[field.key] || {};
     const globalValue = Number(entry.global || 0);
-    const globalInput = limitEl('Global', field.id);
+    if(globalValue > 0) anyLimit = true;
+    const globalInput = limitEl(field.id);
     if(globalInput) globalInput.value = String(globalValue);
-    for(const {scope, prefix} of LIMIT_SCOPES.slice(1)){
-      const input = limitEl(prefix, field.id);
-      const raw = entry[scope];
-      const inherited = (raw === null || raw === undefined);
-      if(input){
-        input.value = inherited ? '' : String(raw);
-        // 占位符直接写出继承到的那个数，省得再翻回全局列对照。
-        input.placeholder = '继承 ' + fmt(globalValue);
-      }
-    }
     const state = document.getElementById('set' + field.id + 'State');
     if(state){
-      state.textContent = limitBadge(entry);
-      state.style.color = (globalValue > 0 || anyOverride) ? 'var(--accent2)' : 'var(--dim)';
+      state.textContent = globalValue > 0 ? '(' + fmt(globalValue) + ')' : '(已关闭)';
+      state.style.color = globalValue > 0 ? 'var(--accent2)' : 'var(--dim)';
     }
   }
-  const expiringToggle = document.getElementById('setExpiringWindowToggle');
-  if(expiringToggle){
-    expiringToggle.checked =
-      Number((limits.expiring_window_days || {}).global || 0) > 0;
-  }
-  const toggle = document.getElementById('setLimitsPerRealm');
-  if(toggle) toggle.checked = anyOverride;
-  toggleLimitRealms(anyOverride);
   const sectionState = document.getElementById('setLimitsState');
   if(sectionState){
-    sectionState.textContent = anyOverride ? '(已分版本设置)' : '(全局生效)';
-    sectionState.style.color = anyOverride ? 'var(--accent2)' : 'var(--dim)';
+    sectionState.textContent = anyLimit ? '(已启用)' : '(全部关闭)';
+    sectionState.style.color = anyLimit ? 'var(--accent2)' : 'var(--dim)';
   }
-}
-
-function limitFormValue(prefix, field){
-  const input = limitEl(prefix, field.id);
-  return input ? String(input.value).trim() : '';
 }
 
 async function saveLimits(btn){
-  const perRealmBox = document.getElementById('setLimitsPerRealm');
-  const showRealms = !!(perRealmBox && perRealmBox.checked);
   const payload = {};
   for(const field of LIMIT_FIELDS){
-    const globalValue = Math.floor(Number(limitFormValue('Global', field) || 0));
-    if(!Number.isFinite(globalValue) || globalValue < 0){
-      toast('「' + field.label + '」的全局默认请填 0 或正整数', 'warn'); return;
+    const input = limitEl(field.id);
+    const raw = input ? String(input.value).trim() : '';
+    const value = raw === '' ? 0 : Number(raw);
+    // 空 = 关闭（0），但乱填不悄悄当成 0：那等于把护栏关掉，看不出问题。
+    if(!Number.isFinite(value) || value < 0){
+      toast('「' + field.label + '」请填 0 或正整数', 'warn'); return;
     }
-    const entry = {global: globalValue};
-    for(const {scope, prefix, label} of LIMIT_SCOPES.slice(1)){
-      const raw = limitFormValue(prefix, field);
-      // 收起分版本、或该版本留空，都表示“继承全局”；服务端收到 null 会清掉旧覆盖值。
-      if(!showRealms || raw === ''){ entry[scope] = null; continue; }
-      const value = Math.floor(Number(raw));
-      if(!Number.isFinite(value) || value < 0){
-        toast('「' + field.label + '」的' + label + '请填 0 或正整数（留空 = 继承全局）', 'warn'); return;
-      }
-      entry[scope] = value;
-    }
-    payload[field.key] = entry;
+    payload[field.key] = {global: Math.floor(value)};
   }
   if(btn) btn.disabled = true;
   try {
     await postJSON('/settings/save', {limits: payload});
     toast('限额已保存', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-  } finally {
-    if(btn) btn.disabled = false;
-  }
-}
-
-/* 临期积分优先的开关：开着等价于「窗口天数 > 0」，关掉就写 0。窗口天数本身
-   仍可在表格里单独填（例如 3 天、14 天），开关只负责一键开/关。 */
-async function toggleExpiringWindow(el){
-  const enabled = !!(el && el.checked);
-  const input = document.getElementById('limitGlobalExpiringWindow');
-  const current = Math.floor(Number(input && input.value) || 0);
-  const value = enabled ? (current > 0 ? current : 7) : 0;
-  if(input) input.value = String(value);
-  el.disabled = true;
-  try {
-    await postJSON('/settings/save', {limits:{expiring_window_days:{global:value}}});
-    toast(enabled ? '已开启临期积分优先' : '已关闭临期积分优先', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-    el.checked = !enabled;
-  } finally {
-    el.disabled = false;
-  }
-}
-
-/* 积分数据的后台刷新间隔。分派读的是账号上缓存的积分余额，只有签到/每日活跃
-   会刷新它；这里给一个 TTL，超时的账号由后台每十分钟挑最旧的一个刷一次，填 0
-   关闭后台刷新。 */
-async function saveCreditsRefreshHours(btn){
-  const input = document.getElementById('setCreditsRefreshHours');
-  const value = Number(input && input.value);
-  if(!Number.isFinite(value) || value < 0){
-    toast('积分数据刷新间隔请填 0 或正整数（0 = 关闭后台刷新）', 'warn'); return;
-  }
-  if(btn) btn.disabled = true;
-  try {
-    await postJSON('/settings/save', {credits_refresh_hours: value});
-    toast('已保存积分数据刷新间隔', 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');
@@ -8874,21 +8214,6 @@ async function saveAnthropicMessages(btn){
   }
 }
 
-async function saveAutoSwitchProduct(btn){
-  const el = document.getElementById('setAutoSwitch');
-  const value = !!(el && el.checked);
-  if(btn) btn.disabled = true;
-  try {
-    await postJSON('/settings/save', {auto_switch_product: value});
-    toast(value ? '已启用：429 时自动切换出站身份' : '已关闭自动切换出站身份', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-  } finally {
-    if(btn) btn.disabled = false;
-  }
-}
-
 async function saveLocalWebTools(btn){
   const el = document.getElementById('setLocalWebTools');
   const value = !!(el && el.checked);
@@ -8896,21 +8221,6 @@ async function saveLocalWebTools(btn){
   try {
     await postJSON('/settings/save', {local_web_tools: value});
     toast(value ? '已启用：由网关代跑 web_search / web_fetch' : '已关闭：工具声明原样透传', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-  } finally {
-    if(btn) btn.disabled = false;
-  }
-}
-
-async function saveRemainingPriority(btn){
-  const el = document.getElementById('setRemainingPriority');
-  const value = !!(el && el.checked);
-  if(btn) btn.disabled = true;
-  try {
-    await postJSON('/settings/save', {remaining_priority_enabled: value});
-    toast(value ? '已启用：剩余用量接近耗尽的组合优先调度' : '已关闭剩余用量优先调度', 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');
@@ -9143,7 +8453,7 @@ async function saveUpdateCheckEnabled(btn){
   }
 }
 
-/* ---- API key list: several keys, each bound to an upstream exit ---- */
+/* ---- API key list: several keys, each with its own model / concurrency cap ---- */
 let API_KEY_ROWS = [];
 let DELETED_KEY_ROWS = [];
 /* Ids the user removed but that are still stored server-side, pending the
@@ -9159,13 +8469,8 @@ function randomKeyValue(){
   const raw = Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
   // crypto.getRandomValues is present in every supported browser; the
   // timestamp fallback only exists so the field is never left empty.
-  return raw || ('wb-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+  return raw || ('ca-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
 }
-
-const REALM_CHOICES = [
-  ['', '跟随面板切换'],
-  ['cn', '固定国内版出口'],
-];
 
 /* Model allow-list per key. Patterns are matched case-insensitively with `*`
    wildcards ("deepseek*", "gpt-6-astra"). An empty list means no limit, which
@@ -9188,10 +8493,8 @@ function renderDeletedKeyRows(){
   if(!box) return;
   if(!DELETED_KEY_ROWS.length){ box.innerHTML = ''; return; }
   const rows = DELETED_KEY_ROWS.map(k => {
-    const realmLbl = (k.realm === 'cn') ? '固定国内版出口' : '跟随面板切换';
     return '<div style="font-size:12px;color:var(--dim);display:flex;gap:14px;flex-wrap:wrap;padding:7px 0;border-top:1px solid var(--line)">'
       + '<span style="color:var(--fg);font-weight:600">' + esc(k.name || '未命名') + '</span>'
-      + '<span>' + esc(realmLbl) + '</span>'
       + (k.created_at ? '<span>创建 ' + esc(k.created_at) + '</span>' : '')
       + (k.deleted_at ? '<span>删除 ' + esc(k.deleted_at) + '</span>' : '')
       + '<span class="mono">' + esc(k.id) + '</span>'
@@ -9216,25 +8519,15 @@ function renderKeyRows(){
   }
   box.innerHTML = API_KEY_ROWS.map((row, i) => {
     if(row._editing){
-      const options = REALM_CHOICES.map(([val, lbl]) =>
-        '<option value="' + val + '"' + ((row.realm || '') === val ? ' selected' : '') + '>' + lbl + '</option>'
-      ).join('');
       return '<div class="key-card" style="border-color:var(--accent);background:var(--panel);box-shadow:0 0 0 1px var(--accent), var(--shadow-md)">'
         + '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">'
         +   '<div style="font-size:14px;font-weight:700;color:var(--fg)">' + (row.id ? '编辑 API Key' : '新建 API Key') + '</div>'
-        +   '<span class="badge s mini">设置出口</span>'
         + '</div>'
         + '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:14px">'
         +   '<div>'
         +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">备注名称</div>'
         +     '<input type="text" id="editKeyName_' + i + '" value="' + esc(row.name || '') + '" placeholder="如: Cursor / DSH / 本地测试" '
         +       'style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
-        +   '</div>'
-        +   '<div>'
-        +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">出口绑定</div>'
-        +     '<select id="editKeyRealm_' + i + '" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
-        +       options
-        +       '</select>'
         +   '</div>'
         +   '<div>'
         +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">最大并发限制 <span style="color:var(--dim-light)">(选填，0 = 不限)</span></div>'
@@ -9266,10 +8559,6 @@ function renderKeyRows(){
       ? '<span class="badge ok" style="font-size:11px;font-weight:600;padding:2px 10px">已启用</span>'
       : '<span class="badge off" style="font-size:11px;font-weight:600;padding:2px 10px">已禁用</span>';
 
-    const realmBadge = (row.realm === 'cn')
-      ? '<span class="realm-badge-cn" style="font-size:11px">固定国内版出口</span>'
-      : '<span class="badge s" style="font-size:11px">跟随面板切换</span>';
-
     const concBadge = (row.concurrency_limit && row.concurrency_limit > 0)
       ? '<span class="badge s mini" style="font-size:11px">并发上限 ' + row.concurrency_limit + '</span>'
       : '';
@@ -9286,7 +8575,6 @@ function renderKeyRows(){
       +     '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap">'
       +       '<span style="font-size:15px;font-weight:700;color:var(--fg)">' + esc(row.name || '未命名') + '</span>'
       +       statusBadge
-      +       realmBadge
       +       modelBadge
         +       concBadge
       +     '</div>'
@@ -9333,13 +8621,11 @@ async function saveSingleKey(index, btn){
   const row = API_KEY_ROWS[index];
   if(!row) return;
   const nameInput = document.getElementById('editKeyName_' + index);
-  const realmSelect = document.getElementById('editKeyRealm_' + index);
   const keyInput = document.getElementById('editKeyValue_' + index);
   const modelsInput = document.getElementById('editKeyModels_' + index);
     const concInput = document.getElementById('editKeyConc_' + index);
 
   const name = nameInput ? nameInput.value.trim() : (row.name || '');
-  const realm = realmSelect ? realmSelect.value : (row.realm || '');
   const keyVal = keyInput ? keyInput.value.trim() : (row.key || '');
 
   if(!keyVal && !row.masked){
@@ -9348,7 +8634,6 @@ async function saveSingleKey(index, btn){
   }
 
   row.name = name || '未命名';
-  row.realm = realm;
   row.models = parseModelPatterns(modelsInput ? modelsInput.value : modelPatternsText(row.models));
     row.concurrency_limit = Math.max(0, parseInt((concInput ? concInput.value : row.concurrency_limit) || 0, 10) || 0);
   if(keyVal) row.key = keyVal;
@@ -9407,7 +8692,6 @@ function addApiKeyRow(){
     id: '',
     name: '',
     key: randomKeyValue(),
-    realm: '',
     models: [],
       concurrency_limit: 0,
     enabled: true,
@@ -9480,7 +8764,6 @@ async function saveApiKeys(btn){
     .map(row => ({
       id: row.id || '',
       name: row.name || '',
-      realm: row.realm || '',
       models: row.models || [],
         concurrency_limit: parseInt(row.concurrency_limit || 0, 10) || 0,
       enabled: row.enabled !== false,
@@ -9513,284 +8796,6 @@ async function saveApiKeys(btn){
     if(btn) btn.disabled = false;
   }
 }
-
-let PROXY_SLOTS = [];
-/* 编辑器里有未保存改动时为 true（issue #79）。
- *
- * 刷新槽位是「拉服务端列表 → 整体替换 → 重绘整张表」，而「+ 添加槽位」只是把
- * 一行 push 进本地列表、服务端并不知道它存在；loadAccounts() 每 15 秒会顺带
- * 刷新一次槽位，于是刚加的那行（以及改了一半的已有行）会被服务端的旧列表顶掉。
- * 置位期间跳过刷新，保存成功后清零。 */
-let SLOTS_DIRTY = false;
-let SLOT_DISCOVER = [];
-
-function slotSelectHtml(a){
-  const current = a.proxySlot || '';
-  // A legacy per-account proxy URL still routes traffic while no slot is
-  // bound. Surface it instead of pretending the account is direct.
-  const legacy = (!current && a.proxy) ? String(a.proxy) : '';
-  const legacyLabel = legacy.length > 28 ? legacy.slice(0, 25) + '...' : legacy;
-  const opts = [];
-  if(legacy){
-    opts.push('<option value="__legacy__" selected>旧代理：' + esc(legacyLabel) + '</option>');
-    opts.push('<option value="">直连（清除旧代理）</option>');
-  } else {
-    opts.push('<option value=""' + (current ? '' : ' selected') + '>直连</option>');
-  }
-  opts.push.apply(opts, PROXY_SLOTS.map(s =>
-    '<option value="' + esc(s.id) + '"' + (s.id === current ? ' selected' : '') + '>'
-    + esc(s.label || s.name || s.id) + (s.enabled === false ? '（停用）' : '') + '</option>'));
-  const uidAttr = esc(String(a.uid || '').replace(/[^\w.@-]/g, ''));
-  return '<select class="slot-select" onchange="setAccountSlot(&quot;' + uidAttr + '&quot;, this.value, this)">'
-    + opts.join('') + '</select>';
-}
-
-async function setAccountSlot(uid, slotId, el){
-  if(slotId === '__legacy__') return;
-  if(el) el.disabled = true;
-  try{
-    await postJSON('/accounts/set', {uid: uid, proxySlot: slotId});
-    toast('出口已更新', 'ok');
-    await loadAccounts();
-    await loadProxySlots();
-  }catch(e){
-    toast('出口更新失败: ' + e.message, 'bad');
-  }finally{
-    if(el) el.disabled = false;
-  }
-}
-
-async function loadProxySlots(force){
-  // 编辑器有未保存改动时不动它：轮询与「切到设置页」都不该覆盖正在填的内容。
-  if(SLOTS_DIRTY && !force) return;
-  try{
-    const r = await getJSON('/proxy/slots');
-    PROXY_SLOTS = r.slots || [];
-    renderProxySlots();
-  }catch(e){
-    // Panel not logged in yet; actions on the settings page surface errors.
-  }
-}
-
-/* 标题旁的状态提示。单独抽出来，是因为标记「未保存」时只能更新这段文字，
- * 不能重绘表格——重绘会让正在输入的那个框失焦。 */
-function renderSlotState(){
-  const stateEl = document.getElementById('slotState');
-  if(!stateEl) return;
-  const parts = [];
-  if(PROXY_SLOTS.length) parts.push(PROXY_SLOTS.length + ' 个');
-  if(SLOTS_DIRTY) parts.push('未保存');
-  stateEl.textContent = parts.length ? ('（' + parts.join(' · ') + '）') : '';
-  stateEl.style.color = SLOTS_DIRTY ? 'var(--warn)' : '';
-}
-
-function markSlotsDirty(){
-  if(SLOTS_DIRTY) return;
-  SLOTS_DIRTY = true;
-  renderSlotState();
-}
-
-/* 出口信息的展示口径，与服务端 ca_ipintel 保持一致：hosting 地址算机房，
-   其余算住宅；国家名由查询服务直接给中文。 */
-const IP_TYPE_LABELS = {residential: '住宅', datacenter: '机房'};
-
-function ipTypeLabel(t){ return IP_TYPE_LABELS[t] || ''; }
-
-/* 默认名称：国家 + 类型（如「美国 住宅」）。没有国家就不自动命名——只有
-   「住宅」两个字区分不了不同槽位，此时回退显示槽位 id。 */
-function autoSlotName(c){
-  const where = String((c && c.country) || '').trim();
-  if(!where) return '';
-  const kind = ipTypeLabel(c && c.ip_type);
-  return kind ? (where + ' ' + kind) : where;
-}
-
-/* 保存时要把探测到的出口字段一起送回，否则一次保存就把它们抹掉了。 */
-function slotPayload(){
-  return PROXY_SLOTS.map(s => ({
-    id: s.id || '', name: s.name || '', url: (s.url || '').trim(),
-    enabled: s.enabled !== false,
-    ip: s.ip || '', country: s.country || '', country_code: s.country_code || '',
-    ip_type: s.ip_type || '', isp: s.isp || '', asn: s.asn || '',
-    probed_at: s.probed_at || 0,
-  }));
-}
-
-function slotExitHtml(s){
-  if(!s.ip) return '<span style="color:var(--dim-light)">未探测</span>';
-  const kind = ipTypeLabel(s.ip_type);
-  const badge = kind
-    ? '<span class="badge ' + (kind === '住宅' ? 's' : '') + '" style="font-size:11px">' + kind + '</span>'
-    : '';
-  const where = [s.country ? esc(s.country) : '', badge].filter(Boolean).join(' ');
-  const tip = [s.isp, s.asn].filter(Boolean).join(' · ');
-  return '<div class="mono" style="font-size:12px">' + esc(s.ip) + '</div>'
-    + '<div style="font-size:12px;color:var(--dim);margin-top:2px"'
-    + (tip ? ' title="' + esc(tip) + '"' : '') + '>'
-    + (where || '<span style="color:var(--dim-light)">国家未知</span>') + '</div>';
-}
-
-function renderProxySlots(){
-  const box = document.getElementById('slotList');
-  if(!box) return;
-  renderSlotState();
-  if(!PROXY_SLOTS.length){
-    box.innerHTML = '<div class="hint" style="color:var(--dim)">还没有代理槽。点击「自动发现 mihomo 端口」或「+ 添加槽位」。</div>';
-    return;
-  }
-  box.innerHTML = '<div class="table-wrap"><table class="data-cards"><thead><tr>'
-    + '<th style="width:150px">名称</th>'
-    + '<th>代理地址</th>'
-    + '<th style="width:150px">出口</th>'
-    + '<th style="width:90px;text-align:center">启用</th>'
-    + '<th style="width:90px;text-align:center">绑定账号</th>'
-    + '<th style="width:190px;text-align:center">操作</th>'
-    + '</tr></thead><tbody>'
-    + PROXY_SLOTS.map((s, i) =>
-        '<tr>'
-        + '<td data-label="名称"><input value="' + esc(s.name || '') + '" placeholder="' + esc(s.label || '') + '" oninput="PROXY_SLOTS[' + i + '].name=this.value; markSlotsDirty()" class="slot-input"></td>'
-        + '<td data-label="代理地址"><input value="' + esc(s.url || '') + '" oninput="PROXY_SLOTS[' + i + '].url=this.value; markSlotsDirty()" class="slot-input mono"></td>'
-        + '<td data-label="出口">' + slotExitHtml(s) + '</td>'
-        + '<td style="text-align:center" data-label="启用"><input type="checkbox" ' + (s.enabled === false ? '' : 'checked')
-        +   ' onchange="PROXY_SLOTS[' + i + '].enabled=this.checked; markSlotsDirty()"></td>'
-        + '<td style="text-align:center" data-label="绑定账号">' + (s.bound || 0) + '</td>'
-        + '<td style="text-align:center;white-space:nowrap" data-label="">'
-        +   '<button class="sec mini" onclick="testProxySlot(' + i + ', this)">测试</button> '
-        +   '<button class="danger mini" onclick="removeProxySlot(' + i + ')">删除</button>'
-        + '</td></tr>'
-      ).join('')
-    + '</tbody></table></div>'
-    + '<div class="legend"><span>「绑定账号」只统计已启用账号；停用账号会自动释放槽位，重新启用后需重新绑定。在网关页账号表的「出口」下拉中调整绑定。名称留空时按出口自动显示「国家 类型」，点「测试」会补全出口信息并据此命名。</span></div>';
-  applyTableSort('slotList');
-}
-
-function addProxySlotRow(){
-  SLOTS_DIRTY = true;
-  // 名称留空：探测到出口后按「国家 类型」自动命名，填过就按填的显示。
-  PROXY_SLOTS.push({id: '', name: '', url: '', enabled: true, bound: 0});
-  renderProxySlots();
-}
-
-function removeProxySlot(index){
-  const s = PROXY_SLOTS[index];
-  if(!s) return;
-  if((s.bound || 0) > 0 && !confirm('该槽位被 ' + s.bound + ' 个账号绑定，删除后它们将回退直连。继续？')) return;
-  SLOTS_DIRTY = true;
-  PROXY_SLOTS.splice(index, 1);
-  renderProxySlots();
-}
-
-async function saveProxySlots(btn){
-  if(btn) btn.disabled = true;
-  try{
-      const r = await postJSON('/proxy/slots/save', {slots: slotPayload()});
-      PROXY_SLOTS = r.slots || [];
-      SLOTS_DIRTY = false;
-      renderProxySlots();
-      await loadAccounts();
-      toast('已保存 ' + PROXY_SLOTS.length + ' 个代理槽', 'ok');
-  }catch(e){
-    toast('保存失败: ' + e.message, 'bad');
-  }finally{
-    if(btn) btn.disabled = false;
-  }
-}
-
-async function testProxySlot(index, btn){
-  const s = PROXY_SLOTS[index];
-  if(!s || !s.url){ toast('槽位还没有填写代理地址', 'warn'); return; }
-  if(btn){ btn.disabled = true; btn.textContent = '测试中...'; }
-  try{
-    let id = s.id;
-    if(!id){
-      const r = await postJSON('/proxy/slots/save', {slots: slotPayload()});
-      PROXY_SLOTS = r.slots || [];
-      SLOTS_DIRTY = false;
-      renderProxySlots();
-      id = (PROXY_SLOTS[index] || {}).id;
-    }
-    const r = await postJSON('/proxy/slots/test', {id: id});
-    if(r.ok){
-      // 服务端已把出口信息写进槽位，这里只把这一行同步过来，不整表重载——
-      // 其他行里还没保存的输入都还在 PROXY_SLOTS 里，重绘不会丢。
-      const row = PROXY_SLOTS[index];
-      if(row && r.slot){
-        ['ip', 'country', 'country_code', 'ip_type', 'isp', 'asn', 'probed_at'].forEach(k => {
-          if(r.slot[k] !== undefined) row[k] = r.slot[k];
-        });
-        if(r.slot.name) row.name = r.slot.name;
-        row.label = row.name || autoSlotName(row) || row.id;
-        renderProxySlots();
-      }
-      const where = [r.country, ipTypeLabel(r.ip_type)].filter(Boolean).join(' ');
-      toast('出口 ' + r.exit_ip + (where ? ' · ' + where : '') + '（' + r.latency_ms + 'ms）', 'ok');
-    }else{
-      toast('测试失败: ' + (r.error || 'unknown'), 'bad');
-    }
-  }catch(e){
-    toast('测试失败: ' + e.message, 'bad');
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '测试'; }
-  }
-}
-
-async function discoverProxySlots(btn){
-  if(btn){ btn.disabled = true; btn.textContent = '探测中...'; }
-  try{
-    const r = await postJSON('/proxy/discover', {});
-    SLOT_DISCOVER = r.candidates || [];
-    renderDiscover();
-    const ok = SLOT_DISCOVER.filter(c => c.reachable).length;
-    toast('发现 ' + ok + ' 个可用出口', ok ? 'ok' : 'warn');
-  }catch(e){
-    toast('自动发现失败: ' + e.message, 'bad');
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '自动发现 mihomo 端口'; }
-  }
-}
-
-function renderDiscover(){
-  const box = document.getElementById('slotDiscover');
-  if(!box) return;
-  if(!SLOT_DISCOVER.length){ box.innerHTML = ''; return; }
-  box.innerHTML = '<div style="margin-top:14px"><div style="font-size:12px;color:var(--dim);margin-bottom:8px">'
-    + '勾选要导入为槽位的出口：</div>'
-    + SLOT_DISCOVER.map((c, i) =>
-        '<label style="display:flex;align-items:center;gap:8px;padding:6px 0;font-size:13px">'
-        + '<input type="checkbox" ' + (c.reachable ? 'checked' : 'disabled') + ' data-idx="' + i + '">'
-        + '<span class="mono">' + esc(c.url) + '</span>'
-        + '<span style="color:' + (c.reachable ? 'var(--accent2)' : 'var(--bad)') + '">'
-        + (c.reachable
-            ? ('出口 ' + esc(c.exit_ip)
-               + (autoSlotName(c) ? ' · ' + esc(autoSlotName(c)) : '')
-               + ' · ' + c.latency_ms + 'ms')
-            : '不可达') + '</span>'
-        + '</label>').join('')
-    + '<button class="sec" onclick="importDiscovered()" style="margin-top:8px">导入勾选的出口</button></div>';
-}
-
-function importDiscovered(){
-  const box = document.getElementById('slotDiscover');
-  if(!box) return;
-  const picked = Array.from(box.querySelectorAll('input[type=checkbox]:checked')).map(el => SLOT_DISCOVER[+el.dataset.idx]);
-  if(!picked.length){ toast('没有勾选任何出口', 'warn'); return; }
-  picked.forEach(c => {
-    if(PROXY_SLOTS.some(s => s.url === c.url)) return;
-    // 导入时就把探测到的出口信息一起带上。名称留空：空名称 = 「按出口自动命名」，
-    // 标签由 country/ip_type 每次现算，所以出口换了名字跟着换；写进 name 就成了
-    // 用户名称，会被 slot_label() 永久优先，出口变了也还显示旧的国家。
-    PROXY_SLOTS.push({
-      id: '', name: '', url: c.url, enabled: true, bound: 0,
-      ip: c.exit_ip || '', country: c.country || '', country_code: c.country_code || '',
-      ip_type: c.ip_type || '', isp: c.isp || '', asn: c.asn || '',
-      probed_at: Math.floor(Date.now() / 1000),
-    });
-  });
-  renderProxySlots();
-  toast('已加入 ' + picked.length + ' 个槽位，记得点「保存槽位」', 'ok');
-}
-
-
 
 function switchMainTab(tab){
   // 任务与福利页已随旧账号子系统一起删掉；老书签 ?tab=tasks
@@ -9847,7 +8852,7 @@ function switchMainTab(tab){
     loadCodeartsAccounts();
   }
   if(tab === 'analytics'){ loadAnalytics(); loadAnalyticsMatrix(); }
-  if(tab === 'settings'){ loadSettings(); loadProxySlots(); }
+  if(tab === 'settings'){ loadSettings(); }
   if(tab === 'logs'){
     startLogPolling();
     fetchNewLogs(true);
@@ -10010,12 +9015,12 @@ function setLogFilterLevel(lvl){
 
 /* 模块筛选按钮的固定顺序与中文名。顺序按「排查时最常先看哪个模块」排，未列出
    的 tag 排到最后并按字母序补上——后端新增 tag 时这里不改也能用。 */
-const LOG_TAG_ORDER = ['chat', 'tasks', 'scheduler', 'accounts', 'pricing',
+const LOG_TAG_ORDER = ['chat', 'tasks', 'scheduler', 'accounts',
                        'egress', 'upstream', 'webtools', 'catalog', 'auth', 'settings',
                        'update', 'usage', 'system'];
 const LOG_TAG_LABELS = {
   chat: '对话', tasks: '任务福利', scheduler: '调度器', accounts: '账号',
-  pricing: '定价', egress: '出口', upstream: '上游',
+  egress: '出口', upstream: '上游',
   webtools: '网络工具', catalog: '模型', auth: '鉴权', settings: '设置',
   update: '更新', usage: '用量', system: '系统'
 };
@@ -10460,18 +9465,16 @@ function renderPerfMatrix(usage, perf){
      * barely-used row cannot outvote a heavily-used one.
      */
     const filtering = !!(matrixAcctFilter || matrixModelFilter);
-    let sumReq, sumErr, sumTok, sumP, sumC, sumR, totTtft, totTps, totWall, totCache, sumCost;
+    let sumReq, sumErr, sumTok, sumP, sumC, sumR, totTtft, totTps, totWall, totCache;
     if(!filtering){
       sumReq = usage.requests; sumErr = perf.errors; sumTok = usage.total_tokens;
       sumP = usage.prompt_tokens; sumC = usage.completion_tokens; sumR = usage.reasoning_tokens;
-      // OpenRouter 价估算的合计：未筛选时取出口级汇总（与上面的数字同源）。
-      sumCost = usage.cost_cny || 0;
       totTtft = perf.ttft_ms ? (ms(perf.ttft_ms.avg) + " (P50 " + ms(perf.ttft_ms.p50) + ")") : "-";
       totTps = perf.tokens_per_sec ? (perf.tokens_per_sec.avg.toFixed(1) + " tok/s") : "-";
       totWall = perf.wall_ms ? ms(perf.wall_ms.avg) : "-";
       totCache = perf.cache_hit_pct ? (perf.cache_hit_pct.avg.toFixed(1) + "%") : "-";
     } else {
-      sumReq = 0; sumErr = 0; sumTok = 0; sumP = 0; sumC = 0; sumR = 0; sumCost = 0;
+      sumReq = 0; sumErr = 0; sumTok = 0; sumP = 0; sumC = 0; sumR = 0;
       let ttftW = 0, ttftN = 0, tpsW = 0, tpsN = 0, wallW = 0, wallN = 0, cacheW = 0, cacheN = 0;
       rowsData.forEach(m => {
         sumReq += m.requests || 0;
@@ -10479,7 +9482,6 @@ function renderPerfMatrix(usage, perf){
         sumP += m.prompt_tokens || 0;
         sumC += m.completion_tokens || 0;
         sumR += m.reasoning_tokens || 0;
-        sumCost += m.cost_cny || 0;
         const mp = ((perf && perf.by_model_realm) || {})[m.id] || {};
         const mpAcctAll = ((perf && perf.by_model_acct) || {})[m.id] || {};
         const mpRealm = m.realm ? (mp[m.realm] || null) : null;
@@ -10499,7 +9501,6 @@ function renderPerfMatrix(usage, perf){
     }
     const summaryRow = '<tr style="background:color-mix(in srgb,var(--accent) 7%,transparent);font-weight:600">'
       + '<td style="text-align:left" data-label="模型"><b>' + (filtering ? '筛选结果合计 (Filtered)' : '全部模型合计 (Total)') + '</b></td>'
-      + '<td style="text-align:center" data-label="区域"><span style="color:var(--dim)">—</span></td>'
       + '<td style="text-align:left" data-label="账号"><span style="color:var(--dim)">' + (filtering ? '已筛选' : '全部账号') + '</span></td>'
       + '<td data-label="请求数">' + fmt(sumReq) + '</td>'
       + '<td data-label="失败">' + (sumErr
@@ -10545,26 +9546,7 @@ function renderPerfMatrix(usage, perf){
       // This row's own accounts, not every account that touched the model.
       const mAccts = m.accts || m.accounts || {};
       const acctEntries = Object.entries(mAccts);
-      let realmCell = '<span style="color:var(--dim)">—</span>';
       let acctCell = '<span style="color:var(--dim)">—</span>';
-      const realms = new Set();
-      if(m.realm){
-        realms.add(m.realm);
-      } else {
-        acctEntries.forEach(([uid]) => {
-          const info = acctsMap[uid] || {};
-          if(info.realm) realms.add(info.realm);
-        });
-      }
-      if(realms.size >= 1){
-        realmCell = '<span class="realm-badge-cn">国内版</span>';
-      } else {
-        // No account attribution on these rows (a test call, say).
-        // Decide from the model id itself rather than the gateway exit.
-        const isCnOnly = ['deepseek-v4-pro', 'glm-5.1', 'glm-5v-turbo', 'kimi-k3-1', 'kimi-k2.7', 'minimax-m3'].includes(m.id);
-        realmCell = isCnOnly ? '<span class="realm-badge-cn">国内版</span>'
-          : '<span style="color:var(--dim)">—</span>';
-      }
       if(acctEntries.length === 1 && acctEntries[0][0] === '(unattributed)'){
         acctCell = '<span style="color:var(--dim)">—</span>';
       } else if(acctEntries.length === 1){
@@ -10581,7 +9563,6 @@ function renderPerfMatrix(usage, perf){
       }
       return '<tr>'
         + '<td style="text-align:left" class="mono" data-label="模型"><b>' + esc(m.id) + '</b></td>'
-        + '<td style="text-align:center;white-space:nowrap" data-label="区域">' + realmCell + '</td>'
         + '<td style="text-align:left" data-label="账号">' + acctCell + '</td>'
         + '<td data-label="请求数">' + fmt(m.requests) + '</td>'
         + '<td data-label="失败">' + errCell + '</td>'
@@ -10606,7 +9587,6 @@ function renderPerfMatrix(usage, perf){
     }
     matrixEl.innerHTML = coverageNote + '<table class="data-cards"><thead><tr>'
       + '<th style="text-align:left">模型名称</th>'
-      + '<th style="text-align:center;width:76px">区域</th>'
       + '<th style="text-align:left">账号</th>'
       + '<th>请求数</th><th>失败</th><th>总 Token</th><th style="min-width:190px">输入 / 输出 / 思考</th>'
       + '<th>首字延迟 (TTFT)</th><th>生成速度</th><th>端到端耗时</th><th>缓存命中率</th><th>用量占比</th>'
@@ -11089,7 +10069,7 @@ function renderAnalytics(data){
 
   if(acctTbody){
     if(!accts.length){
-      acctTbody.innerHTML = '<tr><td colspan="8" class="empty">暂无账号用量数据</td></tr>';
+      acctTbody.innerHTML = '<tr><td colspan="6" class="empty">暂无账号用量数据</td></tr>';
     } else {
       acctTbody.innerHTML = accts.map(a => {
         // window 桶就是当前选中的范围，也就是这张表要展示的口径。
@@ -11107,8 +10087,6 @@ function renderAnalytics(data){
           }).join('');
         }
 
-        const realmBadge = '<span class="badge warn" style="font-size:10px">国内版</span>';
-
         let creditStr = '<span style="color:var(--dim)">—</span>';
         if(a.credits && a.credits.remain != null){
           if(a.credits.size){
@@ -11123,7 +10101,6 @@ function renderAnalytics(data){
           +   '<b>' + esc(a.nickname || a.uid) + '</b>'
           +   '<div style="color:var(--dim);font-size:11px;font-family:monospace">' + esc((a.uid || '').slice(0, 10)) + '...</div>'
           + '</td>'
-          + '<td>' + realmBadge + '</td>'
           + '<td>' + creditStr + '</td>'
           + '<td>' + fmt(st.requests || 0) + '</td>'
           + '<td><b style="color:var(--accent)">' + fmtCompact(st.total_tokens || 0) + '</b></td>'
@@ -11157,15 +10134,6 @@ function applyKeyBeforeHidden(hidden){
   return keyBeforeHidden;
 }
 // 显式选择走既有的 settings save 通道（一个键的 patch，不动别的设置）。
-
-function keyRealmCell(k){
-  if(k.source === 'bucket') return '<span style="color:var(--dim)">—</span>';
-  if(k.realm === 'cn') return '<span class="badge warn" style="font-size:10px">国内版</span>';
-  // realm 为空的 Key 不绑出口，而是跟着模型走：它可能两个出口都用过，
-  // 那时代理返回的积分是两个价格体系相加的结果，必须说出来。
-  if(k.cross_realm) return '<span class="badge warn" style="font-size:10px">跟随 · 混合</span>';
-  return '<span class="badge off" style="font-size:10px">跟随</span>';
-}
 
 function keyModelPills(k){
   const pills = (k.models || []).map(m =>
@@ -11201,7 +10169,6 @@ function renderKeyTable(data){
 
   if(note){
     const named = keys.filter(k => k.source !== 'bucket');
-    const cross = named.filter(k => k.cross_realm).length;
     const parts = [];
     if(!named.length) parts.push('设置里还没有任何 API Key，全部流量都落在下面的未归属行里。');
     // 收起那行时就不再解释那行，否则读者找不到话里指的东西。
@@ -11210,7 +10177,7 @@ function renderKeyTable(data){
   }
 
   if(!shown.length){
-    tbody.innerHTML = '<tr><td colspan="8" class="empty">暂无 API Key 用量数据</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">暂无 API Key 用量数据</td></tr>';
     return;
   }
 
@@ -11248,7 +10215,6 @@ function renderKeyTable(data){
 
     return '<tr>'
       + nameCell
-      + '<td data-label="出口">' + keyRealmCell(k) + '</td>'
       + reqCell + tokCell + splitCell + cacheCell + creditCell + modelCell
       + '</tr>';
   }).join('');
@@ -11295,10 +10261,6 @@ function fmtSec(ms){
   return s >= 100 ? s.toFixed(0) + ' s' : s.toFixed(s >= 10 ? 1 : 2) + ' s';
 }
 function fmtPct(v, d){ return (v == null || !isFinite(v)) ? '—' : Number(v).toFixed(d ?? 1) + '%'; }
-function fmtCostCny(v){
-  if (v == null || !isFinite(v)) return '—';
-  return '￥' + Number(v).toLocaleString('zh-CN', {minimumFractionDigits:2, maximumFractionDigits:2});
-}
 function fmtTime(epoch){
   const d = new Date(epoch * 1000);
   const p = n => String(n).padStart(2, '0');
@@ -11778,7 +10740,7 @@ function buildHeatGrid(heat){
 /* ---------------- 用量明细（维度切换） ---------------- */
 const dimDefs = {
   model: {
-    head: ['模型', '请求', 'Token', '平均速度', '缓存命中', '花费'],
+    head: ['模型', '请求', 'Token', '平均速度', '缓存命中'],
     rows(){
       const a = state.analytics; if (!a) return [];
       const list = Array.isArray(a.models) ? a.models : Object.entries(a.models || {}).map(([name,v])=>({model:name, window:v}));
@@ -11790,40 +10752,37 @@ const dimDefs = {
         tokSub: `思考 ${fmtCompact(m.window.reasoning_tokens ?? m.window.reasoning ?? 0)} · 缓存 ${fmtCompact(m.window.cached_tokens ?? 0)}`,
         speed: m.window.speed_avg,
         cache: m.window.cache_hit_pct,
-        cost: m.window.cost_cny,
       }));
     }
   },
   account: {
-    head: ['账号', '请求', 'Token', '平均速度', '缓存命中', '剩余积分', '花费'],
+    head: ['账号', '请求', 'Token', '平均速度', '缓存命中', '剩余积分'],
     rows(){
       const a = state.analytics; if (!a) return [];
       return (a.accounts || []).map(acc => ({
         key: acc.uid,
-        who: `<div class="who"><b>${acc.nickname || acc.uid.slice(0,8)} <span class="realm-tag realm-cn">国内版</span></b><span data-tip="UID：${acc.uid}">${(acc.uid||'').slice(0,13)}…</span></div>`,
+        who: `<div class="who"><b>${acc.nickname || acc.uid.slice(0,8)}</b><span data-tip="UID：${acc.uid}">${(acc.uid||'').slice(0,13)}…</span></div>`,
         req: acc.window.requests,
         tok: acc.window.total_tokens,
         tokSub: `思考 ${fmtCompact(acc.window.reasoning_tokens)} · 缓存 ${fmtCompact(acc.window.cached_tokens)}`,
         speed: acc.window.speed_avg,
         cache: acc.window.cache_hit_pct,
         remain: acc.credits ? acc.credits.remain : null,
-        cost: acc.window.cost_cny,
       }));
     }
   },
   key: {
-    head: ['API Key', '请求', 'Token', '平均速度', '缓存命中', '花费'],
+    head: ['API Key', '请求', 'Token', '平均速度', '缓存命中'],
     rows(){
       const a = state.analytics; if (!a) return [];
       return (a.keys || []).map(k => ({
         key: 'key:' + (k.key || k.name),
-        who: `<div class="who"><b>${k.name || k.key}</b><span>${k.source === 'panel' ? '面板创建' : k.source || ''}${k.realm ? ' · ' + k.realm : ''}</span></div>`,
+        who: `<div class="who"><b>${k.name || k.key}</b><span>${k.source === 'panel' ? '面板创建' : k.source || ''}</span></div>`,
         req: k.window.requests,
         tok: k.window.total_tokens,
         tokSub: `思考 ${fmtCompact(k.window.reasoning_tokens)} · 缓存 ${fmtCompact(k.window.cached_tokens)}`,
         speed: k.window.speed_avg,
         cache: k.window.cache_hit_pct,
-        cost: k.window.cost_cny,
       }));
     }
   },
@@ -11866,7 +10825,6 @@ function renderDim(){
       <td class="num">${r.speed != null ? Number(r.speed).toFixed(0) + ' tok/s' : '—'}</td>
       <td class="num ${cacheCls}">${fmtPct(r.cache)}</td>
       ${r.remain !== undefined ? `<td class="num">${remainTxt}</td>` : ''}
-      <td class="num">${r.cost != null ? fmtCostCny(r.cost) : '—'}</td>
     </tr>`;
   }).join('');
   applyOpenKey();
@@ -12074,42 +11032,8 @@ async function onKeyBeforeToggle(box){
   }
 }
 
-function costTitle(r){
-  const m = costTipModel(r);
-  const out = ['按 OpenRouter 公布的模型价折算的等价 token 花费'];
-  out.push.apply(out, m.lines);
-  if(m.rates.length){
-    out.push('单价（USD / ' + costUnitLabel(r) + '，OpenRouter 原始价，未折算）');
-    m.rates.forEach(row => out.push('　' + row.k + '：' + row.v));
-  }
-  out.push.apply(out, m.notes);
-  return out.join('\n');
-}
-
 function hiddenPages(){
   return _hiddenPages.slice();
-}
-
-function setCostCurrency(cur){
-  costCurrency = (cur === 'USD') ? 'USD' : 'CNY';
-  try { localStorage.setItem('wb-cost-currency', costCurrency); } catch(e) {}
-  renderCostToggle();
-  // 已经渲染出来的表格/卡片就地换算重画，不必等下一轮轮询。
-  if(typeof refreshAllCostViews === 'function') refreshAllCostViews();
-}
-function renderCostToggle(){
-  document.querySelectorAll('.cost-toggle').forEach(el => {
-    el.querySelectorAll('button').forEach(b => {
-      b.classList.toggle('active', b.dataset.cur === costCurrency);
-    });
-  });
-}
-function refreshAllCostViews(){
-  refresh();
-  if(currentMainTab === 'analytics'){
-    loadAnalytics();
-    loadAnalyticsMatrix();
-  }
 }
 </script>
 </body>

@@ -1,12 +1,12 @@
-/* 限额表的前端契约：全局默认 + 可选分版本。
+/* 限额表的前端契约：三条护栏，全局生效。
  *
- * 后端把五条护栏存成「全局默认 + 可选分版本覆盖」，面板这张表必须一一对上：
- * 每条护栏三列输入（全局 / 国际版 / 国内版），id 由 LIMIT_FIELDS 与
- * LIMIT_SCOPES 的名字拼出来；某一版本留空表示继承全局，保存时发 null 让服务端
- * 清掉旧覆盖值；收起「分别设置」再保存，等于把两个覆盖一起清回继承。
+ * 后端只存一个全局值（LIMIT_SCOPES = ("global",)），面板这张表必须一一对上：
+ * 每条护栏一个输入框，id 由 LIMIT_FIELDS 的名字拼出来，保存时发
+ * {key: {global: 数字}}，0 表示关闭。留空等同于 0，但乱填要拦下来——
+ * 把 "1ooo" 悄悄当成 0 等于关掉护栏，页面上看不出来。
  *
- * 这类错名字只会静默失效——输入框填不上、或者发出去的键名对不上，页面上看不
- * 出来。所以这里把两侧的名字和语义都钉住。Run with Node.
+ * 这类错名字只会静默失效：输入框填不上、或者发出去的键名对不上。所以这里把
+ * 两侧的名字和语义都钉住。Run with Node.
  */
 const assert = require('assert');
 const {dashboardHtml, dashboardScript} = require('./_dashboard_source.js');
@@ -35,32 +35,39 @@ console.log = () => {};
 const api = new Function(script + `
   return {
     LIMIT_FIELDS: LIMIT_FIELDS,
-    LIMIT_SCOPES: LIMIT_SCOPES,
     limitEl: limitEl,
     applyLimits: applyLimits,
-    toggleLimitRealms: toggleLimitRealms,
     saveLimits: saveLimits,
-    toggleExpiringWindow: toggleExpiringWindow,
   };`)();
 
 (async () => {
-  // 1. 每条护栏 × 每个作用域都在 HTML 里有一个输入框。
+  // 1. 三条护栏，键名与服务端 LIMIT_KEYS 一致；每条恰好一个全局输入框。
+  assert.deepStrictEqual(api.LIMIT_FIELDS.map(f => f.key), [
+    'daily_token_limit', 'daily_credit_limit', 'model_daily_token_limit',
+  ]);
+  const expectedIds = api.LIMIT_FIELDS.map(f => 'limitGlobal' + f.id).sort();
+  const htmlIds = [...html.matchAll(/id="(limitGlobal[A-Za-z]+)"/g)]
+    .map(match => match[1]).sort();
+  assert.deepStrictEqual(htmlIds, expectedIds,
+                         '每条护栏只能有一个全局输入框，不能留下分版本列');
   for(const field of api.LIMIT_FIELDS){
-    for(const scope of api.LIMIT_SCOPES){
-      const id = 'limit' + scope.prefix + field.id;
-      assert.ok(html.includes('id="' + id + '"'), '缺少输入框 ' + id);
-    }
+    assert.ok(html.includes('id="limitGlobal' + field.id + '"'),
+              '缺少输入框 limitGlobal' + field.id);
   }
-  assert.equal(api.LIMIT_FIELDS.length, 5, '五条护栏');
-  assert.deepStrictEqual(api.LIMIT_SCOPES.map(s => s.scope), ['global', 'cn']);
 
-  // 1b. 手机上这张表要跟着看板的「表 → 卡片」走：表要带 data-cards，每个作用域格
-  //     要有自己的 data-label 当行名，否则它会撑出 720px 的下限、把整个页面拉出
-  //     横向滚动条。
+  // 分版本时代的控件与键名都应消失，别再被谁重新加回来。
+  for(const gone of ['LIMIT_SCOPES', 'toggleLimitRealms', 'setLimitsPerRealm',
+                     'reserve_credits', 'expiring_window_days',
+                     'toggleExpiringWindow', 'limitCn', 'limitIntl']){
+    assert.ok(!html.includes(gone), '不应再出现 ' + gone);
+  }
+
+  // 2. 手机上这张表要跟着看板的「表 → 卡片」走：表要带 data-cards，限值格
+  //    要有自己的 data-label 当行名，否则它会撑出 720px 的下限、把整个页面
+  //    拉出横向滚动条。
   //
-  //     这一段按「行」绑定，不数全页字符串：类名按集合看（顺序、多余类名都无所谓），
-  //     data-label 必须落在承载该输入框的那一格上。某个作用域格丢了标签、而同样的
-  //     字符串在别处又出现一次时，全页计数照样是 5，只有按行绑定才看得出来。
+  //    这一段按「行」绑定，不数全页字符串：类名按集合看（顺序、多余类名都
+  //    无所谓），data-label 必须落在承载该输入框的那一格上。
   const limitsTableTag = html.match(/<table\b[^>]*>/g)
     .find(tag => /\blimits-cards\b/.test(tag));
   assert.ok(limitsTableTag, '找不到限额表（带 limits-cards 的 <table>）');
@@ -81,30 +88,29 @@ const api = new Function(script + `
       const cell = close < 0 ? raw : raw.slice(0, close);
       const attrs = cell.slice(0, cell.indexOf('>'));
       const label = (attrs.match(/data-label="([^"]*)"/) || [])[1];
-      for(const hit of cell.matchAll(/id="(limit[A-Za-z]+)"/g)) labelById.set(hit[1], label);
+      for(const hit of cell.matchAll(/id="(limitGlobal[A-Za-z]+)"/g)) labelById.set(hit[1], label);
     }
   }
-  assert.equal(labelById.size, api.LIMIT_FIELDS.length * api.LIMIT_SCOPES.length,
-               '限额表里应有 5 条护栏 × 3 个作用域的输入框');
+  assert.equal(labelById.size, api.LIMIT_FIELDS.length,
+               '限额表里应有 3 条护栏的输入框');
   for(const field of api.LIMIT_FIELDS){
-    for(const scope of api.LIMIT_SCOPES){
-      const id = 'limit' + scope.prefix + field.id;
-      assert.equal(labelById.get(id), scope.label,
-                   field.label + ' 的「' + scope.label + '」格必须自己带 data-label');
-    }
+    assert.equal(labelById.get('limitGlobal' + field.id), '全局默认',
+                 field.label + ' 的限值格必须自己带 data-label="全局默认"');
   }
+  // 表头只有「护栏 / 全局默认」两列，不再有分版本列。
+  assert.ok(!/国内版|国际版/.test(tableHtml), '限额表不应再有分版本列');
 
-  // 护栏名与说明占整块那条规则：按选择器与声明的意义找，不比对一条写死的 CSS 文本，
-  // 所以空白、声明顺序、多余声明都不影响；而选择器不再指向限额表的 limit-name 格、
-  // 或 display 不再是 block 时，就必须失败。
+  // 护栏名与说明占整块那条规则：按选择器与声明的意义找，不比对一条写死的 CSS
+  // 文本，所以空白、声明顺序、多余声明都不影响；而选择器不再指向限额表的
+  // limit-name 格、或 display 不再是 block 时，就必须失败。
   const cssText = [...html.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)]
     .map(match => match[1]).join('\n').replace(/\/\*[\s\S]*?\*\//g, '');
   const cssRules = [...cssText.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
     .map(match => ({selector: match[1].trim(), body: match[2]}));
 
   // 逗号分隔的每个 branch 各自判定：表限定与单元格限定必须落在同一个 branch 里。
-  // 否则 `table.limits-cards td, td.limit-name` 这种把两个条件分居两个 branch 的写法
-  // 会被读成「命中了限额表的 limit-name 格」，而它其实谁都没命中。
+  // 否则 `table.limits-cards td, td.limit-name` 这种把两个条件分居两个 branch 的
+  // 写法会被读成「命中了限额表的 limit-name 格」，而它其实谁都没命中。
   function targetsLimitNameCell(rule){
     return rule.selector.split(',').some(branch =>
       /\.limits-cards\b/.test(branch) && /td\.limit-name\b/.test(branch));
@@ -125,89 +131,60 @@ const api = new Function(script + `
   assert.ok(!targetsLimitNameCell({selector: '.limits-cards td'}),
             '守卫：只限定到限额表、没点到 limit-name 格，不算命中');
 
-  // 2. 载入时：全局填进全局列，覆盖值填进对应版本列，留空的写回继承提示。
+  // 3. 载入时：每条护栏的全局值填进输入框，状态跟着值走。
   api.applyLimits({limits: {
-    reserve_credits: {global: 10, cn: 3},
-    daily_token_limit: {global: 1000, cn: null},
-    daily_credit_limit: {global: 0, cn: null},
-    model_daily_token_limit: {global: 0, cn: null},
+    daily_token_limit: {global: 1000},
+    daily_credit_limit: {global: 0},
+    model_daily_token_limit: {global: 5},
   }});
-  assert.equal(api.limitEl('Global', 'Reserve').value, '10');
-  assert.equal(api.limitEl('Cn', 'Reserve').value, '3');
-  assert.equal(api.limitEl('Cn', 'DailyToken').value, '');
-  assert.equal(api.limitEl('Cn', 'DailyToken').placeholder, '继承 1,000');
-  assert.equal(dom.byId('setLimitsPerRealm').checked, true, '有覆盖时勾上分版本');
-  assert.equal(dom.byId('setReserveState').textContent, '(全局 10 · 国内版 3)');
-  assert.equal(dom.byId('setDailyTokenState').textContent, '(全局 1,000)');
+  assert.equal(api.limitEl('DailyToken').value, '1000');
+  assert.equal(api.limitEl('DailyCredit').value, '0');
+  assert.equal(api.limitEl('ModelDailyToken').value, '5');
+  assert.equal(dom.byId('setDailyTokenState').textContent, '(1,000)');
+  assert.equal(dom.byId('setDailyCreditState').textContent, '(已关闭)');
+  assert.equal(dom.byId('setModelDailyTokenState').textContent, '(5)');
+  assert.equal(dom.byId('setLimitsState').textContent, '(已启用)');
 
-  // 3. 没有覆盖时：分版本收起，两个版本列都留空。
-  api.applyLimits({limits: {
-    reserve_credits: {global: 0, cn: null},
-  }});
-  assert.equal(dom.byId('setLimitsPerRealm').checked, false);
-  assert.equal(dom.byId('setLimitsState').textContent, '(全局生效)');
-  assert.equal(dom.byId('setReserveState').textContent, '(全部关闭)');
+  // 缺条目或整块为空都读作 0（关闭），不会把旧值留在框里。
+  api.applyLimits({limits: {}});
+  assert.deepStrictEqual(
+    api.LIMIT_FIELDS.map(f => api.limitEl(f.id).value), ['0', '0', '0']);
+  assert.equal(dom.byId('setLimitsState').textContent, '(全部关闭)');
 
-  // 4. 收起分版本时保存：即使版本列里还留着旧数字，也按“继承”发出去。
-  dom.byId('setLimitsPerRealm').checked = false;
-  api.limitEl('Global', 'Reserve').value = '20';
-  api.limitEl('Cn', 'Reserve').value = '1';
+  // 4. 保存：三条护栏一起发，每条都是 {global: 数字}。
+  api.limitEl('DailyToken').value = '20';
+  api.limitEl('DailyCredit').value = '0';
+  api.limitEl('ModelDailyToken').value = '5';
   sent = null;
   await api.saveLimits(null);
   assert.ok(sent && sent.limits, '保存必须发 limits');
-  assert.deepStrictEqual(sent.limits.reserve_credits, {global: 20, cn: null},
-                         '收起分版本 = 覆盖清回继承');
-  assert.deepStrictEqual(Object.keys(sent.limits).sort(), [
-    'daily_credit_limit', 'daily_token_limit',
-    'expiring_window_days', 'model_daily_token_limit', 'reserve_credits',
-  ]);
+  assert.deepStrictEqual(sent.limits, {
+    daily_token_limit: {global: 20},
+    daily_credit_limit: {global: 0},
+    model_daily_token_limit: {global: 5},
+  });
 
-  // 5. 勾上分版本时保存：填了值的版本发数字，留空的仍发 null。
-  dom.byId('setLimitsPerRealm').checked = true;
-  api.limitEl('Global', 'Reserve').value = '20';
-  api.limitEl('Cn', 'Reserve').value = '5';
+  // 留空 = 关闭，按 0 发出去。
   sent = null;
+  api.limitEl('DailyToken').value = '';
   await api.saveLimits(null);
-  assert.deepStrictEqual(sent.limits.reserve_credits, {global: 20, cn: 5});
+  assert.deepStrictEqual(sent.limits.daily_token_limit, {global: 0},
+                         '留空应发 0（关闭）');
 
-  // 6. 非法输入直接拦下，不发请求。
+  // 5. 非法输入直接拦下，不发请求。
   sent = null;
-  dom.byId('setLimitsPerRealm').checked = false;
-  api.limitEl('Global', 'DailyToken').value = 'abc';
+  api.limitEl('DailyToken').value = 'abc';
   await api.saveLimits(null);
-  assert.equal(sent, null, '非法的全局默认不应发请求');
+  assert.equal(sent, null, '乱填不能悄悄当成 0，应拦下不发请求');
 
   sent = null;
-  dom.byId('setLimitsPerRealm').checked = true;
-  api.limitEl('Global', 'DailyToken').value = '10';
-  api.limitEl('Cn', 'DailyToken').value = '-1';
+  api.limitEl('DailyToken').value = '10';
+  api.limitEl('DailyCredit').value = '-1';
   await api.saveLimits(null);
-  assert.equal(sent, null, '非法的分版本值不应发请求');
-
-  // 7. 临期优先开关：勾选状态跟着全局窗口值走；点一下在 7 与 0 之间切换并保存。
-  api.applyLimits({limits: {expiring_window_days: {global: 7, cn: null}}});
-  assert.equal(dom.byId('setExpiringWindowToggle').checked, true, '窗口 > 0 时开关应为开');
-  api.applyLimits({limits: {expiring_window_days: {global: 0, cn: null}}});
-  assert.equal(dom.byId('setExpiringWindowToggle').checked, false, '窗口 0 时开关应为关');
-
-  sent = null;
-  api.limitEl('Global', 'ExpiringWindow').value = '0';
-  await api.toggleExpiringWindow({checked: true, disabled: false});
-  assert.deepStrictEqual(sent.limits, {expiring_window_days: {global: 7}},
-                         '从关闭打开应写回默认窗口 7');
-
-  sent = null;
-  api.limitEl('Global', 'ExpiringWindow').value = '14';
-  await api.toggleExpiringWindow({checked: false, disabled: false});
-  assert.deepStrictEqual(sent.limits, {expiring_window_days: {global: 0}},
-                         '关闭应写 0，不动窗口天数本身');
-
-  // 8. 收起分版本只隐藏国内版那一列，不动全局列。
-  api.toggleLimitRealms(false);
-  api.toggleLimitRealms(true);
+  assert.equal(sent, null, '负数不应发请求');
 
   console.log = realLog;
-  console.log('limit realm assertions passed');
+  console.log('limit assertions passed');
 })().catch(err => {
   console.log = realLog;
   console.error(err && err.stack ? err.stack : err);

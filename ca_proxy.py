@@ -65,7 +65,6 @@ import ca_catalog
 import ca_codearts
 import ca_protocol
 import ca_egress
-import ca_ipintel
 import ca_logstore
 import ca_settings
 
@@ -2930,66 +2929,8 @@ def remaining_usage_etag():
 
 
 # ---------------------------------------------------------------------------
-# 剩余用量优先调度（开关默认关，见 ca_settings.remaining_priority_enabled）
-#
-# 「快达到估计限额的 (账号, 模型) 先被交出」：估计剩余占预算的比例越小权重
-# 越高，分派侧（AccountPool._pick_remaining_first）只对权重 > 1 的组合做平滑
-# 加权轮询。分档而不是线性：面板上说得清（剩不到 30% 开始加权、5% 以内最重），
-# 测试里也钉得住确切数字。权重表由请求路径每请求推给池——数据方向与
-# apply_daily_* 一致，池不反向依赖本模块。
+# 免费模型判定（WorkBuddy 账号池的日积分护栏仍在用）
 # ---------------------------------------------------------------------------
-_REMAINING_PRIORITY_BANDS = ((0.05, 4), (0.15, 3), (0.30, 2))
-
-
-def _remaining_schedule_weight(remaining, budget):
-    """估计剩余对应的调度权重：1 = 不加权，2..4 = 越接近耗尽越重。
-
-    没有可比较的尺度时不猜：预算样本缺失（budget 为 None/0）或剩余未知
-    （remaining 为 None）一律不加权。剩余 <= 0 也不加权——它没有「先用掉」
-    的意义（真正用满的组合正在冷却，本来就不可用；estimated 口径下它只是
-    下界，不值得把流量往一个可能已经耗尽的组合上压）。
-    """
-    try:
-        remaining = float(remaining)
-        budget = float(budget)
-    except (TypeError, ValueError):
-        return 1
-    if remaining <= 0 or budget <= 0:
-        return 1
-    ratio = remaining / budget
-    for ceiling, weight in _REMAINING_PRIORITY_BANDS:
-        if ratio <= ceiling:
-            return weight
-    return 1
-
-
-def remaining_priority_enabled():
-    """优先调度开关（默认关）。"""
-    return ca_settings.remaining_priority_enabled(ACCOUNTS_DIR) is True
-
-
-def remaining_schedule_weights():
-    """{(uid, model): 权重}：估计剩余接近耗尽的组合，权重 > 1。
-
-    只读剩余估算载荷的既有字段（rows 的 uid / model / remaining / budget），
-    不碰折叠与预算的实现。载荷自带短 TTL：面板在轮询时本来就维持着它，请求
-    路径这里拿到的基本都是缓存，重建只发生在 TTL 到点时（与面板同款成本）。
-    best-effort：任何失败都只意味着这一次不加权，绝不能连累请求本身。
-    """
-    try:
-        payload = remaining_usage()
-        weights = {}
-        for row in payload.get("rows") or []:
-            weight = _remaining_schedule_weight(row.get("remaining"),
-                                                row.get("budget"))
-            if weight > 1:
-                weights[(row.get("uid") or "", row.get("model") or "")] = weight
-        return weights
-    except Exception as exc:
-        log("remaining priority weights unavailable: %s" % exc)
-        return {}
-
-
 _free_models_cache = {"at": 0.0, "data": None}
 _FREE_MODELS_TTL = 60.0
 
@@ -5627,7 +5568,6 @@ def recent_usage(limit=100, realm=None, page=1):
 POOL = None
 SCHEDULER = None
 PRICING = None
-CREDITS_REFRESHER = None
 # CodeArts（华为云）账号登录：与 WorkBuddy 账号池完全独立的一套凭证体系，
 # 只共用 accounts/ 目录（落在 accounts/codearts/ 子目录里）。
 CODEARTS_LOGIN = None
@@ -5883,102 +5823,6 @@ def _both(tasks_fn, summary_fn, account):
         tasks_future = pool.submit(tasks_fn, account)
         summary_future = pool.submit(summary_fn, account)
         return tasks_future.result(), summary_future.result()
-
-
-PROXY_DISCOVER_HOST = os.environ.get("WB_PROXY_DISCOVER_HOST") or "cli-proxy-mihomo"
-
-
-def _proxy_port_range():
-    raw = os.environ.get("WB_PROXY_DISCOVER_PORTS") or "17901-17910"
-    if "-" in raw:
-        lo, _, hi = raw.partition("-")
-        if lo.strip().isdigit() and hi.strip().isdigit():
-            return range(int(lo), int(hi) + 1)
-    if raw.strip().isdigit():
-        return [int(raw)]
-    return range(17901, 17911)
-
-
-def probe_proxy_exit(proxy_url, timeout=12):
-    """Return (exit_ip, error) for one proxy URL."""
-    try:
-        opener = ca_accounts.opener_for_proxy(proxy_url)
-        if opener is None:
-            return "", "empty proxy url"
-        req = urllib.request.Request("https://api.ipify.org", method="GET")
-        with opener.open(req, timeout=timeout) as resp:
-            return resp.read().decode("utf-8", "replace").strip(), ""
-    except Exception as exc:
-        return "", str(exc)[:160]
-
-
-def probe_proxy_intel(proxy_url, timeout=12):
-    """Probe one proxy: its exit IP, and where and what that exit is.
-
-    Both steps live here so the discovery list, the per-slot test and the stored
-    slot all describe an exit the same way. `latency_ms` covers the proxy probe
-    only - the lookup goes out directly and would otherwise inflate it.
-    """
-    started = time.time()
-    exit_ip, error = probe_proxy_exit(proxy_url, timeout=timeout)
-    latency_ms = int((time.time() - started) * 1000)
-    intel = ca_ipintel.lookup(exit_ip) if exit_ip else ca_ipintel.empty()
-    # Two steps, two outcomes. `ok` covers the proxy probe only: the lookup is a
-    # separate third-party call that fails on its own (blocked, timeout, 429, a
-    # reply without a status). Callers that already know an exit need to tell
-    # "the lookup did not answer" from "the lookup answered with nothing", or a
-    # blip at the geo service would erase what the last good probe learned.
-    intel_ok = any(str(intel.get(field) or "").strip() for field in ca_ipintel.FIELDS)
-    return {
-        "ok": not error,
-        "exit_ip": exit_ip,
-        "latency_ms": latency_ms,
-        "error": error,
-        "intel_ok": intel_ok,
-        "country": intel["country"],
-        "country_code": intel["country_code"],
-        "ip_type": intel["ip_type"],
-        "isp": intel["isp"],
-        "asn": intel["asn"],
-    }
-
-
-def discover_proxy_slots():
-    """Probe the configured mihomo host/ports and report reachable exits."""
-    out = []
-    for port in _proxy_port_range():
-        url = "http://%s:%d" % (PROXY_DISCOVER_HOST, port)
-        probe = probe_proxy_intel(url)
-        probe["url"] = url
-        probe["reachable"] = probe["ok"]
-        out.append(probe)
-    return out
-
-
-def slot_label(entry):
-    """What to call a slot: the operator's name, else its exit, else its id."""
-    name = str((entry or {}).get("name") or "").strip()
-    if name:
-        return name
-    auto = ca_ipintel.slot_name(entry.get("country"), entry.get("ip_type"))
-    return auto or str((entry or {}).get("id") or "")
-
-
-def proxy_slots_view():
-    """Proxy slots plus how many enabled accounts are bound to each."""
-    counts = {}
-    if POOL:
-        for account in POOL.accounts:
-            slot_id = account.proxy_slot
-            if slot_id and account.enabled:
-                counts[slot_id] = counts.get(slot_id, 0) + 1
-    out = []
-    for entry in ca_settings.proxy_slots(ACCOUNTS_DIR):
-        item = dict(entry)
-        item["bound"] = counts.get(entry["id"], 0)
-        item["label"] = slot_label(entry)
-        out.append(item)
-    return out
 
 
 _byacct_cache = {"at": 0.0, "data": None}
@@ -9721,18 +9565,13 @@ def runtime_settings_view():
         "api_keys": keys,
         "deleted_api_keys": deleted_keys,
         "limits": ca_settings.limits_snapshot(ACCOUNTS_DIR),
-        "reserve_credits": ca_settings.reserve_credits(ACCOUNTS_DIR),
         "daily_token_limit": ca_settings.daily_token_limit(ACCOUNTS_DIR),
         "daily_credit_limit": ca_settings.daily_credit_limit(ACCOUNTS_DIR),
         "model_daily_token_limit": ca_settings.model_daily_token_limit(ACCOUNTS_DIR),
-        "credits_refresh_hours": ca_settings.credits_refresh_hours(ACCOUNTS_DIR),
         "section_max_height": ca_settings.section_max_height(ACCOUNTS_DIR),
         "ui_language": ca_settings.ui_language(ACCOUNTS_DIR),
-        "auto_switch_product": ca_settings.auto_switch_product(ACCOUNTS_DIR),
         "enable_anthropic_messages": ca_settings.enable_anthropic_messages(ACCOUNTS_DIR),
         "local_web_tools": ca_settings.local_web_tools(ACCOUNTS_DIR),
-        "remaining_priority_enabled":
-            ca_settings.remaining_priority_enabled(ACCOUNTS_DIR),
         "egress_backoff_enabled":
             ca_settings.egress_backoff_enabled(ACCOUNTS_DIR),
         "log_db_enabled": ca_settings.log_db_enabled(ACCOUNTS_DIR),
@@ -10289,6 +10128,15 @@ CODEARTS_STREAM_RESTARTS = max(0, int(os.environ.get("CODEARTS_STREAM_RESTARTS")
 CODEARTS_STREAM_RESTART_BUDGET = float(
     os.environ.get("CODEARTS_STREAM_RESTART_BUDGET") or 90.0)
 
+#: 建连重试的总预算（秒，只作用于流式请求）。
+#:
+#: APIG 的 `Backend timeout`（APIG.0203）实测在 ~60s 触发；我们一次建连失败
+#: 就已经花掉 60s，再按 5/12/25/40 的节奏重试，第二个 60s 还没走完客户端就
+#: 先放弃了（2026-10-23 10:25 线上：open retry 1/3 → 2/3 → client gone）。
+#: 流式请求再重试只会替一个没人要的回答占着账号会话，所以超过预算就不再试；
+#: 非流式没有「首帧」承诺，重试是纯收益，不受这条限制。
+CODEARTS_OPEN_BUDGET = float(os.environ.get("CODEARTS_OPEN_BUDGET") or 75.0)
+
 #: 会话 busy 续期间隔（秒）。上游会话的空闲回收是分钟级，30s 一次足够；
 #: 比请求本身更频繁没有意义，而且每次续期都是一次签名请求。
 CODEARTS_SESSION_PING = float(os.environ.get("CODEARTS_SESSION_PING") or 30.0)
@@ -10815,18 +10663,54 @@ class _CodeartsLease:
         self._session_cred = session_cred
         self._last_ping = time.time()
         self._closed = False
+        # 续期走独立线程，不挂在读循环上（理由见 _ping_loop）。
+        self._ping_lock = threading.Lock()
+        self._ping_stop = threading.Event()
+        self._ping_thread = None
+        if self.session_id and self._session_cred:
+            self._ping_thread = threading.Thread(
+                target=self._ping_loop, name="codearts-session-ping",
+                daemon=True)
+            self._ping_thread.start()
+
+    def _ping_loop(self):
+        """独立定时续期 busy，与「有没有收到字节」无关。
+
+        以前续期挂在读循环上：每收一行试一次、按 session_ping 节流。两个毛病：
+
+        1. 模型思考期间上游可能长时间不吐字节（只靠 KEEPALIVE 哨兵兜着），
+           哨兵拿不到 socket 时续期就彻底停了 —— 上游到点回收会话，表现就是
+           ``IncompleteRead(0 bytes read)``（2026-10-23 上午 11 次断流）。
+        2. 带签名的 HTTP PUT 塞在收帧路径上，一次慢心跳就让读停住，反过来把
+           上游的写缓冲顶满。
+
+        官方客户端的做法就是 busy 之后起 interval(30000) 独立续期，见
+        docs/codearts-projects-study.md 第二节。
+        """
+        while not self._ping_stop.wait(5.0):
+            try:
+                self.keepalive()
+            except Exception as exc:          # noqa: BLE001
+                # 静默吞掉会让「续期线程挂了」表现成「上游无缘无故断流」，
+                # 每次失败都留一行（正常路径一行都没有）。
+                log("codearts session ping loop error: %r" % (exc,))
 
     def keepalive(self):
         """流式期间按需续期 busy（默认 30s 一次）。返回是否真的发了一次。"""
-        if not self.session_id or not self._session_cred:
+        if not self.session_id or not self._session_cred or self._closed:
             return False
         now = time.time()
         interval = _codearts_seconds("session_ping", CODEARTS_SESSION_PING)
         if (now - self._last_ping) < interval:
             return False
-        self._last_ping = now
-        ok, detail = ca_codearts.heartbeat(
-            *(self._session_cred + (self.session_id, "busy")))
+        # 锁只包住一次心跳：close() 要等它落地才能发 idle，否则可能
+        # 「idle 之后又被 busy 续上」，留下一条占着名额的死会话。
+        with self._ping_lock:
+            if self._closed:
+                return False
+            self._last_ping = time.time()
+            ok, detail = ca_codearts.heartbeat(
+                *(self._session_cred + (self.session_id, "busy")))
         if not ok:
             # 续期失败**不释放名额**：一次网络抖动不等于对话结束，急着 idle
             # 会把还活着的对话踢掉。收尾时照常 idle。
@@ -10834,30 +10718,15 @@ class _CodeartsLease:
         return True
 
     def lines(self, abort_check=None, stats=None):
-        """逐行吐出上游 SSE（str），顺手按需续期会话。
+        """逐行吐出上游 SSE（str）。续期在 _ping_loop 里，与读无关。
 
         上游静默时会 yield 一次 ``ca_codearts.KEEPALIVE`` —— 调用方**必须**
         判断哨兵，把它翻成给客户端的一条 SSE 注释（首帧前不要发，那时还没
         承诺 200）。见 ca_codearts.iter_sse。
         """
-        if not self.session_id:
-            return ca_codearts.iter_sse(
-                self.resp, abort_check, stats=stats,
-                idle_timeout=ca_codearts.STREAM_IDLE_TIMEOUT)
-        return self._lines_with_ping(abort_check, stats)
-
-    def _lines_with_ping(self, abort_check, stats):
-        for line in ca_codearts.iter_sse(
-                self.resp, abort_check, stats=stats,
-                idle_timeout=ca_codearts.STREAM_IDLE_TIMEOUT):
-            if line is ca_codearts.KEEPALIVE:
-                # 空等一次也是「这条会话还活着」的证据，顺手续期，省一次
-                # 定时器；真正的续期仍由保持 keepalive() 自己的节流决定。
-                self.keepalive()
-                yield line
-                continue
-            self.keepalive()
-            yield line
+        return ca_codearts.iter_sse(
+            self.resp, abort_check, stats=stats,
+            idle_timeout=ca_codearts.STREAM_IDLE_TIMEOUT)
 
     def byte_lines(self, abort_check=None, stats=None):
         """逐行吐出（bytes）—— Responses / Messages 的事件翻译器吃这种。
@@ -10872,9 +10741,12 @@ class _CodeartsLease:
                 yield line.encode("utf-8")
 
     def close(self):
-        if self._closed:
-            return
-        self._closed = True
+        with self._ping_lock:
+            if self._closed:
+                return
+            # 先占住锁：等在途的那次 busy 落地，然后再也不会有新的 busy。
+            self._closed = True
+        self._ping_stop.set()
         try:
             self.resp.close()      # 关上游连接 = 上游立刻回收这条会话
         except Exception:
@@ -11158,9 +11030,18 @@ def _codearts_request_shape(payload, messages, max_tokens):
     chars = 0
     images = 0
     parts = 0
+    acall = 0
     for message in messages or []:
         if not isinstance(message, dict):
             continue
+        # assistant 的 tool_calls 参数不在 content 里：一次 write_file 可以带
+        # 上百 KB 文件内容，只数 content 会把请求看成「只有 30K 字符」。
+        for call in message.get("tool_calls") or []:
+            try:
+                acall += len(json.dumps((call or {}).get("function") or {},
+                                        ensure_ascii=False))
+            except Exception:
+                pass
         content = message.get("content")
         if isinstance(content, str):
             chars += len(content)
@@ -11177,10 +11058,34 @@ def _codearts_request_shape(payload, messages, max_tokens):
             text = part.get("text")
             if isinstance(text, str):
                 chars += len(text)
-    return ("max_tokens=%s msgs=%d parts=%d chars=%d images=%d tools=%d "
-            "stream=%s thinking=%s"
-            % (max_tokens, len(messages or []), parts, chars, images,
-               len(payload.get("tools") or []) if isinstance(payload, dict) else 0,
+    # 工具的 JSON 字节数单独算：55 个 MCP 工具的 schema 可以轻松上百 KB
+    # （约等于几万 token），只看 messages 的字符数会把它当成「请求很小」。
+    tools = payload.get("tools") if isinstance(payload, dict) else None
+    tchars = 0
+    ttypes = {}
+    if isinstance(tools, list):
+        try:
+            tchars = len(json.dumps(tools, ensure_ascii=False))
+        except Exception:
+            tchars = 0
+        for t in tools:
+            if isinstance(t, dict):
+                key = str(t.get("type") or "?")
+                ttypes[key] = ttypes.get(key, 0) + 1
+    tchoice = ""
+    if isinstance(payload, dict):
+        choice = payload.get("tool_choice")
+        if isinstance(choice, str):
+            tchoice = choice[:16]
+        elif isinstance(choice, dict):
+            tchoice = str(choice.get("type") or "obj")[:16]
+    return ("max_tokens=%s msgs=%d parts=%d chars=%d tchars=%d acall=%d "
+            "images=%d tools=%d ttypes=%s tchoice=%s stream=%s thinking=%s"
+            % (max_tokens, len(messages or []), parts, chars, tchars, acall,
+               images,
+               len(tools) if isinstance(tools, list) else 0,
+               ",".join("%s:%d" % kv for kv in sorted(ttypes.items())) or "-",
+               tchoice or "-",
                bool((payload or {}).get("stream")) if isinstance(payload, dict) else False,
                "yes" if isinstance(payload, dict)
                and ca_codearts.thinking_extra_from(payload) else "no"))
@@ -11519,6 +11424,11 @@ def _codearts_fail_spec(status, code, detail, anthropic=False):
     # 它不是网关故障，重试同一条请求也不会变；回 502 只会让客户端反复退避。
     if "4004.200" in low or "benefit not found" in low:
         return 404, "invalid_request_error"
+    # APIG.0203 Backend timeout：APIG 等后端等超时了（实测约 60s 一刀）。
+    # 这不是网关自己挂了，重试同一条请求只会再等一个 60s —— 回 504，让客户端
+    # 看到「上游算太久」而不是一个含糊的 502。
+    if "apig.0203" in low or "backend timeout" in low:
+        return 504, ("overloaded_error" if anthropic else "upstream_error")
     if (status == 400 or "001001005" in low or "param is invalid" in low
             or "malformed_json" in low or "参数" in text):
         return 400, "invalid_request_error"
@@ -13615,83 +13525,10 @@ def gateway_hint(status, message):
     return ""
 
 
-# ---------------------------------------------------------------------------
-# 出站身分自动切换
-#
-# 官方有三套身分（workbuddy / vscode / cli），端点与配额通道各不相同，
-# 对照表见 ca_identity._ENDPOINTS。
-#
-# 某模型在某条通道被限流（429 / code 6004）时，换成另一套身分通常还能继续
-# 用 —— 那是另一条配额线。每轮最多切 MAX_PRODUCT_SWITCHES 次，避免来回弹跳。
-#
-# 身分会写进凭证档并在重启后读回（issue #76）：面板手动切换当下就落盘，
-# 这里的自动切换则在下一次任何 save() 时一并写入。
-#
-# 这个开关交给面板设定决定（issue #67），预设关闭：自动切换会吃掉重试预算，
-# 也会把帐号留在操作者没主动选过的身分上，要用的话自己开。
-# ---------------------------------------------------------------------------
-
-MAX_PRODUCT_SWITCHES = 4
-_SWITCH_LOG = {}
-
 #: 出口级退避在单次请求里最多睡这么久（见 ca_egress）：退避阶梯可以到十几秒，
 #: 但把一个客户端请求按住十几秒是不可接受的，所以只睡这个上限；共享计数器仍然
 #: 让并发请求一起变慢（这才是「一次短暂的全局退避」）。
 EGRESS_SLEEP_MAX = 5.0
-
-
-def auto_switch_product_enabled():
-    """Whether a 429 may rotate the outbound identity (panel setting, off by default)."""
-    return ca_settings.auto_switch_product(ACCOUNTS_DIR)
-
-
-def _switch_count(account, model):
-    """这一轮已经切过几次（60 秒内的切换算同一轮）。"""
-    entry = _SWITCH_LOG.get((account.uid, model))
-    if not entry:
-        return 0
-    count, last = entry
-    if time.time() - last > 60:
-        return 0
-    return count
-
-
-def _try_switch_product(account, model):
-    """429 时换身分重试。回传 True 表示已切换、可以重试。
-
-    同一请求内最多切 MAX_PRODUCT_SWITCHES 次：
-      cli -> workbuddy -> cli -> workbuddy
-    四次都不行就放弃，让呼叫端回报真正的 429。
-    """
-    count = _switch_count(account, model)
-    if count >= MAX_PRODUCT_SWITCHES:
-        return False
-    current = getattr(account, "product", ca_identity.PRODUCT_DESKTOP)
-    if current == ca_identity.PRODUCT_DESKTOP:
-        target = ca_identity.PRODUCT_VSCODE
-    elif current == ca_identity.PRODUCT_VSCODE:
-        target = ca_identity.PRODUCT_CLI
-    else:
-        target = ca_identity.PRODUCT_DESKTOP
-    try:
-        changed = account.set_product(target)
-    except Exception as exc:
-        log("product switch failed: %s" % exc, level="WARN")
-        return False
-    if not changed:
-        return False
-    _SWITCH_LOG[(account.uid, model)] = (count + 1, time.time())
-    if len(_SWITCH_LOG) > 500:
-        _SWITCH_LOG.clear()
-    log("account %s: %s 被限流，自動切換身分 -> %s (第 %d/%d 次)"
-        % (account.uid[:8], current, target, count + 1, MAX_PRODUCT_SWITCHES),
-        level="WARN")
-    return True
-
-
-def reset_switch_counter(account, model):
-    """成功之后归零，下一次请求重新享有 4 次切换额度。"""
-    _SWITCH_LOG.pop((account.uid, model), None)
 
 
 def retry_after_seconds(model, realm):
@@ -14005,8 +13842,7 @@ def _apply_stream_idle_timeout(response, seconds):
     return ca_codearts.apply_stream_idle_timeout(response, seconds)
 
 
-def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=None,
-                  allow_product_switch=True):
+def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=None):
     # Refresh the daily guards before picking. The scan underneath is
     # incremental and TTL-cached, so this is a stat() plus a cached dict on
     # the hot path, and an account parked by any of the guards is skipped
@@ -14014,13 +13850,6 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
     # share the same fold, and calling them separately paid for it three
     # times on every request.
     apply_daily_guards()
-    # 剩余用量优先调度（开关默认关）：把「估计剩余接近耗尽」的 (账号, 模型)
-    # 权重推给池，让它们先接单。只在开关打开时读剩余估算（载荷有短 TTL，热路径
-    # 上是缓存命中）；关着时推空表，把上一次可能留下的权重清掉，下一个请求就
-    # 回到与从前逐字节一致的纯轮询。
-    if POOL is not None:
-        POOL.apply_remaining_weights(
-            remaining_schedule_weights() if remaining_priority_enabled() else None)
     realm = ca_accounts.match_realm(
         target_realm or detect_model_realm(payload.get("model")) or CURRENT_REALM)
     model = str(payload.get("model") or "")
@@ -14069,10 +13898,6 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
     # 本机断网的次数：这一轮里只要出现过，最终报错就按「网络不可用」报，不按
     # 「上游不稳」报——两者的处置完全相反（去查本机网络 vs 去查账号/上游）。
     local_net_hits = 0
-    # Read once per request, not per attempt: this is a panel setting, and a
-    # settings read on every retry would be pure overhead.
-    auto_switch = (auto_switch_product_enabled()
-                   if allow_product_switch else False)
     # Panel parity: header/idle timeouts are read once per request, not
     # once per retry, so a settings read never lands in the retry loop.
     header_timeout, idle_timeout = upstream_timeouts()
@@ -14092,7 +13917,7 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
             egress_wait[key] = ca_egress.note_transient(key)
         return egress_wait[key]
 
-    max_attempts = max(2, total) + 1 + (MAX_PRODUCT_SWITCHES if auto_switch else 0)
+    max_attempts = max(2, total) + 1
     # 每次失败都把【出错的那个账号】从这段对话的历史里降级（demote），而不是
     # 忘掉整段对话：重选时优先回到还留着这段前缀的暖号（见 SessionAffinity），
     # 一次大 prompt 的冷启动比重选一次账号贵得多。
@@ -14136,7 +13961,6 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                 # streak is over (same rule as the account's note_success).
                 ca_egress.note_success(
                     ca_upstream_pool.egress_key(chat_url, account.proxy))
-            reset_switch_counter(account, model)
             # The third element is the reasoning effort this request ran at: the
             # body is rebuilt per attempt, but the effort is a property of the
             # model and the request, and the callers record it on the usage row.
@@ -14192,19 +14016,6 @@ def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=No
                         except Exception as exc:
                             log("account %s: model cap not persisted: %s"
                                 % (account.uid[:8], exc))
-                if auto_switch and _try_switch_product(account, model):
-                    # 换了身分就等于换了一条配额线：要把它从「已试过」拿掉，
-                    # 并清掉刚刚记下的模型冷却，否则下一轮回圈会找不到帐号。
-                    # keep_caps：6004 的禁用（仍在恢复期内）跨身分成立，不能
-                    # 被这次清理带走——真机实测它会让 6004 之后账号立刻又可用。
-                    tried.discard(account.uid)
-                    try:
-                        account.clear_error(model=model, keep_caps=True)
-                    except Exception:
-                        pass
-                    if session_key and POOL:
-                        POOL.affinity.demote(session_key, account.uid)
-                    continue
                 log("account %s throttled on '%s' (429), retry in %ds"
                     % (account.uid[:8], model, int(wait)))
                 if session_key and POOL:
@@ -16082,9 +15893,6 @@ class Handler(BaseHTTPRequestHandler):
         if not auth_required():
             return True
         return False
-    def _key_realm(self):
-        """Realm bound to the key this request used, or "" when unbound."""
-        return (self.key_entry or {}).get("realm") or ""
     def _key_id(self):
         """Settings id of the key that paid for this request, or None.
 
@@ -16113,10 +15921,9 @@ class Handler(BaseHTTPRequestHandler):
         return key_model_message(entry, model)
     def _request_realm(self, explicit=None):
         """Pick the upstream exit for this request.
-        Priority: an explicit ?realm= argument, then the realm bound to the
-        API key, then the X-Realm header / ?realm= query, and finally the
-        global switch. Returning None lets open_upstream() fall back to
-        model-based detection.
+        Priority: an explicit ?realm= argument, then the X-Realm header /
+        ?realm= query, and finally the global switch. Returning None lets
+        open_upstream() fall back to model-based detection.
 
         返回值一律过 match_realm：已删区域（老客户端还会发 X-Realm: intl）
         归一到现存的出口，否则池里永远匹配不到，请求只会撞出一个
@@ -16124,9 +15931,6 @@ class Handler(BaseHTTPRequestHandler):
         """
         if explicit:
             return ca_accounts.match_realm(explicit)
-        bound = self._key_realm()
-        if bound:
-            return ca_accounts.match_realm(bound)
         header = self.headers.get("X-Realm")
         if header:
             return ca_accounts.match_realm(header)
@@ -16264,12 +16068,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_settings()
         if path == "/updates":
             return self._get_updates()
-        if path == "/proxy/slots":
-            if not self._panel_ok():
-                return self._error(
-                    401, "panel password required", "invalid_request_error"
-                )
-            return self._json(200, {"slots": proxy_slots_view()})
         if path == "/logs":
             return self._get_logs(query)
         if path == "/logs/export":
@@ -17406,35 +17204,10 @@ class Handler(BaseHTTPRequestHandler):
         if limits_payload is not None:
             reply["limits"] = ca_settings.limits_snapshot(ACCOUNTS_DIR)
         if touched:
-            if POOL and "reserve_credits" in touched:
-                POOL.apply_reserve_credits()
-            if any(k in touched for k in ("daily_token_limit", "daily_credit_limit",
-                                          "model_daily_token_limit")):
-                # One pass refreshes all three: a limit edit is rare, and the
-                # guards publish from the same fold anyway.
-                apply_daily_guards(refresh=True)
-            if "expiring_window_days" in touched and POOL:
-                POOL.apply_expiring_window()
+            # One pass refreshes all three: a limit edit is rare, and the guards
+            # publish from the same fold anyway.
+            apply_daily_guards(refresh=True)
 
-        if "credits_refresh_hours" in payload:
-            # How stale a credit balance may get before the background refresher
-            # updates it. Zero turns the refresher off.
-            raw = payload.get("credits_refresh_hours")
-            if isinstance(raw, bool) or raw is None:
-                return self._error(400, "credits_refresh_hours must be a number",
-                                   "invalid_request_error")
-            try:
-                hours = float(raw)
-            except (TypeError, ValueError):
-                return self._error(400, "credits_refresh_hours must be a number",
-                                   "invalid_request_error")
-            if hours < 0:
-                return self._error(400, "credits_refresh_hours cannot be negative",
-                                   "invalid_request_error")
-            reply["credits_refresh_hours"] = \
-                ca_settings.set_credits_refresh_hours(ACCOUNTS_DIR, hours)
-            if CREDITS_REFRESHER:
-                CREDITS_REFRESHER.wake()
         if "section_max_height" in payload:
             # Panel window height cap in pixels; 0 turns the cap off. bool is an
             # int subclass and must be rejected explicitly - true would
@@ -17476,16 +17249,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(400, "enable_anthropic_messages must be true or false", "invalid_request_error")
             ca_settings.set_enable_anthropic_messages(ACCOUNTS_DIR, raw)
             reply["enable_anthropic_messages"] = raw
-        if "auto_switch_product" in payload:
-            # Strictly a JSON boolean: a string like "false" would be truthy and
-            # silently switch the feature on, which is the one thing an operator
-            # turning it off must not get.
-            raw = payload.get("auto_switch_product")
-            if not isinstance(raw, bool):
-                return self._error(400, "auto_switch_product must be true or false",
-                                   "invalid_request_error")
-            ca_settings.set_auto_switch_product(ACCOUNTS_DIR, raw)
-            reply["auto_switch_product"] = raw
         if "local_web_tools" in payload:
             raw = payload.get("local_web_tools")
             if not isinstance(raw, bool):
@@ -17493,27 +17256,15 @@ class Handler(BaseHTTPRequestHandler):
                                    "invalid_request_error")
             ca_settings.set_local_web_tools(ACCOUNTS_DIR, raw)
             reply["local_web_tools"] = raw
-        if "remaining_priority_enabled" in payload:
-            raw = payload.get("remaining_priority_enabled")
-            if not isinstance(raw, bool):
-                return self._error(400, "remaining_priority_enabled must be true or false",
-                                   "invalid_request_error")
-            ca_settings.set_remaining_priority_enabled(ACCOUNTS_DIR, raw)
-            reply["remaining_priority_enabled"] = raw
         if "egress_backoff_enabled" in payload:
-            # 出口级瞬时失败退避（issue #271）：与 remaining_priority_enabled
-            # 同一形状——严格 JSON 布尔，字符串 "false" 会是真值。
+            # 出口级瞬时失败退避（issue #271）：严格 JSON 布尔，字符串
+            # "false" 会是真值。码道路径每个请求读一次，保存即生效。
             raw = payload.get("egress_backoff_enabled")
             if not isinstance(raw, bool):
                 return self._error(400, "egress_backoff_enabled must be true or false",
                                    "invalid_request_error")
             ca_settings.set_egress_backoff_enabled(ACCOUNTS_DIR, raw)
             reply["egress_backoff_enabled"] = raw
-            if not raw and POOL is not None:
-                # 关掉就立刻清掉池里上一次推的权重，不等下一个请求；打开则
-                # 由下一个请求照常推（此刻就算推也要先折一次剩余估算，没必要
-                # 为一个开关多付这一趟）。
-                POOL.apply_remaining_weights(None)
         if "log_db_enabled" in payload or "log_db_max_rows" in payload \
                 or "log_db_max_days" in payload or "log_db_max_bytes" in payload:
             # 日志落库（默认关闭）：开关与三条保留上限一次提交里可以任选子集，
@@ -17654,83 +17405,6 @@ class Handler(BaseHTTPRequestHandler):
             reply["scheduler"] = "restarted"
         reply.update(runtime_settings_view())
         return self._json(200, reply)
-
-    def _handle_proxy_slots(self, path, payload):
-        """Proxy-slot management (panel-authenticated)."""
-        if path == "/proxy/slots":
-            return self._json(200, {"slots": proxy_slots_view()})
-        if path == "/proxy/slots/save":
-            raw = payload.get("slots")
-            if not isinstance(raw, list):
-                return self._error(400, "slots must be a list", "invalid_request_error")
-            cleaned = []
-            for item in raw:
-                if not isinstance(item, dict):
-                    continue
-                # Normalized by the same helper the store uses, so the probed
-                # exit fields the panel echoes back survive a save instead of
-                # being dropped by a second, hand-written field list here.
-                entry = ca_settings._clean_slot_entry(item)
-                if entry is not None:
-                    cleaned.append(entry)
-            saved = ca_settings.set_proxy_slots(ACCOUNTS_DIR, cleaned)
-            if POOL:
-                # A slot may have been removed: unbind anyone still naming it
-                # before recomputing, so a stale id cannot survive.
-                dropped = ca_settings.drop_missing_bindings(POOL, saved)
-                POOL.apply_proxy_slots(saved)
-                if dropped:
-                    log("proxy slots: unbound %d account(s) from removed slots"
-                        % dropped)
-            log("proxy slots saved: %d slot(s)" % len(saved))
-            return self._json(200, {"slots": proxy_slots_view()})
-        if path == "/proxy/slots/test":
-            slot_id = str(payload.get("id") or "").strip()
-            slot = ca_settings.find_proxy_slot(ACCOUNTS_DIR, slot_id)
-            if slot is None:
-                return self._error(404, "no such proxy slot")
-            probe = probe_proxy_intel(slot["url"])
-            reply = dict(probe)
-            reply["id"] = slot_id
-            reply["slot"] = None
-            if probe["ok"]:
-                # Remember what the exit turned out to be, so the panel shows it
-                # without probing again. `ok` covers the IP probe only: when the
-                # geo lookup came back with nothing, the exit info already stored
-                # is kept rather than overwritten with blanks - a blip at the
-                # lookup must not lose what the last good probe learned.
-                updated_fields = {
-                    "ip": probe["exit_ip"],
-                    "probed_at": int(time.time()),
-                }
-                if probe.get("intel_ok"):
-                    updated_fields.update({
-                        "country": probe["country"],
-                        "country_code": probe["country_code"],
-                        "ip_type": probe["ip_type"],
-                        "isp": probe["isp"],
-                        "asn": probe["asn"],
-                    })
-                else:
-                    log("proxy slots: %s probed %s but the geo lookup returned "
-                        "nothing; keeping the exit info already stored"
-                        % (slot_id, probe["exit_ip"] or "-"))
-                # The name is deliberately left alone. An empty name is how the
-                # store marks a slot as auto-named ("label this slot by its
-                # exit"), and slot_label() derives that label from the country
-                # and kind it shows - writing the derived text into the name
-                # would freeze it to the exit it happened to have at the time.
-                updated = ca_settings.update_proxy_slot(
-                    ACCOUNTS_DIR,
-                    slot_id,
-                    updated_fields,
-                )
-                reply["slot"] = updated
-                reply["name"] = (updated or {}).get("name", "")
-            return self._json(200, reply)
-        if path == "/proxy/discover":
-            return self._json(200, {"candidates": discover_proxy_slots()})
-        return self._error(404, "not found", "invalid_request_error")
 
     def _handle_panel(self, path):
         """Panel login, logout and the settings screen (password + API key)."""
@@ -18347,12 +18021,6 @@ class Handler(BaseHTTPRequestHandler):
         # Each field is applied on its own so a caller can change one thing
         # without restating the others; at least one must be present.
         updated = None
-        if "proxySlot" in payload:
-            updated = POOL.set_proxy_slot(uid, payload.get("proxySlot"))
-            if updated is None:
-                return self._error(404, "no such account")
-            log("account %s proxy slot set to %s"
-                % (uid[:8], updated.get("proxySlot") or "(direct)"))
         if "proxy" in payload:
             updated = POOL.set_proxy(uid, payload.get("proxy"))
             if updated is None:
@@ -18385,7 +18053,7 @@ class Handler(BaseHTTPRequestHandler):
         if updated is None:
             return self._error(
                 400,
-                "nothing to update: pass 'enabled', 'proxy', 'proxySlot', 'weight' or 'note'"
+                "nothing to update: pass 'enabled', 'proxy', 'weight' or 'note'"
             )
         return self._json(200, {"account": updated})
 
@@ -18909,15 +18577,6 @@ class Handler(BaseHTTPRequestHandler):
             if payload is None:
                 return
             return self._route_catalog_refresh(payload)
-        if path.startswith("/proxy/"):
-            if not self._panel_ok():
-                return self._error(
-                    401, "panel password required", "invalid_request_error"
-                )
-            payload = self._payload_or_error()
-            if payload is None:
-                return
-            return self._handle_proxy_slots(path, payload)
         if path in ("/panel/login", "/panel/logout", "/panel/password"):
             return self._handle_panel(path)
         if self._is_panel_route(path) and not self._panel_ok():
@@ -19379,11 +19038,20 @@ class Handler(BaseHTTPRequestHandler):
                                   EGRESS_SLEEP_MAX)
                 log("codearts transient on the egress; backing off %.1fs"
                     % egress_wait)
+            # 流式请求的建连重试有总预算：一次 APIG Backend timeout 就 60s，
+            # 再试一轮客户端早走了（而且走了我们还在替它占着会话）。
+            if (retryable and payload.get("stream")
+                    and (time.time() - t_start) > CODEARTS_OPEN_BUDGET):
+                log("codearts open budget exhausted: model=%s %.0fs shape=%s"
+                    % (model, time.time() - t_start,
+                       _codearts_request_shape(payload, messages, max_tokens)))
+                retryable = False
             if not retryable or attempt >= len(delays):
                 break
-            log("codearts open retry %d/%d: model=%s acct=%s cause=%s"
+            log("codearts open retry %d/%d: model=%s acct=%s cause=%s shape=%s"
                 % (attempt + 1, len(delays), model, account_label,
-                   (str(last_exc) if last_exc else (text or "")[:120])))
+                   (str(last_exc) if last_exc else (text or "")[:120]),
+                   _codearts_request_shape(payload, messages, max_tokens)))
             time.sleep(max(delays[attempt], egress_wait))
             attempt += 1
 
@@ -19494,9 +19162,14 @@ class Handler(BaseHTTPRequestHandler):
 
             account_label = lease.account_label
             account_key = lease.account_key
+            # 断流时把「已经收了多少字节、断之前静默了多久、心跳有没有真
+            # 发出去、socket 拿没拿到」一起打出来 —— 这四项能区分「上游好好的
+            # 被中间层掐了」「上游自己回收了会话」和「我们根本没在续期」。
+            stream_stats = {}
             try:
                 try:
-                    for line in lease.lines(self._client_disconnected):
+                    for line in lease.lines(self._client_disconnected,
+                                            stream_stats):
                         if line is ca_codearts.KEEPALIVE:
                             # 上游在思考、一个字都没吐。首帧前不能发（还没承诺
                             # 200，那时失败要能回错误码），首帧后发一条 SSE 注释
@@ -19558,8 +19231,14 @@ class Handler(BaseHTTPRequestHandler):
                     # 「半截回答 + 连接凭空消失」—— 既没有 finish_reason 也没有
                     # [DONE]，也就是用户说的「直接断流」。
                     truncated = str(exc)
-                    log("codearts stream broken: model=%s after %dms %s"
-                        % (model, int((time.time() - t_start) * 1000), exc))
+                    log("codearts stream broken: model=%s after %dms %s "
+                        "(bytes=%d silent=%.1fs pings=%d sock=%s) shape=%s"
+                        % (model, int((time.time() - t_start) * 1000), exc,
+                           stream_stats.get("bytes", 0),
+                           stream_stats.get("silent_s", 0.0),
+                           stream_stats.get("pings", 0),
+                           stream_stats.get("sock"),
+                           _codearts_request_shape(payload, messages, max_tokens)))
                 except (BrokenPipeError, ConnectionResetError,
                         ConnectionAbortedError):
                     log("codearts stream closed by client model=%s" % model)
@@ -20503,8 +20182,6 @@ def _bootstrap_runtime(args):
         log("panel      : password is still the default 'admin' - change it in the panel")
     POOL = ca_accounts.AccountPool(ACCOUNTS_DIR, log=log)
     POOL.load()
-    POOL.apply_proxy_slots()
-    POOL.apply_reserve_credits()
     CODEARTS_LOGIN = ca_codearts.LoginManager(ACCOUNTS_DIR, log=log)
     # WB_MAX_CONCURRENT_CHAT=auto: size the chat ceiling from the pool that was
     # just loaded. Runs before the listener exists, so no request can hold a
@@ -20523,12 +20200,6 @@ def _bootstrap_runtime(args):
     start_catalog_daily()
     # 价格估算体系已下线（2026-10-22）：不再初始化取价器，不再读价表，
     # 也不再有 OpenRouter 映射。计费只按码道积分。
-    # Credit balances back the expiring-credits dispatch preference, and only
-    # the sign-in / daily-activity tasks used to refresh them. The refresher
-    # keeps them current in the background so no request pays for a lookup.
-    global CREDITS_REFRESHER
-    CREDITS_REFRESHER = ca_accounts.CreditsRefresher(POOL)
-    CREDITS_REFRESHER.start()
     global UPDATES
     # Release discovery only: the checker asks GitHub what the newest stable
     # release is and reports it. It never downloads, replaces or restarts

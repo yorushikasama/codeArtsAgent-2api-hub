@@ -497,9 +497,7 @@ class Account(object):
             self.enterprise_id = self.jwt_enterprise_id(token)
         self.added_at = data.get("addedAt") or time.time()
         self.source = str(data.get("source") or "oauth")
-        self.proxy_slot = str(data.get("proxySlot") or "").strip()
         self.proxy_legacy = str(data.get("proxy") or "").strip()
-        # Runtime-resolved value; recomputed by AccountPool.apply_proxy_slots().
         self.proxy = self.proxy_legacy
         self.enabled = data.get("enabled", True)
         # 手动调度权重（面板按账号设置，1 = 不干预）。随凭证档持久化：这是
@@ -582,17 +580,6 @@ class Account(object):
                 continue
             if at > 0 and reset > 0:
                 self.model_caps[str(mid)] = {"at": at, "reset": reset}
-        # Low-credit guard: once the balance reaches this level the account
-        # stops being handed out, so it never drops to zero (a zero balance is
-        # what makes the upstream start sending nagging SMS). Resolved from the
-        # global setting by AccountPool.apply_reserve_credits(); 0 disables it.
-        self.reserve_credits = 0
-        # Expiring-credits preference: while this account's soonest-expiring
-        # credit package is inside this many days, the pool hands the account
-        # out before accounts whose credits lapse later, so credits about to
-        # be written off get spent first. Resolved from the global setting by
-        # AccountPool.apply_expiring_window(); 0 disables the preference.
-        self.expiring_window_days = 0
         # Daily token guard: an account that already burned this many tokens
         # today stops being handed out, so a client that would burn the rest
         # of the day's quota rotates to another account instead of hitting
@@ -658,7 +645,6 @@ class Account(object):
             "expiresAt": self.expires_at,
             "addedAt": self.added_at,
             "source": self.source,
-            "proxySlot": self.proxy_slot,
             "proxy": self.proxy_legacy,
             "enabled": self.enabled,
             "weight": self.weight,
@@ -715,7 +701,6 @@ class Account(object):
             "weight": int(self.weight),
             "note": self.note,
             "source": self.source,
-            "proxySlot": self.proxy_slot,
             "proxy": self.proxy,
             "expiresAt": exp,
             "expiresIn": _human_delta(exp - time.time()) if exp else None,
@@ -737,8 +722,6 @@ class Account(object):
             "addedAt": self.added_at,
             "file": os.path.basename(self.path) if self.path else None,
             "credits": self.credits,
-            "reserveCredits": int(self.reserve_credits or 0),
-            "reserveBlocked": self.reserve_blocked(),
             "dailyTokenLimit": int(self.daily_token_limit or 0),
             "dailyTokensToday": (int(self.daily_tokens_today)
                                  if isinstance(self.daily_tokens_today, int)
@@ -795,83 +778,6 @@ class Account(object):
     def delete(self):
         if self.path and os.path.exists(self.path):
             os.remove(self.path)
-
-    def reserve_blocked(self):
-        """True when the low-credit guard should keep this account idle.
-
-        Only a *known* balance can block: an account whose credits were never
-        fetched stays usable, otherwise a fresh install would look empty.
-        """
-        reserve = int(self.reserve_credits or 0)
-        if reserve <= 0:
-            return False
-        credits = self.credits
-        if not isinstance(credits, dict):
-            return False
-        remain = credits.get("remain")
-        if remain is None:
-            return False
-        try:
-            remain = int(remain)
-        except (TypeError, ValueError):
-            return False
-        return remain <= reserve
-
-    def soonest_expiring_days(self):
-        """Days until the earliest credit package that still has credits left.
-
-        None when nothing can be said: no credit data, no package with a
-        usable remainder, or an end date the upstream never gave.
-
-        Packages the upstream never really expires are skipped. The enterprise
-        quota resets its allowance rather than voiding it, and the free plan /
-        trial packs carry a deduction deadline years out, so both are marked
-        `no_expiry` where they are built. Treating either as an expiry would
-        make those accounts look permanently "about to lapse" - the free plan
-        would even look urgent at every month end, when its billing cycle rolls
-        over but its credits keep working.
-        """
-        credits = self.credits
-        if not isinstance(credits, dict):
-            return None
-        soonest = None
-        for package in (credits.get("packages") or []):
-            if not isinstance(package, dict):
-                continue
-            # `no_expiry` is the general rule; the package_code check is a
-            # belt-and-braces guard for credit blobs written before the flag
-            # existed, which are still on disk until the next refresh.
-            if package.get("no_expiry"):
-                continue
-            if package.get("package_code") == "enterprise":
-                continue
-            if package.get("is_expired"):
-                continue
-            days = package.get("days_left")
-            remain = package.get("remain")
-            if not isinstance(days, (int, float)) or days < 0:
-                continue
-            if not isinstance(remain, (int, float)) or remain <= 0:
-                continue
-            if soonest is None or days < soonest:
-                soonest = float(days)
-        return soonest
-
-    def in_expiring_window(self):
-        """True when this account should jump the dispatch queue.
-
-        Unknown or missing credit data is never a preference: an account the
-        gateway cannot judge keeps its plain round-robin turn instead of being
-        pushed to the front on a guess.
-        """
-        try:
-            window = int(self.expiring_window_days or 0)
-        except (TypeError, ValueError):
-            window = 0
-        if window <= 0:
-            return False
-        soonest = self.soonest_expiring_days()
-        return soonest is not None and soonest <= window
 
     def daily_limit_blocked(self):
         """True when today's counted usage has reached the configured limit.
@@ -1069,8 +975,6 @@ class Account(object):
         label, until = max(penalties, key=lambda item: item[1])
         if until > now:
             return "%s 剩余 %s" % (label, _human_delta(until - now) or "?")
-        if self.reserve_blocked():
-            return "余额低于保留线"
         if self.daily_limit_blocked():
             return "今日 Token 额度用尽"
         if self.credit_limit_blocked(model):
@@ -1086,10 +990,6 @@ class Account(object):
         if not self.enabled or not self.access_token:
             return False
         if self.throttle_wait(model=model) > 0:
-            return False
-        # Parked below the reserve: serving a request here is what would push
-        # the balance to zero and trigger the upstream reminder SMS.
-        if self.reserve_blocked():
             return False
         # Today's token budget is spent: keep the seat for tomorrow instead
         # of letting the upstream answer 429 for the rest of the day.
@@ -2035,144 +1935,6 @@ def _realm_limit(values, realm):
         return 0
 
 
-class CreditsRefresher(threading.Thread):
-    """Keep account credit balances fresh, off the request path.
-
-    The dispatch preference reads `account.credits`, which only the sign-in and
-    daily-activity tasks used to refresh: an account could go days without an
-    update, and a restart inherited whatever balance was on disk. Every tick
-    this refreshes the single stalest account that is past the TTL, so the
-    upstream billing calls stay bounded - one per tick - and land spread across
-    the pool instead of arriving as a burst. A failed account is parked for six
-    hours so a broken credential cannot be retried on every tick.
-
-    The request volume is capped by the tick, not by the pool size: at the
-    default half-hour tick that is at most 48 billing calls a day however many
-    accounts there are. With a 12-hour TTL a 28-account pool wants 56 calls a
-    day, so the tick - not the TTL - is the binding limit and the effective
-    refresh age settles a little above the TTL. That is the intended trade:
-    the preference is measured in days, so a few extra hours of drift is worth
-    far less than the calls it saves.
-    """
-
-    def __init__(self, pool, interval_seconds=1800):
-        super().__init__(daemon=True, name="credits-refresher")
-        self.pool = pool
-        self.interval_seconds = max(60.0, float(interval_seconds))
-        self.last_run = None
-        self.last_uid = None
-        self.last_error = None
-        self.logs = []
-        self._stop_event = threading.Event()
-        self._wake = threading.Event()
-        self._lock = threading.Lock()
-        self._parked = {}          # uid -> epoch until which we skip it
-        self._failed_cooldown = 6 * 3600.0
-
-    def log(self, msg):
-        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
-        self.logs.append("[%s] %s" % (stamp, msg))
-        if len(self.logs) > 40:
-            self.logs = self.logs[-40:]
-
-    def stop(self):
-        self._stop_event.set()
-        self._wake.set()
-
-    def wake(self):
-        self._wake.set()
-
-    def ttl_seconds(self):
-        """The current TTL in seconds - the one place the unit is applied."""
-        try:
-            import ca_settings
-            hours = ca_settings.credits_refresh_hours(self.pool.dir)
-        except Exception:
-            return 0.0
-        try:
-            return max(0.0, float(hours)) * 3600.0
-        except (TypeError, ValueError):
-            return 0.0
-
-    def stalest_account(self, ttl_seconds, now=None):
-        """The account whose balance is oldest and past the TTL, or None.
-
-        A balance that was never fetched counts as infinitely old, so a fresh
-        install fills in its accounts before any timed-out one is revisited.
-        """
-        now = time.time() if now is None else now
-        with self.pool._lock:
-            accounts = list(self.pool.accounts)
-        chosen = None
-        chosen_age = None
-        for account in accounts:
-            if not account.enabled or not account.access_token:
-                continue
-            if self._parked.get(account.uid, 0) > now:
-                continue
-            credits = account.credits
-            updated = credits.get("updated_at") if isinstance(credits, dict) else None
-            if isinstance(updated, (int, float)):
-                age = now - updated
-            else:
-                age = float("inf")
-            if age < ttl_seconds:
-                continue
-            if chosen_age is None or age > chosen_age:
-                chosen, chosen_age = account, age
-        return chosen
-
-    def refresh_once(self, now=None):
-        """Refresh one stale account; returns its uid, or None when none was due."""
-        ttl = self.ttl_seconds()
-        if ttl <= 0:
-            return None
-        with self._lock:
-            account = self.stalest_account(ttl, now=now)
-            if account is None:
-                return None
-            try:
-                result = account.fetch_credits()
-            except Exception as exc:
-                result = {"ok": False, "error": str(exc)}
-            if not isinstance(result, dict) or not result.get("ok"):
-                error = (result or {}).get("error") or "unknown error"
-                self._parked[account.uid] = \
-                    (time.time() if now is None else now) + self._failed_cooldown
-                self.last_error = str(error)
-                self.log("刷新 %s 积分失败，暂缓一小时: %s"
-                         % (account.uid[:8], error))
-                return None
-            self.last_run = time.time() if now is None else now
-            self.last_uid = account.uid
-            self.last_error = None
-            self.log("已刷新 %s 的积分（%s）"
-                     % (account.uid[:8], (account.credits or {}).get("updated_iso")))
-            return account.uid
-
-    def run(self):
-        while not self._stop_event.is_set():
-            self._wake.wait(timeout=self.interval_seconds)
-            if self._stop_event.is_set():
-                break
-            self._wake.clear()
-            try:
-                self.refresh_once()
-            except Exception as exc:
-                self.last_error = str(exc)
-                self.log("刷新循环异常: %s" % exc)
-
-    def status(self):
-        return {
-            "ttl_hours": round(self.ttl_seconds() / 3600.0, 2),
-            "interval_seconds": self.interval_seconds,
-            "last_run": self.last_run,
-            "last_uid": self.last_uid,
-            "last_error": self.last_error,
-            "logs": self.logs[-10:],
-        }
-
-
 class AccountPool(object):
     def __init__(self, directory, log=None):
         self.dir = directory
@@ -2181,19 +1943,8 @@ class AccountPool(object):
         self.logins = {}
         self._lock = threading.RLock()
         self._cursor = 0
-        # Smooth weighted round-robin state for the expiring-credits window,
-        # keyed by uid (see _weighted_pick). Runtime-only: a restart just
-        # restarts the rotation.
-        self._expiry_weights = {}
-        # 剩余用量优先调度：ca_proxy 每请求推来的 {(uid, model): 权重}（只有它
-        # 读得到剩余估算）。空表 = 不启用——开关关着、或没有任何组合接近估计
-        # 限额——选择就是原来的纯轮询。纯派生值，不落盘。
-        self._remaining_weights = {}
-        # 这条偏好自己的平滑加权轮询累计值，键是 (uid, model)：与临期的
-        # _expiry_weights 分开，两个偏好各自记各自的轮次。
-        self._remaining_pick_state = {}
         # 手动权重优先（面板按账号设置，weight > 1 才生效）的平滑加权轮询
-        # 累计值，键是 uid：与前两条偏好各自的轮次分开。派生值，不落盘。
+        # 累计值，键是 uid：派生值，不落盘。
         self._manual_weights = {}
         # 页内轮转（超限对话）的每页游标，键是 (页号, 页大小)；整池轮转仍用
         # _cursor，两条轮转互不挪动对方的位置。派生值，不落盘。
@@ -2217,8 +1968,6 @@ class AccountPool(object):
                     continue
                 if account.uid:
                     self.accounts.append(account)
-            self.apply_reserve_credits()
-            self.apply_expiring_window()
             # 6004 的恢复时间跨重启有效：把还在恢复时间内的组合重新挂成模型
             # 冷却，否则重启会把它们重新放出去，直到下次撞 429 才又停。
             self.restore_model_caps()
@@ -2258,17 +2007,12 @@ class AccountPool(object):
                 account.path = existing.path
                 if not account.credits and existing.credits:
                     account.credits = existing.credits
-                if not account.proxy_slot and existing.proxy_slot:
-                    account.proxy_slot = existing.proxy_slot
                 if not account.proxy_legacy and existing.proxy_legacy:
                     account.proxy_legacy = existing.proxy_legacy
                 self.accounts[self.accounts.index(existing)] = account
             else:
                 self.accounts.append(account)
             account.save(self.dir)
-            self.apply_proxy_slots()
-            self.apply_reserve_credits()
-            self.apply_expiring_window()
             return account
 
     def remove(self, uid):
@@ -2346,8 +2090,6 @@ class AccountPool(object):
 
             (updated if existing else added).append(uid)
 
-        if added or updated:
-            self.apply_proxy_slots()
         return {
             "added": added,
             "updated": updated,
@@ -2362,7 +2104,6 @@ class AccountPool(object):
         if enabled:
             account.clear_error()
         account.save(self.dir)
-        self.apply_proxy_slots()
         return account.public()
 
     def set_weight(self, uid, weight):
@@ -2394,94 +2135,16 @@ class AccountPool(object):
         if account is None:
             return None
         account.proxy_legacy = str(proxy or "").strip()
+        account.proxy = account.proxy_legacy
         account.save(self.dir)
-        self.apply_proxy_slots()
         return account.public()
-
-    def apply_proxy_slots(self, slots=None):
-        """Re-resolve every account's runtime `proxy` from its bound slot.
-
-        `proxy_slot` is the persisted source of truth; `proxy` is a derived
-        runtime value so the many outbound call sites need no change.
-        """
-        import ca_settings
-
-        if slots is None:
-            slots = ca_settings.proxy_slots(self.dir)
-        by_id = {entry["id"]: entry for entry in slots if entry.get("enabled")}
-        with self._lock:
-            for account in self.accounts:
-                slot = by_id.get(account.proxy_slot)
-                if slot:
-                    account.proxy = slot["url"]
-                else:
-                    account.proxy = account.proxy_legacy
-
-    def apply_reserve_credits(self, values=None):
-        """Re-resolve the low-credit guard for every account.
-
-        Same shape as apply_proxy_slots(): settings.json is the source of
-        truth and the per-account value is derived here, so the request path
-        needs no extra settings lookup. `values` is the guard resolved per
-        realm ({"global": g, "cn": ...}); each account picks its
-        own realm, so a per-realm override lands only on that realm's accounts
-        while the global default keeps covering both.
-        """
-        import ca_settings
-
-        if values is None:
-            values = ca_settings.limit_values(self.dir, "reserve_credits")
-        with self._lock:
-            for account in self.accounts:
-                account.reserve_credits = _realm_limit(values, account.realm)
-        return values
-
-    def apply_expiring_window(self, values=None):
-        """Re-resolve the expiring-credits window for every account.
-
-        Same shape as apply_reserve_credits(): settings.json holds the window
-        per realm (global by default) and each account reads its own, so the
-        request path needs no extra settings lookup. The window is a dispatch
-        preference, not a guard: it never makes an account unavailable, it
-        only decides who is handed out first.
-        """
-        import ca_settings
-
-        if values is None:
-            values = ca_settings.limit_values(self.dir, "expiring_window_days")
-        with self._lock:
-            for account in self.accounts:
-                account.expiring_window_days = _realm_limit(values, account.realm)
-        return values
-
-    def apply_remaining_weights(self, weights):
-        """换上 ca_proxy 算好的 (账号, 模型) 权重表（剩余用量优先调度）。
-
-        数据方向与 apply_daily_* 同款：只有 ca_proxy 读得到剩余估算（折叠、
-        预算与载荷都在那边），池不反向依赖它，只存派生值。None / 空表表示
-        「不启用」——开关关着，或这一刻没有组合接近估计限额——把上次的权重
-        清掉，选择立即回到纯轮询（开关关时行为与从前逐字节一致）。
-        权重 <= 1 的条目没有偏好意义，直接丢弃。返回存下来的表（测试用）。
-        """
-        table = {}
-        for pair, weight in (weights or {}).items():
-            try:
-                uid, model = pair
-                weight = int(weight)
-            except (TypeError, ValueError):
-                continue
-            if weight > 1:
-                table[(str(uid), str(model))] = weight
-        with self._lock:
-            self._remaining_weights = table
-        return table
 
     def apply_daily_token_limit(self, values=None, usage=None):
         """Re-resolve the daily token guard for every account.
 
-        Same shape as apply_reserve_credits(): settings.json holds the limit
-        per realm, while `usage` (uid -> tokens counted today) comes from the
-        caller, because only the proxy reads the usage log. Passing None keeps
+        settings.json holds the limit, while `usage` (uid -> tokens counted
+        today) comes from the caller, because only the proxy reads the usage
+        log. Passing None keeps
         the last known counts, so a settings change never turns them into
         "unknown".
         """
@@ -2515,7 +2178,7 @@ class AccountPool(object):
         """Re-resolve the daily credit guard for every account.
 
         Same shape as apply_daily_token_limit(): settings.json holds the
-        limit per realm, while `credits` (uid -> spent today) and `free_models`
+        limit, while `credits` (uid -> spent today) and `free_models`
         (realm -> free model ids) come from the caller, because only the
         proxy reads the usage log and the model catalogue. Passing None
         keeps the last known values, so a settings change never turns them
@@ -2586,21 +2249,6 @@ class AccountPool(object):
                              "cleared" % (str(account.uid)[:8], mid))
         return values
 
-    def set_proxy_slot(self, uid, slot_id):
-        account = self.get(uid)
-        if account is None:
-            return None
-        slot_id = str(slot_id or "").strip()
-        account.proxy_slot = slot_id
-        if not slot_id:
-            # Selecting "direct" must mean direct. A stale legacy URL left in
-            # place kept routing traffic through it, so the panel showed
-            # direct while the account was still proxied.
-            account.proxy_legacy = ""
-        account.save(self.dir)
-        self.apply_proxy_slots()
-        return account.public()
-
     def set_all_enabled(self, enabled, realm=None):
         realm = match_realm(realm)
         with self._lock:
@@ -2610,7 +2258,6 @@ class AccountPool(object):
                 if enabled:
                     account.clear_error()
                 account.save(self.dir)
-        self.apply_proxy_slots()
 
     def count_ready(self, realm=None, model=None):
         realm = match_realm(realm)
@@ -2667,29 +2314,12 @@ class AccountPool(object):
             snapshot = self._page_slice(snapshot, page)
         if not snapshot:
             return None
-        # Expiring-credits preference: accounts whose soonest-expiring credit
-        # package is inside the window are served first, so credits about to
-        # lapse get spent. It only reorders who is offered; an account the
-        # window covers is still skipped when it is cooling down, over a daily
-        # limit, or excluded. When the window covers nobody - or everyone it
-        # covers is unavailable right now - the pool falls back to the plain
-        # round-robin it always had, so a single lapsed account can never wedge
-        # the realm.
-        # 手动权重优先：面板给账号设了 >1 的权重时，这些账号先于一切自动
-        # 偏好接单，彼此之间按权重平滑加权轮询——权重高的先被选中、分到的
-        # 流量也多，但同层之内仍有轮转，谁也不独占。它们此刻都不可用（冷却、
-        # 限额、被排除）时照旧落回下面的自动偏好与轮询，一条偏好卡不住池子。
-        # 全部权重都是 1（默认）时这一层直接返回 None，分派与从前完全一致。
+        # 手动权重优先：面板给账号设了 >1 的权重时，这些账号先接单，彼此
+        # 之间按权重平滑加权轮询——权重高的先被选中、分到的流量也多，但
+        # 同层之内仍有轮转，谁也不独占。它们此刻都不可用（冷却、限额、被
+        # 排除）时照旧落回轮询，一条偏好卡不住池子。全部权重都是 1（默认）
+        # 时这一层直接返回 None，分派与从前完全一致。
         account = self._pick_weighted_first(snapshot, exclude, model)
-        if account is not None:
-            return account
-        account = self._pick_expiring_first(snapshot, exclude, model)
-        if account is not None:
-            return account
-        # 剩余用量优先调度（开关默认关）：估计剩余接近耗尽的 (账号, 模型) 接着
-        # 被优先交出（见 _pick_remaining_first）。权重表为空时这条路径直接
-        # 返回 None，落到与从前完全相同的纯轮询上。
-        account = self._pick_remaining_first(snapshot, exclude, model)
         if account is not None:
             return account
         return self._rotate_pick(snapshot, exclude, model, cursor_key=page)
@@ -2697,12 +2327,10 @@ class AccountPool(object):
     def _pick_weighted_first(self, snapshot, exclude, model):
         """手动权重 > 1 的账号优先接单，或 None（没有可交的）。
 
-        与临期积分那条同款的两层结构，只是这层的权重来自用户在面板上的明确
-        设置，优先级也最高：权重是「我就想让这个号多用」的直接表达，不该被
-        自动偏好覆盖。同层之间按权重平滑加权轮询——两个高权重账号按权重比
-        分流量，它们与权重 1 的账号之间则是「先用完我再轮别人」。权重 1 的
-        账号完全不进这一层：临期积分、剩余用量这些自动子权重照旧在它们身上
-        生效，一行都不变。
+        权重来自用户在面板上的明确设置：权重是「我就想让这个号多用」的直接
+        表达。同层之间按权重平滑加权轮询——两个高权重账号按权重比分流量，
+        它们与权重 1 的账号之间则是「先用完我再轮别人」。权重 1 的账号完全
+        不进这一层，照旧参与下面的轮询。
         """
         ready = []
         for account in snapshot:
@@ -2717,81 +2345,7 @@ class AccountPool(object):
             return None
         return self._smooth_weighted_pick(ready, "_manual_weights")
 
-    def _pick_expiring_first(self, snapshot, exclude, model):
-        """Serve the in-window accounts first, or None when none can.
-
-        Within the window the pick is a weighted round-robin: an account's
-        share grows the closer its credits are to lapsing, but no account is
-        ever handed the whole window. A strict soonest-first order would put
-        every request on the one account expiring tomorrow until the upstream
-        rate-limited it, which is exactly the burst this spreads out; weighting
-        keeps the preference while giving the accounts expiring later a real
-        share. Accounts that lapse on the same day carry the same weight, so
-        they keep taking turns.
-        """
-        urgent = [a for a in snapshot if a.in_expiring_window()]
-        if not urgent:
-            return None
-        ready = [a for a in urgent if a.uid not in exclude and a.ready(model=model)]
-        if not ready:
-            return None
-        return self._weighted_pick(ready)
-
-    def _expiry_weight(self, account):
-        """How much of the window's traffic this account should take.
-
-        Linear in how close the credits are to lapsing, floored at 1 so an
-        account at the far edge of the window still gets served rather than
-        starved until the others run dry.
-        """
-        try:
-            window = int(account.expiring_window_days or 0)
-        except (TypeError, ValueError):
-            window = 0
-        days = account.soonest_expiring_days()
-        if days is None:
-            return 1
-        return max(1, int(round(window - days)) + 1)
-
-    def _pick_remaining_first(self, snapshot, exclude, model):
-        """剩余估算接近耗尽的 (账号, 模型) 优先接单，或 None（没有可交的）。
-
-        与临期积分那条同款的两层结构：只有权重 > 1（快达到估计限额）的组合
-        进入这一层，它们之间按剩余多少平滑加权轮询——越接近耗尽分到的流量
-        越多，但同层之内没有谁独占。没有加权的可选项，或它们此刻都不可用
-        （冷却、限额、被排除）时落回纯轮询，一个快耗尽的组合不会把整个模型
-        卡死。剩余为 0 与没有预算样本的组合由 ca_proxy 侧就不进表：前者没有
-        「先用掉」的意义（冷却中的本来也不可用），后者没有可比较的尺度。
-        """
-        if not model:
-            return None
-        table = self._remaining_weights
-        if not table:
-            return None
-        ready = []
-        for account in snapshot:
-            if account.uid in exclude:
-                continue
-            weight = table.get((account.uid, model))
-            if weight is None or weight <= 1:
-                continue
-            if not account.ready(model=model):
-                continue
-            ready.append((account, weight))
-        if not ready:
-            return None
-        return self._smooth_weighted_pick(
-            [(account, (account.uid, model), weight) for account, weight in ready],
-            "_remaining_pick_state",
-            keep_uids=set(a.uid for a in snapshot))
-
-    def _weighted_pick(self, ready):
-        """临期积分那条的入口：在窗口内的账号之间平滑加权轮询。"""
-        return self._smooth_weighted_pick(
-            [(account, account.uid, self._expiry_weight(account))
-             for account in ready], "_expiry_weights")
-
-    def _smooth_weighted_pick(self, entries, state_name, keep_uids=None):
+    def _smooth_weighted_pick(self, entries, state_name):
         """Smooth weighted round-robin over (account, key, weight) triples.
 
         nginx's algorithm: every entry accrues its weight each pick, the
@@ -2799,34 +2353,22 @@ class AccountPool(object):
         weight. Equal weights degenerate to a plain rotation, so same-weight
         entries keep taking turns.
 
-        `key` is what the rotation state is kept under - a uid for the
-        expiring-credits window, a (uid, model) pair for the remaining-usage
-        preference - and `state_name` names the pool attribute holding that
-        state, so the two preferences never share a rotation.
-
-        Without `keep_uids` the state is pruned to exactly the entries taking
-        part this pick (the expiring window's behaviour). The remaining-usage
-        preference passes every account still in the pool instead: pruning by
-        the current pick alone would drop another model's (or another realm's)
-        rotation every time it is someone else's turn, and a rotation that
-        restarts every pick collapses the weights into "always the first
-        entry". Entries of accounts that really left the pool are dropped.
+        `key` is what the rotation state is kept under, and `state_name` names
+        the pool attribute holding that state. The state is pruned to exactly
+        the entries taking part this pick, so accounts that left the pool do
+        not linger.
 
         The rotation state is shared by every request thread, so the
         read-modify-write runs under the pool lock. The `ready()` checks that
         feed this do NOT: those can reach the network (a token refresh), and
-        holding the lock across one expiring credential would serialise every
-        dispatch in the realm behind it.
+        holding the lock across one would serialise every dispatch in the
+        realm behind it.
         """
         keys = set(key for _account, key, _weight in entries)
         with self._lock:
             stored = getattr(self, state_name)
-            if keep_uids is None:
-                state = dict((key, value) for key, value in stored.items()
-                             if key in keys)
-            else:
-                state = dict((key, value) for key, value in stored.items()
-                             if key[0] in keep_uids)
+            state = dict((key, value) for key, value in stored.items()
+                         if key in keys)
             total = 0
             chosen = None
             for account, key, weight in entries:

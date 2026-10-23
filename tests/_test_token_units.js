@@ -1,11 +1,10 @@
-/* 数据看板：token 紧凑单位（K/M/B）+ 缓存 token 展示 + 总计等价花费。
+/* 数据看板：token 紧凑单位（K/M/B）+ 缓存 token 展示。
  *
  *   1. fmtCompact：<1 万精确（千分位），≥1 万 K、≥100 万 M、≥10 亿 B；
  *      小数位随量级收缩、尾零去掉；单位是大写 K/M/B，与表头排序解析器
  *      （cellSortValue 的 K/M/G 换算）同一口径，带单位的单元格照样按数值排。
  *   2. renderAnalytics：两张 token 卡的大数字与输入/输出/思考/缓存明细都走
- *      紧凑单位；缓存命中率卡的副行带缓存 token 数；花费卡在「价估算开着、
- *      范围不是全部历史」时给出总计（全部历史）。
+ *      紧凑单位；缓存命中率卡的副行带缓存 token 数。
  *
  * Run with Node: node tests/_test_token_units.js
  */
@@ -26,8 +25,6 @@ try {
       fmtCompact: fmtCompact,
   cellSortValue: cellSortValue,
       ms: ms,
-      get PRICING_ON(){ return PRICING_ON; },
-      set PRICING_ON(v){ PRICING_ON = v; },
       renderAnalytics: renderAnalytics,
     };`)();
 } catch(e) {
@@ -117,7 +114,6 @@ const PAYLOAD = {
 
 PAYLOAD.summary.window.ttft_ms_avg = 1397.6;
 PAYLOAD.summary.window.elapsed_ms_avg = 890.4;
-api.PRICING_ON = true;
 api.renderAnalytics(PAYLOAD);
 assert.strictEqual(el('kpiAvgLatency').textContent, '1.40 s', '首字延迟 ≥1000ms 应显示 s');
 assert.ok(el('kpiAvgElapsed').textContent.includes('890 ms'), '耗时 <1000ms 应显示 ms');
@@ -128,9 +124,5 @@ assert.ok(el('kpiTodayTokensDetail').innerHTML.includes('缓存 800K'), '范围�
 assert.strictEqual(el('kpiTotalTokens').textContent, '123M', '全部历史 token 大数字应紧凑显示');
 assert.ok(el('kpiTotalTokensDetail').innerHTML.includes('缓存 900K'), '全部历史明细应含缓存 token');
 assert.ok(el('kpiCacheDetail').textContent.includes('缓存 800K'), '缓存命中率卡副行应带缓存 token 数');
-/* 价格估算体系已移除（2026-10-22）：数据看板不再有「花费卡」与折算金额，
-   相关断言连同 PRICING_ON 开关的检查一并删除。token 紧凑单位与缓存展示
-   仍由上面几条断言覆盖。 */
-assert.ok(!el('kpiCostDetail').innerHTML.includes('总计'), '价估算关闭时不应有总计行');
 
 console.log('_test_token_units.js: all assertions passed');

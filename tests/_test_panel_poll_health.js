@@ -43,7 +43,7 @@ function errRes(status){
 // 闭包读写）。
 const EXPORTS = [
   'getJSON', 'POLL_READ', 'panelSessionLost', 'refresh', 'fetchNewLogs',
-  'setLogFilterLevel', 'refresh', 'setCostCurrency', 'logMatchesFilter', 'logFilterKey',
+  'setLogFilterLevel', 'refresh', 'logMatchesFilter', 'logFilterKey',
   'WB_I18N: window.WB_I18N',
   'getLoginTimer: () => loginTimer', 'setLoginTimer: (t) => { loginTimer = t; }',
   'getLoginState: () => loginState', 'setLoginState: (s) => { loginState = s; }',
@@ -313,7 +313,7 @@ function check(ok, msg){
     /* 8) i18n 观察者路径：EN 下翻译照旧、跳过规则照旧；allowed() 缓存与
         hasAttributes() 短路确实在生效，且不改变任何结果。 */
   {
-    const {api} = boot({}, {beforeEval: () => localStorage.setItem('wb-lang', 'en')});
+    const {api} = boot({}, {beforeEval: () => localStorage.setItem('ca-lang', 'en')});
     check(window.WB_I18N.current() === 'en', '语言应被 localStorage 里的偏好定成 en');
 
     const htmlEl = document.documentElement;
@@ -331,7 +331,7 @@ function check(ok, msg){
     htmlEl.appendChild(blocked);
 
     const attr = dom.makeElement('button');
-    attr.setAttribute('title', '7天内到期');
+    attr.setAttribute('title', '即将到期');
     htmlEl.appendChild(attr);
 
     const term = document.getElementById('logTerminalBody');
@@ -361,7 +361,7 @@ function check(ok, msg){
     check(t1.data === 'Add', 'EN 下普通文本必须被翻译，实得 ' + JSON.stringify(t1.data));
     check(t2.data === '添加', 'data-no-i18n 子树必须保持原文');
     check(term.childNodes[0].data === '添加', '日志终端内容不参与翻译');
-    check(attr.getAttribute('title') === 'expiring within 7 days', '属性也要翻译');
+    check(attr.getAttribute('title') === 'Expiring soon', '属性也要翻译');
     check(attrProbes === 0, '没有属性的元素不该被逐个 ATTRS 探测（hasAttributes 短路）');
     check(htmlChainProbes === 1,
       '第一次 walk：根元素的祖先链只应被探测一次，实际 ' + htmlChainProbes + ' 次');
@@ -371,7 +371,7 @@ function check(ok, msg){
     check(htmlChainProbes === firstWalk,
       'allowed() 结果按元素缓存后，第二次 walk 不应再沿链重复探测祖先');
     check(t1.data === 'Add' && t2.data === '添加'
-          && attr.getAttribute('title') === 'expiring within 7 days',
+          && attr.getAttribute('title') === 'Expiring soon',
       '重复 apply 的结果必须一致（缓存不得改变行为）');
   }
 

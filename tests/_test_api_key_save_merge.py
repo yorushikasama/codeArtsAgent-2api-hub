@@ -7,7 +7,7 @@ that lose keys:
     was soft-deleted. The panel's list can be stale or incomplete - a second
     browser tab, a save that raced the post-save reload, a reload that failed -
     and then "add a key" silently retired a key nobody removed;
-  * a field the submission omitted (realm / enabled / name) was reset instead
+  * a field the submission omitted (enabled / name / models) was reset instead
     of kept, which wiped a key's exit binding the same way the older `models`
     bug (issue #92) wiped its model limits.
 
@@ -78,11 +78,11 @@ class KeySaveMergeTests(unittest.TestCase):
     def test_replace_mode_retires_an_omitted_key(self):
         """No delete list: the old contract still retires by omission."""
         S.set_api_keys(self.dir, [
-            {"id": "k1", "name": "a", "key": "key-aaaa1111", "realm": "cn"},
-            {"id": "k2", "name": "b", "key": "key-bbbb2222", "realm": "cn"},
+            {"id": "k1", "name": "a", "key": "key-aaaa1111"},
+            {"id": "k2", "name": "b", "key": "key-bbbb2222"},
         ])
         saved = S.set_api_keys(self.dir, [
-            {"id": "k1", "name": "a", "key": "key-aaaa1111", "realm": "cn"},
+            {"id": "k1", "name": "a", "key": "key-aaaa1111"},
         ])
         self.assertEqual([e["id"] for e in saved], ["k1"])
         self.assertEqual(self._all()["k2"]["deleted_at"] != "", True)
@@ -91,11 +91,11 @@ class KeySaveMergeTests(unittest.TestCase):
     def test_upsert_mode_keeps_an_omitted_key(self):
         """A delete list turns the save into an upsert: omission is not deletion."""
         S.set_api_keys(self.dir, [
-            {"id": "k1", "name": "a", "key": "key-aaaa1111", "realm": "cn"},
-            {"id": "k2", "name": "b", "key": "key-bbbb2222", "realm": "cn"},
+            {"id": "k1", "name": "a", "key": "key-aaaa1111"},
+            {"id": "k2", "name": "b", "key": "key-bbbb2222"},
         ])
         saved = S.set_api_keys(self.dir, [
-            {"id": "k1", "name": "a", "key": "key-aaaa1111", "realm": "cn"},
+            {"id": "k1", "name": "a", "key": "key-aaaa1111"},
         ], delete_ids=[])
         self.assertEqual(sorted(e["id"] for e in saved), ["k1", "k2"])
         self.assertEqual(self._all()["k2"]["deleted_at"], "")
@@ -135,12 +135,12 @@ class KeySaveMergeTests(unittest.TestCase):
 
     # --- handler contract -------------------------------------------------
 
-    def test_handler_preserves_realm_enabled_and_name_when_omitted(self):
+    def test_handler_preserves_enabled_and_name_when_omitted(self):
         S.set_api_keys(self.dir, [
             {"id": "k1", "name": "甲", "key": "key-cn-1111",
-             "realm": "cn", "models": ["deepseek/*"], "enabled": True},
+             "models": ["deepseek/*"], "enabled": True},
             {"id": "k2", "name": "国内停用", "key": "key-cn-2222",
-             "realm": "cn", "models": [], "enabled": False},
+             "models": [], "enabled": False},
         ])
         # An older client that knows only id/name/key/enabled - and here omits
         # even the name on the first row.
@@ -151,16 +151,14 @@ class KeySaveMergeTests(unittest.TestCase):
         ]})
         live = self._live()
         self.assertEqual(live["k1"]["name"], "甲")
-        self.assertEqual(live["k1"]["realm"], "cn")
         self.assertEqual(live["k1"]["models"], ["deepseek/*"])
-        self.assertEqual(live["k2"]["realm"], "cn")
         # enabled was sent explicitly as true here, so it is honoured.
         self.assertEqual(live["k2"]["enabled"], True)
 
     def test_handler_keeps_disabled_state_when_enabled_omitted(self):
         S.set_api_keys(self.dir, [
             {"id": "k2", "name": "国内停用", "key": "key-cn-2222",
-             "realm": "cn", "enabled": False},
+             "enabled": False},
         ])
         self._save({"api_keys": [
             {"id": "k2", "name": "国内停用", "key": ""},
@@ -168,44 +166,42 @@ class KeySaveMergeTests(unittest.TestCase):
         ]})
         live = self._live()
         self.assertEqual(live["k2"]["enabled"], False)
-        self.assertEqual(live["k2"]["realm"], "cn")
 
     def test_handler_end_to_end_two_quick_adds_keep_both_keys(self):
         """The reported flow: add a key, save, add another, save."""
         # First save: the panel's only row is the brand-new key.
         self._save({"api_keys": [
-            {"id": "", "name": "第一把", "realm": "cn", "models": [],
+            {"id": "", "name": "第一把", "models": [],
              "enabled": True, "key": "key-first-1111"},
         ], "deleted_api_key_ids": []})
         # Second save races the reload: the first key is still id-less locally,
         # so it is submitted again alongside the second.
         self._save({"api_keys": [
-            {"id": "", "name": "第一把", "realm": "cn", "models": [],
+            {"id": "", "name": "第一把", "models": [],
              "enabled": True, "key": "key-first-1111"},
-            {"id": "", "name": "第二把", "realm": "cn", "models": [],
+            {"id": "", "name": "第二把", "models": [],
              "enabled": True, "key": "key-second-2222"},
         ], "deleted_api_key_ids": []})
         live = self._live()
         self.assertEqual(len(live), 2, live)
         self.assertEqual(sorted(e["name"] for e in live.values()),
                          ["第一把", "第二把"])
-        self.assertEqual(sorted(e["realm"] for e in live.values()), ["cn", "cn"])
         retired = [e for e in S.api_keys(self.dir, include_deleted=True)
                    if e["deleted_at"]]
         self.assertEqual(retired, [])
 
     def test_handler_explicit_delete_still_works(self):
         self._save({"api_keys": [
-            {"id": "", "name": "甲", "realm": "", "models": [], "enabled": True,
+            {"id": "", "name": "甲", "models": [], "enabled": True,
              "key": "key-aaaa1111"},
-            {"id": "", "name": "乙", "realm": "", "models": [], "enabled": True,
+            {"id": "", "name": "乙", "models": [], "enabled": True,
              "key": "key-bbbb2222"},
         ], "deleted_api_key_ids": []})
         live = self._live()
         keep = next(e for e in live.values() if e["name"] == "甲")
         drop = next(e for e in live.values() if e["name"] == "乙")
         self._save({
-            "api_keys": [{"id": keep["id"], "name": "甲", "realm": "",
+            "api_keys": [{"id": keep["id"], "name": "甲",
                           "models": [], "enabled": True, "key": ""}],
             "deleted_api_key_ids": [drop["id"]],
         })

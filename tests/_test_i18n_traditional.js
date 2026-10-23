@@ -14,7 +14,7 @@ const assert = require('assert');
 const {dashboardHtml} = require('./_dashboard_source.js');
 
 const html = dashboardHtml();
-const langIndex = html.indexOf("var LANG_KEY = 'wb-lang';");
+const langIndex = html.indexOf("var LANG_KEY = 'ca-lang';");
 assert.ok(langIndex > 0, 'dashboard.html 裡找不到 i18n 區塊');
 const start = html.lastIndexOf('(function(){', langIndex);
 const end = html.indexOf('})();', langIndex) + 5;
@@ -59,7 +59,7 @@ function makeHarness(stored, instanceLang, urlLang) {
   const btn = makeElement('BUTTON', 'langToggleBtn');
   const elements = {langToggleLabel: label, langToggleBtn: btn};
   const store = new Map();
-  if (stored) store.set('wb-lang', stored);
+  if (stored) store.set('ca-lang', stored);
   const doc = {
     readyState: 'complete',
     documentElement: htmlEl,
@@ -116,19 +116,19 @@ check(zh.htmlEl.getAttribute('lang') === 'zh-Hant-TW', 'html lang 應為 zh-Hant
 check(zh.text.data === '閘道設定', 'DOM 文字應轉成正體中文');
 check(zh.label.textContent === 'EN', '正體中文時按鈕應提示 EN');
 check(zh.btn.title.includes('正體中文'), '正體中文時 title 應提到正體中文');
-check(zh.storage.getItem('wb-lang') === 'zh-Hant', '偏好應寫入 localStorage');
+check(zh.storage.getItem('ca-lang') === 'zh-Hant', '偏好應寫入 localStorage');
 
 // 4. 正體 → English → 簡中，一輪循環。
 zh.win.toggleLang();
 check(zh.win.WB_I18N.current() === 'en', '正體後 toggle 應到 en');
 check(zh.htmlEl.getAttribute('lang') === 'en', 'en 時 html lang 應為 en');
-check(zh.storage.getItem('wb-lang') === 'en', 'en 偏好應寫入 localStorage');
+check(zh.storage.getItem('ca-lang') === 'en', 'en 偏好應寫入 localStorage');
 check(zh.label.textContent === '简', 'en 時按鈕應提示「简」');
 
 zh.win.toggleLang();
 check(zh.win.WB_I18N.current() === 'zh', 'en 後 toggle 應回到 zh');
 check(zh.htmlEl.getAttribute('lang') === 'zh-CN', '回到簡中時 html lang 應為 zh-CN');
-check(zh.storage.getItem('wb-lang') === 'zh', '回到簡中時偏好應為 zh');
+check(zh.storage.getItem('ca-lang') === 'zh', '回到簡中時偏好應為 zh');
 check(zh.text.data === '网关设置', '回到簡中時 DOM 應還原原文');
 check(zh.label.textContent === '繁', '回到簡中時按鈕應提示「繁」');
 

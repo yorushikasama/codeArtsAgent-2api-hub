@@ -78,12 +78,7 @@ class UnavailableReasonTests(unittest.TestCase):
         self.assertEqual(acc.unavailable_reason(), "")
 
     def test_local_guards(self):
-        """本地护栏同样要报得具体：这四种跟「上游罚你」是两回事。"""
-        acc = account()
-        acc.reserve_credits = 100
-        acc.credits = {"remain": 50}
-        self.assertEqual(acc.unavailable_reason(), "余额低于保留线")
-
+        """本地护栏同样要报得具体：这三种跟「上游罚你」是两回事。"""
         acc = account()
         acc.daily_token_limit = 1000
         acc.daily_tokens_today = 1000

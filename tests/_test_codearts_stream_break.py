@@ -299,6 +299,35 @@ try:
     check("超过间隔后续期一次 busy", _l2.keepalive() is True, _calls)
     check("续期发的是 busy", _calls and _calls[-1][1] == "busy", _calls)
     _l2.close()
+
+    # 续期已从读循环里摘出去：读多少行都不该产生心跳。以前每收一行就试一次
+    # 续期，一次慢心跳会把读停住，反过来顶满上游的写缓冲。
+    class _FakeResp:
+        def __init__(self, chunks):
+            self._chunks = list(chunks)
+
+        def read1(self, n):
+            return self._chunks.pop(0) if self._chunks else b""
+
+        def close(self):
+            pass
+
+    _calls.clear()
+    _l3 = P._CodeartsLease(
+        _FakeResp([b'data: {"choices":[]}\n', b"data: [DONE]\n"]),
+        "lbl", time.time(), "k3",
+        session_id="sid3", session_cred=("AK", "SK", "TK"))
+    _lines3 = list(_l3.lines())
+    check("读循环不再顺带续期（心跳在独立线程里）",
+          _calls == [] and len(_lines3) == 2, (_calls, _lines3))
+    check("续期线程是 daemon，不会拖住进程退出",
+          _l3._ping_thread is not None and _l3._ping_thread.daemon, None)
+    _l3.close()
+    check("关闭时通知续期线程退出", _l3._ping_stop.is_set(), None)
+    check("关闭之后再调 keepalive 不会补发 busy",
+          _l3.keepalive() is False
+          and not [c for c in _calls if c[0] == "sid3" and c[1] == "busy"],
+          _calls)
 finally:
     C.heartbeat = _saved_hb
 
@@ -318,6 +347,12 @@ check("max_tokens 超限（001001005）→ 400（重试同样的请求没用）"
       _spec(400, "InferHub.001001005.400", "The request param is invalid")[0] == 400)
 check("模型未注册（002002009）→ 404",
       _spec(404, "InferHub.002002009", "model is not registered")[0] == 404)
+check("后端超时（APIG.0203）→ 504，不是含糊的 502",
+      _spec(502, "APIG.0203", "Backend timeout") == (504, "upstream_error"),
+      _spec(502, "APIG.0203", "Backend timeout"))
+check("后端超时在 Anthropic 侧是 overloaded_error",
+      _spec(502, "APIG.0203", "Backend timeout", anthropic=True)[1]
+      == "overloaded_error", None)
 check("鉴权失败（401）→ 502 + credentials_error",
       _spec(401, "APIG.0301", "access key not found")
       == (502, "credentials_error"), _spec(401, "APIG.0301", ""))

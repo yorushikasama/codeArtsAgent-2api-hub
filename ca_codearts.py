@@ -2070,6 +2070,11 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
     sock = _stream_socket(resp) if idle_timeout else None
     idle_streak = 0
     limit = max_idle if max_idle is not None else STREAM_MAX_IDLE
+    # 三个只用于断流归因的计数：socket 到底拿没拿到（拿不到就没有心跳、
+    # 也不会续期）、发了几次心跳、最后一次收到字节是什么时候。
+    stats["sock"] = sock is not None
+    stats.setdefault("pings", 0)
+    last_data_at = time.time()
 
     while True:
         if abort_check is not None and abort_check():
@@ -2087,6 +2092,7 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
                     raise UpstreamBroken(
                         "upstream silent for %ss (%d idle reads)"
                         % (idle_timeout, idle_streak), total)
+                stats["pings"] += 1
                 yield KEEPALIVE
                 continue
         failed = None
@@ -2105,6 +2111,7 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
             failed = exc
         if piece:
             idle_streak = 0
+            last_data_at = time.time()
             total += len(piece)
             stats["bytes"] = total
             buf += decoder.decode(piece)
@@ -2116,6 +2123,7 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
                 yield line
         if failed is not None:
             stats["truncated"] = True
+            stats["silent_s"] = round(time.time() - last_data_at, 1)
             raise UpstreamBroken(
                 "upstream closed early: %s" % (str(failed) or type(failed).__name__),
                 total)

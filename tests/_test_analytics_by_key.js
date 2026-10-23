@@ -30,7 +30,7 @@ dom.installDom({
 let api;
 try {
   api = new Function(code + `
-    ; return { renderKeyTable, keyRealmCell, keyModelPills,
+    ; return { renderKeyTable, keyModelPills,
                onKeyBeforeToggle, applyKeyBeforeHidden };`)();
 } catch (e) {
   console.log('LOAD ERROR:', e.message);
@@ -42,25 +42,25 @@ const stat = (o) => Object.assign({
   cached_tokens: 0, total_tokens: 0, credit: 0, cache_hit_pct: 0,
 }, o);
 const key = (o) => Object.assign({
-  key: '', name: '', source: 'panel', enabled: true, realm: '', cross_realm: false,
+  key: '', name: '', source: 'panel', enabled: true,
   window: stat({}), all_time: stat({}), models: [], models_other: null,
 }, o);
 
 const keys = [
-  key({ key: 'k1', name: '甲 · 生产', realm: 'cn',
+  key({ key: 'k1', name: '甲 · 生产',
         window: stat({ requests: 12, errors: 1, total_tokens: 3456, prompt_tokens: 2000,
                        completion_tokens: 1000, reasoning_tokens: 456, cache_hit_pct: 12.5, credit: 3.5 }),
         models: [{ model: 'glm-5.3', requests: 10, tokens: 3000, reasoning: 400 },
                  { model: 'kimi-k2', requests: 2, tokens: 456, reasoning: 56 }],
         models_other: { model: '(其他)', other: true, models: 2, requests: 5, tokens: 900, reasoning: 0 } }),
-  key({ key: 'k2', name: '乙', enabled: false, realm: '', cross_realm: true,
+  key({ key: 'k2', name: '乙', enabled: false,
         window: stat({ requests: 3, total_tokens: 100 }) }),
-  key({ key: 'launcher', name: '启动参数', source: 'launcher', realm: '',
+  key({ key: 'launcher', name: '启动参数', source: 'launcher',
         window: stat({ requests: 2, total_tokens: 50 }) }),
   key({ key: '__before_keys__', name: '(切换前)', source: 'bucket',
         window: stat({ requests: 9, total_tokens: 9999, credit: 12 }) }),
   key({ key: '__no_key__', name: '(无 key)', source: 'bucket', window: stat({ requests: 1 }) }),
-  key({ key: 'evil', name: '<img src=x onerror=alert(1)>', realm: '',
+  key({ key: 'evil', name: '<img src=x onerror=alert(1)>',
         models: [{ model: '<b>bold</b>', requests: 1, tokens: 1 }] }),
 ];
 
@@ -99,41 +99,17 @@ const show = (row, label) => row === null ? '(no single row)' : JSON.stringify(c
 
 console.log();
 console.log('[1b] every per-key label is bound to the row it describes');
-// k2 is both cross-exit and disabled, which is why one row answers two of
-// these; the point is that each answer is read from that row and no other.
 const cnRow = rowFor(out, '甲 · 生产');
 const crossRow = rowFor(out, '乙');
 const intlRow = rowFor(out, '启动参数');
-const followRow = rowFor(out, '&lt;img');
-const beforeRow = rowFor(out, '(切换前)');
 const noKeyRow = rowFor(out, '(无 key)');
 
-check('the cn-bound key is labelled 国内版 on its own row',
-      cnRow !== null && cellOf(cnRow, '出口').includes('国内版'),
-      show(cnRow, '出口'));
-// 国际版删除后没有第二个出口可绑，未绑定出口的 Key 一律显示「跟随」。
-check('the launcher key follows the only exit, labelled 跟随',
-      intlRow !== null && cellOf(intlRow, '出口').includes('跟随'),
-      show(intlRow, '出口'));
-check('the key that used both exits is flagged 跟随 · 混合 on its own row',
-      crossRow !== null && cellOf(crossRow, '出口').includes('跟随 · 混合'),
-      show(crossRow, '出口'));
-check('a key that only follows the model says 跟随 and not 混合, on its own row',
-      followRow !== null && cellOf(followRow, '出口').includes('跟随')
-      && !cellOf(followRow, '出口').includes('混合'),
-      show(followRow, '出口'));
 check('the disabled marker sits on the disabled key row',
       crossRow !== null && cellOf(crossRow, 'API Key').includes('已禁用'),
       show(crossRow, 'API Key'));
 check('no other key row carries the disabled marker',
       rowsOf(out).filter(r => (cellOf(r, 'API Key') || '').includes('已禁用')).length === 1,
       rowsOf(out).filter(r => (cellOf(r, 'API Key') || '').includes('已禁用')).length + ' row(s)');
-check('the pre-upgrade bucket row shows no exit instead of guessing one',
-      beforeRow !== null && cellOf(beforeRow, '出口').includes('—'),
-      show(beforeRow, '出口'));
-check('the no-key bucket row shows no exit either',
-      noKeyRow !== null && cellOf(noKeyRow, '出口').includes('—'),
-      show(noKeyRow, '出口'));
 // The five below used to be whole-table `includes()`, which only proved the
 // string existed somewhere in the table. Each one is a property of one key's
 // row, so each one is read out of that row's own cell: a value moved to another
@@ -160,9 +136,6 @@ console.log();
 console.log('[2] the unattributed rows stay distinguishable');
 check('(切换前) is rendered', out.includes('(切换前)'));
 check('(无 key) is rendered separately', out.includes('(无 key)'));
-check('bucket rows show no exit instead of guessing one',
-      (out.match(/—<\/span><\/td>/g) || []).length === 2,
-      (out.match(/—<\/span><\/td>/g) || []).length);
 // "a bucket row is never badged as disabled" used to live here as a
 // (切换前)-then-within-400-chars regex. [1b] now states it as a property of the
 // rows themselves, which is both stronger and not dependent on a magic width.
@@ -183,20 +156,20 @@ console.log();
 console.log('[5] the footer explains what the reader cannot infer');
 const note = document.getElementById('analyticsKeyNote').innerHTML;
 check('the upgrade cut-off is stated once', note.includes('(切换前)'));
-api.renderKeyTable({ keys: [key({ name: 'x', realm: 'cn' })] });
-check('the footer does not cry wolf about cross-exit keys when there are none',
-      !document.getElementById('analyticsKeyNote').innerHTML.includes('没有绑定出口'));
+api.renderKeyTable({ keys: [key({ name: 'x' })] });
+check('the footer no longer talks about exit bindings',
+      !document.getElementById('analyticsKeyNote').innerHTML.includes('出口'));
 
 console.log();
 console.log('[6] empty and degraded payloads');
 api.renderKeyTable({ keys: [] });
 out = document.getElementById('analyticsKeyTbody').innerHTML;
-check('an empty axis renders one full-width empty cell', out.includes('colspan="8"'), out);
+check('an empty axis renders one full-width empty cell', out.includes('colspan="7"'), out);
 check('the empty state does not claim a count',
       document.getElementById('analyticsKeyCount').textContent === '');
 check('a panel with no keys is told so', document.getElementById('analyticsKeyNote').innerHTML.includes('还没有任何 API Key'));
 api.renderKeyTable({});
-check('a payload without the axis at all does not throw', document.getElementById('analyticsKeyTbody').innerHTML.includes('colspan="8"'));
+check('a payload without the axis at all does not throw', document.getElementById('analyticsKeyTbody').innerHTML.includes('colspan="7"'));
 
 console.log();
 console.log('[7] the (切换前) legacy row folds away on demand');
@@ -223,14 +196,14 @@ check('the choice is saved server-side through the settings channel',
       && JSON.parse(saved.body).key_before_hidden === true,
       saved && (saved.url + ' ' + saved.body));
 check('nothing is written to the browser store',
-      localStorage.getItem('wb-key-hide-before') === null);
+      localStorage.getItem('ca-key-hide-before') === null);
 box.checked = false; api.onKeyBeforeToggle(box);
 check('flipping it back restores the row',
       document.getElementById('analyticsKeyTbody').innerHTML.includes('(切换前)'));
 check('the off choice is saved too, not just applied',
       JSON.parse(fetchCalls[fetchCalls.length - 1].body).key_before_hidden === false);
 check('a payload with no such row hides the switch entirely',
-      (api.renderKeyTable({ keys: [key({ name: 'x', realm: 'cn' })] }),
+      (api.renderKeyTable({ keys: [key({ name: 'x' })] }),
        wrap.style.display === 'none'));
 // The restore path reads the same single boolean: only a real true folds the
 // row, so a hand-edited "true" or a 1 cannot hide it by accident.

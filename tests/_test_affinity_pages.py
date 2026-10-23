@@ -38,30 +38,10 @@ def make_account(uid, realm="cn", **extra):
     return ca_accounts.Account(data)
 
 
-def credits(*days, remain=100):
-    """A credits blob whose packages expire in the given days."""
-    packages = []
-    for index, day in enumerate(days):
-        packages.append({
-            "name": "pkg%d" % index,
-            "package_code": "package",
-            "remain": remain,
-            "used": 0,
-            "size": remain,
-            "days_left": day,
-            "no_expiry": False,
-            "is_expired": day is not None and day < 0,
-        })
-    total = remain * len(packages)
-    return {"remain": total, "used": 0, "size": total, "packages": packages}
-
-
-def make_pool(accounts, window=None):
+def make_pool(accounts):
     directory = tempfile.mkdtemp(prefix="affinity-pages-")
     pool = ca_accounts.AccountPool(directory, log=lambda _m: None)
     pool.accounts = accounts
-    if window is not None:
-        pool.apply_expiring_window({"global": window, "intl": window, "cn": window})
     return pool
 
 
@@ -133,32 +113,28 @@ class WarmFallbackTests(unittest.TestCase):
     """An unusable account hands the conversation to a warm one, not a cold one."""
 
     def _pool_with_warm_history(self):
-        """fresh (unusable, most recent) -> warm (older) -> urgent (expiring).
+        """fresh (unusable, most recent) -> warm (older) -> other.
 
-        The expiring-credits preference would hand a new conversation to
-        `urgent`; this conversation must go to `warm` instead.
+        A conversation already bound to `warm` must go back to `warm` even
+        though `fresh` is the most recent account and the pool would never
+        pick a cooling one.
         """
         fresh = make_account("fresh")
         warm = make_account("warm")
-        urgent = make_account("urgent", credits=credits(1))
-        pool = make_pool([fresh, warm, urgent], window=7)
+        other = make_account("other")
+        pool = make_pool([fresh, warm, other])
         pool.affinity.bind("s", "warm")
         pool.affinity.bind("s", "fresh")
         fresh.note_error("boom")            # cooling for 60s
-        return pool, fresh, warm, urgent
-
-    def test_the_pool_preference_would_pick_the_urgent_account(self):
-        """Guard for the test below: `urgent` really is the pool's choice."""
-        pool, _fresh, _warm, urgent = self._pool_with_warm_history()
-        self.assertEqual(pool.pick(realm="cn").uid, urgent.uid)
+        return pool, fresh, warm, other
 
     def test_a_conversation_moves_to_its_warm_account(self):
-        pool, _fresh, warm, _urgent = self._pool_with_warm_history()
+        pool, _fresh, warm, _other = self._pool_with_warm_history()
         self.assertEqual(pool.pick_for_session(realm="cn", session_key="s").uid,
                          warm.uid)
 
     def test_the_fallback_account_becomes_the_binding(self):
-        pool, _fresh, warm, _urgent = self._pool_with_warm_history()
+        pool, _fresh, warm, _other = self._pool_with_warm_history()
         pool.pick_for_session(realm="cn", session_key="s")
         self.assertEqual(pool.affinity.get("s"), warm.uid)
         # And it stays there: the next turn goes straight to the warm account.
@@ -166,17 +142,23 @@ class WarmFallbackTests(unittest.TestCase):
                          warm.uid)
 
     def test_a_conversation_without_history_uses_the_pool(self):
-        pool, _fresh, _warm, urgent = self._pool_with_warm_history()
+        pool, _fresh, _warm, other = self._pool_with_warm_history()
+        # A fresh pool over the same accounts, so this asserts the session
+        # path agrees with plain round-robin rather than naming a uid.
+        mirror = make_pool([make_account("fresh"), make_account("warm"),
+                            make_account("other")])
+        mirror.get("fresh").note_error("boom")
+        expected = mirror.pick(realm="cn").uid
         self.assertEqual(pool.pick_for_session(realm="cn", session_key="new").uid,
-                         urgent.uid)
+                         expected)
 
     def test_a_disabled_account_is_skipped_without_losing_the_history(self):
-        pool, _fresh, warm, _urgent = self._pool_with_warm_history()
+        pool, _fresh, warm, other = self._pool_with_warm_history()
         pool.get("warm").enabled = False
         # Nothing warm is usable, so the pool decides - and the two warm
         # accounts stay in the history for the next time one of them recovers.
         self.assertEqual(pool.pick_for_session(realm="cn", session_key="s").uid,
-                         "urgent")
+                         other.uid)
         history = pool.affinity.recent("s")
         self.assertIn("warm", history)
         self.assertIn("fresh", history)
