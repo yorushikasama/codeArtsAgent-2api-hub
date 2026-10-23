@@ -91,14 +91,14 @@ class PanelPasswordChangeTests(unittest.TestCase):
         request = PasswordRequest(
             "/panel/password", headers=headers,
             body=json.dumps(body).encode("utf-8"))
-        with mock.patch.multiple(proxy, ACCOUNTS_DIR=self.directory, POOL=None):
+        with mock.patch.multiple(proxy, ACCOUNTS_DIR=self.directory):
             return request.dispatch()
 
     def login(self, password):
         request = PasswordRequest(
             "/panel/login",
             body=json.dumps({"password": password}).encode("utf-8"))
-        with mock.patch.multiple(proxy, ACCOUNTS_DIR=self.directory, POOL=None):
+        with mock.patch.multiple(proxy, ACCOUNTS_DIR=self.directory):
             return request.dispatch()
 
     def test_change_requires_a_panel_session(self):

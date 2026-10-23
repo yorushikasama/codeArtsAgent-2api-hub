@@ -23,7 +23,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 _TMP = isolated_data_dirs("wb-activity-")
 
-import ca_accounts
 import ca_activity
 import ca_proxy
 import ca_scheduler
@@ -90,12 +89,6 @@ class IsolatedCase(unittest.TestCase):
         """最新一条记录（读取 API 的口径）。"""
         rows = self.query(range_key="all")["rows"]
         return rows[0] if rows else None
-
-    def account(self, realm="cn", uid="uid-1", **extra):
-        data = {"uid": uid, "nickname": "nick-" + uid, "realm": realm,
-                "accessToken": "dummy-token", "expiresAt": 0}
-        data.update(extra)
-        return ca_accounts.Account(data)
 
 
 class PersistenceTests(IsolatedCase):
@@ -368,7 +361,7 @@ class SchedulerRecordingTests(IsolatedCase):
 
         try:
             with mock.patch.object(ca_codearts, "claim_and_verify", fake_verify):
-                scheduler = ca_scheduler.Scheduler(None)
+                scheduler = ca_scheduler.Scheduler()
                 scheduler.accounts_dir = tmp
                 scheduler._run_cycle("测试第一轮")
                 first_round = len(self.rows())
@@ -398,8 +391,8 @@ class CallSiteAuditTests(unittest.TestCase):
     def test_every_call_site_names_its_trigger(self):
         bare = re.compile(r"\.(checkin)\(\s*\)")
         offenders = []
-        for name in ("ca_proxy.py", "ca_accounts.py", "ca_scheduler.py",
-                     "ca_tasks.py"):
+        # 账号池/任务模块已删除（2026-10-23），审计只剩还存在的调用点。
+        for name in ("ca_proxy.py", "ca_scheduler.py"):
             with open(os.path.join(self.ROOT, name), encoding="utf-8") as fh:
                 for number, line in enumerate(fh, 1):
                     if bare.search(line):

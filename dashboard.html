@@ -200,7 +200,7 @@ th{color:var(--dim);font-family:var(--serif);font-weight:700;font-size:12px;whit
 }
 /* 积分扣减 / 获取历史：外层容器自己纵向滚动，表头不钉住的话滑到下面就看不出
    哪列是哪列。表头本来就有 --panel2 底色（不透明），加 sticky 即可盖住滚上来的行。 */
-#creditHistoryTable thead th,#creditGrantsTable thead th{position:sticky;top:0;z-index:2;
+#creditHistoryTable thead th{position:sticky;top:0;z-index:2;
   box-shadow:inset 0 -1px 0 var(--line)}
 th:first-child{border-top-left-radius:8px;border-bottom-left-radius:8px}
 th:last-child{border-top-right-radius:8px;border-bottom-right-radius:8px}
@@ -2113,7 +2113,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '未找到指定账号': 'No matching account found',
     '账号池未初始化': 'The account pool is not initialized',
     '账号池不可用': 'The account pool is unavailable',
-    '账号限额': 'Account limits',
     '调度器未初始化': 'The scheduler is not initialized',
     '未运行': 'Not running',
     '未找到可用的国内版账号': 'No usable China account found',
@@ -3511,28 +3510,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <summary><h2>模型性能分位</h2><span class="fbadge" id="foldPerfBadge">—</span><span class="chev">▶</span></summary>
       <div class="fbody" id="foldPerf"><div class="empty">加载中…</div></div>
     </details>
-    <details class="fold" id="foldGrantsBox">
-      <summary><h2>积分获取历史</h2><span class="chev">▶</span></summary>
-      <div class="fbody">
-      <!-- 原版「积分获取历史」区块：id、整行表头与说明与旧版逐字一致
-           （credit grants 套件按这些字符串找它）。 -->
-      <div id="creditGrantsSection">
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
-          <div>
-            <div style="font-size:12px;color:var(--dim)">各账号积分包的上游发放记录（每日活跃奖励、免费套餐、活动包…）。数据是最近一次「刷新积分」的快照，要更新的数字先点账号页的「一键刷新积分」。</div>
-            <div style="font-size:12px;color:var(--dim);margin-top:4px" id="creditGrantsSummary">-</div>
-          </div>
-          <button class="sec mini" onclick="loadCreditGrants(this)">刷新</button>
-        </div>
-        <div style="overflow-x:auto;max-height:260px">
-          <table class="data-cards" id="creditGrantsTable">
-            <thead><tr><th>时间</th><th>账号</th><th>区域</th><th>名称</th><th>来源</th><th>积分</th><th>剩余</th><th>到期</th><th>状态</th></tr></thead>
-            <tbody id="creditGrantsTbody"></tbody>
-          </table>
-        </div>
-      </div>
-      </div>
-    </details>
   </div>
     </div>
   </div>
@@ -3542,7 +3519,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   <div id="pageSettings" class="main-page">
     <div style="margin-bottom:16px">
       <h2 style="margin:0;font-size:19px;color:var(--fg);font-family:var(--brush);font-weight:700;letter-spacing:.08em">网关设置</h2>
-      <div style="font-size:12px;color:var(--dim);margin-top:4px">面板密码与界面语言、页签布局、API Key、账号限额、Anthropic Messages、上游超时、本地网络工具、用量与日志、更新。</div>
+      <div style="font-size:12px;color:var(--dim);margin-top:4px">面板密码与界面语言、页签布局、API Key、Anthropic Messages、上游超时、用量与日志、更新。</div>
     </div>
 
     <!-- 左侧导航由 initPageNav() 扫描本页的 section 自动生成，
@@ -3663,59 +3640,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <div id="deletedKeySection"></div>
     </section>
 
-    <section>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-        <div>
-          <h2 style="margin:0">账号限额 <em id="setLimitsState"></em></h2>
-          <div style="font-size:12px;color:var(--dim);margin-top:4px">
-            三条护栏对所有账号生效，每条填 0 表示关闭该项。
-          </div>
-        </div>
-        <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-          <button onclick="saveLimits(this)">保存限额</button>
-        </div>
-
-      </div>
-      <div class="table-wrap">
-        <table class="data-cards limits-cards">
-          <thead>
-            <tr>
-              <th style="min-width:240px;width:60%">护栏</th>
-              <th style="width:40%">全局默认</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td class="limit-name">
-                <div style="font-weight:600;color:var(--fg)">每日 Token 限额 <em id="setDailyTokenState"></em></div>
-                <div style="font-size:12px;color:var(--dim);margin-top:2px">
-                  账号当日消耗的 token 达到该值后暂停接单，由其他账号继续服务；全部账号都达到时请求返回 429。本地时间 0 点后自动恢复。
-                </div>
-              </td>
-              <td data-label="全局默认"><input id="limitGlobalDailyToken" class="limit-input" type="number" min="0" step="1000000" value="0"></td>
-            </tr>
-            <tr>
-              <td class="limit-name">
-                <div style="font-weight:600;color:var(--fg)">每日积分限额 <em id="setDailyCreditState"></em></div>
-                <div style="font-size:12px;color:var(--dim);margin-top:2px">
-                  账号当日消费的积分达到该值后暂停接单，由其他账号继续服务；全部账号都达到时请求返回 429。本地时间 0 点后自动恢复。
-                </div>
-              </td>
-              <td data-label="全局默认"><input id="limitGlobalDailyCredit" class="limit-input" type="number" min="0" step="1" value="0"></td>
-            </tr>
-            <tr>
-              <td class="limit-name">
-                <div style="font-weight:600;color:var(--fg)">按模型每日 Token 限额 <em id="setModelDailyTokenState"></em></div>
-                <div style="font-size:12px;color:var(--dim);margin-top:2px">
-                  账号在单个模型上当日消耗的 token 达到该值后，该模型暂停用这个账号接单（同一账号的其他模型不受影响）；本地时间 0 点后自动恢复。
-                </div>
-              </td>
-              <td data-label="全局默认"><input id="limitGlobalModelDailyToken" class="limit-input" type="number" min="0" step="1000000" value="0"></td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </section>
+    
 
 
 
@@ -3740,26 +3665,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         </div>
       </section>
 
-      <section>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-          <div>
-            <h2 style="margin:0">本地网络工具 <em id="setLocalWebToolsState"></em></h2>
-            <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              部分客户端（如 Codex App）会宣告 web_search / web_fetch 这类服务端工具，而上游没有对应的执行器：声明送上去，模型看到工具却没有执行器，客户端最后只拿到一句 unsupported call。开启后由本网关代跑——把声明换成自己的同名函数，在本地执行（搜索按 DuckDuckGo → Bing → Wikipedia → Stack Overflow → Google News 的顺序自动轮换，抓页面抓这个 URL）再把结果喂回模型。默认关闭，关闭时声明原样透传，客户端自己声明的搜索工具照常拿到调用。
-            </div>
-            <div style="font-size:12px;color:var(--warn);margin-top:4px">
-              注意：开启后网关会主动出网抓取模型给出的 URL（字面私网地址与解析进内网的域名都会被挡），且每轮代跑都会多跑一次上游、多消耗该账号的额度；某个搜寻引擎被限流时会自动轮换到下一家，全部不可用才把明确错误交给模型。
-            </div>
-          </div>
-          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-              <input id="setLocalWebTools" type="checkbox" style="width:16px;height:16px">
-              由网关代跑
-            </label>
-            <button onclick="saveLocalWebTools(this)">保存</button>
-          </div>
-        </div>
-      </section>
 
       <section>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
@@ -4033,107 +3938,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   </div>
 </div>
 
-<div class="modal-mask" id="creditsDetailModal" onclick="if(event.target===this) closeCreditsDetail()">
-  <div class="modal" role="dialog" aria-modal="true" style="width:min(960px,96vw);max-height:92vh;display:flex;flex-direction:column">
-    <div class="modal-hd">
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-        <h2 id="creditsModalTitle">积分与套餐明细</h2>
-        <span id="creditsModalRealm" class="badge mini"></span>
-        <span id="creditsModalTier" class="badge mini" style="display:none"></span>
-      </div>
-      <button class="modal-x" onclick="closeCreditsDetail()" aria-label="关闭">×</button>
-    </div>
-    <div class="modal-bd" style="overflow-y:auto;flex:1">
-      <div id="creditsModalLoading" style="display:none;text-align:center;padding:30px 0">
-        <div class="hint">正在向上游同步最新积分与权益包明细…</div>
-      </div>
-      <div id="creditsModalContent">
-        <!-- 顶部指标卡片 (4 列卡片) -->
-        <div class="credits-stat-grid" style="display:grid;grid-template-columns:repeat(auto-fit, minmax(170px, 1fr));gap:12px;margin-bottom:14px">
-          <div class="card" style="padding:12px;margin:0;border:1px solid var(--line);background:var(--bg)">
-            <div style="font-size:11px;color:var(--dim)">剩余可用积分</div>
-            <div id="cmMetricRemain" style="font-size:22px;font-weight:700;color:var(--accent2);margin-top:4px">-</div>
-          </div>
-          <div class="card" style="padding:12px;margin:0;border:1px solid var(--line);background:var(--bg)">
-            <div style="font-size:11px;color:var(--dim)">已消耗积分</div>
-            <div id="cmMetricUsed" style="font-size:22px;font-weight:700;color:var(--fg);margin-top:4px">-</div>
-          </div>
-          <div class="card" style="padding:12px;margin:0;border:1px solid var(--line);background:var(--bg)">
-            <div style="font-size:11px;color:var(--dim)">总额度容量</div>
-            <div id="cmMetricTotal" style="font-size:22px;font-weight:700;color:var(--fg);margin-top:4px">-</div>
-          </div>
-          <div class="card" style="padding:12px;margin:0;border:1px solid var(--line);background:var(--bg)">
-            <div style="font-size:11px;color:var(--dim)">最近将过期</div>
-            <div id="cmExpiryValue" style="font-size:20px;font-weight:700;color:var(--warn);margin-top:4px">-</div>
-            <div id="cmExpirySub" style="font-size:11px;color:var(--dim);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="">-</div>
-          </div>
-        </div>
-
-        <!-- 进度条与利用率 -->
-        <div style="margin-bottom:14px">
-          <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--dim);margin-bottom:4px;flex-wrap:wrap;gap:4px">
-            <span>额度利用率: <b id="cmUsedPercent" style="color:var(--fg)">0.0%</b></span>
-            <span id="cmUpdatedText">更新时间: -</span>
-          </div>
-          <div style="height:6px;background:var(--panel2);border:1px solid var(--line);border-radius:3px;overflow:hidden">
-            <div id="cmProgressBar" style="height:100%;width:0%;background:var(--accent);transition:width .3s ease"></div>
-          </div>
-        </div>
-
-        <!-- 扩展状态（签到与会员信息） -->
-        <div id="cmCheckinCard" style="display:none;padding:10px 14px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;font-size:12px;margin-bottom:14px;color:var(--fg)">
-          <div id="cmCheckinText"></div>
-        </div>
-
-        <!-- 套餐权益包筛选与排序控制条 -->
-        <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;flex-wrap:wrap">
-          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-            <span style="font-weight:600;font-size:13px;color:var(--fg)">套餐权益包明细</span>
-            <span id="cmPkgCountBadge" class="badge mini" style="font-size:11px">共 0 个</span>
-          </div>
-          <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
-            <div class="realm-filter" style="margin:0">
-              <button type="button" class="active" data-filter="all" onclick="filterCreditsPackages('all', this)">全部</button>
-              <button type="button" data-filter="active" onclick="filterCreditsPackages('active', this)">有剩余</button>
-              <button type="button" data-filter="expiring" onclick="filterCreditsPackages('expiring', this)">即将到期</button>
-              <button type="button" data-filter="exhausted" onclick="filterCreditsPackages('exhausted', this)">已用完/过期</button>
-            </div>
-            <input id="cmPkgSearch" type="text" placeholder="搜索包名/代码/来源…" oninput="onCreditsSearchInput(this.value)" style="padding:3px 8px;font-size:11px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg);width:140px">
-            <select id="cmPkgSort" onchange="onCreditsSortChange(this.value)" style="padding:3px 6px;font-size:11px;border:1px solid var(--line);border-radius:6px;background:var(--bg);color:var(--fg)">
-              <option value="expiry_asc">最快到期优先</option>
-              <option value="remain_desc">剩余额度最大</option>
-              <option value="used_desc">已用额度最多</option>
-              <option value="size_desc">总容量最大</option>
-            </select>
-          </div>
-        </div>
-
-        <!-- 套餐权益包明细表格 -->
-        <div style="overflow-x:auto;border:1px solid var(--line);border-radius:8px">
-          <table class="data-table" style="width:100%;margin:0;border-collapse:collapse;font-size:12px">
-            <thead>
-              <tr style="background:var(--panel2);border-bottom:1px solid var(--line)">
-                <th style="text-align:left;padding:8px 10px;min-width:180px">套餐包 / 来源与属性</th>
-                <th style="text-align:center;padding:8px 10px;min-width:140px">到期倒计时 / 有效期</th>
-                <th style="text-align:right;padding:8px 10px">总额度</th>
-                <th style="text-align:right;padding:8px 10px">已用</th>
-                <th style="text-align:right;padding:8px 10px">剩余可用</th>
-                <th style="text-align:center;padding:8px 10px;min-width:100px">利用率</th>
-              </tr>
-            </thead>
-            <tbody id="cmPackagesBody">
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-    <div class="modal-ft">
-      <button id="btnRefreshCreditsDetail" class="sec" onclick="reloadCreditsDetail(this)">刷新明细</button>
-      <span style="flex:1"></span>
-      <button class="sec" onclick="closeCreditsDetail()">关闭</button>
-    </div>
-  </div>
-</div>
 
 <script>
 let loginState = null, loginTimer = null;
@@ -4654,11 +4458,7 @@ function updateUI(){
   if(elCnAcct) elCnAcct.innerHTML = '<b style="color:var(--accent)">' + cnActive + '</b>/' + cnAccts.length + ' 账号';
 };
 
-// 切换视图的唯一入口：改完 VIEW_REALM 立刻用**已经加载好的**全量 window.ACCOUNTS
-// 重画一次「当前禁用账号与模型」，不等后面的异步账号重载 —— 否则在重载返回之前那
-// 段间隙里，DOM 里还留着上一个 realm 的停用行，重载失败时它们会一直留着（issue
-// #31 要求切换立即生效、不留旧行）。启动时的赋值不走这里：那时还没有任何行被画
-// 出来，第一次 loadAccounts() 会画。
+// 切换视图的唯一入口：改完 VIEW_REALM 立刻重画「当前禁用账号与模型」。
 function setViewRealm(r){
   window.VIEW_REALM = r;
   renderDisabled();
@@ -4666,30 +4466,7 @@ function setViewRealm(r){
 
 ;
 
-async function refreshActiveRealm(){
-  // Refresh which exit the gateway is switched to. Deliberately does NOT touch
-  // VIEW_REALM: the view is the user's choice, and an account action taken from
-  // one realm's view must not throw them into the other one. Boot-time view
-  // selection (including the ?view= parameter) lives in initRealm().
-  try {
-    const r = await getJSON("/realm");
-    if(r && r.current) window.ACTIVE_GATEWAY_REALM = r.current;
-  } catch(e){}
-}
 
-async function initRealm(){
-  // Boot only - the initial view follows the active exit unless the URL pins it.
-  // Account actions call refreshActiveRealm() instead: reading ?view= here was
-  // what moved the panel back to the other realm after 签到 / 活跃打卡, because
-  // the view buttons do not rewrite the URL.
-  await refreshActiveRealm();
-  window.VIEW_REALM = window.ACTIVE_GATEWAY_REALM;
-  const viewFromUrl = new URLSearchParams(window.location.search).get('view');
-  if(viewFromUrl === 'cn') window.VIEW_REALM = viewFromUrl;
-  const limitFromUrl = new URLSearchParams(window.location.search).get('limit');
-  if(limitFromUrl && [10, 20, 50, 100].includes(parseInt(limitFromUrl, 10))) RECENT_LIMIT = parseInt(limitFromUrl, 10);
-  window.updateUI();
-}
 
 async function refreshModelCatalog(btn){
   // 手动刷新模型清单：强制重取一次码道目录（服务端执行，绕过 300s 缓存），
@@ -4976,110 +4753,6 @@ let CURRENT_GROWTH_UID = 'all';
 
 
 
-async function loadGrowthTasks(){
-  const sec = document.getElementById("sectionGrowthTasks");
-  if(!sec) return;
-  sec.style.display = 'block';
-  try{
-    const q = (CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all') ? ('?uid=' + encodeURIComponent(CURRENT_GROWTH_UID)) : '';
-    const r = await getJSON('/tasks' + q);
-    const tasks = r.tasks || [];
-    const sum = r.summary || {};
-    const accts = r.accounts || [];
-    const streak = sum.streak_days || 0;
-    const energy = sum.energy || 0;
-    const tr = sum.travel || {};
-
-    const sel = document.getElementById("growthAcctSelect");
-    if(sel && accts.length){
-      const opts = ['<option value="all"' + (CURRENT_GROWTH_UID === 'all' ? ' selected' : '') + '>全部国内账号 (批量)</option>']
-        .concat(accts.map(a => '<option value="' + esc(a.uid) + '"' + (CURRENT_GROWTH_UID === a.uid ? ' selected' : '') + '>' + esc(a.nickname) + ' (' + esc(a.uid.slice(0,6)) + ')</option>'))
-        .join('');
-      sel.innerHTML = opts;
-    }
-
-
-    const elStk = document.getElementById("stkDays");
-    if(elStk) elStk.textContent = streak + ' 天';
-    const elNrg = document.getElementById("nrgBalance");
-    if(elNrg) elNrg.textContent = energy;
-    const elCards = document.getElementById("makeupCards");
-    if(elCards) elCards.textContent = (sum.makeup_cards != null ? sum.makeup_cards : '-') + ' 张';
-    const elLottery = document.getElementById("lotteryChances");
-    if(elLottery) elLottery.textContent = (sum.lottery_chances != null ? sum.lottery_chances : '-') + ' 次';
-
-    const cnTotalEl = document.getElementById("cnTotalGranted");
-    if(cnTotalEl){
-      try{
-        const g = await getJSON('/accounts/credits/grants');
-        let gRows = (g.rows || []).filter(x => x.realm === 'cn');
-        if(CURRENT_GROWTH_UID && CURRENT_GROWTH_UID !== 'all'){
-          gRows = gRows.filter(x => x.uid === CURRENT_GROWTH_UID);
-        }
-        // 排除掉不带任务/活动属性的纯体验包，统计签到、成长、活动等福利
-        const perksRows = gRows.filter(x => {
-          const r = String(x.grant_reason || '');
-          const n = String(x.name || '');
-          return r.includes('签到') || r.includes('成长') || r.includes('活动') || r.includes('裂变') || n.includes('裂变');
-        });
-        const totalAmt = perksRows.reduce((acc, x) => acc + (Number(x.size || x.amount) || 0), 0);
-        cnTotalEl.textContent = '+' + fmt(totalAmt) + ' 积分';
-      }catch(e){
-        cnTotalEl.textContent = '-';
-      }
-    }
-
-    const elCat = document.getElementById("catState");
-    const elCatDesc = document.getElementById("catDesc");
-    if(elCat){
-      if(tr.state === 'arrived') {
-        elCat.innerHTML = '<span style="color:var(--accent2)">待领奖</span>';
-        if(elCatDesc) elCatDesc.textContent = '猫猫旅行 (奖励 +' + (tr.reward_credit || 0) + ' 积分)';
-      } else if(tr.state === 'traveling') {
-        elCat.innerHTML = '<span style="color:var(--accent)">旅行中</span>';
-        if(elCatDesc) elCatDesc.textContent = '猫猫旅行 (预计稍后归来)';
-      } else if(tr.daily_limit_reached) {
-        elCat.innerHTML = '<span style="color:var(--dim)">今日已完成</span>';
-        if(elCatDesc) elCatDesc.textContent = '次日 00:00 刷新';
-      } else {
-        elCat.innerHTML = '<span style="color:var(--accent2)">在家待命</span>';
-        if(elCatDesc) elCatDesc.textContent = '随时可出发旅行';
-      }
-    }
-
-    const tb = document.querySelector("#growthTable tbody");
-    if(!tb) return;
-    if(!tasks.length){
-      tb.innerHTML = '<tr><td colspan="5" class="empty">暂无任务或未登录国内版账号</td></tr>';
-      return;
-    }
-    tb.innerHTML = tasks.map(t => {
-      let stBadge = '<span class="badge">' + esc(t.status) + '</span>';
-      if(t.status === 'claimed'){
-        stBadge = '<span class="badge off">已领取</span>';
-      } else if(t.status === 'completed' || t.current >= t.target){
-        stBadge = '<span class="badge ok">待领奖</span>';
-      } else if(t.status === 'accepted' || t.status === 'in_progress'){
-        stBadge = '<span class="badge s">进行中</span>';
-      } else if(t.status === 'not_accepted'){
-        stBadge = '<span class="badge">未接取</span>';
-      }
-      const prog = (t.status === 'claimed' || t.status === 'completed') ? '已达成' : (t.current + ' / ' + t.target);
-      const rwd = (t.reward_credit ? ('<b style="color:var(--accent2)">+' + t.reward_credit + '</b> 积分') : '') +
-                  (t.reward_energy ? (' <span style="color:var(--accent)">+' + t.reward_energy + ' 能量</span>') : '');
-      return '<tr>'
-        + '<td data-label="任务"><b>' + esc(t.name) + '</b><br><span class="mono" style="font-size:11px;color:var(--dim)">' + esc(t.task_code) + '</span></td>'
-        + '<td style="font-size:12px;color:var(--dim);max-width:300px" data-label="说明">' + esc(t.description || '-') + '</td>'
-        + '<td data-label="进度">' + prog + '</td>'
-        + '<td data-label="奖励">' + (rwd || '-') + '</td>'
-        + '<td data-label="状态">' + stBadge + '</td>'
-        + '</tr>';
-    }).join('');
-    applyTableSort('growthTable');
-  }catch(e){
-    console.error('loadGrowthTasks error:', e);
-  }
-}
 
 
 
@@ -5188,10 +4861,9 @@ const SORT_COL_KINDS = {
   growthTable:      ['text', 'text', 'num', 'num', 'text'],
   // 时间列是 ISO 串，字典序就是时间序，不必另给排序值。
   creditHistoryTable: ['text', 'text', 'text', 'num', 'num'],
-  // 这两张表的时间列显示的是 MM-DD HH:MM，跨年字典序就错了，排序值由 render
-  // 挂 data-sort 单独给（见 renderRemainingUsage / renderCreditGrants）。
+  // 这张表的时间列显示的是 MM-DD HH:MM，跨年字典序就错了，排序值由 render
+  // 挂 data-sort 单独给（见 renderRemainingUsage）。
   remainingUsageTable: ['text', 'text', 'text', 'text', 'num', 'num', 'num'],
-  creditGrantsTable:   ['text', 'text', 'text', 'text', 'text', 'num', 'num', 'text', 'text'],
   analyticsAccountTable: ['text', 'num', 'num', 'num', 'num', null],
   analyticsKeyTable: ['text', 'num', 'num', 'num', 'num', 'num', null],
   perfMatrix:       ['text', 'text', 'num', 'num', 'num', 'num', 'num',
@@ -6143,123 +5815,9 @@ async function loadActivityBoard(showToast, more){
 
 
 
-async function loadAccounts(){
-  // 账号页已裁成码道专用：账号列表的容器不在了。各处的账号操作回调
-  // 仍会调用本函数，这里按容器是否存在早退，免得去操作空 DOM。
-  if(!document.getElementById('accounts')) return;
-  try{
-    const [acct, byAcct] = await Promise.all([
-      getJSON('/accounts?realm=all'),
-      getJSON('/usage/by-account', POLL_READ),
-      // 今日活动与账号列表并行取；它自己吞掉失败，读不到历史不该让账号区跟着坏。
-      loadActivityToday(),
-    ]);
-    window.ACCOUNTS = acct.accounts || [];
-    USAGE_BY_ACCOUNT = {};
-    (byAcct.accounts || []).forEach(a => { USAGE_BY_ACCOUNT[a.account] = a; });
-    updateUI();
-    // 昵称刚到位，补画一次积分扣减历史：它和本请求是并行的，先渲染的那次只有 uid。
-    if(LAST_CREDIT_DATA) renderCreditHistory();
-    // Auto-fetch credits once if not present
-    if(window.ACCOUNTS.length && window.ACCOUNTS.some(a => !a.credits)){
-      postJSON('/accounts/credits', {}).then(r => {
-        window.ACCOUNTS = r.accounts || ACCOUNTS;
-      }).catch(()=>{});
-    }
-  }catch(e){ toast('账号加载失败: ' + e.message); }
-}
 
-async function fetchCredits(btn){
-  if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
-  const currentView = (window.VIEW_REALM || "cn");
-  const viewName = '国内版';
-  try{
-    const r = await postJSON('/accounts/credits', {realm: currentView});
-    await loadAccounts();
-    refresh();
-    const count = (r.results || []).length;
-    toast('已成功刷新当前' + viewName + ' ' + count + ' 个账号的积分', 'ok');
-  }catch(e){
-    toast('刷新积分失败: ' + e.message, 'bad');
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '一键刷新积分'; }
-  }
-}
-const queryCredits = fetchCredits;
 
-async function toggleAccount(uid, enable, btn){
-  if(btn) btn.disabled = true;
-  try{
-    await postJSON('/accounts/set', {uid: uid, enabled: enable});
-    await loadAccounts();
-    toast(enable ? '账号已成功启用' : '账号已停用', 'ok');
-  }catch(e){
-    toast('操作失败: ' + e.message, 'bad');
-  }finally{
-    if(btn) btn.disabled = false;
-  }
-}
 
-async function editAccountNote(uid){
-  const cur = (window.ACCOUNTS || []).find(a => a.uid === uid);
-  const next = prompt('账号备注（留空清除；可用来标记「批量」/「自用」）:', (cur && cur.note) || '');
-  if(next === null) return;
-  try{
-    await postJSON('/accounts/set', {uid: uid, note: next});
-    await loadAccounts();
-    toast(next.trim() ? '备注已保存' : '备注已清除', 'ok');
-  }catch(e){
-    toast('备注保存失败: ' + e.message, 'bad');
-  }
-}
-async function refreshOne(uid, btn){
-  if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
-  try{
-    const r = await postJSON('/accounts/refresh', {uid: uid});
-    const ok = (r.results||[])[0];
-    toast(ok && ok.ok ? '账号凭证刷新成功' : ('刷新失败: ' + (ok && ok.error || '未知错误')), ok && ok.ok ? 'ok' : 'bad');
-    await loadAccounts();
-  }catch(e){
-    toast('刷新失败: ' + e.message, 'bad');
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '刷新凭证'; }
-  }
-}
-async function syncProfile(uid, btn){
-  if(btn){ btn.disabled = true; btn.textContent = '同步中...'; }
-  try{
-    const r = await postJSON('/accounts/sync-profile', {uid: uid});
-    const item = (r.updated || [])[0];
-    const bad = (r.failed || [])[0];
-    if(item && item.nickname) toast('昵称已同步: ' + item.nickname, 'ok');
-    else if(bad) toast('同步失败: ' + bad.error, 'bad');
-    else toast('同步完成（上游未返回昵称）', 'warn');
-    await loadAccounts();
-  }catch(e){
-    toast('同步失败: ' + e.message, 'bad');
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '同步昵称'; }
-  }
-}
-async function testAccount(uid, btn){
-  if(btn){ btn.disabled = true; btn.textContent = '测试中...'; }
-  try{
-    const r = await postJSON('/accounts/test', {uid: uid});
-    if(r.ok){
-      toast('测试通过 (' + r.elapsed_ms + 'ms) [' + r.model + ']: ' + (r.reply || '正常'), 'ok');
-    } else if(r.network){
-      // 本机断网时上游一个字节都没收到：说清是网络问题，别让人以为账号坏了。
-      toast('本机网络不可用: ' + (r.error || 'DNS/路由失败'), 'bad');
-    } else {
-      toast('测试失败: ' + (r.error || r.status || '异常'), 'bad');
-    }
-    await loadAccounts();
-  }catch(e){
-    toast('测试请求失败: ' + e.message, 'bad');
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '测试'; }
-  }
-}
 
 /* 一键测试：区域内每个已启用账号 + 本机连通性一次看全。
    池子出问题时最需要分辨的就是「账号真不行」与「本机没网 / 只是被本地窗口关着」，
@@ -6272,59 +5830,11 @@ async function testAccount(uid, btn){
 
 
 
-async function deleteAccount(uid, name, btn){
-  if(!confirm("确定删除账号 " + name + "？")) return;
-  if(btn) btn.disabled = true;
-  try{
-    await postJSON('/accounts/delete', {uid: uid});
-    await loadAccounts();
-    toast('已成功删除账号 ' + name, 'ok');
-  }catch(e){
-    toast('删除失败: ' + e.message, 'bad');
-  }finally{
-    if(btn) btn.disabled = false;
-  }
-}
 
 /* ---- 账号导出 / 导入 ---- */
-async function downloadExport(query, fallbackLabel){
-  // Fetch through the authorised JSON API and save the blob client-side.
-  // A plain <a href> would not carry the X-Panel-Token header, so a
-  // password-only session would be rejected.
-  const r = await fetch('/accounts/export' + (query || ''), {cache:'no-store', headers: authHeaders()});
-  if(r.status === 401 || r.status === 403){ panelSessionLost(); throw new Error('unauthorized'); }
-  if(r.status === 404){
-    let msg = '账号不存在';
-    try{ const e = await r.json(); msg = (e.error && e.error.message) || msg; }catch(_){}
-    throw new Error(msg);
-  }
-  if(!r.ok) throw new Error('HTTP ' + r.status);
-  const text = await r.text();
-  let doc;
-  try{ doc = JSON.parse(text); }catch(e){ throw new Error('返回内容不是 JSON'); }
-  const stamp = new Date().toISOString().slice(0,19).replace(/[-:T]/g,'');
-  const name = 'workbuddy-accounts-' + (fallbackLabel || '') + stamp + '.json';
-  const blob = new Blob([text], {type:'application/json'});
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = name;
-  document.body.appendChild(a); a.click(); a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-  return {count: doc.count || 0, name: name};
-}
 
 
 
-async function exportOne(uid){
-  // Same document format as the bulk export, just narrowed to one account, so
-  // the file can be re-imported on another instance without editing.
-  try{
-    const r = await downloadExport('?uid=' + encodeURIComponent(uid), uid.slice(0,8) + '-');
-    toast('已导出 1 个账号 → ' + r.name);
-  }catch(e){
-    toast('导出失败: ' + e.message, 'err');
-  }
-}
 
 let importRows = null;   // 已解析、待导入的账号行
 
@@ -6348,98 +5858,8 @@ let CURRENT_PKG_FILTER = 'all';
 let CURRENT_PKG_SEARCH = '';
 let CURRENT_PKG_SORT = 'expiry_asc';
 
-async function openCreditsDetail(uid, forceRefresh = false){
-  CURRENT_CREDIT_DETAIL_UID = uid;
-  CURRENT_PKG_FILTER = 'all';
-  CURRENT_PKG_SEARCH = '';
-  CURRENT_PKG_SORT = 'expiry_asc';
 
-  const m = document.getElementById("creditsDetailModal");
-  if(m) m.classList.add("show");
 
-  const searchInput = document.getElementById("cmPkgSearch");
-  if(searchInput) searchInput.value = "";
-  const sortSelect = document.getElementById("cmPkgSort");
-  if(sortSelect) sortSelect.value = "expiry_asc";
-
-  // 重置过滤器按钮高亮
-  const filterBtns = document.querySelectorAll(".realm-filter button[data-filter]");
-  filterBtns.forEach(b => {
-    if(b.getAttribute("data-filter") === "all") b.classList.add("active");
-    else b.classList.remove("active");
-  });
-
-  const acct = (window.ACCOUNTS || []).find(a => a.uid === uid);
-  const titleEl = document.getElementById("creditsModalTitle");
-  const realmEl = document.getElementById("creditsModalRealm");
-  const tierEl = document.getElementById("creditsModalTier");
-  if(titleEl) titleEl.textContent = (acct ? (acct.nickname || acct.uid.slice(0,8)) : uid.slice(0,8)) + " · 积分明细";
-  if(realmEl && acct){
-    realmEl.className = 'realm-badge-cn';
-    realmEl.textContent = '国内版';
-  }
-  if(tierEl){
-    if(acct && acct.credits && acct.credits.is_paid_user !== undefined){
-      tierEl.style.display = "inline-block";
-      tierEl.className = acct.credits.is_paid_user ? "badge mini ok" : "badge mini";
-      tierEl.textContent = acct.credits.is_paid_user ? "付费用户" : "普通用户";
-    } else {
-      tierEl.style.display = "none";
-    }
-  }
-
-  // 检查已缓存的数据是否包含有效期字段，若包含且无需强制刷新，先秒开渲染本地已缓存数据
-  const cachedPkgs = (acct && acct.credits && Array.isArray(acct.credits.packages)) ? acct.credits.packages : [];
-  const hasExpiryData = cachedPkgs.length > 0 && cachedPkgs.some(p => p.cycle_end_time || p.cycleEndTime || p.CycleEndTime || p.expired_time || p.ExpiredTime);
-  if(!forceRefresh && hasExpiryData){
-    CURRENT_CREDITS_DATA = acct.credits;
-    renderCreditsDetail(acct.credits, acct);
-    return;
-  }
-
-  await reloadCreditsDetail();
-}
-
-async function reloadCreditsDetail(btn){
-  if(!CURRENT_CREDIT_DETAIL_UID) return;
-  const btnEl = btn || document.getElementById("btnRefreshCreditsDetail");
-  if(btnEl){ btnEl.disabled = true; btnEl.textContent = "刷新中..."; }
-  const loadingEl = document.getElementById("creditsModalLoading");
-  const contentEl = document.getElementById("creditsModalContent");
-  if(loadingEl && (!contentEl || contentEl.style.display === 'none')) loadingEl.style.display = "block";
-
-  try {
-    const res = await postJSON("/accounts/credits/detail", { uid: CURRENT_CREDIT_DETAIL_UID, refresh: true });
-    if(res && res.ok && res.credits){
-      CURRENT_CREDITS_DATA = res.credits;
-      // 同步更新全局 window.ACCOUNTS 中的 credits
-      const acct = (window.ACCOUNTS || []).find(a => a.uid === CURRENT_CREDIT_DETAIL_UID);
-      if(acct){
-        acct.credits = res.credits;
-        // 账号列表容器已删除，这里不再调 renderAccounts()。
-      }
-      renderCreditsDetail(res.credits, acct);
-    } else {
-      toast("拉取积分明细失败: " + ((res && res.error) || "请确认后端代理服务已重启以加载新代码"));
-    }
-  } catch(e) {
-    toast("网络异常: " + e.message);
-  } finally {
-    if(loadingEl) loadingEl.style.display = "none";
-    if(contentEl) contentEl.style.display = "block";
-    if(btnEl){ btnEl.disabled = false; btnEl.textContent = "刷新明细"; }
-  }
-}
-
-function filterCreditsPackages(filterType, btn){
-  CURRENT_PKG_FILTER = filterType;
-  const parent = btn && btn.parentNode;
-  if(parent){
-    parent.querySelectorAll("button").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-  }
-  renderCreditsPackagesTable();
-}
 
 function onCreditsSearchInput(val){
   CURRENT_PKG_SEARCH = (val || "").trim().toLowerCase();
@@ -6451,127 +5871,6 @@ function onCreditsSortChange(val){
   renderCreditsPackagesTable();
 }
 
-function renderCreditsDetail(credits, acct){
-  if(!credits) return;
-  CURRENT_CREDITS_DATA = credits;
-  const remain = Number(credits.remain) || 0;
-  const used = Number(credits.used) || 0;
-  const size = Number(credits.size) || (remain + used);
-  const usedPct = credits.used_percent || (size > 0 ? (used / size * 100).toFixed(1) + '%' : '0.0%');
-
-  const elRemain = document.getElementById("cmMetricRemain");
-  const elUsed = document.getElementById("cmMetricUsed");
-  const elTotal = document.getElementById("cmMetricTotal");
-  const elUsedPct = document.getElementById("cmUsedPercent");
-  const elBar = document.getElementById("cmProgressBar");
-  const elUpdated = document.getElementById("cmUpdatedText");
-
-  if(elRemain) elRemain.textContent = fmt(remain);
-  if(elUsed) elUsed.textContent = fmt(used);
-  if(elTotal) elTotal.textContent = fmt(size);
-  if(elUsedPct) elUsedPct.textContent = usedPct;
-  if(elBar){
-    const frac = size > 0 ? Math.min(100, Math.max(0, (used / size) * 100)) : 0;
-    elBar.style.width = frac.toFixed(1) + "%";
-    elBar.style.background = frac >= 90 ? "var(--bad)" : frac >= 70 ? "var(--warn)" : "var(--accent)";
-  }
-  if(elUpdated) elUpdated.textContent = "更新时间: " + (credits.updated_iso || "刚刚");
-
-  // 会员等级徽章
-  const tierEl = document.getElementById("creditsModalTier");
-  if(tierEl){
-    if(credits.is_paid_user !== undefined){
-      tierEl.style.display = "inline-block";
-      tierEl.className = credits.is_paid_user ? "badge mini ok" : "badge mini";
-      tierEl.textContent = credits.is_paid_user ? "付费用户" : "普通用户";
-    } else {
-      tierEl.style.display = "none";
-    }
-  }
-
-  // 最近到期卡片（优先取后端计算的 earliest_expiring，缺失时前端自动推导）
-  const elExpVal = document.getElementById("cmExpiryValue");
-  const elExpSub = document.getElementById("cmExpirySub");
-  if(elExpVal && elExpSub){
-    let ep = credits.earliest_expiring;
-    if(!ep && Array.isArray(credits.packages)){
-      const candidates = [];
-      credits.packages.forEach(p => {
-        const rem = Number(p.remain ?? p.CycleCapacityRemain) || 0;
-        const eStr = p.cycle_end_time || p.cycleEndTime || p.CycleEndTime || p.expired_time || p.ExpiredTime || '';
-        if(rem > 0 && eStr && eStr !== '-'){
-          try {
-            const clean = eStr.replace(/-/g, '/').replace('T', ' ');
-            const ts = new Date(clean).getTime();
-            if(!isNaN(ts)){
-              const d = Math.round((ts - Date.now()) / 86400000 * 10) / 10;
-              candidates.push({ name: p.name || '套餐包', remain: rem, cycle_end_time: eStr, days_left: d });
-            }
-          } catch(e){}
-        }
-      });
-      if(candidates.length){
-        candidates.sort((a, b) => a.days_left - b.days_left);
-        ep = candidates[0];
-      }
-    }
-
-    if(ep && ep.days_left !== undefined && ep.days_left !== null){
-      const days = Number(ep.days_left);
-      const endStr = String(ep.cycle_end_time || '');
-      if(days < 0){
-        elExpVal.textContent = "已有包过期";
-        elExpVal.style.color = "var(--bad)";
-        elExpSub.textContent = esc(ep.name) + " · 周期已过";
-      } else if(days <= 3){
-        elExpVal.textContent = "剩 " + days.toFixed(1) + " 天";
-        elExpVal.style.color = "var(--bad)";
-        elExpSub.textContent = esc(endStr.slice(5, 16)) + " · " + fmt(ep.remain) + " 积分即将到期";
-      } else if(days <= 7){
-        elExpVal.textContent = "剩 " + Math.ceil(days) + " 天";
-        elExpVal.style.color = "var(--warn)";
-        elExpSub.textContent = esc(endStr.slice(5, 10)) + " 到期 · " + fmt(ep.remain) + " 积分";
-      } else {
-        elExpVal.textContent = "剩 " + Math.floor(days) + " 天";
-        elExpVal.style.color = "var(--fg)";
-        elExpSub.textContent = esc(endStr.slice(5, 10)) + " 到期 · " + fmt(ep.remain) + " 积分";
-      }
-      elExpSub.title = (ep.name || "") + " (" + endStr + ")";
-    } else {
-      elExpVal.textContent = "长期有效";
-      elExpVal.style.color = "var(--accent2)";
-      elExpSub.textContent = "暂无临期生效套餐包";
-    }
-  }
-
-  // 扩展状态（签到与会员信息）
-  const checkinCard = document.getElementById("cmCheckinCard");
-  const checkinText = document.getElementById("cmCheckinText");
-  if(checkinCard && checkinText){
-    let items = [];
-    if(credits.checkin){
-      const c = credits.checkin;
-      const st = c.today_checked_in
-        ? '<span style="color:var(--accent2);font-weight:600">今日已签到</span>'
-        : '<span style="color:var(--warn);font-weight:600">今日未签到</span>';
-      items.push('每日签到: ' + st + ' (连续 ' + (c.streak_days || 0) + ' 天)');
-      if(c.daily_credit) items.push('签到奖励: ' + c.daily_credit + ' 积分');
-      if(c.today_credit) items.push('今日领取: ' + c.today_credit + ' 积分');
-    }
-    if(credits.is_paid_user !== undefined){
-      items.push('会员类型: ' + (credits.is_paid_user ? '<span class="badge ok mini">付费用户</span>' : '<span class="badge mini">普通/体验用户</span>'));
-    }
-    if(items.length){
-      checkinText.innerHTML = items.join(' · ');
-      checkinCard.style.display = "block";
-    } else {
-      checkinCard.style.display = "none";
-    }
-  }
-
-  // 渲染套餐权益包明细表格
-  renderCreditsPackagesTable();
-}
 
 function renderCreditsPackagesTable(){
   const credits = CURRENT_CREDITS_DATA;
@@ -6756,11 +6055,6 @@ function renderCreditsPackagesTable(){
   }).join('');
 }
 
-function closeCreditsDetail(){
-  const m = document.getElementById("creditsDetailModal");
-  if(m) m.classList.remove("show");
-  CURRENT_CREDIT_DETAIL_UID = null;
-}
 
 
 
@@ -7159,17 +6453,9 @@ let visHookInstalled = false;
 async function startDashboard(){
   if(PANEL_READY) return;
   PANEL_READY = true;
-  // 前两步决定下面各自查什么（VIEW_REALM / 面板可见性），必须先行；之后就并行，
-  // 别让国内版那条约 2 秒的成长任务接口把首屏的用量卡片拖在后面。
+  // 设置先回来，它决定下面各自查什么；之后就并行。
   await loadSettings();
-  await initRealm();
-  // 成长任务那条走上游、约 2 秒，只服务「任务与福利」页，而且它自己渲染。原来
-  // 它在这一批 Promise.all 里，switchMainTab 因此被押到它后面——落在数据看板
-  // 页签时，KPI 要等这两秒过去才开始发 /usage/analytics。这里只把它摘出来让它
-  // 并行跑，其余照旧等待；异常自己收，别变成未处理的拒绝。
-  loadGrowthTasks().catch(() => {});
-  await Promise.all([loadAccounts(), loadModels(),
-                     loadSchedulerStatus(), refresh()]);
+  await Promise.all([loadModels(), loadSchedulerStatus(), refresh()]);
   updateRecentLimitButtons();
   // The head script already resolved this before first paint; re-apply it
   // here so the data loaders for the active page actually run.
@@ -7197,7 +6483,6 @@ async function startDashboard(){
     // 一张表不必在它的 render 函数里再写一行，下一轮自己就接上了。
     setInterval(() => { if(!document.hidden){ refresh(); applyAllTableSorts(); } }, 5000),
     setInterval(() => { if(!document.hidden) loadSchedulerStatus(); }, 30000),
-    setInterval(() => { if(!document.hidden) loadAccounts(); }, 15000),
   ];
   if(!visHookInstalled){
     visHookInstalled = true;
@@ -7206,7 +6491,6 @@ async function startDashboard(){
     document.addEventListener('visibilitychange', () => {
       if(document.hidden || !PANEL_READY) return;
       refresh();
-      loadAccounts();
       loadSchedulerStatus();
       if(currentMainTab === 'analytics'){ loadAnalytics(); loadAnalyticsMatrix(); }
       if(currentMainTab === 'logs' && logAutoRefresh) fetchNewLogs(false);
@@ -7521,7 +6805,7 @@ function restorePageNavHash(){
 }
 
 // ==== 账号区折叠开始 ====
-// 折叠纯粹是呈现：账号轮询（loadAccounts）、realm 切换、签到/启用停用等逻辑
+// 折叠纯粹是呈现：realm 切换、签到/启用停用等逻辑
 // 都不碰这里，所以收起之后它们照常跑，也不会把区域顶开。偏好存在服务端的
 // accounts/settings.json（accounts_collapsed），不用 localStorage。
 let _accountsCollapsed = false;
@@ -7886,7 +7170,6 @@ async function loadSettings(showToast){
       keyState.style.color = count ? 'var(--accent2)' : 'var(--dim)';
     }
 
-    applyLimits(data);
     applyUiLanguageSelect(data.ui_language || 'zh');
 
     // 账号区折叠：服务端没存过、存坏了，或后端根本没这个字段，都按展开算。
@@ -7921,14 +7204,6 @@ async function loadSettings(showToast){
       if(anthropicMsgState){
         anthropicMsgState.textContent = anthropicMsg ? '(已启用)' : '(未启用)';
         anthropicMsgState.style.color = anthropicMsg ? 'var(--accent2)' : 'var(--dim)';
-      }
-      const localWeb = data.local_web_tools === true;
-      const localWebInput = document.getElementById('setLocalWebTools');
-      if(localWebInput) localWebInput.checked = localWeb;
-      const localWebState = document.getElementById('setLocalWebToolsState');
-      if(localWebState){
-        localWebState.textContent = localWeb ? '(已启用)' : '(直通)';
-        localWebState.style.color = localWeb ? 'var(--accent2)' : 'var(--dim)';
       }
       const egressBackoff = data.egress_backoff_enabled === true;
       const egressBackoffInput = document.getElementById('setEgressBackoff');
@@ -8143,61 +7418,9 @@ async function savePanelPassword(btn){
 }
 
 // ---- 限额（全局生效） ---------------------------------------------------
-const LIMIT_FIELDS = [
-  {key:'daily_token_limit',       id:'DailyToken',      label:'每日 Token 限额'},
-  {key:'daily_credit_limit',      id:'DailyCredit',     label:'每日积分限额'},
-  {key:'model_daily_token_limit', id:'ModelDailyToken', label:'按模型每日 Token 限额'},
-];
 
-function limitEl(id){
-  return document.getElementById('limitGlobal' + id);
-}
 
-function applyLimits(data){
-  const limits = data.limits || {};
-  let anyLimit = false;
-  for(const field of LIMIT_FIELDS){
-    const entry = limits[field.key] || {};
-    const globalValue = Number(entry.global || 0);
-    if(globalValue > 0) anyLimit = true;
-    const globalInput = limitEl(field.id);
-    if(globalInput) globalInput.value = String(globalValue);
-    const state = document.getElementById('set' + field.id + 'State');
-    if(state){
-      state.textContent = globalValue > 0 ? '(' + fmt(globalValue) + ')' : '(已关闭)';
-      state.style.color = globalValue > 0 ? 'var(--accent2)' : 'var(--dim)';
-    }
-  }
-  const sectionState = document.getElementById('setLimitsState');
-  if(sectionState){
-    sectionState.textContent = anyLimit ? '(已启用)' : '(全部关闭)';
-    sectionState.style.color = anyLimit ? 'var(--accent2)' : 'var(--dim)';
-  }
-}
 
-async function saveLimits(btn){
-  const payload = {};
-  for(const field of LIMIT_FIELDS){
-    const input = limitEl(field.id);
-    const raw = input ? String(input.value).trim() : '';
-    const value = raw === '' ? 0 : Number(raw);
-    // 空 = 关闭（0），但乱填不悄悄当成 0：那等于把护栏关掉，看不出问题。
-    if(!Number.isFinite(value) || value < 0){
-      toast('「' + field.label + '」请填 0 或正整数', 'warn'); return;
-    }
-    payload[field.key] = {global: Math.floor(value)};
-  }
-  if(btn) btn.disabled = true;
-  try {
-    await postJSON('/settings/save', {limits: payload});
-    toast('限额已保存', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-  } finally {
-    if(btn) btn.disabled = false;
-  }
-}
 
 async function saveAnthropicMessages(btn){
   const el = document.getElementById('setAnthropicMessages');
@@ -8214,20 +7437,6 @@ async function saveAnthropicMessages(btn){
   }
 }
 
-async function saveLocalWebTools(btn){
-  const el = document.getElementById('setLocalWebTools');
-  const value = !!(el && el.checked);
-  if(btn) btn.disabled = true;
-  try {
-    await postJSON('/settings/save', {local_web_tools: value});
-    toast(value ? '已启用：由网关代跑 web_search / web_fetch' : '已关闭：工具声明原样透传', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-  } finally {
-    if(btn) btn.disabled = false;
-  }
-}
 
 async function saveEgressBackoff(btn){
   const el = document.getElementById('setEgressBackoff');
@@ -8846,7 +8055,6 @@ function switchMainTab(tab){
     // 每个页面各自按自己的区块重建侧栏；非当前页的区块变化在切过来时补上
     if(on) initPageNav(page);
   });
-  if(tab === 'tasks'){ loadGrowthTasks(); }
   if(tab === 'accounts' || (!_accountsSeparateTab && tab === 'gateway')){
     loadActivityBoard();
     loadCodeartsAccounts();
@@ -9918,71 +9126,9 @@ function renderCreditHistory(data){
 // 每个包带面额与发放时间。这个区块把全部账号的包摊平成一张表、新的在前；接口只读
 // 最近一次「刷新积分」留下的快照（不发上游请求），所以摘要里带上快照时刻。
 // ---------------------------------------------------------------------------
-let LAST_GRANTS_DATA = null;
 const GRANT_STATUS_LABEL = {active: '生效中', available: '可用', used_up: '已用完', expired: '已过期'};
 
-async function loadCreditGrants(btn){
-  if(btn){ btn.disabled = true; btn.textContent = '刷新中...'; }
-  try{
-    const data = await getJSON('/accounts/credits/grants', POLL_READ);
-    renderCreditGrants(data);
-    if(btn) toast('积分获取历史已刷新', 'ok');
-  }catch(e){
-    if(!isAuthError(e)) toast('积分获取历史加载失败: ' + e.message, 'bad');
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '刷新'; }
-  }
-}
 
-function renderCreditGrants(data){
-  if(data) LAST_GRANTS_DATA = data;
-  const d = LAST_GRANTS_DATA || {};
-  const rows = (d.rows || []).slice(0, 100);
-  const s = d.summary || {};
-  const summary = document.getElementById('creditGrantsSummary');
-  if(summary){
-    summary.textContent = rows.length
-      ? ('共 ' + fmt(s.count || rows.length) + ' 笔 · 合计 ' + fmt(s.size || 0)
-         + ' · 剩余 ' + fmt(s.remain || 0)
-         + (d.fetched_iso ? ' · 数据截至 ' + String(d.fetched_iso).slice(5, 16) : ''))
-      : '暂无积分获取记录（上游只返回当前仍可见的积分包，先点「一键刷新积分」拉一次）';
-  }
-  const tbody = document.getElementById('creditGrantsTbody');
-  if(!tbody) return;
-  tbody.innerHTML = rows.map(r => {
-    const status = GRANT_STATUS_LABEL[r.status] || String(r.status || '');
-    const tone = (r.status === 'expired' || r.status === 'used_up') ? 'bad'
-      : (r.status === 'active' ? 'ok' : '');
-    const expiry = r.no_expiry ? '不过期' : String(r.expire_iso || '').slice(5, 16) || '—';
-    // 来源：上游给了发放原因就用它的原文（如「成长计划奖励」），没有就用空。
-    const reason = String(r.grant_reason || '').trim();
-    // 过去这里还有一条「Bonus Pack 30 = 每日活跃奖励」的推断，只对国际版成立；
-    // 该区域删除后上游不再出现那种包，规则一并去掉，来源只认上游给的原因。
-    const source = reason;
-    const tips = [];
-    if(reason) tips.push('上游发放原因：' + reason);
-    if(r.action && r.action.task){
-      const task = r.action.task === 'checkin' ? '每日签到' : '每日活跃打卡';
-      tips.push('本机动作：' + task + ' ' + String(r.action.ts || '').slice(5, 16).replace('T', ' ')
-                + ' ' + (r.action.ok ? '成功' : '失败'));
-    }
-    return '<tr>'
-      + '<td' + (r.create_iso ? ' data-sort="' + esc(r.create_iso) + '"' : '') + '>'
-      + esc(String(r.create_iso || '').slice(5, 16) || '—') + '</td>'
-      + '<td title="' + esc(r.uid || '') + '">' + esc(r.nickname || creditAccountLabel(r.uid)) + '</td>'
-      + '<td style="text-align:center">国内版</td>'
-      + '<td' + (r.grant_reason ? ' title="' + esc(r.grant_reason) + '"' : '') + '>' + esc(r.name || '') + '</td>'
-      + '<td' + (tips.length ? ' title="' + esc(tips.join('；')) + '"' : '') + '>' + esc(source || '—') + '</td>'
-      + '<td style="text-align:right">' + fmt(r.size || 0) + '</td>'
-      + '<td style="text-align:right">' + fmt(r.remain || 0) + '</td>'
-      + '<td style="text-align:center;font-size:11px;color:var(--dim)"'
-      + (!r.no_expiry && r.expire_iso ? ' data-sort="' + esc(r.expire_iso) + '"' : '') + '>'
-      + esc(expiry) + '</td>'
-      + '<td style="text-align:center"><span class="badge ' + tone + '">' + esc(status) + '</span></td>'
-      + '</tr>';
-  }).join('') || '<tr><td colspan="9" style="color:var(--dim)">暂无积分获取记录</td></tr>';
-  applyTableSort('creditGrantsTable');
-}
 
 /* 第一列的口径随范围切换，标签必须跟着走，否则「本周」的数字会被当成「今日」读。 */
 const RANGE_LABELS = {today:'今日', week:'本周', month:'本月', custom:'自定义区间', all:'全部历史'};
@@ -10998,8 +10144,6 @@ function syncOldRange(){
   if (rb) rb.addEventListener('toggle', () => { if (rb.open) { try{ loadRemainingUsage(); }catch(e){} } });
   const cb = $('foldCreditsBox');
   if (cb) cb.addEventListener('toggle', () => { if (cb.open) { try{ syncOldRange(); loadCreditHistory(); }catch(e){} } });
-  const gb = $('foldGrantsBox');
-  if (gb) gb.addEventListener('toggle', () => { if (gb.open) { try{ loadCreditGrants(); }catch(e){} } });
 }
 
 /* ============================================================

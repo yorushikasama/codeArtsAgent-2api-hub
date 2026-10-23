@@ -50,7 +50,6 @@ import time as _time
 _time.time = lambda: FROZEN
 
 import ca_proxy as P
-import ca_accounts
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
 USAGE_LOG = P.USAGE_LOG
 LEGACY = os.path.join(USAGE_DIR, "usage-aggregate-cache.json")
@@ -189,11 +188,22 @@ def cache_env_off():
 # --------------------------------------------------------------------------
 # 结果、状态清理与「模拟重启」
 # --------------------------------------------------------------------------
+class _Acct(object):
+    """账号池删除后剩下的最小替身：这几条折叠只读 uid/nickname/realm/enabled。"""
+
+    def __init__(self, data=None, **kw):
+        kw = dict(data or {}, **kw)
+        self.uid = kw.get("uid", "")
+        self.nickname = kw.get("nickname", "")
+        self.realm = kw.get("realm", "cn")
+        self.enabled = kw.get("enabled", True)
+
+
 def live_all(accounts=None):
     """五条折叠各走一遍：snapshot / by_account / analytics / series /
     remaining（three realms where the state is per-realm）。"""
     if accounts is None:
-        accounts = [ca_accounts.Account({"uid": "u1", "nickname": "u1",
+        accounts = [_Acct({"uid": "u1", "nickname": "u1",
                                          "accessToken": "t", "realm": "intl"})]
     return {
         # 走公开入口（与面板同一条路）：realm="all" 折不限 realm 的那份，
@@ -439,7 +449,7 @@ before_files = {kind: io.open(path, "rb").read()
 append_log([row(FROZEN - 100, "m-a", "u1", 500, 50)])
 cache_env_force()
 restart()
-P._remaining_payload(now=FROZEN, accounts=[ca_accounts.Account(
+P._remaining_payload(now=FROZEN, accounts=[_Acct(
     {"uid": "u1", "nickname": "u1", "accessToken": "t", "realm": "intl"})])
 after_files = {kind: io.open(path, "rb").read()
                for kind, path in cache_files().items()}

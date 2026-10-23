@@ -147,7 +147,7 @@ class BoundaryCase(unittest.TestCase):
     def dispatch(self, path, headers=None, command="GET", body=b""):
         request = DispatchRequest(path, headers=headers, command=command, body=body)
         with mock.patch.multiple(proxy, ACCOUNTS_DIR=self.directory, API_KEY=None,
-                                 POOL=None, PRICING=None, UPDATES=self.updates,
+                                 PRICING=None, UPDATES=self.updates,
                                  SCHEDULER=None,
                                  codearts_catalog=injected_catalog,
                                  codearts_deployed=lambda: True,

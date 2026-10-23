@@ -653,7 +653,7 @@ finally:
 # 调度器能独立跑领取
 import ca_scheduler  # noqa: E402
 
-_sched = ca_scheduler.Scheduler(pool=None)
+_sched = ca_scheduler.Scheduler()
 check("没注入目录时明确失败",
       _sched.claim_daily_tokens().get("ok") is False)
 _sched.accounts_dir = tempfile.mkdtemp(prefix="wb-sched-")
@@ -791,7 +791,7 @@ def _stub_claim(ak, sk, tok, session=None, trigger="unknown"):
 _saved_ensure, _saved_claim = C.ensure_fresh_session, C.claim_and_verify
 C.ensure_fresh_session, C.claim_and_verify = _stub_ensure, _stub_claim
 try:
-    _sched2 = ca_scheduler.Scheduler(pool=None)
+    _sched2 = ca_scheduler.Scheduler()
     _sched2.accounts_dir = _sched_dir
     _out = _sched2.claim_daily_tokens()
 finally:
@@ -1533,25 +1533,31 @@ _h.headers = {}
 _h.key_entry = None
 _h._codearts_chat_result = _stub_codearts
 _h._request_realm = lambda explicit=None: "cn"
-_hit = {"open_upstream": False}
-_saved_open = P.open_upstream
+# 账号池删除后没有「第二套上游」可落：码道模型必须交给码道翻译层，
+# 其余名字一律 404。以前这里桩掉 open_upstream 来证明「没落进池子」，
+# 现在池子根本不存在，改桩分发点。
+_hit = {"codearts": False}
+_saved_dispatch = _h._responses_codearts
 
 
-def _no_open(*args, **kwargs):
-    _hit["open_upstream"] = True
-    raise AssertionError("codearts 请求不该走 WorkBuddy 账号池")
+def _spy_dispatch(*args, **kwargs):
+    _hit["codearts"] = True
+    return _saved_dispatch(*args, **kwargs)
 
 
-P.open_upstream = _no_open
-try:
-    _h._handle_responses({"model": "deepseek-v4.1-flash", "input": "hi"})
-finally:
-    P.open_upstream = _saved_open
+_h._responses_codearts = _spy_dispatch
+_h._handle_responses({"model": "deepseek-v4.1-flash", "input": "hi"})
 
-check("Responses 对码道模型不再落到 WorkBuddy 账号池",
-      not _hit["open_upstream"], _hit)
+check("Responses 把码道模型交给码道翻译层", _hit["codearts"], _hit)
 check("Responses 入口能返回码道正文",
       (_h.payload or {}).get("output_text") == "你好", _h.payload)
+
+_h404 = _FakeResponsesHandler()
+_h404.headers = {}
+_h404.key_entry = None
+_h404._handle_responses({"model": "no-such-model", "input": "hi"})
+check("Responses 对非码道模型回 404",
+      _h404.status == 404, (_h404.status, _h404.payload))
 
 
 # ---------------------------------------------------------------------------
@@ -1610,19 +1616,32 @@ _h.headers = {}
 _h.key_entry = None
 _h._codearts_chat_result = _stub_codearts
 _h._request_realm = lambda explicit=None: "cn"
-_hit = {"open_upstream": False}
-P.open_upstream = _no_open
-try:
-    _h._handle_messages({"model": "deepseek-v4.1-flash",
-                         "messages": [{"role": "user", "content": "hi"}],
-                         "max_tokens": 16})
-finally:
-    P.open_upstream = _saved_open
-check("Messages 对码道模型不再落到 WorkBuddy 账号池",
-      not _hit["open_upstream"], _hit)
+_hit = {"codearts": False}
+_saved_msg_dispatch = _h._messages_codearts
+
+
+def _spy_msg_dispatch(*args, **kwargs):
+    _hit["codearts"] = True
+    return _saved_msg_dispatch(*args, **kwargs)
+
+
+_h._messages_codearts = _spy_msg_dispatch
+_h._handle_messages({"model": "deepseek-v4.1-flash",
+                     "messages": [{"role": "user", "content": "hi"}],
+                     "max_tokens": 16})
+check("Messages 把码道模型交给码道翻译层", _hit["codearts"], _hit)
 check("Messages 入口能返回码道正文",
       any(b.get("type") == "text" and b.get("text") == "你好"
           for b in (_h.payload or {}).get("content") or []), _h.payload)
+
+_h404 = _FakeResponsesHandler()
+_h404.headers = {}
+_h404.key_entry = None
+_h404._handle_messages({"model": "no-such-model",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "max_tokens": 16})
+check("Messages 对非码道模型回 404",
+      _h404.status == 404, (_h404.status, _h404.payload))
 
 
 # ---------------------------------------------------------------------------

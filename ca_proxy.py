@@ -58,20 +58,17 @@ import time
 import urllib.error
 import urllib.request
 import uuid
-import ca_accounts
 import ca_activity
-import ca_atrest
 import ca_catalog
 import ca_codearts
 import ca_protocol
+import ca_webtools
 import ca_stream
 import ca_egress
 import ca_logstore
 import ca_settings
 
 import ca_upstream_pool
-import ca_webtools
-import ca_identity
 import ca_prompt
 import ca_modelsdev
 import ca_probes
@@ -91,14 +88,40 @@ def port_owner_hint(port):
     return "lsof -nP -iTCP:%d -sTCP:LISTEN" % port
 #: 当前生效的上游出口。国际版（intl）已整体移除，默认值就是唯一合法值。
 CURRENT_REALM = os.environ.get("WB_PROXY_DEFAULT_REALM", "cn")
+#: 唯一还存在的出口。WorkBuddy 账号池移除后，realm 只剩一层兼容壳：用量行里
+#: 仍带着这个字段（历史数据也有 intl 的），面板也还有按 realm 过滤的入口。
+DEFAULT_REALM = "cn"
+
+
+def normalize_realm(realm):
+    """把任何来源的 region 归一成当前存在的区域（只剩 cn）。
+
+    历史行里写着 `intl` 的那些流量确实被花掉过，按原值返回会让它们在唯一那个
+    出口的视图里整批消失，用量与花费对不上账——比贴错区域名更糟。
+    """
+    return DEFAULT_REALM
+
+
+def match_realm(realm):
+    """把「请求要哪个出口」归一成真正存在的区域名。
+
+    None / 空 / "all" 原样返回（调用方当「不过滤」处理）；已经删掉的区域
+    （老客户端可能还在发 X-Realm: intl）一并归一到现存出口。
+    """
+    text = str(realm or "").strip().lower()
+    if text in ("", "all"):
+        return text or None
+    return normalize_realm(text)
+
+
 def detect_model_realm(model_id):
-    """模型归属哪个出口。国际版已移除，恒为当前出口（cn）。
+    """模型归属哪个出口。国际版已移除，恒为当前出口。
 
     参数保留：调用方仍按「模型 → 出口」的语义传值，将来换上游时这里要重新划界。
-    CURRENT_REALM 从环境变量/磁盘读进来，值本身也可能是历史遗留的已删区域，
-    所以出口名一律过一遍归一——否则 row_realm 会把整批行贴上一个不存在的区域。
+    CURRENT_REALM 从环境变量读进来，值本身也可能是历史遗留的已删区域，所以
+    出口名一律过一遍归一——否则 row_realm 会把整批行贴上一个不存在的区域。
     """
-    return ca_accounts.normalize_realm(CURRENT_REALM)
+    return normalize_realm(CURRENT_REALM)
 
 
 # 这里原来有一份 CN_EXCLUSIVE 清单和 exclusive_realm()：国际版移除后它们
@@ -492,15 +515,7 @@ def row_realm(row):
     """
     r = row.get("realm")
     if r:
-        return ca_accounts.normalize_realm(r)
-    acct_uid = row.get("account")
-    if acct_uid and POOL:
-        acc = POOL.get(acct_uid)
-        if acc:
-            # 账号池里的 realm 正常已在构造时归一，但这里再归一一次：调用方
-            # 可能塞进别的对象（测试替身、被手工改过的实例），而一个没归一的
-            # "intl" 会让这些行在唯一那个出口的视图里整批消失。
-            return ca_accounts.normalize_realm(acc.realm)
+        return normalize_realm(r)
     model = row.get("model")
     if model:
         return detect_model_realm(model)
@@ -514,7 +529,7 @@ def row_matches_realm(row, realm):
     if not realm or realm == "all": return True
     # 请求侧的已删区域也归一到现存出口：只归一 row_realm 而不归一比较值，
     # 结果是「filter 说 cn、行也说 cn，却永远不相等」。
-    return row_realm(row) == ca_accounts.match_realm(realm)
+    return row_realm(row) == match_realm(realm)
 def realm_scope(realm, fallback=None):
     """Map a caller-supplied realm onto a log filter.
 
@@ -533,7 +548,7 @@ def realm_scope(realm, fallback=None):
         return None
     if not realm:
         return fallback
-    return ca_accounts.match_realm(realm)
+    return match_realm(realm)
 
 
 def _local_midnight(ts=None, days_back=0):
@@ -688,8 +703,8 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
         row.update(fp)
     if account:
         row["account"] = account
-    acc = POOL.get(account) if (account and POOL) else None
-    row["realm"] = acc.realm if acc else CURRENT_REALM
+    # 账号池已移除：行上的 realm 一律是唯一那个出口。
+    row["realm"] = normalize_realm(CURRENT_REALM)
     # Always written, even when the caller presented no key. The empty value is
     # what separates "ran without a key" from rows written before the field
     # existed; the dashboard reports those as two different buckets, and a
@@ -789,8 +804,7 @@ def record_error(model, status, message, elapsed_ms=None, account=None,
         row.update(fp)
     if account:
         row["account"] = account
-        acc = POOL.get(account) if POOL else None
-        row["realm"] = acc.realm if acc else CURRENT_REALM
+        row["realm"] = normalize_realm(CURRENT_REALM)
     row["key"] = key or ""
     _persist_usage(row, "error persist failed")
     dur = f" {elapsed_ms:.0f}ms" if elapsed_ms is not None else ""
@@ -1769,97 +1783,6 @@ def seconds_until_local_midnight():
     return max(60, int(nxt - time.time()))
 
 
-def apply_daily_token_limit(refresh=False):
-    """Push the daily token setting and today's counts into the pool.
-
-    The setting is resolved per realm, so the pool can guard the two exits
-    with different numbers while a realm that carries no override still
-    follows the global default.
-    """
-    if POOL is None:
-        return 0
-    limits = ca_settings.limit_values(ACCOUNTS_DIR, "daily_token_limit")
-    usage = None
-    if any(value > 0 for value in limits.values()):
-        usage = daily_tokens_by_account(ttl=0 if refresh else None)
-    return POOL.apply_daily_token_limit(limits, usage)
-
-
-def apply_daily_credit_limit(refresh=False):
-    """Push the daily credit setting, today's spend and the free-model view
-    into the pool."""
-    if POOL is None:
-        return 0
-    limits = ca_settings.limit_values(ACCOUNTS_DIR, "daily_credit_limit")
-    credits = None
-    free_models = None
-    if any(value > 0 for value in limits.values()):
-        stats = daily_usage_stats(ttl=0 if refresh else None)
-        credits = stats["credits"] if stats is not None else None
-        free_models = free_models_by_realm()
-    return POOL.apply_daily_credit_limit(limits, credits, free_models)
-
-
-def apply_model_daily_token_limit(refresh=False):
-    """Push the per-model daily token setting and today's counts into the pool."""
-    if POOL is None:
-        return 0
-    limits = ca_settings.limit_values(ACCOUNTS_DIR, "model_daily_token_limit")
-    per_model = None
-    if any(value > 0 for value in limits.values()):
-        stats = daily_usage_stats(ttl=0 if refresh else None)
-        per_model = stats["models"] if stats is not None else None
-    return POOL.apply_model_daily_token_limit(limits, per_model)
-
-
-def apply_daily_guards(refresh=False):
-    """Push all three daily guards into the pool in one pass.
-
-    The guards share their inputs - one settings file and the same folded day
-    counters - and the request path used to call them back to back, so each
-    one re-read the settings, re-scanned (and re-copied) the same counters and
-    re-walked the pool. Here it is one settings read, one fold, three
-    publishes; each guard's own semantics are untouched: per-realm limits, the
-    free-model exemption on the credit guard, and the "no limit configured ->
-    unknown count, never park" rule (an unreadable log leaves the counts None
-    for all three, exactly as the separate calls did).
-
-    `refresh` forces the counter fold to bypass its TTL (the settings-save
-    path uses it so a limit change is visible immediately). The three
-    individual entry points stay for callers that only want one guard.
-    """
-    if POOL is None:
-        return 0
-    ttl = 0 if refresh else None
-    guards = ca_settings.limit_values_many(
-        ACCOUNTS_DIR, ("daily_token_limit", "daily_credit_limit",
-                       "model_daily_token_limit"))
-    token_limits = guards["daily_token_limit"]
-    credit_limits = guards["daily_credit_limit"]
-    model_limits = guards["model_daily_token_limit"]
-    wants = (any(v > 0 for v in token_limits.values())
-             or any(v > 0 for v in credit_limits.values())
-             or any(v > 0 for v in model_limits.values()))
-    stats = daily_usage_stats(ttl=ttl) if wants else None
-    # 池上这三个 apply_* 的返回值是它们各自的 limits 字典（不是计数），调用方
-    # 谁也没用过；这里数的是「推了几条护栏」，别拿返回值做算术。
-    published = 0
-    if any(v > 0 for v in token_limits.values()):
-        POOL.apply_daily_token_limit(
-            token_limits, stats["tokens"] if stats is not None else None)
-        published += 1
-    if any(v > 0 for v in credit_limits.values()):
-        POOL.apply_daily_credit_limit(
-            credit_limits, stats["credits"] if stats is not None else None,
-            free_models_by_realm())
-        published += 1
-    if any(v > 0 for v in model_limits.values()):
-        POOL.apply_model_daily_token_limit(
-            model_limits, stats["models"] if stats is not None else None)
-        published += 1
-    return published
-
-
 # ---------------------------------------------------------------------------
 # Remaining usage estimate
 #
@@ -1895,7 +1818,7 @@ def apply_daily_guards(refresh=False):
 # 「上段 + 本段」呈现；预算样本同样按段截断（链式撞线时样本从上一个重置时刻
 # 起算，旧窗口的用量不进新窗口的样本）。
 #
-# 锚点来源除事件日志外还有凭证档的 model_caps（持久化，见 ca_accounts）：本次
+# 锚点来源除事件日志外还有凭证档的 model_caps（历史持久化格式，账号池已删除）：本次
 # 进程没撞过线（日志丢失/被裁）但磁盘上有记录时，冷却、窗口起点与截断点照它算。
 #
 # 按需过滤：昨天或今天没消耗过的模型不参与剩余用量计算（判定见
@@ -2257,46 +2180,6 @@ def _save_account_caps(account, model, reset_at):
         log("account %s: model cap write failed: %s" % (account.uid[:8], exc))
 
 
-def note_limit_event(account, model, reset_at):
-    """Record a model-scoped upstream cap as it happens (429 / code 6004).
-
-    Called from the request path the moment the 429 is classified: the sample
-    is computed against the usage fold refreshed right here, because the rows
-    that led to the cap are already in the log but may not have been scanned
-    yet. Everything is best-effort - a failure to record must never break the
-    request that is already failing.
-    """
-    try:
-        uid = getattr(account, "uid", "") or ""
-        if not uid or not model or not reset_at:
-            return
-        at = time.time()
-        with _remaining_state_lock:
-            _remaining_refresh(_remaining_state)
-            anchors = _cap_anchors(_remaining_state["events"], uid, model)
-            # 凭证档里的最近一次撞线（note_model_cap 还没记这次）也能锚住窗口
-            # 起点：日志里没有上一个重置时刻时它是唯一的分段依据。
-            cap = (getattr(account, "model_caps", None) or {}).get(model)
-            if isinstance(cap, dict):
-                _cap_anchor(anchors, cap.get("at"), cap.get("reset"))
-            sample = _window_sample(_remaining_state["usage"], uid, model,
-                                    reset_at, at,
-                                    _cap_window_start(anchors, reset_at))
-        event = {
-            "at": at, "account": uid, "model": model,
-            "realm": ca_accounts.normalize_realm(getattr(account, "realm", "") or ""),
-            "reset": float(reset_at), "sample": sample,
-        }
-        try:
-            os.makedirs(USAGE_DIR, exist_ok=True)
-            with open(LIMIT_EVENTS_FILE, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps(event, ensure_ascii=False) + "\n")
-        except Exception as exc:
-            log("limit event not persisted: %s" % exc)
-        with _remaining_state_lock:
-            _merge_event(_remaining_state, event, "file")
-    except Exception as exc:
-        log("limit event not recorded: %s" % exc)
 
 
 def _fold_remaining(row, state):
@@ -2325,7 +2208,7 @@ def _fold_remaining(row, state):
             "at": at, "reset": reset, "account": uid, "model": model,
             # 归一：历史行里写着已删区域的（intl）要和账号侧的 cn 对齐，否则
             # 预算按 (intl, model) 建、按 (cn, model) 查，永远查不到。
-            "realm": ca_accounts.normalize_realm(row.get("realm") or ""),
+            "realm": normalize_realm(row.get("realm") or ""),
             "sample": _window_sample(state["usage"], uid, model, reset, at,
                                      _cap_window_start(anchors, reset)),
         }, "log")
@@ -2678,7 +2561,7 @@ def _remaining_payload(now=None, accounts=None):
     """
     now = time.time() if now is None else now
     if accounts is None:
-        accounts = list(POOL.accounts) if POOL else []
+        accounts = []
     accounts = [a for a in accounts
                 if getattr(a, "enabled", True) and getattr(a, "uid", "")]
     with _remaining_state_lock:
@@ -3480,49 +3363,22 @@ def _account_files_key(directory):
 
 
 def _account_realm_map(directory=None):
-    """账号文件里的 uid→realm 映射（排序后的元组）；读不到返回 None。
+    """uid→realm 映射。数据源（WorkBuddy 账号文件）已随池移除，恒为空。
 
-    用账号池自己的加载器推导，而不是在这里复制一份 uid/realm 解析逻辑：复制
-    出来的那份迟早会和 Account 里的逻辑漂移，而漂移意味着指纹描述的东西和
-    折叠读的东西不再是同一个。整份读一次的开销由缓存键挡着——目录下每个
-    *.json 的名字/size/mtime 都没变就直接用上次的结果。
+    空元组是这条链路本来就支持的「一个账号都没有」状态（全新安装就是这样）：
+    折叠退化成按日志行里写的 realm 归属，不会把任何一行算丢；指纹也稳定，
+    checkpoint 照常可写。
     """
-    directory = ACCOUNTS_DIR if directory is None else directory
-    key = _account_files_key(directory)
-    if key is None:
-        return None
-    with _realm_disk_lock:
-        cached = _realm_disk_cache
-        if cached["key"] == key:
-            return cached["map"]
-    try:
-        pool = ca_accounts.AccountPool(directory, log=None)
-        pool.load()
-        value = tuple(sorted((a.uid, a.realm) for a in pool.accounts if a.uid))
-    except Exception as exc:
-        log("account realm map unreadable: %s" % exc)
-        return None
-    with _realm_disk_lock:
-        _realm_disk_cache.update({"key": key, "map": value})
-    return value
+    return ()
 
 
 def _realm_fold_reproducible(disk):
     """这次折叠用的归属，冷启动的进程能不能按同一份磁盘原样复现。
 
-    折叠读的是活账号池，指纹读的是磁盘。两者一致（正常情况：池就是启动时从
-    这份磁盘加载的）时没有疑问；磁盘被改过、池还没重载时两者会短暂不一致，
-    那种折叠写下的 checkpoint 会被冷进程按新归属当成有效，所以不写。池整个
-    不存在时折叠根本不查账号映射——只有磁盘上也没有账号，两边才一致。
+    账号池移除后折叠不再查账号映射（`_account_realm_map` 恒为空），所以只要
+    磁盘侧也读不到账号，两边就一致；没有池可以「还没重载」了。
     """
-    if POOL is None:
-        return not disk
-    try:
-        pool = tuple(sorted((a.uid, a.realm) for a in POOL.accounts))
-    except Exception as exc:
-        log("realm inputs unreadable: %s" % exc)
-        return False
-    return pool == disk
+    return not disk
 
 
 def _scan_usage_from(offset, fold, stop_at=None, skip=None, skip_raw=None, path=None):
@@ -4259,7 +4115,9 @@ def _usage_snapshot_uncached(realm=None, since=None, until=None):
     # None means every realm; usage_snapshot() has already mapped "all"
     # onto it, so the filter below is simply skipped.
     r = realm
-    rep = POOL.representative(realm=r) if POOL else current_account()
+    # WorkBuddy 池已移除：这里不再有「代表账号」。字段保留（面板按它们渲染），
+    # 值恒为空 —— 删字段会让前端读到 undefined。
+    rep = None
     # 总开关整扫只问一次，值一路传进折叠与价格指纹：每行重问一次就是每行一次
     # os.stat，2.7 万行上很可观（见 tests/_test_usage_aggregate_fold.py）。
     # 价格估算体系已下线：折叠永远在「不计价」档跑。
@@ -4278,15 +4136,10 @@ def _usage_snapshot_uncached(realm=None, since=None, until=None):
     # Cost figures are CNY; the panel divides by this rate to show USD
     # without a round trip.
     snap["usd_cny"] = 0.0
-    snap["accounts_map"] = {a.uid: {"nickname": a.nickname, "realm": a.realm} for a in POOL.accounts} if POOL else {}
+    snap["accounts_map"] = {}
     snap["account"] = {
-        "uid": (rep.uid if rep else ""),
-        "domain": (rep.domain if rep else ""),
-        "issuer": (ca_accounts.jwt_issuer(rep.access_token) if rep else ""),
-        "credential_file": (os.path.basename(rep.path) if rep and rep.path else ""),
-        "expires_at": (rep.expires_at if rep else 0),
-        "accounts": (len(POOL.accounts) if POOL else 0),
-        "accounts_ready": (POOL.count_ready() if POOL else 0),
+        "uid": "", "domain": "", "issuer": "", "credential_file": "",
+        "expires_at": 0, "accounts": 0, "accounts_ready": 0,
     }
     return snap
 def _tail_lines(path, max_lines, chunk=256 * 1024):
@@ -4735,7 +4588,7 @@ def _count_usage_line(state, line):
         if start >= 0:
             quote = line.find('"', start)
             if quote >= 0:
-                value = ca_accounts.normalize_realm(line[start:quote])
+                value = normalize_realm(line[start:quote])
                 counts[value] = counts.get(value, 0) + 1
                 return
         pos = line.find(_REALM_KEY, end)
@@ -5566,7 +5419,6 @@ def recent_usage(limit=100, realm=None, page=1):
         "usd_cny": 0.0,
         "rows": page_rows
     }
-POOL = None
 SCHEDULER = None
 PRICING = None
 # CodeArts（华为云）账号登录：与 WorkBuddy 账号池完全独立的一套凭证体系，
@@ -5615,26 +5467,6 @@ def save_persisted_realm(realm):
     return CURRENT_REALM
 API_KEY = None
 SYSTEM_PROMPT = DEFAULT_SYSTEM_PROMPT
-def import_desktop_accounts(realm=None):
-    imported = []
-    for p, r in ca_accounts.desktop_credential_candidates():
-        if realm and r != realm:
-            continue
-        try:
-            account = POOL.import_desktop_credential(path=p, realm=r)
-            imported.append(account)
-            log("imported %s (%s) from %s" % (account.uid[:8], account.realm, os.path.basename(p)))
-        except Exception as exc:
-            log("skip %s: %s" % (os.path.basename(p), exc))
-    return imported
-def desktop_credential_scan():
-    """Read-only scan of the desktop client credentials on this machine."""
-    return ca_accounts.scan_desktop_credentials()
-def account_views(realm=None):
-    """List view of every account, including a live readiness flag."""
-    if not POOL:
-        return []
-    return POOL.list_public(realm=realm)
 
 # --------------------------------------------------------- 积分获取历史（发放记录）
 # 上游对每个账号返回一份积分包清单（免费套餐、每日活跃奖励的 Bonus Pack、活动包…），
@@ -5720,110 +5552,6 @@ def _grant_action(index, uid, at):
                 "delta_seconds": int(round(at - item["at"]))}
     return None
 
-def credit_grants(now=None):
-    """每个积分包一行（新的在前）＋汇总；只读快照，不发上游请求。"""
-    now = time.time() if now is None else now
-    actions = _grant_actions()
-    rows = []
-    fetched = 0.0
-    for account in (POOL.accounts if POOL else []):
-        credits = getattr(account, "credits", None) or {}
-        try:
-            fetched = max(fetched, float(credits.get("updated_at") or 0))
-        except (TypeError, ValueError):
-            pass
-        for pkg in credits.get("packages") or []:
-            if not isinstance(pkg, dict):
-                continue
-            def _num(key):
-                try:
-                    return float(pkg.get(key) or 0)
-                except (TypeError, ValueError):
-                    return 0.0
-            expire_iso = pkg.get("expire_time") or pkg.get("cycle_end_time") or ""
-            create_at = _parse_stamp_epoch(pkg.get("create_time"))
-            rows.append({
-                "uid": account.uid,
-                "nickname": account.nickname or (account.uid or "")[:8],
-                "realm": account.realm,
-                "name": str(pkg.get("name") or pkg.get("package_code") or "Package"),
-                "product": str(pkg.get("sub_product_name") or pkg.get("product_name") or ""),
-                "grant_reason": str(pkg.get("grant_reason") or ""),
-                "size": _num("size"),
-                "remain": _num("remain"),
-                "used": _num("used"),
-                "unit": str(pkg.get("unit") or "credit"),
-                "create_at": create_at,
-                "create_iso": str(pkg.get("create_time") or ""),
-                "expire_at": _parse_stamp_epoch(expire_iso),
-                "expire_iso": str(expire_iso),
-                "no_expiry": bool(pkg.get("no_expiry")),
-                "days_left": pkg.get("days_left"),
-                "status": _grant_status(pkg, now),
-                "action": _grant_action(actions, account.uid, create_at),
-            })
-    # 新的在前；同一秒按账号、包名稳定排序，免得每次刷新顺序都在跳。
-    rows.sort(key=lambda r: (-(r["create_at"] or 0), r["nickname"], r["name"]))
-    return {
-        "ok": True,
-        "generated_at": now,
-        "generated_iso": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
-        "fetched_at": fetched or None,
-        "fetched_iso": (time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(fetched))
-                        if fetched else None),
-        "rows": rows,
-        "summary": {
-            "count": len(rows),
-            "size": round(sum(r["size"] for r in rows), 2),
-            "remain": round(sum(r["remain"] for r in rows), 2),
-            "used": round(sum(r["used"] for r in rows), 2),
-            "accounts": len(set(r["uid"] for r in rows)),
-        },
-    }
-
-
-# --------------------------------------------------------------- 任务状态快照
-# GET /tasks 每次都要向上游要两份数据（成长任务 + 汇总），实测约 2 秒；而看板切区域、
-# 切账号、切页面都会各打一次，用户在界面上就是"点了要等几秒才变"。这里按账号放一份
-# 短 TTL 快照：只有这条只读路径吃缓存，任何会改变任务状态的动作（执行/旅行/签到）都
-# 先清掉它，所以"刚点完执行却看到旧状态"不会发生。TTL 可用 WB_TASKS_CACHE_TTL 调，
-# 设 0 即关闭缓存、回到每次直连上游。
-TASKS_CACHE_TTL = float(os.environ.get("WB_TASKS_CACHE_TTL") or "20")
-_tasks_cache = {}
-_tasks_cache_lock = threading.Lock()
-
-def invalidate_tasks_cache():
-    """任务状态变了就清掉快照，下一次读重新向上游取。"""
-    with _tasks_cache_lock:
-        _tasks_cache.clear()
-
-def growth_snapshot(account):
-    """成长任务 + 汇总；TTL 内直接复用上一份快照，过期或没缓存才请求上游。
-
-    两条查询互不依赖（汇总那边自己还要问三个接口），所以并发发出：冷启动时这块
-    从"两条串起来等"变成一个来回，实测约 2 秒降到 1.5 秒以内。
-    """
-    if TASKS_CACHE_TTL <= 0:
-        from ca_tasks import fetch_growth_tasks, fetch_growth_summary
-        return _both(fetch_growth_tasks, fetch_growth_summary, account)
-    now = time.time()
-    with _tasks_cache_lock:
-        hit = _tasks_cache.get(account.uid)
-        if hit and hit[0] > now:
-            return hit[1]
-    from ca_tasks import fetch_growth_tasks, fetch_growth_summary
-    data = _both(fetch_growth_tasks, fetch_growth_summary, account)
-    with _tasks_cache_lock:
-        _tasks_cache[account.uid] = (time.time() + TASKS_CACHE_TTL, data)
-    return data
-
-def _both(tasks_fn, summary_fn, account):
-    """并发跑两条上游查询；任一条抛错就照旧往外抛（不写进快照）。"""
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        tasks_future = pool.submit(tasks_fn, account)
-        summary_future = pool.submit(summary_fn, account)
-        return tasks_future.result(), summary_future.result()
 
 
 _byacct_cache = {"at": 0.0, "data": None}
@@ -8016,29 +7744,6 @@ def _build_key_rows(key_map, realm=None):
     return out
 
 
-def _enrich_accounts_from_pool(acct_map, realm=None):
-    """Attach nickname/realm/credits for accounts that saw no traffic."""
-    if POOL:
-        for a in POOL.accounts:
-            if realm and a.realm != realm:
-                continue
-            if a.uid in acct_map:
-                acct_map[a.uid]["nickname"] = a.nickname
-                acct_map[a.uid]["realm"] = a.realm
-                acct_map[a.uid]["domain"] = a.domain
-                acct_map[a.uid]["credits"] = getattr(a, "credits", None) or {}
-            else:
-                    acct_map[a.uid] = {
-                        "uid": a.uid,
-                        "nickname": a.nickname,
-                        "realm": a.realm,
-                        "domain": a.domain,
-                        "credits": getattr(a, "credits", None) or {},
-                        "window": _new_analytics_stat(),
-                        "all_time": _new_analytics_stat(),
-                        "window_models": {},
-                        "all_models": {},
-                    }
 
 
 def _finalize_analytics_stat(stat_obj):
@@ -8072,7 +7777,7 @@ def _compute_usage_analytics_uncached(realm=None, since=None, until=None):
     acct_map = parts["accts"]
     model_map = parts["models"]
     key_map = parts["keys"]
-    _enrich_accounts_from_pool(acct_map, realm=realm)
+    # 账号池已移除：分析里的「账号」只是日志行上的标签，没有昵称/区域可补。
     all_summary = parts["summary"]
     window_summary = parts["window_summary"]
     _finalize_analytics_stat(all_summary)
@@ -9565,14 +9270,12 @@ def runtime_settings_view():
         "auth_required": auth_required(),
         "api_keys": keys,
         "deleted_api_keys": deleted_keys,
-        "limits": ca_settings.limits_snapshot(ACCOUNTS_DIR),
         "daily_token_limit": ca_settings.daily_token_limit(ACCOUNTS_DIR),
         "daily_credit_limit": ca_settings.daily_credit_limit(ACCOUNTS_DIR),
         "model_daily_token_limit": ca_settings.model_daily_token_limit(ACCOUNTS_DIR),
         "section_max_height": ca_settings.section_max_height(ACCOUNTS_DIR),
         "ui_language": ca_settings.ui_language(ACCOUNTS_DIR),
         "enable_anthropic_messages": ca_settings.enable_anthropic_messages(ACCOUNTS_DIR),
-        "local_web_tools": ca_settings.local_web_tools(ACCOUNTS_DIR),
         "egress_backoff_enabled":
             ca_settings.egress_backoff_enabled(ACCOUNTS_DIR),
         "log_db_enabled": ca_settings.log_db_enabled(ACCOUNTS_DIR),
@@ -9593,9 +9296,6 @@ def runtime_settings_view():
         "settings_file": ca_settings.settings_path(ACCOUNTS_DIR),
         "version": "1.7.10",
     }
-def current_account():
-    """Account used for display purposes (health / usage summaries)."""
-    return POOL.representative() if POOL else None
 # ---------------------------------------------------------------------------
 # Prefix-based session affinity (PATCHED-BY-OPS)
 # ---------------------------------------------------------------------------
@@ -9643,7 +9343,8 @@ AFFINITY_MAX_MSGS = int(os.environ.get("WB_AFFINITY_MAX_MSGS", "400") or 0)
 # 一个（那正是 400 条上限要解决的断连问题）。
 #
 # 取值：≥2 = 页大小（账号数）；1 = 和普通对话一样钉住（等于取消上限）；
-# 0 = 保持 1.6.x 的整池轮转。页的划分见 ca_accounts.AccountPool._page_slice。
+# 0 = 保持 1.6.x 的整池轮转。账号池移除后这个开关已无作用，保留读取以免
+# 老配置文件里的一行被当成错误。
 AFFINITY_PAGE_SIZE = int(os.environ.get("WB_AFFINITY_PAGE_SIZE", "3") or 0)
 def affinity_route(messages):
     """This conversation's (session_key, page).
@@ -9731,12 +9432,10 @@ _LOG_TAG_HINTS = (
     ("chat", ("chat:", "chat done", "request error", "/v1/chat",
               "/chat/completions", "responses")),
     ("scheduler", ("scheduler", "调度器")),
-    ("tasks", ("task", "任务", "打卡", "签到", "猫猫", "travel", "growth")),
     ("accounts", ("account", "账号", "pool", "imported")),
     ("pricing", ("pricing", "定价", "取价", "价格", "price", "抓取")),
     ("egress", ("egress", "出口", "槽位", "proxy slot", "mihomo")),
     ("upstream", ("upstream", "上游")),
-    ("webtools", ("webtool", "web tool", "本地网络工具")),
     ("catalog", ("model", "catalog", "模型")),
     ("auth", ("auth", "token", "oauth")),
     ("settings", ("settings", "设置")),
@@ -9797,8 +9496,6 @@ def log(msg, level=None, tag=None):
     sys.stderr.flush()
     add_log_entry(msg, level=level, tag=tag)
 
-# 本地网路工具的多引擎轮换、冷却与失败分类写进看板日志（tag=webtools）
-ca_webtools.set_logger(log)
 
 def get_logs(limit=200, level="", tag="", search="", since_id=0):
     # 落库开启时以数据库为准：它是完整历史（受保留上限约束），而内存环形缓冲
@@ -10027,48 +9724,6 @@ def catalog_meta(realm=None):
         return dict(meta) if meta else None
 
 
-def fetch_models(realm=None):
-    r = realm or CURRENT_REALM
-    with _lock:
-        c = _models_cache.get(r) or {"at": 0.0, "data": None}
-        if c["data"] and time.time() - c["at"] < 300:
-            return c["data"]
-    # One upstream walk per realm even when several callers miss the cache at
-    # the same moment: a batch of /v1/models requests must not turn into a
-    # batch of upstream requests.
-    with _catalog_lock:
-        with _lock:
-            c = _models_cache.get(r) or {"at": 0.0, "data": None}
-            if c["data"] and time.time() - c["at"] < 300:
-                return c["data"]
-        live, extras, source = curated_live_sources(r)
-        if not live:
-            # The narrow endpoint is not the desktop catalogue, so it keeps the
-            # old whitelist behaviour: only names the order table knows.
-            live = [(m, {}) for m in fetch_endpoint_models()]
-            extras = False
-            if live:
-                source = "endpoint"
-        entries = merge_catalog(live, realm=r, extras=extras)
-        note_bundled_reasoning(r, live, entries)
-        if not live:
-            # 没有任何活数据：清单完全来自内置快照（硬编码兜底）。
-            source = "bundled"
-        elif source in ("remote", "endpoint"):
-            # 记下「这个 realm 今天已经从 API 拿到过目录」，每日兜底循环据此
-            # 跳过（见 catalog_daily_pass）。
-            note_remote_catalog(r)
-        file_mtime = None
-        if source in ("cache", "legacy"):
-            try:
-                file_mtime = os.path.getmtime(product_config_path(r))
-            except OSError:
-                file_mtime = None
-        with _lock:
-            _models_cache[r] = {"at": time.time(), "data": entries}
-            _catalog_meta[r] = {"source": source, "fetched_at": time.time(),
-                                "file_mtime": file_mtime}
-        return entries
 # ---------------------------------------------------------------------------
 # 码道（华为云）模型目录与路由
 # ---------------------------------------------------------------------------
@@ -11069,16 +10724,6 @@ def codearts_catalog(force=False):
     return _CODEARTS_CATALOG
 
 
-def workbuddy_accounts_available():
-    """有没有配置 WorkBuddy 账号。
-
-    没有账号时**不该**把 WorkBuddy 那批模型挂进 /v1/models —— 清单是给客户端
-    选模型用的，宣告一批调用必然失败的模型只会让人以为是网关坏了。
-    （这是接码道时踩出来的：没账号时清单仍从内置快照兜底出 14 个模型，
-    实际一个都打不通。）
-    """
-    pool = POOL
-    return bool(pool is not None and getattr(pool, "accounts", None))
 
 
 #: 模型别名表文件名（放在 accounts/ 下，与 settings.json 同级）。
@@ -11337,17 +10982,6 @@ def routes_to_codearts(model_id):
     return is_codearts_model(model_id) and codearts_deployed()
 
 
-def workbuddy_pool_empty():
-    """这个部署压根没配 WorkBuddy 账号（只配了码道）。
-
-    只看「有没有账号」，不看「账号现在忙不忙」：全在冷却的池子仍然会在
-    几秒后恢复，那是 429/503 的语义；一个账号都没有则是**这个部署不服务
-    这个模型**，属于 404。两者混在一起会让人以为网关坏了。
-    """
-    try:
-        return POOL is None or not POOL.accounts
-    except Exception:
-        return False
 
 
 def unserved_model_message(model_id):
@@ -11714,22 +11348,6 @@ REMOTE_CONFIG_PATH = "/v3/config"
 VARIANT_SUFFIXES = ("-sg", "-x")
 
 
-def remote_config_headers(account, realm, ua=None):
-    """Headers for the product-config call.
-
-    The UA decides which catalogue comes back and only the desktop UA returns
-    the full list (an unknown one is a hard 400, code 12403), so this uses a
-    realm's fixed desktop UA rather than the account's current identity.
-    """
-    cfg = ca_accounts.get_realm_config(realm)
-    return {
-        "Accept": "application/json, text/plain, */*",
-        "User-Agent": ua or cfg["chat_ua"],
-        "Origin": cfg["origin"],
-        "Referer": cfg["origin"] + "/",
-        "Authorization": "Bearer " + account.access_token,
-        "X-User-Id": account.uid,
-    }
 
 
 def _agent_model_lists(payload):
@@ -11866,45 +11484,6 @@ def curate_remote_catalog(realm, ids, meta=None):
     return out
 
 
-def fetch_remote_product_config(realm):
-    """(ids, meta) from the realm's own product-config endpoint, or None.
-
-    At most two 10s attempts bound the wait: one per desktop UA, because the
-    endpoint sits behind the WAF where a dropped connection is normal, and
-    every caller has a fallback (the desktop cache file, the narrow model
-    endpoint, the bundled snapshot).
-    """
-    if realm != "cn" or POOL is None:
-        return None
-    account = POOL.representative(realm=realm)
-    if account is None or not account.access_token:
-        log("remote catalog: no usable %s account, skipping" % realm)
-        return None
-    cfg = ca_accounts.get_realm_config(realm)
-    url = cfg["chat_upstream"] + REMOTE_CONFIG_PATH
-    # The chat UA is the desktop identity the rest of the gateway uses; the
-    # plain app UA is the second try, for a build that answers only to it.
-    uas = [cfg["chat_ua"]]
-    if cfg.get("billing_ua") and cfg["billing_ua"] != cfg["chat_ua"]:
-        uas.append(cfg["billing_ua"])
-    last = None
-    for ua in uas:
-        headers = remote_config_headers(account, realm, ua)
-        req = urllib.request.Request(url, headers=headers, method="GET")
-        try:
-            with ca_accounts.urlopen(req, timeout=10, proxy=account.proxy) as resp:
-                payload = json.loads(resp.read().decode("utf-8", "replace"))
-        except Exception as exc:
-            last = exc
-            continue
-        parsed = parse_remote_catalog(payload)
-        if parsed:
-            # 成功副本落盘留档（catalog/，纯存档；见 persist_remote_catalog）。
-            persist_remote_catalog(realm, payload)
-            return parsed
-        last = "empty catalogue"
-    log("remote catalog: %s fetch failed (%s)" % (realm, last))
-    return None
 
 
 #: 面板「刷新模型清单」按钮的服务端冷却：同一 realm 两次手动强制拉取的最短
@@ -11915,57 +11494,6 @@ CATALOG_REFRESH_COOLDOWN = 30.0
 _catalog_refresh_at = {}
 
 
-def refresh_catalog(realm):
-    """手动刷新：立即向上游拉一次该 realm 的目录并发布到 /v1/models。
-
-    与自动链（fetch_models 缓存过期后）共用同一条取数管线：
-    fetch_remote_product_config 只挑该 realm 的代表账号、只打该 realm 的
-    端点（realm 隔离由它内部的 POOL.representative(realm=realm) 保证，
-    绝无跨区取数）；_catalog_lock 与自动链互斥，不会并发打到上游；失败
-    时不清旧缓存——清单保持可用，等用户或自动链下次再拉。与自动链的一个
-    差别：这里不读桌面缓存文件，拉不到就说拉不到（手动按钮要的是「这次
-    真的从上游 API 取到了」的如实反馈）。
-
-    返回面板可直接展示的 dict（任何情况都不抛异常）：
-      {"ok": bool, "realm": str|None, "source": "remote"|None,
-       "count": int, "cooldown": bool?, "retry_after": float?, "msg": str}
-    """
-    if realm != "cn":
-        return {"ok": False, "realm": None, "source": None, "count": 0,
-                "msg": "realm 必须是 cn"}
-    now = time.time()
-    with _lock:
-        wait = CATALOG_REFRESH_COOLDOWN - (now - _catalog_refresh_at.get(realm, 0.0))
-        if wait > 0:
-            return {"ok": False, "realm": realm, "source": None, "count": 0,
-                    "cooldown": True, "retry_after": round(wait, 1),
-                    "msg": "刷新太频繁：约 %d 秒后可再试" % max(1, int(wait + 0.5))}
-        # 先登记再拉取：失败也进冷却，连点的高频重试在这里就被拦住。
-        _catalog_refresh_at[realm] = now
-    with _catalog_lock:
-        try:
-            remote = fetch_remote_product_config(realm)
-        except Exception as exc:
-            log("catalog refresh: %s failed (%s)" % (realm, exc))
-            remote = None
-        if not remote:
-            log("catalog refresh: %s kept the previous list (upstream gave none)" % realm)
-            return {"ok": False, "realm": realm, "source": None, "count": 0,
-                    "msg": "上游未返回可用目录（账号不可用或网络异常），已保留现有清单"}
-        ids, meta = remote
-        live = [(mid, meta.get(mid) or {})
-                for mid in curate_remote_catalog(realm, ids, meta)]
-        entries = merge_catalog(live, realm=realm, extras=True)
-        note_bundled_reasoning(realm, live, entries)
-        with _lock:
-            _models_cache[realm] = {"at": time.time(), "data": entries}
-            _catalog_meta[realm] = {"source": "remote", "fetched_at": time.time(),
-                                    "file_mtime": None}
-    log("catalog refresh: %s updated from the product-config endpoint (%d models)"
-        % (realm, len(entries)))
-    note_remote_catalog(realm)
-    return {"ok": True, "realm": realm, "source": "remote", "count": len(entries),
-            "msg": "已从上游 API 更新清单，共 %d 个模型" % len(entries)}
 
 
 #: 目录的「每天至少从上游 API 取一次」兜底。活跃使用的部署里 fetch_models
@@ -11993,134 +11521,28 @@ def catalog_daily_due(now=None):
                 if now - _catalog_last_remote.get(r, 0.0) >= CATALOG_DAILY_INTERVAL]
 
 
-def catalog_daily_pass(now=None):
-    """每日兜底的一轮：只为到期的 realm 触发一次刷新。
-
-    与手动刷新共用 refresh_catalog（同一把 _catalog_lock、同一个 30s 冷却、
-    同样的 realm 隔离），失败保留旧数据。没有可用账号的 realm 静默跳过——
-    不是错误，等有账号了下一轮再看，也不留日志噪声。
-    """
-    done = []
-    for realm in catalog_daily_due(now):
-        if POOL is None or POOL.representative(realm=realm) is None:
-            continue
-        out = refresh_catalog(realm)
-        log("catalog daily: %s -> %s" % (realm, out.get("msg")))
-        done.append((realm, out))
-    return done
 
 
-def catalog_daily_loop():
-    # 先等启动流程跑完（账号池、服务就位），之后每小时看一眼。
-    time.sleep(60)
-    while True:
-        try:
-            catalog_daily_pass()
-        except Exception as exc:
-            log("catalog daily: pass failed (%s)" % exc)
-        time.sleep(3600)
 
 
-def start_catalog_daily():
-    threading.Thread(target=catalog_daily_loop, name="catalog-daily",
-                     daemon=True).start()
 
 
-def product_config_path(realm):
-    """The desktop cache file for a realm."""
-    home = os.path.expanduser("~")
-    cache_dir = ".workbuddy"
-    return os.path.join(home, cache_dir, "cache", "acc-product-config-v3.json")
 
 
-def catalog_cache_path(realm):
-    """网关自己的落盘副本：最近一次成功拉取的 /v3/config 响应体。"""
-    return os.path.join(CATALOG_CACHE_DIR, "product-config-%s.json" % realm)
 
 
-def persist_remote_catalog(realm, payload):
-    """把刚成功拉取的 /v3/config 响应体原样落盘一份（原子写；失败静默）。
-
-    纯存档：网关自己不读它，只为留一份「最近一次 API 拿到的原始目录」——
-    重启或排查时可直接查看文件。写盘失败不是取数失败，绝不能影响本次结果。
-    """
-    try:
-        os.makedirs(CATALOG_CACHE_DIR, exist_ok=True)
-        path = catalog_cache_path(realm)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
-            json.dump(payload, fh, ensure_ascii=False)
-        os.replace(tmp, path)
-    except Exception as exc:
-        log("catalog cache: %s persist failed (%s)" % (realm, exc))
 
 
 def read_cached_remote_catalog(realm):
-    """(ids, meta) from the desktop cache file, parsed like the remote."""
-    try:
-        with open(product_config_path(realm), encoding="utf-8") as fh:
-            payload = json.load(fh)
-    except Exception:
-        return None
-    return parse_remote_catalog(payload)
+    """桌面端缓存里的目录。WorkBuddy 桌面板已与网关无关，恒为 None。
 
-
-def curated_live_sources(realm):
-    """(entries, extras, source) for the realm's live catalogue, already curated.
-
-    Remote first, then the desktop cache file - the cache is this very
-    response written to disk, so both go through the same parser and the same
-    rules. `extras` says the entries came from the desktop catalogue, whose
-    membership may add a model the curated tables have never seen; the legacy
-    readers keep the old whitelist behaviour. `source` names where the batch
-    came from ("remote" = 上游 /v3/config，"cache" = 同机的桌面缓存文件，
-    "legacy" = 同一文件的宽松解析)，面板据此把「通过 API 获取」与「读取
-    配置文件」分开说；None = 哪里都没拿到。
+    这个文件是 WorkBuddy 桌面应用自己落的 `acc-product-config-v3.json`，
+    账号池移除后没有任何东西会去写它；留一条恒 None 的分支，调用方（免费
+    模型判定）自然退化成只用随包静态表。
     """
-    remote = None
-    try:
-        remote = fetch_remote_product_config(realm)
-    except Exception as exc:
-        log("remote catalog: %s failed (%s)" % (realm, exc))
-    if remote:
-        ids, meta = remote
-        return ([(mid, meta.get(mid) or {})
-                for mid in curate_remote_catalog(realm, ids, meta)], True, "remote")
-    cached = read_cached_remote_catalog(realm)
-    if cached:
-        ids, meta = cached
-        return ([(mid, meta.get(mid) or {})
-                for mid in curate_remote_catalog(realm, ids, meta)], True, "cache")
-    legacy = read_product_config_models(realm=realm)
-    if legacy:
-        ids = [mid for mid, _ in legacy]
-        meta = dict((mid, m) for mid, m in legacy if isinstance(m, dict))
-        keep = set(curate_remote_catalog(realm, ids, meta))
-        return ([(mid, m) for mid, m in legacy if mid in keep], False, "legacy")
-    return [], False, None
+    return None
 
 
-def fetch_endpoint_models():
-    account = POOL.pick(realm="cn") if POOL else None
-    if account is None:
-        log("model discovery skipped: no usable account")
-        cached = _models_cache.get("cn", {}).get("data")
-        return [m for m, _ in (cached or [])]
-    req = urllib.request.Request(UPSTREAM + MODELS_PATH, method="GET", headers=account.headers())
-    try:
-        with ca_accounts.urlopen(req, timeout=30, proxy=account.proxy) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
-    except Exception as exc:
-        log(f"model discovery failed: {exc}")
-        cached = _models_cache.get("cn", {}).get("data")
-        return [m for m, _ in (cached or [])]
-    ids, seen = [], set()
-    for agent in (payload.get("data") or {}).get("agents") or []:
-        for mid in agent.get("models") or []:
-            if mid not in seen:
-                seen.add(mid)
-                ids.append(mid)
-    return ids
 def clean_chunk(raw):
     """Drop the empty noise fields the WorkBuddy gateway pads deltas with."""
     try:
@@ -13552,37 +12974,8 @@ def gateway_hint(status, message):
 EGRESS_SLEEP_MAX = 5.0
 
 
-def retry_after_seconds(model, realm):
-    """Shortest wait until any account of this realm can serve `model` again."""
-    if not POOL:
-        return 60
-    realm = ca_accounts.match_realm(realm)
-    waits = [a.throttle_wait(model=model) for a in POOL.accounts
-             if a.realm == realm and a.enabled and a.access_token]
-    active = [w for w in waits if w > 0]
-    return int(min(active)) if active else 60
 
 
-def realm_model_throttled(realm, model):
-    """True when accounts exist and are healthy but all are cooling this model.
-
-    Only a *model* cooldown counts. A plain account cooldown usually comes from
-    a transient network error, and reporting that as "rate limited" told
-    clients to back off from a model that was never throttled.
-    """
-    if not POOL:
-        return (False, 0)
-    existing = [a for a in POOL.accounts
-                if a.realm == realm and a.enabled and a.access_token]
-    if not existing:
-        return (False, 0)
-    waits = []
-    for a in existing:
-        wait = getattr(a, "model_cooldowns", {}).get(model, 0.0) - time.time()
-        waits.append(max(0.0, wait))
-    if waits and all(w > 0 for w in waits):
-        return (True, int(min(waits)))
-    return (False, 0)
 
 
 def is_transient(exc):
@@ -13863,397 +13256,7 @@ def _apply_stream_idle_timeout(response, seconds):
     return ca_codearts.apply_stream_idle_timeout(response, seconds)
 
 
-def open_upstream(payload, session_key=None, target_realm=None, prebuilt_body=None):
-    # Refresh the daily guards before picking. The scan underneath is
-    # incremental and TTL-cached, so this is a stat() plus a cached dict on
-    # the hot path, and an account parked by any of the guards is skipped
-    # like any other unusable one. One call covers all three guards: they
-    # share the same fold, and calling them separately paid for it three
-    # times on every request.
-    apply_daily_guards()
-    realm = ca_accounts.match_realm(
-        target_realm or detect_model_realm(payload.get("model")) or CURRENT_REALM)
-    model = str(payload.get("model") or "")
-    # 复用调用方已建好的 body：/v1/chat/completions 在进这里之前已经 build 过
-    # 一次（那次的产物只用于一行日志和 prompt_fingerprint），此前这里会为同一
-    # 个 payload 再建一遍，大请求实测白付 ~13.6ms/请求。403 降级重试时仍按
-    # payload 重建（degrade 会切换 prompt 模式，必须拿到新 body）。
-    upstream_body = (prebuilt_body if prebuilt_body is not None
-                     else build_upstream_body(payload))
-    # PATCHED-BY-OPS: 客户端未提供会话标识时，用对话稳定前缀兜底。
-    # 位置放在 build_upstream_body 之后，保证键与真正发往上游的消息一致
-    # （该函数可能在最前面插入 SYSTEM_PROMPT）。affinity_page 只在超限对话上
-    # 有值（页内轮转），客户端自带会话键的请求不参与。
-    affinity_page = None
-    if not session_key:
-        session_key, affinity_page = affinity_route(upstream_body.get("messages"))
-        if session_key and AFFINITY_DEBUG:
-            log("affinity: derived %s for %d msgs"
-                % (session_key, len(upstream_body.get("messages") or [])))
-    total = max(1, POOL.count_ready(realm, model=model)) if POOL else 1
-    tried = set()
-    # 这一轮请求已经记过账的账号：重试轮（transient_hits 后 tried.clear() 整池
-    # 重轮）会把同一个账号再挑一遍，若每次都记，一次请求就能给同一个账号记上
-    # 好几笔 fails/degrade——池子越空、重轮越频繁，越容易把一个刚抖了一下的
-    # 账号直接推过熔断阈值。一次请求对一个账号最多记一次。
-    charged = set()
 
-    def charge_account(account, message, unknown):
-        """给账号记一笔失败，一次请求最多记一笔（见上面的 charged）。"""
-        if account.uid in charged:
-            return False
-        charged.add(account.uid)
-        if unknown:
-            account.note_unknown_failure(message)
-        else:
-            account.note_failure(message)
-        return True
-
-    last_error = None
-    last_uid = None
-    last_429 = None
-    last_429_detail = ""
-    last_403_detail = ""
-    transient_hits = 0
-    degraded_retried = False
-    # 本机断网的次数：这一轮里只要出现过，最终报错就按「网络不可用」报，不按
-    # 「上游不稳」报——两者的处置完全相反（去查本机网络 vs 去查账号/上游）。
-    local_net_hits = 0
-    # Panel parity: header/idle timeouts are read once per request, not
-    # once per retry, so a settings read never lands in the retry loop.
-    header_timeout, idle_timeout = upstream_timeouts()
-    # Same treatment for the egress-level backoff switch (issue #271): one read
-    # per request, and when it is off the retry loop below is byte-for-byte the
-    # old path.
-    egress_backoff = ca_settings.egress_backoff_enabled(ACCOUNTS_DIR)
-    # 同一段出口在一次请求里只记一次：重试轮（tried.clear() 之后整池重轮）会把
-    # 同一个账号 / 同一段出口再挑一遍，若每次都记，一次请求就能把共享计数器推高
-    # 好几步——那正是 issue #271 里「一次请求给同一账号记好几笔」的另一半。已经
-    # 记过的那一段沿用同一段退避，不重复记。
-    egress_wait = {}
-
-    def charge_egress(url, proxy):
-        key = ca_upstream_pool.egress_key(url, proxy)
-        if key not in egress_wait:
-            egress_wait[key] = ca_egress.note_transient(key)
-        return egress_wait[key]
-
-    max_attempts = max(2, total) + 1
-    # 每次失败都把【出错的那个账号】从这段对话的历史里降级（demote），而不是
-    # 忘掉整段对话：重选时优先回到还留着这段前缀的暖号（见 SessionAffinity），
-    # 一次大 prompt 的冷启动比重选一次账号贵得多。
-    for _attempt in range(max_attempts):
-        account = POOL.pick_for_session(realm=realm, session_key=session_key,
-                                        exclude=tried, model=model,
-                                        page=affinity_page) if POOL else None
-        if account is None:
-            if transient_hits and _attempt < max_attempts - 1:
-                tried.clear()
-                time.sleep(min(1.5 * transient_hits, 3.0))
-                continue
-            break
-        if account.realm != realm:
-            if session_key and POOL: POOL.affinity.demote(session_key, account.uid)
-            continue
-        tried.add(account.uid)
-        last_uid = account.uid
-        cfg = ca_accounts.get_realm_config(account.realm)
-        chat_url = account.chat_base_url() + CHAT_PATH
-        # The cache key is account scoped, so it is rebuilt per candidate rather
-        # than once up front. Opt-in only: measurement showed the upstream
-        # caches prefixes without it (see prompt_cache_key_enabled).
-        if prompt_cache_key_enabled():
-            attempt_body = inject_prompt_cache_key(upstream_body, account.uid, session_key)
-        else:
-            attempt_body = upstream_body
-        attempt_data = json.dumps(attempt_body, ensure_ascii=False).encode("utf-8")
-        # 会话头族（X-Conversation-ID 等）由身分构造里每次请求现生成：上游不拿
-        # 这个 id 存历史，不需要按会话复用；缺了它上游的渠道校验会回 400 /
-        # code 11-128（`conversation id missing`），补的是「有」而不是「稳定」。
-        req = urllib.request.Request(chat_url, data=attempt_data, method="POST",
-                                     headers=account.headers(purpose="chat"))
-        try:
-            resp = ca_accounts.urlopen(req, timeout=header_timeout,
-                                       proxy=account.proxy)
-            _apply_stream_idle_timeout(resp, idle_timeout)
-            account.note_success(model=model)
-            if egress_backoff:
-                # This outbound path just served a request, so its transient
-                # streak is over (same rule as the account's note_success).
-                ca_egress.note_success(
-                    ca_upstream_pool.egress_key(chat_url, account.proxy))
-            # The third element is the reasoning effort this request ran at: the
-            # body is rebuilt per attempt, but the effort is a property of the
-            # model and the request, and the callers record it on the usage row.
-            return resp, account, upstream_effort_of(upstream_body, model)
-        except urllib.error.HTTPError as exc:
-            if exc.code == 429:
-                try:
-                    detail = exc.read(600).decode("utf-8", "replace")
-                except Exception:
-                    detail = ""
-                reset_at = parse_rate_limit_reset(detail)
-                if rate_limit_is_account_level(detail, reset_at):
-                    wait = account.note_soft_rate("HTTP 429 (account soft rate)")
-                    log("account %s soft-rate limited (%r), cooling %.0fs (streak %d)"
-                        % (account.uid[:8], credential_scope_phrase(detail), wait,
-                           account.soft_streak))
-                    if session_key and POOL:
-                        POOL.affinity.demote(session_key, account.uid)
-                    last_error = exc
-                    last_429 = exc
-                    last_429_detail = detail
-                    continue
-                # No reset clock, so nothing here says whether the limit is on
-                # the credential or on one model. For a recognised soft-limit
-                # shape the repetition is the evidence: the window goes on this
-                # model and grows on the short ladder (60s up to 10m) instead of
-                # the credential's 600s -> 2h one. An unrecognised body gets the
-                # same 60s on one model, with no streak at all.
-                wait = max(1.0, reset_at - time.time()) if reset_at else 60.0
-                if reset_at is None and rate_limit_is_soft_shape(detail):
-                    wait = account.note_unscoped_rate(model)
-                    log("account %s: unscoped 429, parking '%s' for %.0fs "
-                        "(unscoped streak %d)"
-                        % (account.uid[:8], model, wait, account.unscoped_streak))
-                # Model-scoped: only this model is throttled for this account,
-                # so sibling models stay serviceable on the same credential.
-                account.note_error("HTTP 429 (model throttled)", model=model, until=reset_at,
-                                   cooldown=wait, detail=detail)
-                if reset_at:
-                    # A cap with a reset clock is the one observable moment the
-                    # window budget can be measured from; the usage rows alone
-                    # lose it (only the last account of a retry batch keeps its
-                    # attribution). See note_limit_event().
-                    note_limit_event(account, model, reset_at)
-                    # 「达到限额」的唯一标志是上游返回 6004（用户口径）：别的
-                    # 429 即使带重置墙钟也不构成额度判定，不记 cap、不写盘。
-                    # 记录范围（免费模型）由 note_model_cap 把守——范围外的
-                    # 模型返回 False，重启后自动放开，不参与持久化禁用。
-                    if rate_limit_is_cap(detail):
-                        try:
-                            if account.note_model_cap(model, reset_at):
-                                _save_account_caps(account, model, reset_at)
-                        except Exception as exc:
-                            log("account %s: model cap not persisted: %s"
-                                % (account.uid[:8], exc))
-                log("account %s throttled on '%s' (429), retry in %ds"
-                    % (account.uid[:8], model, int(wait)))
-                if session_key and POOL:
-                    POOL.affinity.demote(session_key, account.uid)
-                last_error = exc
-                last_429 = exc
-                last_429_detail = detail
-                continue
-            if exc.code == 403:
-                try:
-                    detail = exc.read(600).decode("utf-8", "replace")
-                except Exception:
-                    detail = ""
-                # 先分流：上游风控限制（code 11140「账号存在异常行为，已被限制
-                # 使用」）是账号级的坏，降级提示词救不了，透传给客户端只会让
-                # 一个被限制的账号把对话一次次打死。冷却这个账号、换下一个继
-                # 续；全都试完还是不行才把原因交给客户端。
-                if restriction_is_account_level(detail):
-                    account.note_error("HTTP 403 (account restricted)",
-                                       cooldown=RESTRICTED_403_COOLDOWN,
-                                       single_account=(total <= 1), detail=detail)
-                    log("account %s restricted by upstream (403 11140), "
-                        "cooling %.0fs" % (account.uid[:8], RESTRICTED_403_COOLDOWN))
-                    if session_key and POOL:
-                        POOL.affinity.demote(session_key, account.uid)
-                    last_error = exc
-                    last_403_detail = detail
-                    continue
-                # Panel degrade.go: a content rejection in passthrough/append
-                # mode is usually a system-prompt fingerprint false positive.
-                # Switch to the minimal neutral prompt until next 00:00 CST
-                # and retry this turn once; custom mode opted out.
-                if (not degraded_retried
-                        and prompt_mode_config().get("mode") in ("passthrough", "append")):
-                    PROMPT_DEGRADE.trigger()
-                    degraded_retried = True
-                    upstream_body = build_upstream_body(payload)
-                    tried.discard(account.uid)
-                    log("upstream 403 (content review) -> degraded prompt retry")
-                    continue
-                log("upstream 403 for '%s' (content review), passing through" % model)
-                if session_key and POOL:
-                    POOL.affinity.demote(session_key, account.uid)
-                last_error = exc
-                last_403_detail = detail
-                break
-            if exc.code == 402:
-                try:
-                    detail = exc.read(400).decode("utf-8", "replace")
-                except Exception:
-                    detail = ""
-                account.note_balance_cooled(detail or "HTTP 402 (insufficient credits)")
-                log("account %s out of credits (402), parked until 04:00"
-                    % account.uid[:8])
-                if session_key and POOL:
-                    POOL.affinity.demote(session_key, account.uid)
-                last_error = exc
-                continue
-            if exc.code == 401:
-                log("account %s rejected (HTTP 401), rotating" % account.uid[:8])
-                if session_key and POOL:
-                    POOL.affinity.demote(session_key, account.uid)
-                account.note_error("HTTP 401",
-                                   cooldown=60,
-                                   single_account=(total <= 1))
-                last_error = exc
-                continue
-            if exc.code >= 500:
-                # 一切服务端 5xx（含上游自定义的 550 这类）都按瞬时故障轮转，
-                # 不在已知清单里的也不能把错误原样甩回客户端——换号是默认，
-                # 全试完才交出去。
-                transient_hits += 1
-                if egress_backoff and exc.code in (502, 503, 504):
-                    # Gateway-side blips (502/503/504) say the path is unhappy,
-                    # not the credential: charge the egress and back off for
-                    # seconds (issue #271). 500 stays on the account - it can be
-                    # a real fault tied to this credential and needs another look
-                    # before it is moved off the breaker.
-                    wait = charge_egress(chat_url, account.proxy)
-                    log("upstream %s for '%s', backing off the egress %.1fs"
-                        % (exc.code, model, wait))
-                    if session_key and POOL:
-                        POOL.affinity.demote(session_key, account.uid)
-                    last_error = exc
-                    time.sleep(min(wait, EGRESS_SLEEP_MAX))
-                    continue
-                charge_account(account, "HTTP %d" % exc.code, unknown=False)
-                log("upstream %s for '%s', retrying (fails=%d)"
-                    % (exc.code, model, account.fails))
-                if session_key and POOL:
-                    POOL.affinity.demote(session_key, account.uid)
-                last_error = exc
-                continue
-            raise
-        except Exception as exc:
-            if session_key and POOL:
-                POOL.affinity.demote(session_key, account.uid)
-            if looks_like_local_network(exc):
-                # 本机没网：不记账。账号没发出去一个字节，这笔不该算它的；
-                # 断网期间每次都记的话，网络一恢复池子里全是冷却中的账号。
-                # 也不能只 break——网络抖动几秒很常见，先原地重试几轮。
-                local_net_hits += 1
-                if local_net_hits == 1:
-                    log("local network looks down (%s); not charging any account"
-                        % exc_detail(exc))
-                last_error = exc
-                time.sleep(min(0.3 * local_net_hits, 1.5))
-                continue
-            if is_transient(exc):
-                transient_hits += 1
-                if egress_backoff:
-                    # A transport blip is the path's problem, not the account's:
-                    # charge the egress and back off for seconds (issue #271).
-                    # The account's fails/degrade counters are left alone, so a
-                    # few seconds of flakiness no longer parks healthy accounts.
-                    wait = charge_egress(chat_url, account.proxy)
-                    log("account %s: upstream connection hiccup for '%s' (%s), "
-                        "backing off the egress %.1fs"
-                        % (account.uid[:8], model, exc_detail(exc), wait))
-                    last_error = exc
-                    time.sleep(min(wait, EGRESS_SLEEP_MAX))
-                    continue
-                charge_account(account, "connection: %s" % exc_detail(exc, 120),
-                               unknown=True)
-                # 带上 UID：这一行同时是一次扣分（连续 3 次就把账号熔断 30
-                # 分钟），不写清楚是谁挨的这一下，事后只能看着一串 hiccup 猜
-                # 是哪几个账号被关掉、池子为什么突然空了。
-                log("account %s: upstream connection hiccup for '%s' (%s), "
-                    "retrying (degrade=%d)"
-                    % (account.uid[:8], model, exc_detail(exc), account.degrade_count))
-                last_error = exc
-                time.sleep(min(0.6 * transient_hits, 2.0))
-                continue
-            charge_account(account, str(exc)[:120], unknown=True)
-            account.note_error(str(exc)[:120], cooldown=60, single_account=(total <= 1))
-            last_error = exc
-            continue
-    if last_error is not None:
-        # Carry the account that produced the failure out to the caller, so
-        # the error row can name it even though the local variable that would
-        # have held it was never assigned in the caller.
-        try:
-            last_error.account_uid = last_uid
-        except Exception:
-            pass
-        if looks_like_local_network(last_error):
-            # 最后一笔就是本机网络的问题：按「本机网络不可用」上报，不要报成
-            # 「上游不可达」——后者会让人去查上游/账号，而真正要查的是本机。
-            exc = LocalNetworkError(exc_detail(last_error))
-            exc.account_uid = last_uid
-            raise exc
-        if last_429 is not None:
-            exc = RateLimited(last_429, last_429_detail,
-                              wait=retry_after_seconds(model, realm))
-            exc.account_uid = last_uid
-            raise exc
-        if last_403_detail:
-            exc = ContentRejected(last_error, last_403_detail)
-            exc.account_uid = last_uid
-            raise exc
-        raise last_error
-    throttled, wait = realm_model_throttled(realm, model)
-    if throttled:
-        raise RateLimited(None, "usage exceeds frequency limit", wait=wait)
-    enabled = [a for a in POOL.accounts
-               if a.realm == realm and a.enabled and a.access_token] if POOL else []
-    if enabled and all(a.daily_limit_blocked() for a in enabled):
-        reason = ("every usable account reached today's token limit (%s per "
-                  "account); the pool resumes after local midnight"
-                  % ca_settings.daily_token_limit(ACCOUNTS_DIR, realm))
-        raise RateLimited(None, reason,
-                          wait=seconds_until_local_midnight(), message=reason)
-    if enabled and model and all(a.credit_limit_blocked(model) for a in enabled):
-        reason = ("every usable account reached today's credit limit (%s per "
-                  "account); paid models resume after local midnight, free "
-                  "models keep working"
-                  % ca_settings.daily_credit_limit(ACCOUNTS_DIR, realm))
-        raise RateLimited(None, reason,
-                          wait=seconds_until_local_midnight(), message=reason)
-    if enabled and model and all(a.model_token_limit_blocked(model) for a in enabled):
-        reason = ("every usable account reached today's token limit for %s "
-                  "(%s per account); the model resumes after local midnight"
-                  % (model, ca_settings.model_daily_token_limit(ACCOUNTS_DIR, realm)))
-        raise RateLimited(None, reason,
-                          wait=seconds_until_local_midnight(), message=reason)
-    raise RuntimeError("no usable account for realm '%s': all are disabled, cooling down, "
-                       "expired or parked by the daily token limit%s"
-                       % (realm, pool_unavailable_detail(realm, model)))
-
-def pool_unavailable_detail(realm, model=None):
-    """把该区域每个账号不可用的原因拼成一句，附在「没有可用账号」后面。
-
-    这句话以前只列了四种可能（停用 / 冷却 / 过期 / 日限额），而 v1.6.16 之后
-    账号还会被熔断与降权窗口挡住——恰好这两种一个字都没提。于是生产上出现过
-    一场很难解释的报错：上游成片丢连接，几个账号各连踩 3 次触发 30 分钟熔断，
-    池子瞬间空掉、请求 11ms 就回 503，而看板上那些账号仍然显示「可用」，
-    排查的人只能对着「明明有 9 个账号」的池子猜。
-
-    这里不改变判定，只把判定结果说出来：每个不可用账号「八位 UID + 原因」。
-    """
-    if POOL is None:
-        return ""
-    realm = ca_accounts.match_realm(realm)
-    accounts = [a for a in POOL.accounts if a.realm == realm]
-    if not accounts:
-        return "；该区域没有任何账号"
-    reasons = []
-    for account in accounts:
-        try:
-            reason = account.unavailable_reason(model=model)
-        except Exception:
-            reason = ""
-        if reason:
-            reasons.append("%s %s" % ((account.uid or "?")[:8], reason))
-    if not reasons:
-        return ""
-    return "；各账号：%s" % "，".join(reasons)
 
 #: 「测试」默认用哪条模型：最便宜、任何区域都有的那条。
 TEST_MODEL_DEFAULT = "deepseek-v4.1-flash"
@@ -14269,119 +13272,7 @@ def _is_public_addr(text):
     return not (addr.is_private or addr.is_loopback or addr.is_link_local
                 or addr.is_reserved or addr.is_multicast or addr.is_unspecified)
 
-def probe_local_network(realm):
-    """本机到该区域上游这条路通不通：DNS 解析 + TCP 握手。
 
-    一键测试里最容易被误判的就是这一项：本机一断网，每个账号都会失败，用户看到的
-    却是「账号全挂了」，然后越测越乱。先把这条路单独确认掉，再谈账号。
-
-    目标是各区域写死的上游主机（不是用户给的 URL），并且只接受 https、拒绝解析到
-    环回/私有段的结果——配置被改坏时宁可报错，也不去连一个不该连的地址。
-    """
-    url = str(ca_accounts.get_realm_config(realm).get("chat_upstream") or "")
-    info = {"realm": realm, "url": url, "host": "", "ip": "", "ok": False,
-            "dns_ms": None, "tcp_ms": None, "error": ""}
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname:
-        info["error"] = "上游地址必须是 https + 主机名：%s" % url
-        return info
-    host = parsed.hostname
-    port = parsed.port or 443
-    info["host"] = host
-    t0 = time.time()
-    try:
-        addrinfos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
-    except Exception as exc:
-        info["error"] = "DNS 解析失败：%s" % exc_detail(exc)
-        return info
-    info["dns_ms"] = int((time.time() - t0) * 1000)
-    for family, socktype, proto, _canon, sockaddr in addrinfos:
-        if not _is_public_addr(sockaddr[0]):
-            info["error"] = "解析到非公网地址 %s，已拒绝连接" % sockaddr[0]
-            return info
-        info["ip"] = str(sockaddr[0])
-        t1 = time.time()
-        try:
-            with socket.socket(family, socktype, proto) as sock:
-                sock.settimeout(5)
-                sock.connect(sockaddr)
-        except Exception as exc:
-            info["error"] = "TCP 连接失败：%s" % exc_detail(exc)
-            return info
-        info["tcp_ms"] = int((time.time() - t1) * 1000)
-        info["ok"] = True
-        return info
-    info["error"] = "没有可用的解析结果"
-    return info
-
-def probe_account(account, model=None, timeout=30):
-    """给一个账号发一条最小请求，返回一行结果；成功即清掉它的本地惩罚。
-
-    单个「测试」与「一键测试」共用这一份：两边各写一套的话，早晚一边忘了清计数、
-    另一边忘了认本机断网——而这两件事正是「明明测了能用，它还熔断」的全部来源。
-    """
-    model = model or TEST_MODEL_DEFAULT
-    row = {"uid": account.uid, "nickname": account.nickname or account.uid[:8],
-           "realm": account.realm, "model": model, "ok": False, "elapsed_ms": 0,
-           "status": None, "reply": "", "error": "", "network": False}
-    chat_url = account.chat_base_url() + CHAT_PATH
-    test_body = {"model": model, "messages": [{"role": "user", "content": "hi"}],
-                 "stream": False}
-    body = json.dumps(build_upstream_body(test_body), ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(chat_url, data=body, method="POST",
-                                 headers=account.headers(purpose="chat"))
-    t0 = time.time()
-    try:
-        with ca_accounts.urlopen(req, timeout=timeout, proxy=account.proxy) as resp:
-            chat_obj = aggregate_stream(resp, model, None)
-            row["elapsed_ms"] = int((time.time() - t0) * 1000)
-            choices = chat_obj.get("choices") or []
-            msg = (choices[0].get("message") or {}) if choices else {}
-            reply = (msg.get("content") or msg.get("reasoning_content") or "OK").strip()
-            row["reply"] = reply[:77] + "..." if len(reply) > 80 else reply
-            # A served request, so it takes the semantic success path. That clears
-            # the account-level streak/breaker/degrade counters: a green panel test
-            # used to leave soft_streak standing, and the next 429 resumed the
-            # ladder from it. Only the tested model's cooldown is dropped here -
-            # sibling models keep theirs, and a 402 balance park keeps its own lift
-            # path (revive_balance_cooldown on a credits refresh).
-            account.note_success(model=model)
-            row["ok"] = True
-            return row
-    except urllib.error.HTTPError as exc:
-        row["elapsed_ms"] = int((time.time() - t0) * 1000)
-        try:
-            detail = exc.read(400).decode("utf-8", "replace")
-        except Exception:
-            detail = str(exc)
-        if looks_like_local_network(exc):
-            row["network"] = True
-            row["error"] = "本机网络不可用：%s" % exc_detail(exc)
-            account.note_error(row["error"], cooldown=0)
-            return row
-        # The label keeps its 80-char cut; `detail` rides along untouched so the
-        # panel can show the whole upstream body on hover.
-        row["status"] = exc.code
-        row["error"] = "HTTP %d: %s" % (exc.code, detail[:150])
-        account.note_error("HTTP %d: %s" % (exc.code, detail[:80]),
-                           cooldown=60, detail=detail)
-        row["fails"] = int(account.fails)
-        return row
-    except Exception as exc:
-        row["elapsed_ms"] = int((time.time() - t0) * 1000)
-        if looks_like_local_network(exc):
-            # 断网时上游一个字节都没收到：只报「本机网络不可用」，不给账号记冷却，
-            # 否则网络一恢复，池子里全是刚才这轮测试留下的冷却账号。
-            row["network"] = True
-            row["error"] = "本机网络不可用：%s" % exc_detail(exc)
-            account.note_error(row["error"], cooldown=0)
-            return row
-        row["error"] = "%s: %s" % (type(exc).__name__, exc)
-        # 测试是诊断动作：失败要看得见（last_error），但不停用账号——真有问题，
-        # 真实流量会照常记账；测试顺手把账号关掉才是「越测越乱」。
-        account.note_error(str(exc)[:80], cooldown=0)
-        row["fails"] = int(account.fails)
-        return row
 
 def extract_session_key(headers, payload):
     key = (
@@ -14836,16 +13727,6 @@ def _tools_for_chat(tools):
 # egress policy is the operator's call.
 #
 # ca_protocol.web_tools_active()（本次请求的工具是不是网关换进去的）已搬到 ca_protocol。
-def local_web_tools_enabled():
-    """Panel switch: does this gateway run web_search / web_fetch itself?
-
-    Read per request, so flipping the panel takes effect on the next one
-    without a restart.
-    """
-    try:
-        return ca_settings.local_web_tools(ACCOUNTS_DIR) is True
-    except Exception:
-        return False
 
 
 def sum_usage(total, part):
@@ -14868,85 +13749,6 @@ def sum_usage(total, part):
     return total
 
 
-def follow_up_with_tool_results(internal_calls, holder, model, session_key, t_start,
-                                drop_tools=False):
-    """执行反代自己代跑的网路工具，把结果喂回模型，回传新的上游连线。
-
-    drop_tools=True 表示这是最后一轮：把网路工具从工具清单收回，模型没有东西
-    可以再呼叫，只能用手上的结果把话讲完。旧版在回合用尽时合成一个
-    resp_wrapup（status=completed、output=[]）收尾，那等于把失败伪装成正常
-    结束，客户端看到的就是「讲到一半断掉」——issue #43。
-    """
-    convo = holder.get("convo_messages")
-    if convo is None:
-        convo = list(holder.get("base_messages") or [])
-        holder["convo_messages"] = convo
-
-    tool_calls = []
-    for i, c in enumerate(internal_calls):
-        tool_calls.append({
-            "id": "call_web_%d_%d" % (int(t_start * 1000) % 1000000, i),
-            "type": "function",
-            "function": {"name": c["name"], "arguments": c.get("arguments") or "{}"},
-        })
-    convo.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
-
-    for tc in tool_calls:
-        nm = tc["function"]["name"]
-        result = ca_webtools.execute(nm, tc["function"]["arguments"])
-        found = ca_webtools.sources_from_result(result)
-        if found:
-            holder.setdefault("web_sources", []).extend(found)
-        log("web tool %s -> %d chars, %d citeable source(s)"
-            % (nm, len(result or ""), len(found)), level="INFO")
-        convo.append({
-            "role": "tool",
-            "tool_call_id": tc["id"],
-            "name": nm,
-            "content": result,
-        })
-
-    body = dict(holder.get("base_body") or {})
-    if drop_tools:
-        body["tools"] = [t for t in (body.get("tools") or [])
-                         if not ca_webtools.is_internal_tool(tool_name_of(t))]
-        convo.append({
-            "role": "system",
-            "content": ("The web tools are no longer available. Answer the user now with "
-                        "what you already have. Do not say that you are searching again."),
-        })
-    body["messages"] = convo
-    body["stream"] = True
-    return open_upstream(body, session_key=session_key,
-                         target_realm=holder.get("realm"))
-
-
-def internal_calls_from_chat(chat_obj, web_tools=False):
-    """Calls in an aggregated chat completion the gateway runs itself.
-
-    Only a request whose definitions the gateway injected can carry such a
-    call; with the switch off a client's own same-named function stays the
-    client's, so this answers empty.
-    """
-    message = ((chat_obj.get("choices") or [{}])[0] or {}).get("message") or {}
-    out = []
-    if not web_tools:
-        return out
-    for tc in message.get("tool_calls") or []:
-        fn = tc.get("function") or {}
-        name = fn.get("name") or ""
-        if ca_webtools.is_internal_tool(name):
-            out.append({"name": name, "arguments": fn.get("arguments") or "{}"})
-    return out
-
-
-def tool_name_of(tool):
-    """Tool name, whichever of the two shapes the entry uses."""
-    if not isinstance(tool, dict):
-        return ""
-    if isinstance(tool.get("function"), dict):
-        return str((tool.get("function") or {}).get("name") or "")
-    return str(tool.get("name") or "")
 
 
 def _responses_input_to_messages(payload):
@@ -15198,15 +14000,6 @@ def responses_to_chat(payload):
         flat_tools, ns_map = expand_namespace_tools(raw_tools)
         chat["tools"] = _tools_for_chat(flat_tools)
         chat["_namespace_map"] = ns_map
-    # 客户端宣告 web_search / web_fetch 时，把那份宣告换成我们的
-    # function（见 ca_webtools.install_tool_defs）。
-    # 看板开关关闭时原样透传，客户端自己的同名工具不受影响。
-    # 用合并后的清单：工具可能整份都在 additional_tools 里，只看顶层会漏。
-    if local_web_tools_enabled():
-        wants = ca_webtools.client_wants_web(raw_tools)
-        if wants["search"] or wants["fetch"]:
-            chat["tools"] = ca_webtools.install_tool_defs(chat.get("tools") or [], wants)
-            chat["_web_tools"] = True
     if payload.get("tool_choice"):
         chat["tool_choice"] = payload["tool_choice"]
     if payload.get("parallel_tool_calls") is not None:
@@ -15943,20 +14736,19 @@ class Handler(BaseHTTPRequestHandler):
     def _request_realm(self, explicit=None):
         """Pick the upstream exit for this request.
         Priority: an explicit ?realm= argument, then the X-Realm header /
-        ?realm= query, and finally the global switch. Returning None lets
-        open_upstream() fall back to model-based detection.
+        ?realm= query, and finally the global switch.
 
         返回值一律过 match_realm：已删区域（老客户端还会发 X-Realm: intl）
         归一到现存的出口，否则池里永远匹配不到，请求只会撞出一个
         「该区域没有账号」的 502。
         """
         if explicit:
-            return ca_accounts.match_realm(explicit)
+            return match_realm(explicit)
         header = self.headers.get("X-Realm")
         if header:
-            return ca_accounts.match_realm(header)
+            return match_realm(header)
         try:
-            return ca_accounts.match_realm(
+            return match_realm(
                 parse_qs(urlparse(self.path).query).get("realm", [None])[0])
         except Exception:
             return None
@@ -16974,67 +15766,6 @@ class Handler(BaseHTTPRequestHandler):
             ca_settings.set_auth_disabled(ACCOUNTS_DIR, payload.get("auth_disabled"))
             reply["auth_disabled"] = bool(payload.get("auth_disabled"))
 
-        # The four guards can arrive grouped under "limits" (the panel's own
-        # shape) or as the flat top-level keys older clients still send, which
-        # are read as the global default. Both land in the same grouped store,
-        # so there is one source of truth no matter who writes it.
-        limits_payload = payload.get("limits")
-        if limits_payload is not None and not isinstance(limits_payload, dict):
-            return self._error(400, "limits must be an object",
-                               "invalid_request_error")
-        touched = set()
-        for key in ca_settings.LIMIT_KEYS:
-            grouped = (limits_payload or {}).get(key)
-            if isinstance(grouped, dict):
-                scopes = {scope: grouped[scope]
-                          for scope in ca_settings.LIMIT_SCOPES
-                          if scope in grouped}
-            elif key in payload:
-                scopes = {"global": payload.get(key)}
-            else:
-                continue
-            for scope, raw in scopes.items():
-                if scope == "global":
-                    if isinstance(raw, bool) or raw is None:
-                        return self._error(400, "%s must be a whole number" % key,
-                                           "invalid_request_error")
-                    try:
-                        number = int(raw)
-                    except (TypeError, ValueError):
-                        return self._error(400, "%s must be a whole number" % key,
-                                           "invalid_request_error")
-                    if number < 0:
-                        return self._error(400, "%s cannot be negative" % key,
-                                           "invalid_request_error")
-                else:
-                    # Blank clears the override back to "inherit the global".
-                    if raw is None or raw == "":
-                        number = None
-                    else:
-                        if isinstance(raw, bool):
-                            return self._error(
-                                400, "%s must be a whole number" % key,
-                                "invalid_request_error")
-                        try:
-                            number = int(raw)
-                        except (TypeError, ValueError):
-                            return self._error(
-                                400, "%s must be a whole number" % key,
-                                "invalid_request_error")
-                        if number < 0:
-                            return self._error(
-                                400, "%s cannot be negative" % key,
-                                "invalid_request_error")
-                ca_settings.set_limit(ACCOUNTS_DIR, key, scope, number)
-                touched.add(key)
-            reply[key] = ca_settings.limit_value(ACCOUNTS_DIR, key)
-        if limits_payload is not None:
-            reply["limits"] = ca_settings.limits_snapshot(ACCOUNTS_DIR)
-        if touched:
-            # One pass refreshes all three: a limit edit is rare, and the guards
-            # publish from the same fold anyway.
-            apply_daily_guards(refresh=True)
-
         if "section_max_height" in payload:
             # Panel window height cap in pixels; 0 turns the cap off. bool is an
             # int subclass and must be rejected explicitly - true would
@@ -17076,13 +15807,6 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(400, "enable_anthropic_messages must be true or false", "invalid_request_error")
             ca_settings.set_enable_anthropic_messages(ACCOUNTS_DIR, raw)
             reply["enable_anthropic_messages"] = raw
-        if "local_web_tools" in payload:
-            raw = payload.get("local_web_tools")
-            if not isinstance(raw, bool):
-                return self._error(400, "local_web_tools must be true or false",
-                                   "invalid_request_error")
-            ca_settings.set_local_web_tools(ACCOUNTS_DIR, raw)
-            reply["local_web_tools"] = raw
         if "egress_backoff_enabled" in payload:
             # 出口级瞬时失败退避（issue #271）：严格 JSON 布尔，字符串
             # "false" 会是真值。码道路径每个请求读一次，保存即生效。
@@ -17416,8 +16140,6 @@ class Handler(BaseHTTPRequestHandler):
         # so it cannot replay a prior turn. Silently ignoring the field would
         # answer a follow-up as if it were a fresh conversation - the client
         # gets a normal-looking reply with the context missing. Say so instead.
-        # 拒绝 namespace 工具，逼 Codex fallback 成 flat 工具清单。
-        # 不这样做的话，MCP／外挂工具全部会被 app 判定为不可执行。
         if payload.get("previous_response_id"):
             return self._error(
                 400,
@@ -17425,7 +16147,6 @@ class Handler(BaseHTTPRequestHandler):
                 "store response state. Send the full conversation in 'input' "
                 "instead, or use a stateless client.",
                 "invalid_request_error")
-        session_key = extract_session_key(self.headers, payload)
         # 工具可能在顶层，也可能整份在 input 的 additional_tools 条目里。回程
         # 的两处取值（custom_names 判定条目类型、request_meta 回显工具清单）
         # 必须和 responses_to_chat() 出站合并后的清单一致，否则两边看到的
@@ -17444,8 +16165,6 @@ class Handler(BaseHTTPRequestHandler):
         }
         model = payload.get("model") or "deepseek-v4.1-flash"
         want_stream = bool(payload.get("stream"))
-        t_start = time.time()
-        fp = prompt_fingerprint(chat_req.get("messages"))
         log(
             "responses: model=%s stream=%s msgs=%d effort=%r tools=%d/%d custom_tools=%s"
             % (model, want_stream, len(chat_req.get("messages") or []),
@@ -17453,200 +16172,23 @@ class Handler(BaseHTTPRequestHandler):
                len(chat_req.get("tools") or []), len(all_tools),
                sorted(custom_names) or "-")
         )
-        try:
-            req_realm = self._request_realm() or CURRENT_REALM
-            banned = self._banned_model_error(chat_req.get("model"))
-            if banned:
-                return self._error(400, banned, "invalid_request_error")
-            key_blocked = self._key_model_error(chat_req.get("model"))
-            if key_blocked:
-                return self._error(400, key_blocked, "invalid_request_error")
-            # 码道没有原生 Responses 端点（逆向本地客户端确认它只发
-            # chat/completions 形状），这里用同一套翻译层桥接。
-            if is_codearts_model(chat_req.get("model")):
-                return self._responses_codearts(
-                    chat_req, want_stream, custom_names, request_meta, ns_map)
-            # WorkBuddy 池已移除（2026-10-23）：非码道模型这个网关一个都不服务。
-            return self._error(404,
-                               unserved_model_message(chat_req.get("model")),
-                               "model_not_found")
-            upstream, account, effort = open_upstream(
-                chat_req, session_key=session_key, target_realm=req_realm)
-        except ContentRejected as exc:
-            record_error(model, 403, exc.detail[:200],
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            return self._error(403, "upstream 403: %s" % (exc.detail or "content rejected"),
-                               "invalid_request_error")
-        except LocalNetworkError as exc:
-            record_error(model, 503, exc.detail[:200],
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            return self._error(503, "本机网络不可用：%s - 请检查本机网络/代理后重试"
-                                    "（本次不计入账号熔断）" % (exc.detail or "DNS/路由失败"),
-                               "invalid_request_error")
-        except RateLimited as exc:
-            t = time.time() - t_start
-            record_error(model, 429, exc.detail[:200], elapsed_ms=int(t * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            return self._rate_limited(exc)
-        except urllib.error.HTTPError as exc:
-            detail = exc.read(600).decode("utf-8", "replace")
-            record_error(model, exc.code, detail,
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            return self._error(exc.code, f"upstream {exc.code}: {detail}")
-        except Exception as exc:
-            message = str(exc)
-            record_error(model, 502, message,
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            if message.startswith("no usable account"):
-                return self._error(503, message +
-                                   " - add or enable one at the dashboard (/)")
-            return self._error(502, f"upstream unreachable: {exc}")
-        with upstream:
-            if want_stream:
-                return self._responses_stream_response(
-                    upstream, model, custom_names, request_meta, fp, account, t_start, ns_map,
-                    base_body=chat_req, session_key=session_key, realm=req_realm,
-                    effort=effort)
-            return self._responses_nonstream_response(
-                upstream, model, custom_names, request_meta, fp, account, t_start, ns_map,
-                base_body=chat_req, session_key=session_key, realm=req_realm,
-                effort=effort)
+        banned = self._banned_model_error(chat_req.get("model"))
+        if banned:
+            return self._error(400, banned, "invalid_request_error")
+        key_blocked = self._key_model_error(chat_req.get("model"))
+        if key_blocked:
+            return self._error(400, key_blocked, "invalid_request_error")
+        # 码道没有原生 Responses 端点（逆向本地客户端确认它只发
+        # chat/completions 形状），这里用同一套翻译层桥接。
+        if is_codearts_model(chat_req.get("model")):
+            return self._responses_codearts(
+                chat_req, want_stream, custom_names, request_meta, ns_map)
+        # 网关只服务码道：别的名字一律 404，不回 503「没有可用账号」——
+        # 那看起来像网关坏了，实际是这个部署不提供这个名字。
+        return self._error(404, unserved_model_message(chat_req.get("model")),
+                           "model_not_found")
 
-    def _responses_stream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start, namespace_map=None, base_body=None, session_key=None, realm=None, effort=None):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
-        if cors_origin_allowed(self.path):
-            self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        holder = {"usage": None, "custom_names": custom_names,
-                  "request_meta": request_meta,
-                  "namespace_map": namespace_map,
-                  "base_body": base_body,
-                  "base_messages": (base_body or {}).get("messages"),
-                  "session_key": session_key,
-                  "realm": realm}
-        first_ms = None
-        try:
-            # 一轮跑完如果模型要的是 web_search / web_fetch，就由反代
-            # 执行、把结果喂回去再跑一轮。客户端从头到尾只看到一则连续的回应。
-            rounds = 0
-            total_usage = None
-            while True:
-                holder.pop("internal_calls", None)
-                holder.pop("suppress_completion", None)
-                holder["suppress_lifecycle"] = rounds > 0
-                for frame in stream_responses_events(upstream, model, holder):
-                    if first_ms is None:
-                        first_ms = int((time.time() - t_start) * 1000)
-                    self.wfile.write(ca_protocol.clean_responses_frame(frame))
-                    self.wfile.flush()
-                # 每一轮的 token 都是真的花掉的，记帐要加总
-                total_usage = sum_usage(total_usage, holder.get("usage"))
-                internal = holder.get("internal_calls") or []
-                if not internal:
-                    break
-                rounds += 1
-                # 用完就收回工具，让模型自己收尾；这里不合成任何事件。
-                give_up = rounds > ca_webtools.MAX_WEB_ROUNDS
-                try:
-                    upstream.close()
-                except Exception:
-                    pass
-                upstream, account, _ = follow_up_with_tool_results(
-                    internal, holder, model, session_key, t_start, drop_tools=give_up)
-            if total_usage:
-                holder["usage"] = total_usage
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            wall = int((time.time() - t_start) * 1000)
-            record_upstream_usage(upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
-                         ttft_ms=first_ms,
-                         gen_ms=(wall - first_ms) if first_ms is not None else None,
-                         fp=fp, account=account.uid,
-                         outcome="client_aborted", key=self._key_id(), effort=effort)
-            return
-        except Exception as exc:
-            wall = int((time.time() - t_start) * 1000)
-            record_error(model, 502, "stream aborted: %s" % exc,
-                         elapsed_ms=wall, account=account.uid,
-                         usage=holder.get("usage"), stream=True,
-                         ttft_ms=first_ms,
-                         gen_ms=(wall - first_ms) if first_ms is not None else None,
-                         fp=fp, outcome="upstream_aborted", key=self._key_id())
-            try:
-                self.wfile.write(b"data: [DONE]" + bytes([10, 10]))
-                self.wfile.flush()
-            except Exception:
-                pass
-            return
-        finally:
-            # 代跑多轮时 upstream 会被换掉，外层的 with 只认得最开始那一条，
-            # 最后一条要在这里收掉。
-            try:
-                upstream.close()
-            except Exception:
-                pass
-        wall = int((time.time() - t_start) * 1000)
-        record_upstream_usage(upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
-                     ttft_ms=first_ms,
-                     gen_ms=(wall - first_ms) if first_ms is not None else None,
-                     fp=fp, account=account.uid, key=self._key_id(), effort=effort)
-        return
 
-    def _responses_nonstream_response(self, upstream, model, custom_names, request_meta, fp, account, t_start, namespace_map=None, base_body=None, session_key=None, realm=None, effort=None):
-        # 跟串流那条一样：客户端宣告 web_search / web_fetch 时由反代代跑。
-        # 中间那几轮对客户端不可见，最后才组成一个 Responses 物件回传；不这样
-        # 做的话 web_search 的 function_call 会直接漏给客户端，客户端只会回
-        # 一句 unsupported call。
-        sources = []
-        rounds = 0
-        # 开关关闭时不拦同名呼叫：那是客户端自己的工具。
-        web_tools = ca_protocol.web_tools_active(base_body)
-        while True:
-            try:
-                chat_obj = aggregate_stream(upstream, model, None)
-            except Exception as exc:
-                record_error(model, 502, str(exc),
-                             elapsed_ms=int((time.time() - t_start) * 1000),
-                             account=account.uid, key=self._key_id())
-                return self._error(502, f"upstream stream error: {exc}")
-            calls = internal_calls_from_chat(chat_obj, web_tools=web_tools)
-            if not calls:
-                break
-            rounds += 1
-            give_up = rounds > ca_webtools.MAX_WEB_ROUNDS
-            try:
-                upstream.close()
-            except Exception:
-                pass
-            holder = {"base_messages": (base_body or {}).get("messages"),
-                      "base_body": base_body, "realm": realm,
-                      "web_sources": sources}
-            try:
-                upstream, account, _ = follow_up_with_tool_results(
-                    calls, holder, model, session_key, t_start, drop_tools=give_up)
-            except Exception as exc:
-                record_error(model, 502, "web tool follow-up failed: %s" % exc,
-                             elapsed_ms=int((time.time() - t_start) * 1000),
-                             account=account.uid, key=self._key_id())
-                return self._error(502, "web tool follow-up failed: %s" % exc)
-            sources = holder.get("web_sources") or sources
-        wall = int((time.time() - t_start) * 1000)
-        result = chat_to_response(chat_obj, model, custom_names, request_meta, namespace_map,
-                                  sources=sources)
-        record_upstream_usage(upstream, model, chat_obj.get("usage"), stream=False, elapsed_ms=wall, fp=fp,
-                     account=account.uid, key=self._key_id(), effort=effort)
-        return self._json(200, result)
 
     def _handle_messages_count_tokens(self, payload):
         """Best-effort Anthropic count_tokens endpoint.
@@ -17673,161 +16215,21 @@ class Handler(BaseHTTPRequestHandler):
         canonicalize_model(chat_req)
         model = chat_req.get("model") or "unknown"
         want_stream = bool(chat_req.get("stream"))
-        session_key = extract_session_key(self.headers, chat_req)
-        t_start = time.time()
-        fp = prompt_fingerprint(chat_req.get("messages"))
-        try:
-            client_ip = self.client_address[0] if self.client_address else ""
-        except Exception:
-            client_ip = ""
         log("messages: model=%s stream=%s msgs=%d effort=%r tools=%d"
             % (model, want_stream, len(chat_req.get("messages") or []),
                chat_req.get("reasoning_effort"), len(chat_req.get("tools") or [])))
-        try:
-            req_realm = self._request_realm() or CURRENT_REALM
-            banned = self._banned_model_error(chat_req.get("model"))
-            if banned:
-                return self._anthropic_error(400, banned, "invalid_request_error")
-            key_blocked = self._key_model_error(chat_req.get("model"))
-            if key_blocked:
-                return self._anthropic_error(400, key_blocked, "invalid_request_error")
-            # 与 /v1/responses 同一个缺口：码道模型不能落进 WorkBuddy 空池。
-            if is_codearts_model(chat_req.get("model")):
-                return self._messages_codearts(chat_req, want_stream)
-            # WorkBuddy 池已移除（2026-10-23）：非码道模型这个网关一个都不服务。
-            return self._anthropic_error(
-                404, unserved_model_message(chat_req.get("model")),
-                "not_found_error")
-            upstream, account, effort = open_upstream(
-                chat_req, session_key=session_key, target_realm=req_realm)
-        except ContentRejected as exc:
-            record_error(model, 403, exc.detail[:200],
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            return self._anthropic_error(403, "upstream 403: %s" %
-                                          (exc.detail or "content rejected"),
-                                          "permission_error")
-        except LocalNetworkError as exc:
-            record_error(model, 503, exc.detail[:200],
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            return self._anthropic_error(503, "本机网络不可用：%s - 请检查本机网络/代理后重试"
-                                              "（本次不计入账号熔断）"
-                                              % (exc.detail or "DNS/路由失败"),
-                                         "api_error")
-        except RateLimited as exc:
-            record_error(model, 429, exc.detail[:200],
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            return self._anthropic_rate_limited(exc)
-        except urllib.error.HTTPError as exc:
-            try:
-                detail = exc.read(600).decode("utf-8", "replace")
-            except Exception:
-                detail = str(exc)
-            record_error(model, exc.code, detail,
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            return self._anthropic_error(exc.code,
-                                         "upstream %s: %s" % (exc.code, detail))
-        except Exception as exc:
-            message = str(exc)
-            low = message.lower()
-            status = 503 if ("no account" in low or "no enabled account" in low) else 502
-            record_error(model, status, message,
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            if status == 503:
-                message += " - add or enable one at the dashboard (/)"
-            return self._anthropic_error(status, message)
-        with upstream:
-            if want_stream:
-                return self._messages_stream_response(
-                    upstream, model, fp, account, t_start,
-                    base_body=chat_req, session_key=session_key,
-                    realm=req_realm, effort=effort)
-            return self._messages_nonstream_response(
-                upstream, model, fp, account, t_start,
-                base_body=chat_req, session_key=session_key,
-                realm=req_realm, effort=effort)
+        banned = self._banned_model_error(chat_req.get("model"))
+        if banned:
+            return self._anthropic_error(400, banned, "invalid_request_error")
+        key_blocked = self._key_model_error(chat_req.get("model"))
+        if key_blocked:
+            return self._anthropic_error(400, key_blocked, "invalid_request_error")
+        if is_codearts_model(chat_req.get("model")):
+            return self._messages_codearts(chat_req, want_stream)
+        return self._anthropic_error(
+            404, unserved_model_message(chat_req.get("model")), "not_found_error")
 
-    def _messages_nonstream_response(self, upstream, model, fp, account, t_start,
-                                     base_body=None, session_key=None, realm=None,
-                                     effort=None):
-        try:
-            chat_obj = aggregate_stream(upstream, model, None)
-            result = ca_protocol.chat_to_messages(chat_obj)
-            wall = int((time.time() - t_start) * 1000)
-            record_upstream_usage(upstream, model, chat_obj.get("usage"), stream=False, elapsed_ms=wall,
-                         fp=fp, account=account.uid, key=self._key_id(), effort=effort)
-            return self._json(200, result)
-        except Exception as exc:
-            wall = int((time.time() - t_start) * 1000)
-            record_error(model, 502, "messages upstream error: %s" % exc,
-                         elapsed_ms=wall, account=account.uid, key=self._key_id())
-            return self._anthropic_error(502, "upstream stream error: %s" % exc)
-        finally:
-            try:
-                upstream.close()
-            except Exception:
-                pass
 
-    def _messages_stream_response(self, upstream, model, fp, account, t_start,
-                                  base_body=None, session_key=None, realm=None,
-                                  session_meta=None, effort=None):
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Connection", "close")
-        if cors_origin_allowed(self.path):
-            self.send_header("Access-Control-Allow-Origin", "*")
-        self.end_headers()
-        holder = {"usage": None}
-        first_ms = None
-        try:
-            for frame in ca_protocol.stream_messages_events(upstream, model, holder):
-                if first_ms is None:
-                    first_ms = int((time.time() - t_start) * 1000)
-                self.wfile.write(frame)
-                self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-            wall = int((time.time() - t_start) * 1000)
-            record_upstream_usage(upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
-                         ttft_ms=first_ms,
-                         gen_ms=(wall - first_ms) if first_ms is not None else None,
-                         fp=fp, account=account.uid,
-                         outcome="client_aborted", key=self._key_id(), effort=effort)
-            return
-        except Exception as exc:
-            wall = int((time.time() - t_start) * 1000)
-            record_error(model, 502, "messages stream aborted: %s" % exc,
-                         elapsed_ms=wall, account=account.uid,
-                         usage=holder.get("usage"), stream=True,
-                         ttft_ms=first_ms, fp=fp, outcome="upstream_aborted",
-                         key=self._key_id())
-            try:
-                self.wfile.write(ca_protocol.anthropic_sse_frame("error", {
-                    "error": {"type": "api_error", "message": str(exc)}}))
-                self.wfile.flush()
-            except Exception:
-                pass
-            return
-        finally:
-            try:
-                upstream.close()
-            except Exception:
-                pass
-        wall = int((time.time() - t_start) * 1000)
-        record_upstream_usage(upstream, model, holder.get("usage"), stream=True, elapsed_ms=wall,
-                     ttft_ms=first_ms,
-                     gen_ms=(wall - first_ms) if first_ms is not None else None,
-                     fp=fp, account=account.uid, key=self._key_id(), effort=effort)
-        return
 
     def do_POST(self):
         # 双 /v1 前缀兼容（OpenAI SDK 的 base_url 含 /v1、Anthropic SDK 不含，
@@ -19201,247 +17603,11 @@ class Handler(BaseHTTPRequestHandler):
         # 码道模型走另一套凭证体系，先按模型名分流。
         if is_codearts_model(payload.get("model")):
             return self._handle_codearts_chat(payload)
-        # WorkBuddy 池已移除（2026-10-23）：非码道模型这个网关一个都不服务。
-        # 回 404 说清「这个网关不服务这个名字」，别回 503（那看起来像网关坏了）。
+        # 网关只服务码道：非码道模型一律 404，不回 503（那看起来像网关坏了）。
         return self._error(404, unserved_model_message(payload.get("model")),
                            "model_not_found")
-        # ---- 以下为 WorkBuddy 转发路径，已不再可达（下一轮删除）----
-        # Diagnostics: what the client actually asked for, and what we forward.
-        # Only the knobs that change behaviour are logged - never message text.
-        forwarded = build_upstream_body(payload)
-        given = client_effort_of(payload) or payload.get("reasoning") \
-            or payload.get("thinking") or payload.get("enable_thinking")
-        log(
-            "chat: model=%s client_effort=%r -> upstream_effort=%r stream=%s msgs=%d"
-            % (
-                payload.get("model"),
-                given,
-                upstream_effort_of(forwarded, payload.get("model")),
-                bool(payload.get("stream")),
-                len(forwarded.get("messages") or []),
-            )
-        )
-        session_key = extract_session_key(self.headers, payload)
-        fp = prompt_fingerprint(forwarded.get("messages"))
-        want_stream = bool(payload.get("stream"))
-        model = payload.get("model") or "hy4-preview"
-        t_start = time.time()
-        try:
-            req_realm = self._request_realm() or CURRENT_REALM
-            upstream, account, effort = open_upstream(
-                payload, session_key=session_key, target_realm=req_realm,
-                prebuilt_body=forwarded)
-        except ContentRejected as exc:
-            record_error(model, 403, exc.detail[:200],
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            return self._error(403, "upstream 403: %s" % (exc.detail or "content rejected"),
-                               "invalid_request_error")
-        except LocalNetworkError as exc:
-            record_error(model, 503, exc.detail[:200],
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            return self._error(503, "本机网络不可用：%s - 请检查本机网络/代理后重试"
-                                    "（本次不计入账号熔断）" % (exc.detail or "DNS/路由失败"),
-                               "invalid_request_error")
-        except RateLimited as exc:
-            record_error(model, 429, exc.detail[:200],
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            return self._rate_limited(exc)
-        except urllib.error.HTTPError as exc:
-            detail = exc.read(600).decode("utf-8", "replace")
-            record_error(model, exc.code, detail,
-                         elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            return self._error(exc.code, f"upstream {exc.code}: {detail}")
-        except Exception as exc:
-            message = str(exc)
-            record_error(model, 502, message, elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=getattr(exc, "account_uid", None),
-                         key=self._key_id())
-            if message.startswith("no usable account"):
-                # Only a genuinely empty/cooling pool is a 503. A throttled model
-                # is reported as 429 by _rate_limited above instead.
-                return self._error(503, message +
-                                   " - add or enable one at the dashboard (/)")
-            return self._error(502, f"upstream unreachable: {exc}")
-        with upstream:
-            if want_stream:
-                return self._chat_stream_response(
-                    upstream, model, fp, account, t_start, effort=effort)
-            return self._chat_nonstream_response(
-                upstream, model, fp, account, t_start, effort=effort)
 
-    def _chat_stream_response(self, upstream, model, fp, account, t_start, effort=None):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-            self.send_header("Cache-Control", "no-cache")
-            self.send_header("Connection", "close")
-            if cors_origin_allowed(self.path):
-                self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            emitted = False
-            last_usage = None
-            first_ms = None
-            streamed_text = []
-            leak_filter = LeakedToolCallStreamFilter()
-            synthesized_calls = False
-            pending_finish = None
-            # 写出缓冲：一个读取块里的事件合成一次 write。
-            # wfile 是 wbufsize=0 的**无缓冲**文件（StreamRequestHandler 默认），
-            # 每个 chunk 直接落成一次 sendall —— 一次 syscall 加一次 GIL 交还。
-            # 真机 10 秒 5043 次 sendto，对应约一万次 futex，占全部 futex 的一成。
-            # 攒到「下一个可能阻塞的读之前」再写，不改变任何延迟：块边界就是
-            # socket 里当前已经有的全部字节（见 iter_sse_lines 的 before_read）。
-            out_buf = []
 
-            def flush_out():
-                if out_buf:
-                    self.wfile.write(b"".join(out_buf))
-                    self.wfile.flush()
-                    del out_buf[:]
-
-            def write_chunk(payload):
-                nonlocal emitted, first_ms
-                if first_ms is None:
-                    first_ms = int((time.time() - t_start) * 1000)
-                emitted = True
-                out_buf.append(f"data: {payload}\n\n".encode("utf-8"))
-
-            def release(actions):
-                nonlocal synthesized_calls
-                for action in actions:
-                    if action[0] == "text":
-                        if action[1]:
-                            write_chunk(chat_text_chunk(model, action[1]))
-                    else:
-                        synthesized_calls = True
-                        for payload in chat_tool_call_chunks(model, action[1]):
-                            write_chunk(payload)
-
-            try:
-                for line in ca_protocol.iter_sse_lines(upstream, before_read=flush_out):
-                    data = ca_protocol.strip_data_prefix(line.decode("utf-8", "replace"))
-                    if not data or data == "[DONE]" or data.startswith(":"):
-                        continue
-                    maybe = None
-                    try:
-                        maybe = json.loads(data)
-                    except Exception:
-                        maybe = None
-                    if isinstance(maybe, dict):
-                        u = maybe.get("usage")
-                        if u:
-                            if last_usage is None or (u.get("total_tokens") or 0) >= (last_usage.get("total_tokens") or 0):
-                                last_usage = u
-                        for ch in (maybe.get("choices") or []):
-                            delta = ch.get("delta") or {}
-                            if delta.get("reasoning_content"):
-                                streamed_text.append(delta["reasoning_content"])
-                            piece = delta.get("content")
-                            if piece:
-                                streamed_text.append(piece)
-                                # Hold the text back: it may be a call the model
-                                # printed instead of emitting, and a client that
-                                # reads it as prose ends the turn with nothing to
-                                # run ("it keeps stopping by itself").
-                                delta.pop("content", None)
-                                release(leak_filter.feed(piece))
-                            if ch.get("finish_reason"):
-                                # Hold the terminator too: whether this turn ends
-                                # in tool_calls is only known once the text has
-                                # been flushed at end of stream.
-                                pending_finish = ch["finish_reason"]
-                                ch["finish_reason"] = None
-                    cleaned = clean_chunk(
-                        json.dumps(maybe, ensure_ascii=False)
-                        if isinstance(maybe, dict) else data)
-                    if not cleaned:
-                        continue
-                    write_chunk(cleaned)
-                release(leak_filter.flush())
-                if synthesized_calls or pending_finish is not None:
-                    write_chunk(chat_finish_chunk(
-                        model, "tool_calls" if synthesized_calls else pending_finish))
-            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                # Client hung up; still account for what upstream produced.
-                wall = int((time.time() - t_start) * 1000)
-                record_upstream_usage(upstream, model, last_usage, stream=True,
-                             elapsed_ms=wall, ttft_ms=first_ms,
-                             gen_ms=(wall - first_ms) if first_ms is not None else None,
-                             fp=fp, account=account.uid,
-                             outcome="client_aborted", key=self._key_id(), effort=effort)
-                return
-            except Exception as exc:
-                # Upstream quit mid-stream (timeout, incomplete read, ...).
-                # The client would otherwise get a truncated stream with no
-                # terminal marker, and the traceback reached the HTTP layer.
-                wall = int((time.time() - t_start) * 1000)
-                record_error(model, 502, "stream aborted: %s" % exc,
-                             elapsed_ms=wall, account=account.uid,
-                            usage=last_usage, stream=True, ttft_ms=first_ms,
-                            gen_ms=(wall - first_ms) if first_ms is not None else None,
-                             fp=fp, outcome="upstream_aborted", key=self._key_id())
-                try:
-                    flush_out()
-                    self.wfile.write(b"data: [DONE]\n\n")
-                    self.wfile.flush()
-                except Exception:
-                    pass
-                return
-            flush_out()
-            if not emitted:
-                err = json.dumps({"error": {"message": "empty upstream stream", "type": "server_error"}})
-                self.wfile.write(f"data: {err}\n\n".encode("utf-8"))
-            self.wfile.write(b"data: [DONE]\n\n")
-            self.wfile.flush()
-            wall = int((time.time() - t_start) * 1000)
-            if last_usage is None or (last_usage.get("total_tokens") or 0) == 0:
-                full_s = "".join(streamed_text)
-                if full_s:
-                    comp = ca_protocol.estimate_tokens(full_s)
-                    last_usage = {
-                        "prompt_tokens": max(1, comp // 2),
-                        "completion_tokens": comp,
-                        "total_tokens": max(1, comp // 2) + comp,
-                        "completion_tokens_details": {"reasoning_tokens": 0},
-                        "prompt_tokens_details": {"cached_tokens": 0},
-                    }
-            outcome = "failed" if pending_finish == "error" else "completed"
-            if outcome == "failed":
-                record_error(getattr(upstream, "_wb_billed_model", model), 502, "upstream stream finished with error",
-                             elapsed_ms=wall, account=account.uid,
-                             usage=last_usage, stream=True, ttft_ms=first_ms,
-                             gen_ms=(wall - first_ms) if first_ms is not None else None,
-                             fp=fp, outcome="failed", key=self._key_id())
-            else:
-                record_upstream_usage(upstream, model, last_usage, stream=True,
-                             elapsed_ms=wall, ttft_ms=first_ms,
-                             gen_ms=(wall - first_ms) if first_ms is not None else None,
-                             fp=fp, account=account.uid, key=self._key_id(), effort=effort)
-            return
-
-    def _chat_nonstream_response(self, upstream, model, fp, account, t_start, effort=None):
-        try:
-            result = aggregate_stream(upstream, model, None)
-        except Exception as exc:
-            record_error(model, 502, str(exc), elapsed_ms=int((time.time() - t_start) * 1000),
-                         account=account.uid, key=self._key_id())
-            return self._error(502, f"upstream stream error: {exc}")
-        wall = int((time.time() - t_start) * 1000)
-        first_at = result.get("first_chunk_at")
-        # Measured from request arrival so streaming and non-streaming are comparable.
-        first_ms = int((first_at - t_start) * 1000) if first_at else None
-        record_upstream_usage(upstream, model, result.get("usage"), stream=False,
-                     elapsed_ms=wall, ttft_ms=first_ms,
-                     gen_ms=(wall - first_ms) if first_ms is not None else None,
-                     fp=fp, account=account.uid, key=self._key_id(), effort=effort)
-        return self._json(200, result)
 
 def running_version():
     """The version this process reports, e.g. "1.6.19".
@@ -19559,7 +17725,7 @@ def _probe_running_instance(args):
     return False
 
 def _bootstrap_runtime(args):
-    global POOL, ACCOUNTS_DIR, API_KEY, SYSTEM_PROMPT
+    global ACCOUNTS_DIR, API_KEY, SYSTEM_PROMPT
     global API_KEY_FILE_SET, SCHEDULER, LOG_STORE, CODEARTS_LOGIN
     api_key_generated = False
     API_KEY = args.api_key
@@ -19600,19 +17766,18 @@ def _bootstrap_runtime(args):
         # 'same' 什么都不用说：这是正常重启
     elif ca_settings.panel_password_is_default(ACCOUNTS_DIR):
         log("panel      : password is still the default 'admin' - change it in the panel")
-    # WorkBuddy 账号池已移除（2026-10-23）：网关只服务码道，POOL 保持 None。
-    # 所有仍然带 `if POOL` 判断的地方自动走「没有 WorkBuddy 账号」那一支。
+    # WorkBuddy 账号池已整体移除（2026-10-23）：网关只服务码道，没有第二套
+    # 上游凭证体系可加载。
     CODEARTS_LOGIN = ca_codearts.LoginManager(ACCOUNTS_DIR, log=log)
     load_persisted_realm()
     global SCHEDULER
     from ca_scheduler import Scheduler
-    SCHEDULER = Scheduler(None)
+    SCHEDULER = Scheduler()
     # 码道每日领取要自己读 accounts/codearts/，调度器拿不到账号池之外的目录。
     SCHEDULER.accounts_dir = ACCOUNTS_DIR
     SCHEDULER.start()
     # 目录兜底：每天至少从上游 API 取一次（活跃使用的部署里 300s 缓存早就
     # 刷得更新，这个线程只兜长时间没人访问 / 一直吃缓存文件或内置快照）。
-    start_catalog_daily()
     # 价格估算体系已下线（2026-10-22）：不再初始化取价器，不再读价表，
     # 也不再有 OpenRouter 映射。计费只按码道积分。
     global UPDATES

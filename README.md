@@ -65,7 +65,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- 124 个套件：99 个 Python + 25 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 94 个套件：71 个 Python + 23 个 JS；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_test_protocol_pure.py` 只 import `ca_protocol`，用来钉住「协议层不依赖 ca_proxy、不碰 I/O」。
 - `tests/_test_protocol_golden.py` 对拍两种流式协议的**逐字节帧序列**（`tests/golden/*.json`）。
   只有确认行为变化是想要的才重录：`python tests/record_protocol_golden.py`，录完 review diff。
@@ -244,8 +244,11 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 - 三个协议入口（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）非码道模型一律 **404 `model_not_found`**，不再有「转发到 WorkBuddy 上游」的分支。
 - 面板删掉 WorkBuddy 那一整套接口：`/accounts`、`/accounts/export`、`/accounts/credits*`、`/accounts/login/*`、`/accounts/import*`、`/accounts/refresh`、`/accounts/sync-profile`、`/accounts/test`、`/accounts/set*`、`/accounts/delete`、`/accounts/product`、`/tasks*`、`/realm`、`/catalog/refresh`。
 - 关键顺序：码道那组 `/accounts/codearts/*` 路由必须排在任何「账号池」判断**之前**。以前那段 `if POOL is None: 503` 会把「加一个码道账号」也一起打死，报错文案还写着 `account pool unavailable` —— 跟码道毫无关系，极难查。
-- 随功能一起退场的 7 个套件（它们测的路径已经不存在）：`_test_anthropic_http.py`（mock 的 WorkBuddy 上游 HTTP 面）、`_test_breaker_fairness.py`、`_test_credit_grants.py`、`_test_pool_backoff.py`、`_test_product_switch.py`、`_test_profile_sync.py`、`_test_tasks_cache.py`。Anthropic 的协议面仍由 `_test_protocol_golden.py` + `_test_codearts.py` 覆盖。
-- **还没做完**：`ca_accounts.py` / `ca_identity.py` / `ca_atrest.py` / `ca_tasks.py` / `ca_fingerprint.py` 与 `ca_scheduler` 的 WB 循环还在（已不可达），`dashboard.html` 里对应的孤儿 JS 与两个区块也还在；这些是纯删除，下一步做。
+- **代码层同步删干净**（第二步，同一个 2026-10-23）：`ca_accounts.py`（2 929 行）、`ca_identity.py`、`ca_atrest.py`、`ca_tasks.py`、`ca_fingerprint.py` 整体删除；`ca_proxy` 去掉 `open_upstream` 及其调用树（含 `fetch_models` / 产品目录拉取 / 账号探针 / 亲和分页），本地只留一支 `normalize_realm`（单出口下恒为 `cn`）；`ca_scheduler` 只保留码道每日领取。
+- **顺带删掉两个「执行器在 WorkBuddy 那边」的功能**：本地网络工具（`ca_webtools` 的代跑循环只存在于已删的 Responses 转发里，留着开关只会注入没人执行的工具定义）与账号日限额三道护栏（`apply_daily_guard*` 全部作用在账号池上，池没了就是空操作）。
+- **面板**：删掉积分获取历史、积分与套餐明细弹窗、账号限额、本地网络工具、成长任务、WorkBuddy 账号列表与登录/导入/刷新/导出/删除等一整套 `loadAccounts` / `fetchCredits` / `toggleAccount` / … 脚本与 `/realm` 启动调用；账号页只剩码道账号。
+- 随功能一起退场的套件共 33 个（它们测的路径已经不存在），包括 `_test_account_proxy*.py`、`_test_affinity_pages.py`、`_test_balance_park.py`、`_test_catalog_refresh.py`、`_test_credit_grants.js`、`_test_daily_credit_limit.py`、`_test_daily_token_limit.py`、`_test_desktop_*.py`、`_test_error_persistence.py`、`_test_limit_realms.js`、`_test_local_web_tools.py`、`_test_pool_diagnostics.py`、`_test_product_persistence.py`、`_test_prompt_modes.py`、`_test_remaining_*.py`、`_test_restricted_403.py`、`_test_streak_report.py`、`_test_upstream_pool.py`、`_test_upstream_timeouts.py` 等。Anthropic 的协议面仍由 `_test_protocol_golden.py` + `_test_codearts.py` 覆盖，出口退避保留 `_test_egress_backoff.py` 的纯退避那一半。
+- **保留但已无调用方**：`ca_settings` 里的三组日限额键与 `limits_data` 迁移（老 `settings.json` 里的历史值仍能读、不被当成坏数据；写入入口只剩设置文件本身）。
 
 
 **模型清单补上上游新出现的 `kimi-k3`**
