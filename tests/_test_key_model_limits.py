@@ -141,7 +141,7 @@ print("[5] /settings/save keeps a stored limit when the field is absent")
 d3 = tempfile.mkdtemp(prefix="wb-keymodels-")
 S.set_api_keys(d3, [{"id": "k1", "name": "limited", "key": "key-delta",
                      "realm": "cn", "models": ["deepseek/*"]}])
-with mock.patch.multiple(proxy, ACCOUNTS_DIR=d3, SCHEDULER=None):
+with mock.patch.multiple(proxy, ACCOUNTS_DIR=d3):
     # An older cached panel posts rows without the new field at all.
     request = FakeRequest(payload={"api_keys": [
         {"id": "k1", "name": "limited", "key": "", "realm": "cn", "enabled": True},
@@ -190,7 +190,7 @@ print("[7] runtime_settings_view exposes models and round-trips when adding a ne
 d5 = tempfile.mkdtemp(prefix="wb-keymodels-view-")
 S.set_api_keys(d5, [{"id": "k1", "name": "first", "key": "key-first-secret",
                      "realm": "intl", "models": ["deepseek*"]}])
-with mock.patch.multiple(proxy, ACCOUNTS_DIR=d5, SCHEDULER=None):
+with mock.patch.multiple(proxy, ACCOUNTS_DIR=d5):
     view = proxy.runtime_settings_view()
     keys_in_view = view.get("api_keys") or []
     check("runtime_settings_view returns the key list", len(keys_in_view) == 1, keys_in_view)

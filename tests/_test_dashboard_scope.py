@@ -151,7 +151,7 @@ def main():
     check("没有调用 IIFE 私有函数", not private_calls, private_calls)
 
     # 账号区块专项：它的渲染函数必须是全局的
-    for fn in ("loadCodeartsAccounts", "caBalanceHtml", "caLeft", "caStamp"):
+    for fn in ("loadCodeartsAccounts", "caLeft", "caStamp"):
         check("函数 %s 是全局的（不在 IIFE 内）" % fn,
               re.search(r"^(?:async\s+)?function\s+%s\s*\(" % re.escape(fn), clean, re.M) is not None,
               "找不到顶层定义")

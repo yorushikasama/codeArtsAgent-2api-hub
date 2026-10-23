@@ -226,6 +226,22 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+**福利渠道下线：删掉 benefit 通道与「每日额度领取」**
+
+- 触发：`deepseek-v4.1-flash` 一直回 `InferHub.4004.200 benefit not found`。归因不是「今天的额度没领」，而是**请求带错了分组开关**：`BENEFIT_MODELS` 里还把它算成福利模型，于是每个请求都带 `maas_type: benefit`，而上游的福利渠道已被官方收回。
+- 实测（2026-10-23，同一账号、同一请求形状，只改一个头）：
+  - `deepseek-v4.1-flash` 不带 `maas_type` → **200 正常出字**；带上 → `4004.200 benefit not found`。它已经内置化。
+  - `deepseek-v4-flash-0731` / `glm-5.3-flash` / `deepseek-v4-pro-0813`：不带 → `002002009 model is not registered`；带上 → `4004.200`。**两条通道都不通**，已从 `CHAT_MODELS` 移除。
+  - 权益网关 `opengw /api/v1/gateway/config` 直接回 `[4000] invalid channel, group not found` —— 不是「没领」，是这条账号没有这个渠道。
+- 删除：
+  - `ca_codearts`：`GATEWAY_HOST`、`gateway_config()`、`normalize_models()`、`BENEFIT_MODELS`、`model_group()`、`MAAS_BENEFIT`、`GROUP_BENEFIT`、`credit_headers()`、`claim_benefit()`、`enable_benefit_claim()`、`tokens_balance()`、`balance_summary()`、`_is_full()`、`record_claim()`、`claim_and_verify()` 全部退场。`model_catalog()` 只取内置目录；`chat_headers()` 不再接受 `maas_type`。
+  - `ca_proxy`：`/accounts/codearts/claim`、账号面板的 `balance` 字段，以及 `mark_benefit_missing()` 那套「撞到 4004.200 就把它从清单里临时摘掉」的补丁 —— 福利模型都没了，没有可摘的对象，而且它治的是症状（真因是分组判错）。
+  - `ca_scheduler.py` **整个删除**：它唯一的任务是每日 09:00 / 21:00 领额度，渠道没了就是空转。
+  - 面板：调度器状态条与「立即巡检保活 / 暂停调度」两个按钮、`loadSchedulerStatus` / `triggerSchedulerNow` / `toggleScheduler`、token 额度行与「领取今日额度」按钮，以及为「渠道没了」准备的「重新授权」分支。
+- 保留：**积分两条线不受影响** —— `credit_package()`（snap-manager 的「总已用积分」）与 `welfare_*`（snap-access 的每日签到）。加上已删的 opengw token 额度，原本是三个独立体系；现在账号面板只显示积分与签到状态。
+- 测试口径：`_test_codearts.py` 删掉「每日领取」「调度领取前先续期」两段（-64 项），清单段改成「只有内置一组」；`_test_activity_history.py` 只留持久化与读取 API（领取记录三组用例退场）；`_test_codearts_stream_break.py` / `_test_panel_route_auth.py` / `_test_key_model_limits.py` / `_test_dashboard_scope.py` 去掉对已删符号的引用。
+
+
 **中途错误帧不再被当成正常结束（半截回答不盖章）**
 
 - 现象：上游先吐正文、再塞一个 `error_code` 帧时，客户端收到的是 `200` + `finish_reason=stop` + `[DONE]`，没有 error 帧；`usage.jsonl` 只有一条 `completed`。客户端把半截回答当完整结果，错误不进日志、账上算成功。

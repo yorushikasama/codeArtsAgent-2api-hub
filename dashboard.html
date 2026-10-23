@@ -122,8 +122,6 @@ input[type="checkbox"],input[type="radio"]{accent-color:var(--accent)}
 #cards .card{padding:13px 20px;min-width:0;border-radius:0;background:transparent;border:none;
   box-shadow:none;display:flex;flex-direction:column;justify-content:space-between;min-height:0}
 #cards .card+.card{border-left:1px solid var(--line)}
-#schedulerBar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;
-  gap:8px;padding:8px 20px;border-top:1px solid var(--line);background:var(--panel2);font-size:12px}
 #cards .card .k{font-size:12px;color:var(--dim);margin-bottom:8px;font-weight:600;letter-spacing:.2px}
 #cards .card .v{font-family:var(--serif);font-size:22px;font-weight:700;letter-spacing:0;color:var(--fg);display:flex;align-items:baseline}
 #cards .card .v-split{display:flex;flex-direction:column;gap:5px;width:100%}
@@ -3203,21 +3201,10 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     </div>
   </div>
 
-  <!-- 顶部统计条：三张统计卡（JS 每轮重画 #cards 内部）+ 调度器状态行，合成
-       一块面板（分段的样式见 .gw-summary / #schedulerBar）。 -->
+  <!-- 顶部统计条：三张统计卡（JS 每轮重画 #cards 内部），合成一块面板
+       （分段的样式见 .gw-summary）。 -->
   <div class="gw-summary">
     <div class="cards" id="cards"></div>
-    <div id="schedulerBar">
-      <div style="display:flex;align-items:center;gap:8px">
-        <span class="dot" id="schedDot"></span>
-        <span>后台定时调度器: <b id="schedStatusText">运行中</b></span>
-        <span style="color:var(--dim);font-size:11px" id="schedTimes"></span>
-      </div>
-      <div style="display:flex;gap:8px">
-        <button class="sec mini" id="btnTriggerSched" onclick="triggerSchedulerNow(this)">立即巡检保活</button>
-        <button class="sec mini" id="btnToggleSched" onclick="toggleScheduler(this)">暂停调度</button>
-      </div>
-    </div>
   </div>
 
   <!-- 合并模式（设置里「账号独立成一个页签」关闭，默认）时，账号页的三个区块搬到
@@ -4139,12 +4126,6 @@ async function loadCodeartsAccounts(){
   }
   // 渲染放进 try：一旦某一项抛错，之前的表现是 set() 永远不执行、页面就一直
   // 停在「正在读取…」，看不出任何线索（fmtTime 那次就是这么被藏住的）。
-  // 上游额度读不到时，用 /usage/by-account 的本网关累计数补一个可看的数字。
-  // 只在真出错时才拉，正常路径不多一次请求。
-  let localUsage = null;
-  if(list.some(function(a){ return !a.credit && !!a.balanceError; })){
-    localUsage = await caLocalUsageByAccount();
-  }
   let html;
   try{
     html = list.map(function(a){
@@ -4165,16 +4146,10 @@ async function loadCodeartsAccounts(){
       const runtimeText = " · 并发 " + flight + (cap ? "/" + cap : "")
         + (rt.cooling_s > 0 ? " · 冷却 " + Math.ceil(rt.cooling_s) + "s" : "");
       const id = esc(a.account_id || "");
-      // 积分（snap-manager 统计插件）才是客户端里真正在扣的额度；token 额度
-      // （opengw benefit）是另一套，上游收回后读不到。有积分就显示积分，
-      // 没有才退回原来的额度行。
-      const quotaHtml = a.credit
-        ? caCreditHtml(a.credit)
-        : caBalanceHtml(a.balance, a.balanceError, localUsage && localUsage[a.account]);
-      // 额度报「渠道没了」时领取必然失败，换「重新授权」；积分还在也不影响这个判断。
-      const dead = caBalanceErrDead(a.balanceError);
-      // 每日签到是活动系统（/v1/ops）的积分，与 token 额度互不影响：
-      // benefit 渠道被收回时它照样能签，所以按钮单独判断。
+      // 积分（snap-manager 统计插件）是客户端里真正在扣的额度。token 额度
+      // 那一栏随福利渠道一起下线（opengw 已停服），不再展示。
+      const quotaHtml = caCreditHtml(a.credit);
+      // 每日签到是活动系统（/v1/ops）的积分体系，与已下线的福利渠道无关。
       const daily = a.welfare || null;
       const wStatus = daily ? String(daily.status || "").toUpperCase() : "";
       const canSign = !!daily && (daily.claimable || !wStatus || wStatus === "ELIGIBLE");
@@ -4190,9 +4165,6 @@ async function loadCodeartsAccounts(){
         + (canSign
             ? '<button class="sec mini" data-ca-id="' + id + '" onclick="claimCodeartsWelfare(this)">积分签到</button>'
             : "")
-        + (dead
-            ? '<button class="sec mini" onclick="openCodeartsLogin()">重新授权</button>'
-            : '<button class="sec mini" data-ca-id="' + id + '" onclick="claimCodeartsBenefit(this)">领取今日额度</button>')
         + (a.renewable ? '<button class="sec mini" data-ca-id="' + id + '" onclick="refreshCodeartsAccount(this)">续期</button>' : "")
         + '<button class="sec mini" data-ca-id="' + id + '" onclick="deleteCodeartsAccount(this)">删除</button>'
         + '</div></div>';
@@ -4202,30 +4174,6 @@ async function loadCodeartsAccounts(){
     return;
   }
   set(html);
-}
-
-// 额度是「今天领没领」的唯一可信依据：领取接口幂等、查不到自己的履历，只有
-// 余额能反推。满额且未消耗 = 今天的已经在手上，零消耗 = 额度没用过。
-/* 上游的报错文案要翻成人话：额度接口在上游「渠道/分组」被收回时回的是
-   `invalid channel, group not found`，直接甩给用户等于没说。 */
-function caBalanceErrDead(err){
-  return /group not found|invalid channel|benefit not found/i.test(String(err || ""));
-}
-
-function caBalanceErrText(err){
-  const s = String(err || "");
-  if(caBalanceErrDead(s)) return "额度不可用 · 上游已收回福利渠道，需要重新授权";
-  if(/unauthorized|401|403/i.test(s)) return "凭证失效，需要重新授权";
-  return "额度读取失败：" + s;
-}
-
-/* 领取失败文案：后端已经带了一次「领取失败:」，这里去掉重复前缀，
-   再把上游收回渠道翻成能照着做的提示。 */
-function caClaimErrText(err){
-  const s = String(err || "").replace(/^领取失败[:：]\s*/, "");
-  if(caBalanceErrDead(s)) return "上游已收回福利渠道，需要重新授权";
-  if(/unauthorized|401|403/i.test(s)) return "凭证失效，需要重新授权";
-  return s;
 }
 
 /* 每日签到（活动页「每日签到领 1000 积分」）的状态行。它是 /v1/ops 的
@@ -4248,21 +4196,6 @@ function caWelfareErrText(err){
   return s;
 }
 
-/* 上游额度读不到时，退一步用本网关自己的累计量顶一格 —— 有数字总比空着强，
-   但必须标明来源，不能让人误以为是上游余额。结果缓存 30 秒，失败也缓存，
-   免得额度接口坏掉时每 5 秒轮询都多打一次 /usage/by-account。 */
-let caUsageCache = null;
-async function caLocalUsageByAccount(){
-  if(caUsageCache && (Date.now() - caUsageCache.at) < 30000) return caUsageCache.map;
-  let map = {};
-  try{
-    const r = await getJSON("/usage/by-account", POLL_READ);
-    ((r && r.accounts) || []).forEach(function(x){ if(x && x.account) map[x.account] = x; });
-  }catch(e){ map = {}; }
-  caUsageCache = {at: Date.now(), map: map};
-  return map;
-}
-
 /* 体验版积分：客户端「总已用积分 4,817 / 11,500 · 6,683 剩余」那一栏，
    来自 snap-access 的 snap-manager 统计插件。它和下面的 token 额度是两套，
    积分才是客户端里真正在扣的那个数。 */
@@ -4274,49 +4207,6 @@ function caCreditHtml(c){
   if(c.package_name) bits.push(c.package_name);
   if(c.end_date) bits.push(String(c.end_date).slice(0, 10) + ' 到期');
   return '<span class="ca-sub">' + esc(bits.join(' · ')) + '</span>';
-}
-
-function caBalanceHtml(b, err, localUsage){
-  if(err){
-    // 上游额度读不到时，至少给一个本地能证明的数字：本网关累计的调用与 token。
-    // 明确标注「本地统计」——它不是上游余额，不能拿来当额度看。
-    const u = localUsage || {};
-    let extra = "";
-    if(u.total_tokens != null)
-      extra = " · 本网关累计 " + fmt(u.requests || 0) + " 次 / " + fmt(u.total_tokens) + " token（本地统计）";
-    return '<span class="ca-sub">' + esc(caBalanceErrText(err)) + esc(extra) + '</span>';
-  }
-  if(!b) return '';
-  const left = fmt(b.remaining) + " / " + fmt(b.daily_limit) + " token";
-  let state = "今日已领";
-  if(!b.daily_limit) state = "未开通额度";
-  else if(b.used_today > 0) state = "今日已用 " + b.used_percent + "%";
-  const reset = b.expires_at_today ? "· 当日有效、0 点清零" : "";
-  return '<span class="ca-sub">今日额度 ' + esc(left) + " · " + esc(state)
-    + (b.updated_at ? " · 更新于 " + esc(b.updated_at) : "") + esc(reset) + '</span>';
-}
-
-async function claimCodeartsBenefit(btn){
-  const id = btn && btn.getAttribute("data-ca-id");
-  if(!id) return;
-  const old = btn.textContent;
-  btn.disabled = true; btn.textContent = "领取中…";
-  try{
-    const r = await postJSON("/accounts/codearts/claim", {accountId: id});
-    const res = (r && r.results && r.results[0]) || {};
-    const b = res.balance || {};
-    if(res.skipped){
-      toast("今日已领取：" + fmt(b.total_balance || 0) + " token", "ok");
-    }else if(res.ok){
-      toast("领取成功：" + (res.msg || ""), "ok");
-    }else{
-      toast("领取失败：" + caClaimErrText(res.msg || "未知原因"), "bad");
-    }
-    await loadCodeartsAccounts();
-  }catch(e){
-    toast("领取失败：" + caClaimErrText(e.message), "bad");
-    btn.disabled = false; btn.textContent = old;
-  }
 }
 
 async function claimCodeartsWelfare(btn){
@@ -4759,52 +4649,6 @@ let CURRENT_GROWTH_UID = 'all';
 
 
 
-
-async function loadSchedulerStatus(){
-  try{
-    const s = await getJSON("/scheduler");
-    const bar = document.getElementById("schedulerBar");
-    if(!bar) return;
-    const dot = document.getElementById("schedDot");
-    const txt = document.getElementById("schedStatusText");
-    const times = document.getElementById("schedTimes");
-    const btn = document.getElementById("btnToggleSched");
-    const btnTrig = document.getElementById("btnTriggerSched");
-
-    if(dot) dot.className = s.enabled ? 'dot' : 'dot off';
-    const modeText = s.mode_cn || s.mode || '整点排程';
-    if(txt) txt.textContent = s.enabled ? ('运行中 · ' + modeText) : '已暂停';
-    if(times) times.textContent = '上次: ' + (s.last_run_time || '-') + ' · 下次: ' + (s.next_run_time || '-');
-    if(btn) btn.textContent = s.enabled ? '暂停调度' : '启用调度';
-    if(btnTrig) btnTrig.textContent = '立即巡检保活';
-  }catch(e){}
-}
-
-async function triggerSchedulerNow(btn){
-  if(btn){ btn.disabled = true; btn.textContent = '巡检中...'; }
-  try{
-    const r = await postJSON("/scheduler/trigger", {});
-    toast(r.msg || "已触发巡检保活", "ok");
-    setTimeout(loadSchedulerStatus, 2000);
-  }catch(e){
-    toast("触发失败: " + e.message, "bad");
-  }finally{
-    if(btn){ btn.disabled = false; btn.textContent = '立即巡检保活'; }
-  }
-}
-
-async function toggleScheduler(btn){
-  if(btn){ btn.disabled = true; }
-  try{
-    const r = await postJSON("/scheduler/toggle", {});
-    await loadSchedulerStatus();
-    toast("后台调度器已" + (r.enabled ? "启用" : "暂停"), "ok");
-  }catch(e){
-    toast("切换失败: " + e.message, "bad");
-  }finally{
-    if(btn){ btn.disabled = false; }
-  }
-}
 
 const fmt = n => (n ?? 0).toLocaleString('en-US');
 /* Token 数的紧凑显示：<1 万精确显示（千分位），≥1 万 K，≥100 万 M，≥10 亿 B；
@@ -6455,7 +6299,7 @@ async function startDashboard(){
   PANEL_READY = true;
   // 设置先回来，它决定下面各自查什么；之后就并行。
   await loadSettings();
-  await Promise.all([loadModels(), loadSchedulerStatus(), refresh()]);
+  await Promise.all([loadModels(), refresh()]);
   updateRecentLimitButtons();
   // The head script already resolved this before first paint; re-apply it
   // here so the data loaders for the active page actually run.
@@ -6482,7 +6326,6 @@ async function startDashboard(){
     // applyAllTableSorts）：表本来就是 5 秒重画一次，扫描跟同一个节奏走，新加
     // 一张表不必在它的 render 函数里再写一行，下一轮自己就接上了。
     setInterval(() => { if(!document.hidden){ refresh(); applyAllTableSorts(); } }, 5000),
-    setInterval(() => { if(!document.hidden) loadSchedulerStatus(); }, 30000),
   ];
   if(!visHookInstalled){
     visHookInstalled = true;
@@ -6491,7 +6334,6 @@ async function startDashboard(){
     document.addEventListener('visibilitychange', () => {
       if(document.hidden || !PANEL_READY) return;
       refresh();
-      loadSchedulerStatus();
       if(currentMainTab === 'analytics'){ loadAnalytics(); loadAnalyticsMatrix(); }
       if(currentMainTab === 'logs' && logAutoRefresh) fetchNewLogs(false);
     });

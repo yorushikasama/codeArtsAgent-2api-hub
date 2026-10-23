@@ -224,13 +224,13 @@ class BadJSON(Exception):
     """Raised when a request body is present but not a JSON object."""
 # CORS is only needed by browser-based chat clients that call the OpenAI-style
 # API from another origin. Management routes (accounts, settings, usage,
-# scheduler, panel) serve the dashboard, which is same-origin, so they get no
+# panel) serve the dashboard, which is same-origin, so they get no
 # ACAO header - that keeps a stray page on the LAN from reading their replies.
 CORS_PATH_PREFIXES = ("/v1", "/chat", "/completions", "/models", "/responses")
 # Management paths that happen to live under /v1 must not be treated as API:
 # /v1/usage reports account-level spend and is gated by the panel session.
 MANAGEMENT_PATH_PREFIXES = ("/v1/usage", "/usage", "/accounts", "/settings",
-                            "/tasks", "/scheduler", "/panel", "/logs")
+                            "/panel", "/logs")
 def cors_origin_allowed(path):
     """True when the OpenAI-style API path should advertise CORS."""
     path = (path or "").split("?")[0]
@@ -5419,7 +5419,6 @@ def recent_usage(limit=100, realm=None, page=1):
         "usd_cny": 0.0,
         "rows": page_rows
     }
-SCHEDULER = None
 PRICING = None
 # CodeArts（华为云）账号登录：与 WorkBuddy 账号池完全独立的一套凭证体系，
 # 只共用 accounts/ 目录（落在 accounts/codearts/ 子目录里）。
@@ -9426,12 +9425,11 @@ _LOG_WARN_HINTS = (
 # 模块：顺序即优先级，越靠前越先判定。新增的 pricing / egress / upstream /
 # update / usage / webtools 都是从原先那个大杂烩 "system" 里拆出来的——这些
 # 模块本来就在打日志，只是推断规则不认识它们的词，于是一律归到 system，事后
-# 想按模块看某一类问题时筛不出来。原有类别（chat/scheduler/tasks/accounts/
-# catalog/auth/settings）的相对顺序保持不变，避免改变既有日志的归类。
+# 想按模块看某一类问题时筛不出来。原有类别（chat/accounts/catalog/auth/
+# settings）的相对顺序保持不变，避免改变既有日志的归类。
 _LOG_TAG_HINTS = (
     ("chat", ("chat:", "chat done", "request error", "/v1/chat",
               "/chat/completions", "responses")),
-    ("scheduler", ("scheduler", "调度器")),
     ("accounts", ("account", "账号", "pool", "imported")),
     ("pricing", ("pricing", "定价", "取价", "价格", "price", "抓取")),
     ("egress", ("egress", "出口", "槽位", "proxy slot", "mihomo")),
@@ -10646,34 +10644,6 @@ _CODEARTS_CATALOG = {"at": 0.0, "models": [], "errors": {}}
 _CODEARTS_CATALOG_TTL = 300.0
 _CODEARTS_RR = {"next": 0}
 
-#: 实测「这个账号没有该福利模型权益」的模型（``InferHub.4004.200``）。
-#:
-#: 福利渠道的 4 个模型是我们按名字写进 CHAT_MODELS 的，但账号**不一定领了**
-#: 权益。不领的话上游回 ``benefit not found``，而 /v1/models 还把它们广告
-#: 出去 —— 客户端选中一个，必错。这里记一笔，让清单在一段时间内不再列它；
-#: 到期后重新试探（用户可能刚去领了福利）。
-CODEARTS_BENEFIT_MISSING_TTL = float(
-    os.environ.get("CODEARTS_BENEFIT_MISSING_TTL") or 600.0)
-_CODEARTS_BENEFIT_MISSING = {}
-
-
-def mark_benefit_missing(model_id):
-    """记下「这个模型当前没有权益」。返回是否是新记的（不要重复写日志）。"""
-    name = str(model_id or "")
-    if not name:
-        return False
-    now = time.time()
-    fresh = _CODEARTS_BENEFIT_MISSING.get(name, 0.0) <= now
-    _CODEARTS_BENEFIT_MISSING[name] = now + CODEARTS_BENEFIT_MISSING_TTL
-    return fresh
-
-
-def benefit_missing(model_id):
-    """这个模型是否还在「没有权益」的观察期内。"""
-    until = _CODEARTS_BENEFIT_MISSING.get(str(model_id or ""), 0.0)
-    return until > time.time()
-
-
 def codearts_catalog(force=False):
     """码道模型目录（内存缓存 5 分钟）。没有账号时返回空，不抛。"""
     now = time.time()
@@ -10716,10 +10686,8 @@ def codearts_catalog(force=False):
     except Exception as exc:
         models, errors = [], {"catalog": str(exc)}
     # 只暴露实测可用的那些：服务端报了但打不通的模型进清单只会误导客户端。
-    # 「没有福利权益」（4004.200）也按不可用处理 —— 列出来必错。
     models = [m for m in models if m.get("id") in ca_codearts.CHAT_MODELS
-              and m.get("routable", True)
-              and not benefit_missing(m.get("id"))]
+              and m.get("routable", True)]
     _CODEARTS_CATALOG.update({"at": now, "models": models, "errors": errors})
     return _CODEARTS_CATALOG
 
@@ -14316,7 +14284,7 @@ class Handler(BaseHTTPRequestHandler):
             if status_code < 400 and getattr(self, "command", "GET") == "GET":
                 req_path = (getattr(self, "path", None) or (args[0] if args else "")).split("?")[0]
                 quiet_prefixes = (
-                    "/logs", "/usage", "/accounts", "/scheduler",
+                    "/logs", "/usage", "/accounts",
                     "/health", "/panel/status", "/realm", "/favicon.ico"
                 )
                 if any(req_path == p or req_path.startswith(p + "/") for p in quiet_prefixes):
@@ -14795,8 +14763,6 @@ class Handler(BaseHTTPRequestHandler):
             return True
         if path.startswith("/activity"):
             return True
-        if path.startswith("/tasks") or path.startswith("/scheduler"):
-            return True
         if path.startswith("/settings"):
             return True
         if path.startswith("/updates"):
@@ -14857,8 +14823,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_usage_timeseries(query)
         if path == "/activity/history":
             return self._get_activity_history(query)
-        if path == "/scheduler":
-            return self._get_scheduler()
         if path == "/pricing":
             return self._get_pricing()
         if path == "/settings":
@@ -15128,18 +15092,8 @@ class Handler(BaseHTTPRequestHandler):
             info = ca_codearts.summarize(session)
             info["file"] = os.path.basename(
                 ca_codearts.session_path(ACCOUNTS_DIR, info.get("account_id") or ""))
-            # 额度是签到这件事的**唯一真相**：领取接口幂等、无法反查「今天领没领」，
-            # 只有余额能看出来（满额且未消耗 == 今天的已经在手上）。读失败就留空，
-            # 不让一次上游抖动把整个列表打挂。
-            try:
-                info["balance"] = ca_codearts.balance_summary(
-                    session.get("accessKey"), session.get("secretKey"),
-                    session.get("securitytoken"))
-            except Exception as exc:
-                info["balance"] = None
-                info["balanceError"] = str(exc)
-            # 体验版积分（客户端「总已用积分 x / y」那一条）。与上面的 token 额度
-            # 是两个体系：benefit 渠道被上游收回后 token 额度读不到，但积分还在。
+            # 体验版积分（客户端「总已用积分 x / y」那一条）。token 额度那一栏
+            # 已随福利渠道一起下线（opengw 不再提供服务），面板只显示积分。
             try:
                 info["credit"] = ca_codearts.credit_package(
                     session.get("accessKey"), session.get("secretKey"),
@@ -15174,52 +15128,6 @@ class Handler(BaseHTTPRequestHandler):
             "port": port,
             "callbackPath": ca_codearts.AUTH_REDIRECT_PATH,
         })
-
-    def _route_codearts_claim(self, payload):
-        """领取当日额度。accountId 为空则逐个领取全部会话。"""
-        account_id = payload.get("accountId") or ""
-        sessions = ca_codearts.load_sessions(ACCOUNTS_DIR)
-        if account_id:
-            sessions = [s for s in sessions
-                        if (s.get("account") or {}).get("id") == account_id]
-            if not sessions:
-                return self._error(404, "codearts account not found",
-                                   "invalid_request_error")
-        results = []
-        for session in sessions:
-            acct = session.get("account") or {}
-            label = acct.get("label") or acct.get("id") or "码道账号"
-            try:
-                # 领取要打上游，先把快要过期的 STS 续掉。否则闲置两小时后
-                # 「一键领取」永远失败，而账号本身明明还能自动续期。
-                session = ca_codearts.ensure_fresh_session(
-                    ACCOUNTS_DIR, session, CODEARTS_REFRESH_MARGIN)
-                acct = session.get("account") or acct
-                label = acct.get("label") or acct.get("id") or label
-            except Exception as exc:  # noqa: BLE001
-                log("codearts: claim renew failed for %s: %s" % (label, exc),
-                    level="WARN")
-            try:
-                res = ca_codearts.claim_and_verify(
-                    session.get("accessKey"), session.get("secretKey"),
-                    session.get("securitytoken"), session=session,
-                    trigger="manual")
-                res["accountId"] = acct.get("id") or ""
-                res["label"] = label
-                if res.get("skipped"):
-                    add_log_entry(f"[账号] 码道 [{label}] {res.get('msg')}", tag="accounts")
-                else:
-                    add_log_entry(f"[账号] 码道 [{label}] 领取每日额度: {res.get('msg')}",
-                                  tag="accounts")
-            except Exception as exc:
-                res = {"ok": False, "skipped": False,
-                       "msg": "领取失败: %s" % exc,
-                       "accountId": acct.get("id") or "", "label": label,
-                       "balance": None}
-                add_log_entry(f"[账号] 码道 [{label}] 领取每日额度失败: {exc}",
-                              level="WARN", tag="accounts")
-            results.append(res)
-        return self._json(200, {"results": results})
 
     def _route_codearts_welfare_claim(self, payload):
         """积分签到（活动页「每日签到领 1000 积分」），与领取 token 额度是两回事。"""
@@ -15404,11 +15312,6 @@ class Handler(BaseHTTPRequestHandler):
             lambda: perf_stats_etag(sample, realm=req_realm, range=req_range,
                                     since=req_since, until=req_until))
 
-
-    def _get_scheduler(self):
-        if not self._authorized():
-            return
-        return self._json(200, SCHEDULER.status() if SCHEDULER else {"enabled": False, "msg": "未运行"})
 
     def _get_pricing(self):
         if not self._authorized():
@@ -15949,11 +15852,6 @@ class Handler(BaseHTTPRequestHandler):
             API_KEY = new_key
             API_KEY_FILE_SET = True
             reply["api_key_set"] = bool(new_key)
-        if payload.get("restart_scheduler"):
-            if SCHEDULER:
-                SCHEDULER.stop()
-                SCHEDULER.start()
-            reply["scheduler"] = "restarted"
         reply.update(runtime_settings_view())
         return self._json(200, reply)
 
@@ -16054,18 +15952,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_codearts_refresh(payload or {})
         if path == "/accounts/codearts/refresh-catalog":
             return self._route_codearts_refresh_catalog(payload or {})
-        if path == "/accounts/codearts/claim":
-            return self._route_codearts_claim(payload or {})
         if path == "/accounts/codearts/welfare/claim":
             return self._route_codearts_welfare_claim(payload or {})
         if path == "/accounts/codearts/delete":
             return self._route_codearts_delete(payload or {})
         if not isinstance(payload, dict):
             return self._error(400, "expected a JSON object", "invalid_request_error")
-        if path == "/scheduler/trigger":
-            return self._route_scheduler_trigger(payload)
-        if path == "/scheduler/toggle":
-            return self._route_scheduler_toggle(payload)
         if path == "/pricing/refresh":
             return self._route_pricing_refresh(payload)
         if path == "/logs/clear":
@@ -16089,18 +15981,6 @@ class Handler(BaseHTTPRequestHandler):
         status = UPDATES.check(manual=True)
         status["ok"] = True
         return self._json(200, status)
-
-    def _route_scheduler_trigger(self, payload):
-        if SCHEDULER:
-            return self._json(200, SCHEDULER.trigger_now())
-        return self._json(200, {"ok": False, "msg": "调度器未初始化"})
-
-    def _route_scheduler_toggle(self, payload):
-        if SCHEDULER:
-            SCHEDULER.enabled = not SCHEDULER.enabled
-            SCHEDULER.log(f"用户切换调度器状态为: {'启用' if SCHEDULER.enabled else '暂停'}")
-            return self._json(200, SCHEDULER.status())
-        return self._json(200, {"ok": False, "msg": "调度器未初始化"})
 
     def _route_pricing_refresh(self, payload):
         """价格估算体系已下线（2026-10-22），保留接口只为给出明确答复。"""
@@ -16282,8 +16162,6 @@ class Handler(BaseHTTPRequestHandler):
         is_account_route = (
             path.startswith("/accounts/")
             or path == "/realm"
-            or path.startswith("/tasks")
-            or path.startswith("/scheduler")
             or path.startswith("/logs")
         )
         if not is_account_route and not is_messages_route and path not in (
@@ -16548,11 +16426,6 @@ class Handler(BaseHTTPRequestHandler):
 
         if status not in (200, 201):
             code, detail = ca_stream.error_detail(text)
-            if "4004.200" in (code or "") or "benefit not found" in (detail or ""):
-                if mark_benefit_missing(model):
-                    log("codearts model %s has no benefit entitlement; "
-                        "hiding it from /v1/models for %ds"
-                        % (model, int(CODEARTS_BENEFIT_MISSING_TTL)))
             st, _et = ca_stream.fail_spec(status, code, detail, anthropic)
             # 参数错（001001005）不说清是哪个参数，把形状留在日志里，
             # 下次才能区分「上下文太长 / max_tokens 越界 / 图片给了非多模态」。
@@ -16574,8 +16447,6 @@ class Handler(BaseHTTPRequestHandler):
             # 客户端当完整回答用，账上记 completed。错误帧的意思只有一个 ——
             # 这一轮废了；半截正文留着只会让人误以为拿到了完整答案。
             _st, _et = ca_stream.frame_status(frame_err, anthropic)
-            if "4004.200" in frame_err or "benefit not found" in frame_err:
-                mark_benefit_missing(model)
             dump_failed_request(payload, messages, max_tokens)
             log("codearts stream finished with an error frame after %d chars: "
                 "model=%s %s" % (len(content) + len(reasoning), model,
@@ -16776,11 +16647,6 @@ class Handler(BaseHTTPRequestHandler):
         code, detail = ca_stream.error_detail(text)
         log("codearts request shape on failure: model=%s %s"
             % (model, _codearts_request_shape(payload, messages, max_tokens)))
-        if "4004.200" in (code or "") or "benefit not found" in (detail or ""):
-            if mark_benefit_missing(model):
-                log("codearts model %s has no benefit entitlement; "
-                    "hiding it from /v1/models for %ds"
-                    % (model, int(CODEARTS_BENEFIT_MISSING_TTL)))
         # 记账必须和回给客户端的状态码同源：以前这里写死 502，而
         # _codearts_fail 会按表把 APIG.0203 映射成 504 —— gw.log 与
         # usage.jsonl 记 502、客户端收 504，同一个失败两个答案。
@@ -17010,8 +16876,6 @@ class Handler(BaseHTTPRequestHandler):
             # 比「200 + 半截流」诚实得多。
             reason = frame_err or truncated or "upstream returned no frames"
             code, err_type = ca_stream.frame_status(reason)
-            if "4004.200" in reason or "benefit not found" in reason:
-                mark_benefit_missing(model)
             record_error(model, code, reason[:200], elapsed_ms=elapsed_ms,
                          account=account_label, key=self._key_id())
             return self._error(code, "codearts error: %s" % reason, err_type)
@@ -17028,8 +16892,6 @@ class Handler(BaseHTTPRequestHandler):
             # 状态码仍过 `frame_status` 那张表：真被限流（1041 / 811xx）就该让
             # 客户端看到 429，而不是一个笼统的 502。
             code, err_type = ca_stream.frame_status(frame_err)
-            if "4004.200" in frame_err or "benefit not found" in frame_err:
-                mark_benefit_missing(model)
             partial = bool(content_parts or reasoning_parts)
             if partial:
                 # 断在半路：和断流一样留一份请求形状，否则这条失败无从归因。
@@ -17726,7 +17588,7 @@ def _probe_running_instance(args):
 
 def _bootstrap_runtime(args):
     global ACCOUNTS_DIR, API_KEY, SYSTEM_PROMPT
-    global API_KEY_FILE_SET, SCHEDULER, LOG_STORE, CODEARTS_LOGIN
+    global API_KEY_FILE_SET, LOG_STORE, CODEARTS_LOGIN
     api_key_generated = False
     API_KEY = args.api_key
     SYSTEM_PROMPT = args.system_prompt
@@ -17770,12 +17632,8 @@ def _bootstrap_runtime(args):
     # 上游凭证体系可加载。
     CODEARTS_LOGIN = ca_codearts.LoginManager(ACCOUNTS_DIR, log=log)
     load_persisted_realm()
-    global SCHEDULER
-    from ca_scheduler import Scheduler
-    SCHEDULER = Scheduler()
-    # 码道每日领取要自己读 accounts/codearts/，调度器拿不到账号池之外的目录。
-    SCHEDULER.accounts_dir = ACCOUNTS_DIR
-    SCHEDULER.start()
+    # 后台调度器随「每日额度领取」一起删除（2026-10-23）：那套 opengw 权益
+    # 接口已被官方下线，没有任何定时任务还需要跑。
     # 目录兜底：每天至少从上游 API 取一次（活跃使用的部署里 300s 缓存早就
     # 刷得更新，这个线程只兜长时间没人访问 / 一直吃缓存文件或内置快照）。
     # 价格估算体系已下线（2026-10-22）：不再初始化取价器，不再读价表，

@@ -456,238 +456,6 @@ check("拒绝 file 协议", not _allow("file:///C:/Windows/win.ini"))
 
 
 # ---------------------------------------------------------------------------
-# 每日领取：判据与签名
-# ---------------------------------------------------------------------------
-
-print()
-print("== 每日领取 ==")
-check("领取路径取自官方扩展", C.BENEFIT_CLAIM_PATH == "/api/v1/benefit/claim",
-      C.BENEFIT_CLAIM_PATH)
-check("余额路径取自官方扩展",
-      C.TOKENS_BALANCE_PATH == "/api/v1/user/tokens/balance",
-      C.TOKENS_BALANCE_PATH)
-check("权益接口挂在权益网关而不是权益消费网关",
-      C.GATEWAY_HOST == "https://opengw.developer.huaweicloud.com",
-      C.GATEWAY_HOST)
-
-# POST 必须把 body 的 hash 算进签名，否则回 APIG.0301「verify ak sk signature
-# fail」—— 看起来像 AK/SK 错了，实际是签名串少了 payload hash。
-_get = C.credit_headers("AK", "SK", "TOK", C.BENEFIT_CLAIM_PATH, "GET")
-_post = C.credit_headers("AK", "SK", "TOK", C.BENEFIT_CLAIM_PATH, "POST", body={})
-check("GET 带令牌头", _get.get("X-Security-Token") == "TOK", sorted(_get))
-check("POST 带令牌头", _post.get("X-Security-Token") == "TOK", sorted(_post))
-check("两种方法都签了名", "Authorization" in _get and "Authorization" in _post)
-check("带 traceid 便于上游排障", bool(_get.get("x-snap-traceid")))
-
-
-# 服务端时间戳换算
-check("毫秒时间戳换成本地时间",
-      C._ms_to_iso(1792054192998).startswith("2026-"), C._ms_to_iso(1792054192998))
-check("0 换出空串而不是 1970", C._ms_to_iso(0) == "", repr(C._ms_to_iso(0)))
-check("None 不炸", C._ms_to_iso(None) == "")
-check("非数字不炸", C._ms_to_iso("abc") == "")
-
-# 「今天领没领」的唯一判据是余额满不满，不是服务端时间戳：实测 update_time 在
-# 连续领取时不刷新，拿它判会把「还没领」误判成「已领」，于是永远领不到。
-check("满额且未消耗 = 已领", C._is_full(
-    {"daily_limit": 1000, "total_balance": 1000, "used_today": 0}))
-check("额度不足 = 未领", not C._is_full(
-    {"daily_limit": 1000, "total_balance": 400, "used_today": 0}))
-check("满额但已消耗 = 未领（今天的还能再领）", not C._is_full(
-    {"daily_limit": 1000, "total_balance": 1000, "used_today": 300}))
-check("服务端没给上限时不算已领", not C._is_full(
-    {"daily_limit": 0, "total_balance": 0, "used_today": 0}))
-check("上限为 None 也不算已领", not C._is_full(
-    {"daily_limit": None, "total_balance": 500, "used_today": 0}))
-
-
-# 余额摘要：口径都是「上限 / 余额 / 今日已用」
-class _FakeBalance(object):
-    def __init__(self, payload):
-        self.payload = payload
-
-    def __call__(self, ak, sk, tok, timeout=None):
-        return self.payload
-
-
-def with_balance(payload, fn, *a, **k):
-    saved = C.tokens_balance
-    C.tokens_balance = _FakeBalance(payload)
-    try:
-        return fn(*a, **k)
-    finally:
-        C.tokens_balance = saved
-
-
-# 键名照抄服务端返回的 result，不是摘要里的名字 —— 摘要的键是转换后的
-# daily_limit，服务端那个是 daily_token_limit。
-BASE = {"channel": "codearts", "daily_token_limit": 10000000,
-        "total_balance": 10000000, "daily_tokens_used": 2500000,
-        "monthly_token_limit": 0, "monthly_tokens_used": 0,
-        "expire_time": 0, "update_time": 1792054192998}
-
-sum_ = with_balance(BASE, C.balance_summary, "AK", "SK", "TOK")
-check("摘要带每日上限", sum_["daily_limit"] == 10000000, sum_)
-check("摘要带今日已用", sum_["used_today"] == 2500000, sum_)
-check("剩余 = 上限 - 已用", sum_["remaining"] == 7500000, sum_)
-check("已用百分比", sum_["used_percent"] == 25.0, sum_)
-check("expire_time=0 读作当日清零", sum_["expires_at_today"] is True, sum_)
-check("updated_at 是展示用的时间戳", bool(sum_["updated_at"]), sum_)
-check("没有 granted_today 这个误导性字段",
-      "granted_today" not in sum_, sorted(sum_))
-# 摘要与原始 result 的键名不同，别让以后有人把两者混用
-check("摘要用 daily_limit，原始 result 是 daily_token_limit",
-      "daily_limit" in sum_ and "daily_token_limit" in BASE, sorted(sum_))
-
-# 用完了也别算出负数
-spent = with_balance(dict(BASE, daily_tokens_used = 12000000),
-                     C.balance_summary, "AK", "SK", "TOK")
-check("超额消耗时剩余不取负", spent["remaining"] == 0, spent)
-
-# 服务端没给上限时不做除法
-nolimit = with_balance({"expire_time": 0},
-                       C.balance_summary, "AK", "SK", "TOK")
-check("缺上限时百分比为 None", nolimit["used_percent"] is None, nolimit)
-check("缺上限时剩余为 0", nolimit["remaining"] == 0, nolimit)
-
-
-# claim_and_verify 的三条分支
-def fake_verify(balance_before, claim_ok=True, grew=True, balance_after=None):
-    seq = [balance_before, balance_after if balance_after is not None else balance_before]
-
-    def fake_balance(ak, sk, tok, timeout=None):
-        return seq.pop(0) if len(seq) > 1 else seq[0]
-
-    saved_bal, saved_claim = C.balance_summary, C.claim_benefit
-    C.balance_summary = fake_balance
-    calls = []
-
-    def fake_claim(ak, sk, tok, timeout=None):
-        calls.append(1)
-        if not claim_ok:
-            raise RuntimeError("APIG.0301")
-        return {"ok": True, "msg": "success", "user_name": "hid_x",
-                "domain_id": "D", "raw": {}}
-
-    C.claim_benefit = fake_claim
-    try:
-        return C.claim_and_verify("AK", "SK", "TOK"), len(calls)
-    finally:
-        C.balance_summary, C.claim_benefit = saved_bal, saved_claim
-
-
-# claim_and_verify 的契约是「传进来一个**摘要**（balance_summary 的产物），
-# 而不是服务端原始 result」—— 摘要的键是 daily_limit / used_today。
-FULL = {"daily_limit": 1000, "total_balance": 1000, "used_today": 0}
-EMPTY = {"daily_limit": 1000, "total_balance": 0, "used_today": 0}
-
-res, calls = fake_verify(FULL)
-check("已满额时跳过", res["skipped"] is True and res["ok"] is True, res)
-check("跳过时不发领取请求", calls == 0, calls)
-check("跳过时带出可读的说明", "已领取" in res["msg"], res["msg"])
-check("跳过时把额度摘要原样带回来",
-      res["balance"]["daily_limit"] == 1000, res["balance"])
-
-res, calls = fake_verify(EMPTY, balance_after=FULL)
-check("未领时不跳过", res["skipped"] is False, res)
-check("未领时发一次领取请求", calls == 1, calls)
-check("领取后报告额度是否涨了", res["grew"] is True, res)
-check("领取结果带上新余额", res["balance"]["total_balance"] == 1000, res)
-check("领取结果带上账号名", res["user_name"] == "hid_x", res)
-
-res, calls = fake_verify({"daily_limit": 1000, "total_balance": 1000,
-                          "used_today": 400})
-check("已消耗后可以再领", res["skipped"] is False, res)
-
-# 领取失败要往上抛，让调度器记 failed 而不是假装成功
-saved_claim = C.claim_benefit
-saved_bal = C.balance_summary
-C.balance_summary = lambda *a, **k: dict(EMPTY)
-C.claim_benefit = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
-try:
-    raised = False
-    try:
-        C.claim_and_verify("AK", "SK", "TOK")
-    except RuntimeError:
-        raised = True
-    check("领取失败向上抛而不吞掉", raised)
-finally:
-    C.claim_benefit, C.balance_summary = saved_claim, saved_bal
-
-
-# 余额这一步就失败时（上游收回渠道 → "invalid channel, group not found"），
-# 也必须写一行历史，否则调度器每小时都在失败而签到记录里一片空白。
-saved_claim = C.claim_benefit
-saved_bal = C.balance_summary
-saved_record = C.record_claim
-_recorded = []
-
-
-def _fake_record(session, result, trigger="unknown"):
-    _recorded.append((trigger, dict(result)))
-    return True
-
-
-C.balance_summary = lambda *a, **k: (_ for _ in ()).throw(
-    RuntimeError("invalid channel, group not found"))
-C.record_claim = _fake_record
-try:
-    raised = False
-    try:
-        C.claim_and_verify("AK", "SK", "TOK", session={"account": {"id": "a"}},
-                           trigger="scheduler")
-    except RuntimeError:
-        raised = True
-    check("余额读取失败也向上抛", raised)
-    check("余额读取失败时留下历史记录", len(_recorded) == 1, _recorded)
-    if _recorded:
-        trig, res = _recorded[0]
-        check("历史记录标为失败", res.get("ok") is False, res)
-        check("历史记录说明是额度不可用", "额度不可用" in (res.get("msg") or ""), res)
-        check("历史记录保留触发来源", trig == "scheduler", trig)
-finally:
-    C.claim_benefit, C.balance_summary = saved_claim, saved_bal
-    C.record_claim = saved_record
-
-
-# 调度器能独立跑领取
-import ca_scheduler  # noqa: E402
-
-_sched = ca_scheduler.Scheduler()
-check("没注入目录时明确失败",
-      _sched.claim_daily_tokens().get("ok") is False)
-_sched.accounts_dir = tempfile.mkdtemp(prefix="wb-sched-")
-try:
-    _empty = _sched.claim_daily_tokens()
-    check("没有会话时是成功的空转",
-          _empty == {"ok": True, "skipped": 0, "claimed": 0, "failed": 0,
-                     "logs": []}, _empty)
-
-    # 放一个 AK 在、SK 与令牌为空的会话：load_sessions 只按 accessKey 过滤
-    # （accessKey 来自 STS 签发时就不可能为空），所以凭证不全只可能缺后两者 ——
-    # 续期失败就会留下这种会话。它必须被记成 failed，不能拿着空串去打上游。
-    os.makedirs(os.path.join(_sched.accounts_dir, C.SESSION_SUBDIR), exist_ok=True)
-    with open(os.path.join(_sched.accounts_dir, C.SESSION_SUBDIR, "broken.json"),
-              "w", encoding="utf-8") as _fh:
-        json.dump({"id": "s1", "account": {"id": "a1", "label": "hid_broken"},
-                   "accessKey": "AK", "secretKey": "", "securitytoken": ""}, _fh)
-    _res = _sched.claim_daily_tokens()
-    check("凭证不全的会话计为失败", _res["failed"] == 1, _res)
-    check("失败原因写进日志",
-          "重新登录" in (_res.get("logs") or [""])[0], _res.get("logs"))
-    check("凭证不全时不发请求", _res["claimed"] == 0, _res)
-
-    # 空 accessKey 的文件根本不会被当成会话（load_sessions 直接滤掉）
-    with open(os.path.join(_sched.accounts_dir, C.SESSION_SUBDIR, "empty.json"),
-              "w", encoding="utf-8") as _fh:
-        json.dump({"id": "s2", "account": {"id": "a2"}, "accessKey": ""}, _fh)
-    _res2 = _sched.claim_daily_tokens()
-    check("没有 AK 的文件不算会话", _res2["failed"] == 1, _res2)
-finally:
-    shutil.rmtree(_sched.accounts_dir, ignore_errors=True)
-
-
-# ---------------------------------------------------------------------------
 # 自动续期：身份保留 + 过期判定
 # ---------------------------------------------------------------------------
 
@@ -762,67 +530,22 @@ shutil.rmtree(_root3, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------
-# 调度领取前先续期
+# 模型清单：只剩内置一组（福利渠道已由官方下线）
 # ---------------------------------------------------------------------------
 
 print()
-print("== 调度领取前先续期 ==")
-
-_sched_dir = tempfile.mkdtemp(prefix="wb-sched-renew-")
-os.makedirs(os.path.join(_sched_dir, C.SESSION_SUBDIR), exist_ok=True)
-with open(os.path.join(_sched_dir, C.SESSION_SUBDIR, "live.json"), "w",
-          encoding="utf-8") as _fh:
-    json.dump(dict(_session, expires_at="2020-01-01T00:00:00.000Z"), _fh)
-
-_seen = {}
-
-
-def _stub_ensure(accounts_dir, session, margin=None):
-    _seen["ensure"] = (accounts_dir, (session.get("account") or {}).get("id"))
-    return dict(session, accessKey="RENEWEDAK", secretKey="S",
-                securitytoken="T", expires_at="2099-01-01T00:00:00.000Z")
-
-
-def _stub_claim(ak, sk, tok, session=None, trigger="unknown"):
-    _seen["claim"] = (ak, (session or {}).get("accessKey"))
-    return {"ok": True, "skipped": False, "msg": "ok"}
-
-
-_saved_ensure, _saved_claim = C.ensure_fresh_session, C.claim_and_verify
-C.ensure_fresh_session, C.claim_and_verify = _stub_ensure, _stub_claim
-try:
-    _sched2 = ca_scheduler.Scheduler()
-    _sched2.accounts_dir = _sched_dir
-    _out = _sched2.claim_daily_tokens()
-finally:
-    C.ensure_fresh_session, C.claim_and_verify = _saved_ensure, _saved_claim
-    shutil.rmtree(_sched_dir, ignore_errors=True)
-
-check("领取前调用了续期",
-      _seen.get("ensure", (None, None))[1] == _session["account"]["id"], _seen)
-check("领取用的是续期后的 AK", _seen.get("claim") == ("RENEWEDAK", "RENEWEDAK"),
-      _seen)
-check("续期成功计为已领取",
-      _out.get("claimed") == 1 and _out.get("failed") == 0, _out)
-
-
-# ---------------------------------------------------------------------------
-# 模型清单：限时福利 + 内置两组
-# ---------------------------------------------------------------------------
-
-print()
-print("== 模型清单（两组）==")
+print("== 模型清单（内置）==")
 check("内置目录在 PromptCenter 那台主机上",
       C.BUILTIN_MODELS_PATH == "/v1/model/builtin", C.BUILTIN_MODELS_PATH)
-check("两个分组都定义了",
-      C.MODEL_GROUPS == (C.GROUP_BENEFIT, C.GROUP_BUILTIN), C.MODEL_GROUPS)
+check("分组只剩内置",
+      C.MODEL_GROUPS == (C.GROUP_BUILTIN,), C.MODEL_GROUPS)
 
 # 这几行曾经两次判错过，都是被**假信号**带偏的：
 #   · 限时福利 4 个全 404/429 → 被判「不在推理入口注册」，其实是限流不是不支持
 #   · glm-5.3 连续 400 且响应体为空 → 被判「真的不通」，其实它只收 stream=true
 # 所以不只钉「谁在清单里」，还要把这两个判据本身钉住。
-check("清单 12 个模型，两组都在",
-      len(C.CHAT_MODELS) == 12
+check("清单 9 个模型（12 减掉 3 个纯福利模型）",
+      len(C.CHAT_MODELS) == 9
       and "deepseek-v4.1-flash" in C.CHAT_MODELS
       and "GLM-5.2" in C.CHAT_MODELS
       and "glm-5.3" in C.CHAT_MODELS
@@ -833,11 +556,17 @@ check("清单 12 个模型，两组都在",
 # 掉进 WorkBuddy 池，只配码道账号的部署回 503，报错和模型名毫无关系。
 check("kimi-k3 在可推理名单里（上游展示它，网关不能装作没有）",
       "kimi-k3" in C.CHAT_MODELS, C.CHAT_MODELS)
-check("限时福利 4 个全在清单里（限流不等于不支持）",
-      all(m in C.CHAT_MODELS for m in
-          ("deepseek-v4.1-flash", "glm-5.3", "deepseek-v4-flash-0731",
-           "glm-5.3-flash", "deepseek-v4-pro-0813")),
+# 2026-10-23：福利渠道由官方下线（opengw gateway/config 回
+# `[4000] invalid channel, group not found`）。那 3 个纯福利模型两条通道都
+# 打不通，已从名单移除 —— 留着它们只会让清单广告一个必错的选项。
+check("纯福利模型已从名单移除",
+      not any(m in C.CHAT_MODELS for m in
+              ("deepseek-v4-flash-0731", "glm-5.3-flash",
+               "deepseek-v4-pro-0813")),
       [m for m in C.CHAT_MODELS if "deepseek" in m or m.startswith("glm")])
+# deepseek-v4.1-flash 是例外：上游已把它内置化，不带 maas_type 实测 200 出字。
+check("deepseek-v4.1-flash 留在名单里（已内置化）",
+      "deepseek-v4.1-flash" in C.CHAT_MODELS, C.CHAT_MODELS)
 check("glm-5.3 不再被标为不可路由（它只收流式，不是死的）",
       "glm-5.3" not in C.BUILTIN_UNROUTABLE, C.BUILTIN_UNROUTABLE)
 
@@ -851,17 +580,12 @@ check("chat_body 可显式关掉流式",
 check("chat_body 的 max_tokens 默认 256", C.chat_body("x", [])["max_tokens"] == 256,
       C.chat_body("x", []))
 
-# maas_type 是**分组开关**：全套头对照实验（2026-10-17）证明
-#   · 限时福利 4 个不带 maas_type: benefit → 全部 404「model is not registered」
-#   · 内置 7 个带上它 → 全部 InferHub.4005.200「unsupported model」
-# 所以 benefit 组必须带、builtin 组必须不带，缺一不可。
-check("分组判定：限时福利 4 个归 benefit",
-      all(C.model_group(m) == C.GROUP_BENEFIT for m in
-          ("deepseek-v4-flash-0731", "glm-5.3-flash",
-           "deepseek-v4-pro-0813", "deepseek-v4.1-flash")))
-check("分组判定：内置归 builtin", C.model_group("GLM-5.2") == C.GROUP_BUILTIN)
-check("benefit 模型集合与 CHAT_MODELS 一致",
-      C.BENEFIT_MODELS <= set(C.CHAT_MODELS), C.BENEFIT_MODELS)
+# maas_type 曾是福利组的开关（2026-10-17 全套头对照实验得出）。福利渠道
+# 下线后它不该再出现在任何请求里 —— 带上就是 `InferHub.4004.200 benefit
+# not found`，deepseek-v4.1-flash 就是这么被误伤的（已内置化却仍被判成福利组）。
+check("请求头不再带 maas_type",
+      "maas_type" not in C.chat_headers("AK", "SK", "TOK", "0" * 64),
+      C.chat_headers("AK", "SK", "TOK", "0" * 64))
 
 # credit 是按 token 数分段的价格表，面板只要一个代表值
 check("分段计费取第一档",
@@ -936,62 +660,24 @@ check("未实测的多模态模型不猜采样参数",
       "Qwen3-VL-235B" not in _SAMPLING and "kimi-k2.6-vl" not in _SAMPLING,
       sorted(_SAMPLING))
 
-# deepseek-v4.1-flash 走的是限时福利组（normalize_models），不经过
-# normalize_builtin；它同样有实测采样值，不能因此漏成「—」。
-_benefit = C.normalize_models([{"model_id": "deepseek-v4.1-flash",
-                                "context_window": 1000000,
-                                "max_tokens": 384000}])
-check("福利组模型也带实测采样参数",
-      (_benefit[0].get("temperature"), _benefit[0].get("top_p")) == (0.5, 0.0),
-      _benefit[0])
-# 网关配置的 max_tokens=384000 是参数上限；模型真实输出是 65536，
-# 请求也会被 clamp_max_tokens 夹到 65536。清单必须显示后者。
-check("福利组上限以实测表为准",
-      (_benefit[0]["maxInputTokens"], _benefit[0]["maxOutputTokens"])
-      == C.BUILTIN_MODEL_LIMITS["deepseek-v4.1-flash"], _benefit[0])
-# 客户端那一行写着 0.18x / 入 40 · 出 160 积分/M，网关不补就和它对不上。
-_benefit_cp = _benefit[0].get("creditPricing") or {}
-check("福利组模型带出实测倍率", _benefit[0].get("creditRatio") == "0.18x",
-      _benefit[0].get("creditRatio"))
-check("福利组模型带出每百万积分",
-      (_benefit_cp.get("credits_per_mtok_input"),
-       _benefit_cp.get("credits_per_mtok_output")) == (40.0, 160.0), _benefit_cp)
-check("福利组模型的错峰档也带出",
-      (_benefit_cp.get("time_slots") or {}).get("off_peak", {}).get("ratio_display")
-      == "0.09x", _benefit_cp.get("time_slots"))
-_benefit_bare = C.normalize_models([{"model_id": "glm-5.3-flash"}])
-check("福利组未实测的模型不带采样参数",
-      "temperature" not in _benefit_bare[0] and "top_p" not in _benefit_bare[0],
-      _benefit_bare[0])
-check("福利组未定价的模型不编倍率",
-      "creditRatio" not in _benefit_bare[0]
-      and "creditPricing" not in _benefit_bare[0], _benefit_bare[0])
-
-# 两组合并：任一组失败都不能让整份清单挂掉
-BENEFIT_RAW = [{"model_id": "deepseek-v4.1-flash", "context_window": 1000000,
-                "max_tokens": 384000, "sort": 40}]
-
 
 THINK_CALLS = []
 
 
-def with_groups(benefit_exc=None, builtin_exc=None, variants=None,
-                variants_exc=None):
-    """跑一次 model_catalog，两组取数与思考档位全部打桩。
+def with_catalog(builtin_exc=None, variants=None, variants_exc=None):
+    """跑一次 model_catalog：内置取数与思考档位全部打桩。
 
     思考档位也必须打桩：它是清单构建里唯一一个「顺手多问一次」的接口，
     忘了桩就会真的发出网络请求 —— 这个测试文件的前提是**不联网**，
     真发出去的结果只是随机失败（实测 APIG.0613 IAM unavailable）。
     """
-    saved = (C.gateway_config, C.builtin_models, C.thinking_variants)
+    saved = (C.builtin_models, C.thinking_variants)
 
     def _fake_variants(*a, **k):
         names = a[3] if len(a) > 3 else k.get("model_names")
         THINK_CALLS.append(list(names or []))
         return dict(variants or {})
 
-    C.gateway_config = (lambda *a, **k: (_ for _ in ()).throw(benefit_exc)) \
-        if benefit_exc else (lambda *a, **k: {"models": list(BENEFIT_RAW)})
     C.builtin_models = (lambda *a, **k: (_ for _ in ()).throw(builtin_exc)) \
         if builtin_exc else (lambda *a, **k: list(BUILTIN_SAMPLE))
     C.thinking_variants = (lambda *a, **k: (_ for _ in ()).throw(variants_exc)) \
@@ -999,7 +685,7 @@ def with_groups(benefit_exc=None, builtin_exc=None, variants=None,
     try:
         return C.model_catalog("AK", "SK", "TOK")
     finally:
-        C.gateway_config, C.builtin_models, C.thinking_variants = saved
+        C.builtin_models, C.thinking_variants = saved
 
 
 # 上游思考档位接口的键是 **model_name**，不是 model_id：
@@ -1011,8 +697,8 @@ THINK_VARIANTS = {
     "GLM-5.3": {"strengths": [], "default": ""},
 }
 
-cat = with_groups(variants=THINK_VARIANTS)
-check("两组都取到", len(cat["models"]) == 4, len(cat["models"]))
+cat = with_catalog(variants=THINK_VARIANTS)
+check("清单只来自内置目录", len(cat["models"]) == 3, len(cat["models"]))
 check("取数无错时 errors 为空", cat["errors"] == {}, cat["errors"])
 # 请求侧同样要发展示名：上游只按 model_name 匹配，发 id 的模型问不到档位。
 check("档位接口按展示名请求",
@@ -1039,34 +725,16 @@ check("有档位但为空时也不编档位",
 
 # 档位接口挂了：清单照旧返回，但要记一笔 —— 否则面板上全显示「原生」，
 # 分不清是「本来没有档位」还是「这次没问到」。
-cat_t = with_groups(variants_exc=RuntimeError("APIG.0613"))
-check("档位失败不影响清单", len(cat_t["models"]) == 4, len(cat_t["models"]))
+cat_t = with_catalog(variants_exc=RuntimeError("APIG.0613"))
+check("档位失败不影响清单", len(cat_t["models"]) == 3, len(cat_t["models"]))
 check("档位失败记进 errors", "thinking" in cat_t["errors"], cat_t["errors"])
-check("限时福利排在内置之前（与 UI 一致）",
-      cat["models"][0]["group"] == C.GROUP_BENEFIT
-      and cat["models"][-1]["group"] == C.GROUP_BUILTIN,
-      [m["group"] for m in cat["models"]])
-check("限时福利那侧带 group 标记",
-      cat["models"][0]["group"] == C.GROUP_BENEFIT, cat["models"][0])
-check("限时福利那侧带上下文窗口",
-      cat["models"][0]["contextWindow"]
-      == C.BUILTIN_MODEL_LIMITS["deepseek-v4.1-flash"][0], cat["models"][0])
 
-only_builtin = with_groups(benefit_exc=RuntimeError("网关挂了"))
-check("限时福利挂了仍返回内置", len(only_builtin["models"]) == 3, only_builtin["errors"])
-check("并说明缺了哪组",
-      "网关挂了" in only_builtin["errors"].get(C.GROUP_BENEFIT, ""),
-      only_builtin["errors"])
-
-only_benefit = with_groups(builtin_exc=RuntimeError("PromptCenter 挂了"))
-check("内置挂了仍返回限时福利", len(only_benefit["models"]) == 1, only_benefit["errors"])
-check("并说明内置缺失",
-      "PromptCenter 挂了" in only_benefit["errors"].get(C.GROUP_BUILTIN, ""),
-      only_benefit["errors"])
-
-both = with_groups(RuntimeError("a"), RuntimeError("b"))
-check("两组都挂仍返回空清单而不是抛异常",
-      both["models"] == [] and len(both["errors"]) == 2, both)
+# 内置目录取不到：回空清单 + 原因，绝不抛异常（面板靠 errors 说明）。
+empty = with_catalog(builtin_exc=RuntimeError("PromptCenter 挂了"))
+check("内置取数挂了回空清单而不是抛异常", empty["models"] == [], empty["models"])
+check("并说明原因",
+      "PromptCenter 挂了" in empty["errors"].get(C.GROUP_BUILTIN, ""),
+      empty["errors"])
 
 
 # ---------------------------------------------------------------------------
@@ -1086,7 +754,7 @@ import ca_stream as S2  # noqa: E402
 
 _META = {
     "id": "deepseek-v4.1-flash", "name": "deepseek-v4.1-flash",
-    "group": C.GROUP_BENEFIT, "contextWindow": 1000000,
+    "group": C.GROUP_BUILTIN, "contextWindow": 1000000,
     "maxInputTokens": 1000000, "maxOutputTokens": 384000,
     "supportsImages": False, "supportsReasoning": True,
     "supportsToolCall": True, "routable": True, "creditRatio": None,
@@ -1133,7 +801,7 @@ check("缺上下文信息时 model_entry 也不炸", bare_boom is None, bare_boo
 
 wrapped = P.codearts_model_entry(_META)
 check("包装后 owned_by 是 codearts", wrapped.get("owned_by") == "codearts", wrapped)
-check("包装后带出分组", wrapped.get("group") == C.GROUP_BENEFIT, wrapped)
+check("包装后带出分组", wrapped.get("group") == C.GROUP_BUILTIN, wrapped)
 
 check("分流判定认得码道模型", P.is_codearts_model("deepseek-v4.1-flash"))
 check("分流判定认得内置那组", P.is_codearts_model("GLM-5.2"))
@@ -1278,7 +946,7 @@ class _CatalogHandler(P.Handler):
 
 _CA_DS = {
     "id": "deepseek-v4.1-flash", "name": "deepseek-v4.1-flash",
-    "group": C.GROUP_BENEFIT, "supportsImages": False,
+    "group": C.GROUP_BUILTIN, "supportsImages": False,
     "supportsReasoning": True, "supportsToolCall": True,
     "creditRatio": "0.18x",
     "creditPricing": {"ratio": 0.05, "ratio_display": "0.18x",

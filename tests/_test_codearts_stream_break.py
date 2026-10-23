@@ -571,11 +571,6 @@ check("福利渠道没权益（4004.200 benefit not found）→ 404（重试无�
       _spec(502, "InferHub.4004.200", "benefit not found")[0] == 404,
       _spec(502, "InferHub.4004.200", "benefit not found"))
 
-# 没有权益的模型要在一段时间内从清单里消失（否则广告一个必错的模型）
-P.mark_benefit_missing("gemini-x")
-check("记下无权益模型", P.benefit_missing("gemini-x") is True, None)
-check("没记过的模型不受影响", P.benefit_missing("other") is False, None)
-
 # 429 必须带 Retry-After，否则客户端只能盲猜
 _h = _Handler()
 _h.path = "/v1/chat/completions"
@@ -754,12 +749,6 @@ check("认不出的名字原样返回（不编近似名）", C.resolve_model("gp
       C.resolve_model("gpt-4o"))
 check("空值不炸", C.resolve_model(None) == "" and C.resolve_model("") == "",
       (C.resolve_model(None), C.resolve_model("")))
-
-check("小写的福利模型判对分组（否则不带 maas_type → 002002009）",
-      C.model_group("DeepSeek-V4.1-Flash") == C.GROUP_BENEFIT,
-      C.model_group("DeepSeek-V4.1-Flash"))
-check("小写的内置模型仍是内置", C.model_group("GLM-5.3") == C.GROUP_BUILTIN,
-      C.model_group("GLM-5.3"))
 
 check("小写模型名也夹得住 max_tokens（否则 128000 原样上去 → 001001005）",
       C.clamp_max_tokens("glm-5.2", 128000) == (65536, True),

@@ -126,7 +126,7 @@ class BoundaryCase(unittest.TestCase):
     """One management surface, one isolated settings directory per test."""
 
     # Management reads the panel draws, none of which is a model API.
-    PANEL_ONLY_GET = ("/settings", "/updates", "/logs", "/scheduler",
+    PANEL_ONLY_GET = ("/settings", "/updates", "/logs",
                       "/usage", "/pricing", "/activity/history")
     # The same boundary on a reply that is a file rather than a document.
     PANEL_ONLY_DOWNLOAD = ("/logs/export",)
@@ -148,7 +148,6 @@ class BoundaryCase(unittest.TestCase):
         request = DispatchRequest(path, headers=headers, command=command, body=body)
         with mock.patch.multiple(proxy, ACCOUNTS_DIR=self.directory, API_KEY=None,
                                  PRICING=None, UPDATES=self.updates,
-                                 SCHEDULER=None,
                                  codearts_catalog=injected_catalog,
                                  codearts_deployed=lambda: True,
                                  model_aliases=lambda: {}):

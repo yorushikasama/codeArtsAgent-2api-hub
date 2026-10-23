@@ -618,9 +618,6 @@ def summarize(session, now=None):
 # /v1/model/builtin 权威 —— 后者是 IDE 聊天用的目录（GLM-5.2 / Qwen3-VL /
 # 盘古那批），两者不是一回事。
 
-GATEWAY_HOST = "https://opengw.developer.huaweicloud.com"
-GATEWAY_CONFIG_PATH = "/api/v1/gateway/config"
-
 # 出站身份：真正发出去的只有 User-Agent（内核的 OPENCODE_SERVICE_NAME 默认
 # CodeAgent3.0、tracing 层名 Kernel），照抄以免被网关按客户端特征拦。
 GATEWAY_USER_AGENT = "CodeAgent3.0-Kernel"
@@ -695,105 +692,13 @@ def aksk_sign(access_key, secret_key, method, url, query=None, headers=None,
     return signed
 
 
-def gateway_config(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
-    """取对话网关配置：推理入口 + 这账号可用的对话模型。
-
-    返回 {"base_url": ..., "models": [...]}；models 已按 sort 排好序。
-    """
-    url = GATEWAY_HOST + GATEWAY_CONFIG_PATH
-    # security token 是**参与签名**的头，必须在签名前就放进请求头里。
-    # 先签一次再补 token、再拿补过的头去签第二次是错的：第二次会把第一次
-    # 产出的 Authorization / Host / X-Sdk-Date 一起签进去，对不上。
-    base = {
-        "Content-Type": "application/json",
-        "User-Agent": GATEWAY_USER_AGENT,
-        "x-snap-traceid": secrets.token_hex(16),
-    }
-    if security_token:
-        base["X-Security-Token"] = security_token
-    headers = aksk_sign(access_key, secret_key, "GET", url, {}, base)
-    payload = _http("GET", url, headers=headers, timeout=timeout)
-    if str(payload.get("error_code") or "") not in ("", "0000"):
-        raise CodeArtsError(
-            "网关配置返回 %s：%s" % (payload.get("error_code"), payload.get("error_msg")),
-            code=str(payload.get("error_code")), payload=payload)
-    result = payload.get("result") or {}
-    models = result.get("models") or []
-    models.sort(key=lambda m: (m.get("sort") if isinstance(m.get("sort"), (int, float))
-                               else 999))
-    return {"base_url": result.get("base_url") or result.get("endpoint") or "",
-            "models": models}
-
-
-def normalize_models(models):
-    """码道网关的模型条目 → 网关内部统一的模型对象形状。
-
-    网关这份只给 id / 名字 / 上下文窗口 / 最大输出，没有能力标签与定价，
-    所以 supportsImages 一律 False、credits 不给（不给 = 非免费，避免被
-    「有免费兄弟模型」的逻辑误判）。
-    """
-    out = []
-    for raw in models or []:
-        mid = str(raw.get("model_id") or "").strip()
-        if not mid:
-            continue
-        try:
-            ctx = int(raw.get("context_window") or 0)
-        except (TypeError, ValueError):
-            ctx = 0
-        try:
-            out_tokens = int(raw.get("max_tokens") or 0)
-        except (TypeError, ValueError):
-            out_tokens = 0
-        item = {
-            "id": mid,
-            "name": str(raw.get("model_name") or mid),
-            "maxInputTokens": ctx,
-            "maxOutputTokens": out_tokens,
-            "contextWindow": ctx,
-            "maxAllowedSize": ctx,
-            "supportsImages": False,
-            "supportsReasoning": True,
-            "supportsToolCall": True,
-        }
-        # 网关配置里的 max_tokens 是**请求参数上限**，不等于模型真实输出能力：
-        # deepseek-v4.1-flash 这里给 384000，客户端实测 65536，请求也确实按
-        # 65536 夹（clamp_max_tokens）。有实测值的以实测表为准，否则面板写
-        # 384K、请求只出 66K，两边对不上。
-        measured = BUILTIN_MODEL_LIMITS.get(mid)
-        if measured:
-            item["maxInputTokens"] = measured[0]
-            item["contextWindow"] = measured[0]
-            item["maxAllowedSize"] = measured[0]
-            item["maxOutputTokens"] = measured[1]
-        # deepseek-v4.1-flash 属于限时福利组，但采样默认值同样有 AgentCenter
-        # 实测数据。不在这里补的话，面板里同一张表只有它显示「—」。
-        sample = BUILTIN_MODEL_SAMPLING.get(mid)
-        if sample:
-            item["temperature"], item["top_p"] = sample
-        # 网关配置不带计费信息，但 deepseek-v4.1-flash 的档位已从上游实测
-        # 固化在静态表里。不补的话面板「消费倍率」一列只有它显示「—」，
-        # 与客户端（0.18x，错峰 0.09x）对不上。
-        tier = credit_tier_for(mid)
-        if tier:
-            item["creditRatio"] = tier.get("ratio_display") or ""
-            rows = tier.get("tiers") or []
-            first = rows[0] if rows else {}
-            item["inputPrice"] = first.get("input_price")
-            item["outputPrice"] = first.get("output_price")
-            item["creditTier"] = tier
-            item["creditPricing"] = credit_pricing_view(tier)
-        out.append(item)
-    return out
-
-
 # ---------------------------------------------------------------------------
 # 推理入口（实测确认）
 # ---------------------------------------------------------------------------
 #
-# 注意别和上面的 GATEWAY_HOST 搞混——那是**权益**网关（免费额度 / claim / config），
-# 推理走的是另一个基址。扩展里拼的是 `${agentChatDomain}/api/v2/`，
-# 而 agentChatDomain 在 prod 下就是 snap-engine 那台主机。
+# 扩展里拼的是 `${agentChatDomain}/api/v2/`，而 agentChatDomain 在 prod 下
+# 就是 snap-engine 那台主机。曾经的「权益网关」opengw（免费额度 / claim /
+# gateway-config）已由官方下线，这里不再有第二套基址。
 #
 # 实测（AK/SK 签名 + X-Security-Token，2026-10-17）：
 #   POST {CHAT_BASE}chat/completions  model=deepseek-v4.1-flash → 429 TPM 超限
@@ -813,9 +718,14 @@ CHAT_PATH = CHAT_BASE + "chat/completions"
 # 实测可路由的推理模型名。这份是**验证过**的：逐个打推理入口，6 个内置 + 4 个
 # 限时福利里只有 glm-5.3 是死的（400 空响应体）。早期只探过限时福利那组的 4 个，
 # 当时把另外 3 个判成「服务端不认」—— 那个结论只对那一组成立，内置那组整体可路由。
+#: 可推理模型（逐个实测过）。**只收内置目录里的**：限时福利渠道已由官方
+#: 下线（2026-10-23 实测 opengw /api/v1/gateway/config 回
+#: ``[4000] invalid channel, group not found``），原来那 4 个福利模型里
+#: ``deepseek-v4-flash-0731`` / ``glm-5.3-flash`` / ``deepseek-v4-pro-0813``
+#: 两条通道都打不通（不带 maas_type 是 002002009 未注册，带上就是 4004.200），
+#: 已从名单移除；``deepseek-v4.1-flash`` 上游已内置化，照常保留。
 CHAT_MODELS = ("deepseek-v4.1-flash",
-               "glm-5.3", "deepseek-v4-flash-0731", "glm-5.3-flash",
-               "deepseek-v4-pro-0813",
+               "glm-5.3",
                "GLM-5.2", "Qwen3-VL-235B", "kimi-k2.6-vl",
                "openpangu-2.0-flash", "openpangu-2.0-pro",
                "glm-5.2-sft-harmony",
@@ -828,20 +738,18 @@ CHAT_MODELS = ("deepseek-v4.1-flash",
 
 
 # ---------------------------------------------------------------------------
-# 模型清单：限时福利 + 内置
+# 模型清单：只有内置一组
 # ---------------------------------------------------------------------------
 #
-# 客户端 UI 里模型分两组显示，网关必须同时覆盖 —— 之前只取「限时福利」那一组，
-# 面板上会缺掉整个「内置」。两组来自两个接口、形状完全不同：
+# 2026-10-23 起清单只来自 PromptCenter ``/v1/model/builtin``。曾经的第二组
+# 「限时福利」走权益网关 ``/api/v1/gateway/config``，官方已把它下线 —— 该接口
+# 现在直接回 ``[4000] invalid channel, group not found``，那几个福利模型里除了
+# 已内置化的 ``deepseek-v4.1-flash``，其余两条通道都打不通。
 #
-#   限时福利  权益网关 /api/v1/gateway/config      —— 给 id / 名字 / 上下文 / 最大输出
-#   内置      PromptCenter /v1/model/builtin      —— 给 id / 名字 / 分类 / 多模态标记 /
-#                                                   计费档（含 UI 上那个 0.7x 倍率）
-#
-# 曾经把内置这一组判成「IDE 聊天目录、不是网关推理目录」直接排除，那是错的：
-# 实测 7 个内置模型在推理入口**全部真的能跑通**（GLM-5.2 返回真实回复、多模态
-# Qwen3-VL-235B 能真的读图）。唯一例外是 `glm-5.3`：它在推理入口稳定 400 且响应体
-# 为空 —— 内置的 glm-5.3 与限时福利的 glm-5.3-flash 是两个不同的东西，别混。
+# 内置这一组一度被判成「IDE 聊天目录、不是网关推理目录」而排除，那是错的：
+# 实测内置模型在推理入口**全部真的能跑通**（GLM-5.2 返回真实回复、多模态
+# Qwen3-VL-235B 能真的读图）。``glm-5.3`` 曾因「400 且响应体为空」被误判死，
+# 实际是它只收 ``stream=true``（见 chat_body）。
 #
 # 一条容易踩的口径：`model_id` 与 `model_name` 不一致。界面显示的是 **model_name**
 # （如 glm-5.2-sft-harmony 显示成「GLM-5.2-ArkTS-SPARK」），而请求要发的是
@@ -866,26 +774,6 @@ CREDIT_PACKAGE_PATH = "/snap-manager/v1/statistics/plugin"
 
 #: PromptCenter 所在的主机，与推理入口同一台（agentChatDomain 在 prod 下就是它）
 SNAP_HOST = CHAT_HOST
-
-#: 限时福利渠道的 maas_type 值（见 chat_headers 的注释 —— 这是分组开关）
-MAAS_BENEFIT = "benefit"
-
-#: 限时福利 4 个模型名 → 它们必须带 maas_type: benefit
-BENEFIT_MODELS = frozenset({
-    "deepseek-v4-flash-0731", "glm-5.3-flash",
-    "deepseek-v4-pro-0813", "deepseek-v4.1-flash",
-})
-
-
-def model_group(model_id):
-    """按模型名判分组。限时福利那 4 个来自权益网关清单，其余都算内置。
-
-    走 ``resolve_model`` 而不是直接比字符串：分组决定要不要带
-    ``maas_type: benefit``，而这是个**没有兜底的分组开关** —— 判错就是
-    ``InferHub.002002009 model is not registered``，客户端只会看到「模型不存在」。
-    """
-    return (GROUP_BENEFIT if resolve_model(model_id) in BENEFIT_MODELS
-            else GROUP_BUILTIN)
 
 #: 推理入口实测不可路由的内置模型。目前是空的 —— 清单里 7 个内置模型全部可用。
 #: 留着这个集合是为了以后真出现不通的模型时有地方标；「routable」字段的语义
@@ -949,18 +837,23 @@ BUILTIN_MODEL_SAMPLING = {
 
 BUILTIN_UNROUTABLE = set()
 
+#: 模型分组。福利（限时福利渠道）已由官方下线，只剩内置一组 —— 留着这个
+#: 常量是因为清单条目、面板与测试都按 ``group`` 字段渲染/断言。
+GROUP_BUILTIN = "builtin"
+MODEL_GROUPS = (GROUP_BUILTIN,)
+
 
 def _model_index():
     """大小写无关的模型名索引：``lower()`` → 上游真名。
 
-    三张表都收：可推理名单（CHAT_MODELS）、实测上限表、福利分组表。真实名字
-    以先出现的为准 —— 三张表的键本来就一致，``setdefault`` 只是防以后有人只改
-    一张表时把名字改出两个写法。
+    两张表都收：可推理名单（CHAT_MODELS）、实测上限表。真实名字以先出现的
+    为准 —— 两张表的键本来就一致，``setdefault`` 只是防以后有人只改一张表时
+    把名字改出两个写法。
     """
     index = {}
     for name in CHAT_MODELS:
         index.setdefault(str(name).lower(), name)
-    for table in (BUILTIN_MODEL_LIMITS, BENEFIT_MODELS):
+    for table in (BUILTIN_MODEL_LIMITS,):
         for name in table:
             index.setdefault(str(name).lower(), name)
     return index
@@ -983,8 +876,6 @@ def resolve_model(model_id):
       2. ``max_tokens`` 夹不住：``BUILTIN_MODEL_LIMITS`` 查不到 → 客户端发
          128000 原样上去 → ``InferHub.001001005.400``，这条路还会被当成
          不可重试的参数错。
-      3. 分组判错：``DeepSeek-V4.1-Flash`` 判成 builtin → 不带
-         ``maas_type: benefit`` → ``InferHub.002002009 model is not registered``。
 
     认不出来的名字原样返回：宁可交给上游拒绝（它会给准确错误），也不在这里
     编一个近似名把请求打到别的模型上。
@@ -1028,9 +919,7 @@ def clamp_max_tokens(model_id, max_tokens):
     return value, False
 
 #: UI 的两分组，与客户端侧一致。
-GROUP_BENEFIT = "benefit"
-GROUP_BUILTIN = "builtin"
-MODEL_GROUPS = (GROUP_BENEFIT, GROUP_BUILTIN)
+
 
 
 def builtin_models(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
@@ -1523,7 +1412,7 @@ def credit_pricing_view(tier):
 def normalize_builtin(raw_list):
     """内置模型 → 网关内部统一的模型对象形状。
 
-    与 ``normalize_models`` 的区别是这里有真实的能力标签与计费信息：
+    福利渠道下线后这是**唯一**的清单来源，条目带真实的能力标签与计费信息：
     ``supportsImages`` 取服务端的 ``supports_images``（实测多模态那三个确实能读图），
     计费倍率原样带出，供面板显示 0.7x 之类。
     """
@@ -1568,25 +1457,19 @@ def normalize_builtin(raw_list):
 
 
 def model_catalog(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
-    """两组模型合到一份清单里，限时福利在前、内置按服务端顺序。
+    """码道模型清单（只有内置一组）。
 
-    任何一组取数失败都不让整份清单失败 —— 面板显示能拿到的那组，并在
-    ``errors`` 里说明缺了哪组。模型目录是展示性功能，为它整体挂掉不划算。
+    限时福利渠道（opengw ``/api/v1/gateway/config``）已由官方下线 —— 2026-10-23
+    实测该接口直接回 ``[4000] invalid channel, group not found``，福利那 4 个
+    模型里 3 个两条通道都不通、``deepseek-v4.1-flash`` 已内置化。所以清单只
+    可能来自 ``/v1/model/builtin``，不再有「两组合并」这回事。
+
+    取数失败不让整份清单失败：回空清单 + ``errors``，面板据此说明原因。
     """
-    groups = {GROUP_BENEFIT: [], GROUP_BUILTIN: []}
+    models = []
     errors = {}
-
     try:
-        cfg = gateway_config(access_key, secret_key, security_token, timeout=timeout)
-        benefit = normalize_models(cfg.get("models") or [])
-        for item in benefit:
-            item["group"] = GROUP_BENEFIT
-        groups[GROUP_BENEFIT] = benefit
-    except Exception as exc:
-        errors[GROUP_BENEFIT] = str(exc)
-
-    try:
-        groups[GROUP_BUILTIN] = normalize_builtin(
+        models = normalize_builtin(
             builtin_models(access_key, secret_key, security_token, timeout=timeout))
     except Exception as exc:
         errors[GROUP_BUILTIN] = str(exc)
@@ -1594,20 +1477,19 @@ def model_catalog(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOU
     # 思考档位：另开一个接口问「每个模型能选哪几档」，拿到了就贴到模型上。
     # 失败不影响清单本身（档位是可选功能），但要记进 errors —— 否则面板上
     # 所有模型都显示「原生」，看不出是「本来没有档位」还是「这次没问到」。
-    if groups[GROUP_BUILTIN]:
+    if models:
         try:
             variants = thinking_variants(
                 access_key, secret_key, security_token,
                 # 这个接口认的是 model_name（客户端也是发展示名）。发 model_id
                 # 时上游对不上号，两者不同的模型连档位都问不到。
-                [item.get("name") or item["id"]
-                 for item in groups[GROUP_BUILTIN]],
+                [item.get("name") or item["id"] for item in models],
                 timeout=timeout)
             # 上游返回的键是 **model_name**（如 "GLM-5.2-ArkTS-SPARK"），不是
             # model_id（glm-5.2-sft-harmony）。只按 id 查会让两者不一致的模型
             # 丢掉真实档位 —— 面板上那个模型会错误地显示「原生」。
-            by_id = {item["id"]: item for item in groups[GROUP_BUILTIN]}
-            by_name = {item.get("name"): item for item in groups[GROUP_BUILTIN]}
+            by_id = {item["id"]: item for item in models}
+            by_name = {item.get("name"): item for item in models}
             matched = {}
             for key, info in variants.items():
                 item = by_id.get(key) or by_name.get(key)
@@ -1615,28 +1497,26 @@ def model_catalog(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOU
                     matched[item["id"]] = info
             THINKING_STRENGTHS.clear()
             THINKING_STRENGTHS.update(matched)
-            for item in groups[GROUP_BUILTIN]:
+            for item in models:
                 info = matched.get(item["id"]) or {}
                 item["thinkingStrengths"] = info.get("strengths") or []
                 item["thinkingDefault"] = info.get("default") or ""
         except Exception as exc:
             errors["thinking"] = str(exc)
 
-    return {"models": groups[GROUP_BENEFIT] + groups[GROUP_BUILTIN],
-            "groups": groups, "errors": errors}
+    return {"models": models, "groups": {GROUP_BUILTIN: models}, "errors": errors}
 
 
 def chat_headers(access_key, secret_key, security_token, payload_hash,
-                 stream=False, maas_type=None, model=None, session_id=None):
+                 stream=False, model=None, session_id=None):
     """推理请求头：与网关配置同一套签名，只是多一个 Accept。
 
-    ``maas_type`` 是**分组开关，不是通用头** —— 这是从一次全套头对照实验里
-    得出的硬结论（2026-10-17）：
-      · 限时福利 4 个模型不带 ``maas_type: benefit`` 时全部回 404
-        InferHub.002002009「model is not registered」，带上立刻全通；
-      · 内置 7 个模型带上它反而回 InferHub.4005.200「unsupported model」，
-        不带才通。
-    所以 benefit 组必须带、builtin 组必须不带，由调用方按模型所属分组传。
+    **不再有 ``maas_type``**：那是限时福利渠道的分组开关，官方已下线
+    （2026-10-23 实测 opengw ``/api/v1/gateway/config`` 回
+    ``[4000] invalid channel, group not found``）。以前福利组必须带
+    ``maas_type: benefit``，现在带上去只会换回
+    ``InferHub.4004.200 benefit not found`` —— ``deepseek-v4.1-flash``
+    已经内置化，和 glm-5.3 一样不带这个头。
 
     ``session_id``：会话名额的句柄（见 ``heartbeat``）。**必须参与签名** ——
     上游按签名覆盖的头集合校验，改了头不重签会直接 401。带上它，这次推理才
@@ -1653,8 +1533,6 @@ def chat_headers(access_key, secret_key, security_token, payload_hash,
     }
     if security_token:
         headers["X-Security-Token"] = security_token
-    if maas_type:
-        headers["maas_type"] = maas_type
     if session_id:
         headers["user-session-id"] = session_id
     return aksk_sign(access_key, secret_key, "POST", CHAT_PATH, {}, headers,
@@ -1970,15 +1848,13 @@ def open_chat(access_key, secret_key, security_token, model, messages,
     socket 读超时切到该值，供整条流使用。
     """
     timeout = CHAT_TIMEOUT if timeout is None else timeout
-    maas = MAAS_BENEFIT if model_group(model) == GROUP_BENEFIT else None
     body = json.dumps(chat_body(model, messages, max_tokens=max_tokens,
                                 stream=stream, extra=extra, tools=tools,
                                 tool_choice=tool_choice),
                       ensure_ascii=False).encode("utf-8")
     headers = chat_headers(access_key, secret_key, security_token,
                            hashlib.sha256(body).hexdigest(),
-                           stream=stream, maas_type=maas,
-                           session_id=session_id)
+                           stream=stream, session_id=session_id)
     req = urllib.request.Request(CHAT_PATH, data=body, headers=headers,
                                  method="POST")
     try:
@@ -2201,11 +2077,9 @@ def chat_for_model(access_key, secret_key, security_token, model, messages,
                    max_tokens=256, stream=True, timeout=None, extra=None,
                    tools=None, tool_choice=None, abort_check=None,
                    session_id=None, idle_timeout=None):
-    """按模型所属分组自动选对请求头，发一次真实推理。
+    """发一次真实推理，返回 (http 状态码, 原始响应体)。
 
-    分组 → maas_type 的映射在这里集中维护（见 chat_headers 的注释）：
-      benefit 组 → maas_type: benefit
-      builtin 组 → 不带
+    福利渠道下线后所有模型都走内置通道，不再需要按分组挑请求头。
     返回 (http 状态码, 原始响应体)。**不走 _http** —— 那个函数会把非 JSON 的
     SSE 流包成 {"_raw": ...}，还会把流式帧里的 error_code 当业务错误抛掉，
     推理这边需要的是原样字节，判定交给调用方。
@@ -2225,229 +2099,6 @@ def chat_for_model(access_key, secret_key, security_token, model, messages,
         return status, "".join(iter_sse(resp, abort_check))
     finally:
         resp.close()
-
-
-# ---------------------------------------------------------------------------
-# 每日福利领取
-# ---------------------------------------------------------------------------
-#
-# 这是码道客户端「限时福利 → 每日额度」的落点：每个账号每天可以领一份当日
-# 有效的推理额度（实测 daily_token_limit 为 1000 万 token，0 点清零、不累计）。
-# 领取接口本身**幂等** —— 同一天重复调都返回 error_code 0000，不会叠加额度，
-# 所以不需要客户端自己去重；「今天领没领」要靠余额接口的发放时间来判断，见
-# balance_summary。
-#
-# 注意别把它和客户端活动页的「每日签到领 1000 积分」混为一谈：那个是积分体系
-# （snap-access /v1/ops/claim，campaignId=1），与这里的 token 额度是两套账，
-# 实现见下方「积分签到」一节。上游把福利渠道收回时，这里会报
-# `invalid channel, group not found`，而积分签到仍然可用。
-#
-# 端点取自 vscode-codebot/out/extension.js 的 Uce()：
-#   非 gamma 版（isGammaVersion=false，普通用户走这条）
-#     claim   = opengw.developer.huaweicloud.com/api/v1/benefit/claim
-#     balance = opengw.developer.huaweicloud.com/api/v1/user/tokens/balance
-#   gamma 版则是 snapengine-apig.cn-north-7.myhuaweicloud.com 下的同名路径，
-#   且**必须**额外带 x-auth-token（普通版走 AK/SK 签名，不需要那个头）。
-#
-# 注意两件事，都实测踩过：
-#   1. 成功判据是 error_code == "0000"，不是 HTTP 状态码 —— 服务端全程 200，
-#      业务失败也回 200，判 status 会把失败当成功。
-#   2. POST 同路径是 enableBenefitClaim（开启领取开关），**不是领取**，别混用。
-
-BENEFIT_CLAIM_PATH = "/api/v1/benefit/claim"
-TOKENS_BALANCE_PATH = "/api/v1/user/tokens/balance"
-
-
-def credit_headers(access_key, secret_key, security_token, path, method="GET",
-                   body=None):
-    """权益接口（领取 / 余额）的请求头。
-
-    POST 时 body 会参与签名：payload hash 必须算进 body 的 SHA-256。漏掉这一项
-    报的是 APIG.0301「verify ak sk signature fail」，看起来像 AK/SK 错了，实际
-    是签名串里少了 payload hash。
-    """
-    url = GATEWAY_HOST + path
-    payload = b"" if body is None else json.dumps(body).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": GATEWAY_USER_AGENT,
-        "x-snap-traceid": secrets.token_hex(16),
-    }
-    if security_token:
-        headers["X-Security-Token"] = security_token
-    return aksk_sign(access_key, secret_key, method, url, {}, headers,
-                     payload_hash=hashlib.sha256(payload).hexdigest())
-
-
-def claim_benefit(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
-    """领取当日额度。
-
-    返回 {"ok": bool, "msg": str, "user_name": str, "raw": dict}。
-    幂等：当天已领过也返回 ok=True，所以这里的 ok 只说明「领取动作被接受」，
-    至于额度有没有涨，要用 balance_summary 交叉核对。
-    """
-    headers = credit_headers(access_key, secret_key, security_token,
-                             BENEFIT_CLAIM_PATH, "GET")
-    payload = _http("GET", GATEWAY_HOST + BENEFIT_CLAIM_PATH, headers=headers,
-                    timeout=timeout)
-    # _http 已经在 error_code 非空时报错；能走到这里就是业务成功
-    result = payload.get("result") or {}
-    return {
-        "ok": True,
-        "msg": payload.get("error_msg") or "ok",
-        "user_name": result.get("user_name") or "",
-        "domain_id": result.get("domain_id") or "",
-        "raw": result,
-    }
-
-
-def enable_benefit_claim(access_key, secret_key, security_token,
-                         timeout=DEFAULT_TIMEOUT):
-    """开启「登录后自动领取」的开关（客户端点「开启领取」时调的那个）。"""
-    headers = credit_headers(access_key, secret_key, security_token,
-                             BENEFIT_CLAIM_PATH, "POST", body={})
-    payload = _http("POST", GATEWAY_HOST + BENEFIT_CLAIM_PATH, headers=headers,
-                    body=b"{}", timeout=timeout)
-    return {"ok": True, "msg": payload.get("error_msg") or "ok",
-            "raw": payload.get("result") or {}}
-
-
-def tokens_balance(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
-    """额度余额（只读）。返回服务端 result 原样。"""
-    headers = credit_headers(access_key, secret_key, security_token,
-                             TOKENS_BALANCE_PATH, "GET")
-    payload = _http("GET", GATEWAY_HOST + TOKENS_BALANCE_PATH, headers=headers,
-                    timeout=timeout)
-    return payload.get("result") or {}
-
-
-def _ms_to_iso(value):
-    if not value:
-        return ""
-    try:
-        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(value) / 1000))
-    except (TypeError, ValueError, OSError):
-        return ""
-
-
-def balance_summary(access_key, secret_key, security_token,
-                    timeout=DEFAULT_TIMEOUT):
-    """余额 → 面板直接显示的形状。
-
-    ``updated_at`` 来自服务端的 update_time。它在连续领取时**不刷新**（实测是
-    账号开通那一刻的时间），所以只作展示，不能拿它判「今天领没领」—— 判据见
-    claim_and_verify 的 ``_is_full``。
-    """
-    result = tokens_balance(access_key, secret_key, security_token, timeout=timeout)
-    stamp = _ms_to_iso(result.get("update_time"))
-    limit = result.get("daily_token_limit") or 0
-    total = result.get("total_balance") or 0
-    used_today = result.get("daily_tokens_used") or 0
-    return {
-        "channel": result.get("channel") or "",
-        "user_name": result.get("user_name") or "",
-        "domain_id": result.get("domain_id") or "",
-        "daily_limit": limit,
-        "total_balance": total,
-        "used_today": used_today,
-        "remaining": max(0, limit - used_today) if limit else 0,
-        # expire_time 为 0 表示「当日有效、0 点清零」，不是一个具体时刻
-        "expires_at_today": result.get("expire_time") == 0,
-        "updated_at": stamp,
-        "used_percent": round(100.0 * used_today / limit, 2) if limit else None,
-    }
-
-
-def _is_full(balance):
-    """额度是否已经满额且今日未动过 —— 也就是「今天的已经领了」。"""
-    limit = balance.get("daily_limit") or 0
-    return bool(limit) and balance.get("total_balance") >= limit \
-        and not (balance.get("used_today") or 0)
-
-
-def record_claim(session, result, trigger="unknown"):
-    """把一次领取尝试记进活动历史，形状与旧的 WorkBuddy 签到一致。
-
-    会话不是 Account 实例，所以这里自己拼那几项而不是复用
-    ca_activity.record_attempt（那个按属性取值，码道会话的属性名对不上）。
-    写失败不会改变领取结论 —— 记录只是审计，不是控制流。
-    """
-    try:
-        import ca_activity
-        account = session.get("account") or {}
-        balance = (result or {}).get("balance") or {}
-        ok = bool((result or {}).get("ok"))
-        message = ((result or {}).get("msg") or ("成功" if ok else "失败"))
-        if balance.get("total_balance") is not None:
-            message = "%s（余额 %s / %s）" % (
-                message, balance.get("total_balance"), balance.get("daily_limit"))
-        return ca_activity.record(
-            uid=account.get("id") or "",
-            nickname=account.get("label") or "",
-            realm="cn",
-            task=ca_activity.TASK_CHECKIN,
-            trigger=trigger,
-            ok=ok,
-            message=message)
-    except Exception:
-        return None
-
-
-def claim_and_verify(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT,
-                     session=None, trigger="unknown"):
-    """领取 → 回查余额，返回一条可直接落进活动历史的记录。
-
-    「今天领没领」的判据是**余额是否满额**，不是服务端的时间戳：实测 update_time
-    在连续领取的情况下并不刷新（账号开通后一直是同一个值），拿它当判据会把
-    「今天还没领」误判成「已领」，于是永远领不到。满额（余额 == 每日上限且今日
-    消耗为 0）就意味着今天的额度已在手上且还没动过，重复领取是空操作。
-
-    给了 session 就顺手写一行活动历史（trigger 沿用旧的 scheduler / manual
-    口径），没给就不写 —— 这样纯单元测试不必准备历史目录。
-    """
-    try:
-        before = balance_summary(access_key, secret_key, security_token,
-                                 timeout=timeout)
-    except Exception as exc:
-        # 余额读不到时也要落一行：2026-10-21 上游把福利渠道收回，调度器每小时
-        # 都在失败，但历史里一条记录都没有（异常在余额这一步就抛了，走不到
-        # 下面那两个 record_claim），事后完全看不出「从 22:00 起就没成功过」。
-        result = {"ok": False, "skipped": False,
-                  "msg": "额度不可用: %s" % exc}
-        if session is not None:
-            record_claim(session, result, trigger=trigger)
-        raise
-    if _is_full(before):
-        result = {"ok": True, "skipped": True,
-                  "msg": "今日已领取（余额 %s / %s，未消耗）" % (
-                      before["total_balance"], before["daily_limit"]),
-                  "balance": before}
-    else:
-        try:
-            claimed = claim_benefit(access_key, secret_key, security_token,
-                                    timeout=timeout)
-        except Exception as exc:
-            # 上游抛错也要留一行：否则「今天没领到」在历史里是空白，
-            # 事后分不清是没跑还是跑了但失败。
-            result = {"ok": False, "skipped": False, "msg": "领取失败: %s" % exc}
-            if session is not None:
-                record_claim(session, result, trigger=trigger)
-            raise
-        after = balance_summary(access_key, secret_key, security_token,
-                               timeout=timeout)
-        result = {
-            "ok": True,
-            "skipped": False,
-            "msg": "%s，余额 %s → %s（今日已用 %s）" % (
-                claimed["msg"], before["total_balance"], after["total_balance"],
-                after["used_today"]),
-            "grew": after["total_balance"] > before["total_balance"],
-            "user_name": claimed.get("user_name") or after.get("user_name") or "",
-            "balance": after,
-        }
-    if session is not None:
-        record_claim(session, result, trigger=trigger)
-    return result
 
 
 # ---------------------------------------------------------------------------
