@@ -645,7 +645,9 @@ class _DataResp:
 _wait_script = []
 
 
-def _fake_wait(_sock, _timeout):
+def _fake_wait(_sock, _timeout, _fp=None):
+    # 第三个参数是 resp.fp（见 _wait_readable：光看 socket 会把 Python 缓冲里
+    # 已收到的字节当成静默）。桩按剧本返回，不关心 fp。
     return _wait_script.pop(0) if _wait_script else True
 
 

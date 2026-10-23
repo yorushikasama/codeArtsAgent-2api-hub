@@ -226,6 +226,17 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+**中途错误帧不再被当成正常结束（半截回答不盖章）**
+
+- 现象：上游先吐正文、再塞一个 `error_code` 帧时，客户端收到的是 `200` + `finish_reason=stop` + `[DONE]`，没有 error 帧；`usage.jsonl` 只有一条 `completed`。客户端把半截回答当完整结果，错误不进日志、账上算成功。
+- 根因是 chat 流式的收尾只写了「一个字都没出就报错」这一条分支（`frame_err and not content_parts and not reasoning_parts`），**出过内容时没有分支接住 `frame_err`**，直接落到 `emit(frame({}, finish_reason or "stop", …))` + `record_usage(outcome="completed")` —— 正是那段注释里说要避免的「给半截回答盖章」。
+- 另外两条入口漏得更彻底：`tap` 只把错误记进 sink 就照常喂给翻译器，翻译器不知道这件事，补了 `response.completed` / `message_stop`；收尾处还是 `if tap["error"] and not usage` —— 上游只要回过 usage，失败就被记成成功，而且失败/成功各落一行（同一请求账上算两次）。
+- 聚合路径（非流式）同样有 `and not content and not reasoning`：拼出来的残句被当成完整答案回 200。
+- 现在：错误帧一律压过完成。`ca_stream.tail_kind()` 把这条优先级写成显式规则（`error_frame > upstream_aborted > complete`），三个入口共用；`tap_lines` 遇到错误帧直接抛 `UpstreamErrorFrame` **打断翻译器**，由调用方按本协议发错误终态 —— chat 发 `{"error": …}` + `[DONE]`，Responses 发 `response.failed`，Messages 发 `event: error`。失败只落一行账，usage 跟着 `record_error` 走。
+- 状态码不再写死 502：过 `frame_status` 那张表，被 TPM 限流就回 429 语义，客户端知道该等而不是该改请求。
+- 顺带认两种以前漏掉的失败表达：`{"error": {"code": …, "message": …}}`（OpenAI 兼容层的错误帧）与 `finish_reason="error"`（以前只有 WorkBuddy 那条路认，#389）。
+- **分层**：帧解析、收尾判定、上游错误码 → 状态码的映射整块搬进新模块 `ca_stream.py`（360 行，纯函数，只 import `json`），`ca_proxy.py` 20 647 → 19 740 行。以前这套判断散在三个 handler 里，同一种 bug 要修三遍，于是两遍没修。新增 `tests/_test_stream_tail.py`（57 项）钉住三态优先级、两种错误形状、三条入口各自的错误终态，以及「映射表只剩一份」的静态约束。
+
 **移除 WorkBuddy 账号池：网关只服务码道**
 
 - `POOL` 不再创建（恒为 `None`），启动不再读 `accounts/*.json` 的 WorkBuddy 凭据、不再扫桌面端会话、不再有 `--info` / `--import-desktop` / `--user-agent` 三个参数；`/health` 的 `accounts` 语义改成「码道会话数」。

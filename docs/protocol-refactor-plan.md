@@ -12,10 +12,12 @@
 
 | 项 | 数字 |
 |---|---|
-| `ca_proxy.py` | 20 706 行（起点 22 119） |
+| `ca_proxy.py` | 19 740 行（起点 22 119） |
+| `ca_stream.py` | 360 行（流式帧解析 / 收尾判定 / 错误映射） |
 | `ca_protocol.py` | 1 693 行，40 个函数 |
-| 测试套件 | 133 个（107 Python + 26 JS） |
-| `_test_codearts_stream_break.py` | 226 项 |
+| 测试套件 | 124 个（99 Python + 25 JS，见 README） |
+| `_test_codearts_stream_break.py` | 265 项 |
+| `_test_stream_tail.py` | 57 项（三态收尾 + 三条入口的错误终态） |
 | `_test_protocol_pure.py` | 41 项（只 import ca_protocol） |
 | `_test_protocol_golden.py` | 19 项（逐字节帧序列） |
 | 线上 / 远端 | 与本地 `main` 同步（具体 sha 以 `git log -1` 为准） |
@@ -55,6 +57,20 @@
 
 ---
 
+## 0b. 第十一刀：流式收尾语义（2026-10-23，顺手修 bug）
+
+`ca_stream.py` 不是「多搬一块协议转换」，而是把三个 handler 里各写一遍的流式
+收尾判断收成一份。触发它的是一个线上 bug：上游先吐正文、再塞 `error_code` 帧，
+chat 流式出过内容后没有分支接住错误帧，落到 `finish_reason=stop` + `completed`。
+
+- 搬走：`tap_lines`（含 KEEPALIVE 翻译）、`collect_sse`、`merge_tool_call`、
+  `frame_error` / `frame_usage` / `finish_error`、`tail_kind`、`break_hint`、
+  `fail_spec` / `frame_status` / `retryable` / `concurrency_full` / `error_detail`。
+- 唯一的行为变化：`tap_lines` 遇到错误帧抛 `UpstreamErrorFrame` 打断翻译器；
+  `frame_error` 多认 `{"error": …}` 形状；`finish_reason=error` 也算失败。
+- 纯度：只 import `json`，不碰 socket / 日志 / 账号目录（`_test_stream_tail.py`
+  第 7 节静态检查）。
+
 ## 1. 目标物清单（全部搬完）
 
 | 目标 | 计划行数 | 结果 |
@@ -66,7 +82,7 @@
 | `iter_sse_lines` / `strip_data_prefix` | 56 | ✅ 第 5 刀顺手 |
 | 别名桥 | 44 条 | ✅ 第 10 刀拆掉 |
 
-最终：`ca_proxy.py` 20 706 行（-1 413），`ca_protocol.py` 1 693 行。
+最终：`ca_proxy.py` 19 740 行（-2 379），`ca_protocol.py` 1 693 行、`ca_stream.py` 360 行。
 （第十刀结束时是 20 729 / 1 620；之后 stop_sequence 回填、面板并发涨了几十行，
 死代码清理减了 79 行、价格设置收口减了 46 行，净数如上。）
 
@@ -264,11 +280,11 @@
 
 **完成标志（全部达成）**
 
-- ✅ `ca_proxy.py` 20 706 行（≤ 21 000），`ca_protocol.py` 覆盖全部协议转换；
+- ✅ `ca_proxy.py` 19 740 行（≤ 21 000），`ca_protocol.py` 覆盖全部协议转换、`ca_stream.py` 覆盖流式收尾；
 - ✅ `_test_protocol_pure.py`（41 项）全绿，只 import `ca_protocol`；
 - ✅ `ca_proxy` 顶部不再有别名桥（只剩两个注入包装）；
 - ✅ golden 套件钉住两种流式协议的逐字节帧序列（19 项）；
-- ✅ 套件数 133（README 已同步）。
+- ✅ 套件数与 README 同步（见 §0 表）。
 
 ---
 

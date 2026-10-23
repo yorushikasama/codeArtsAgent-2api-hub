@@ -1005,7 +1005,7 @@ def clamp_max_tokens(model_id, max_tokens):
     Codex CLI 等）习惯性发一个「模型族里最大的那个」值 —— ZCode 对所有模型
     固定发 `max_tokens=128000`。上游对超限值不回「值太大」这种明白错误，而是
     `InferHub.001001005.400 The request param is invalid`，一句话把整个请求
-    打死，且这个码**不在** `_codearts_retryable` 里，所以重试多少次都是同样的
+    打死，且这个码**不在** `ca_stream.retryable` 里，所以重试多少次都是同样的
     502，用户侧表现为「这个模型一直失败」。
 
     实测 glm-5.3：`65536`（正好等于输出上限）200 正常出字，`128000` 立刻
@@ -2019,7 +2019,7 @@ def _stream_socket(resp):
     return getattr(raw, "_sock", None)
 
 
-def _wait_readable(sock, timeout):
+def _wait_readable(sock, timeout, fp=None):
     """等 socket 变可读，**不碰 socket 自己的读超时**。
 
     返回 True（有数据）/ False（等满了 timeout，上游静默）/ None（这个 socket
@@ -2032,6 +2032,14 @@ def _wait_readable(sock, timeout):
     正是 ``sock.makefile()`` 出来的那个 SocketIO —— 一旦拿短超时去「探」静默，
     这根连接就永久废了。所以空闲只能靠 select 看 fd，读写超时交还给
     open_chat 的兜底值。
+
+    ``fp`` 是 ``resp.fp``（BufferedReader）。**必须一起看**：socket 可读只说明
+    「内核里有字节」，而 HTTPResponse 读的是上面那层 Python 缓冲 —— 响应头和
+    头几个 body 块常常在同一个 TCP 包里到达，``readline()`` 解析响应头时把
+    body 一起读进了缓冲。此时 fd 上已经没有新字节，select 会一直等到超时，
+    这段时间里明明有数据可读却发不出去（本地 socket 实测首字被推迟 6 秒）；
+    更糟的是连续空等到 max_idle 就把一条完好的流误报成断流。
+    所以先看缓冲里有没有已经收到的字节。
     """
     try:
         # TLS 把明文解在内存里时，fd 上可能暂时没有新字节，select 会误判成
@@ -2041,6 +2049,8 @@ def _wait_readable(sock, timeout):
             return True
     except Exception:
         pass
+    if _buffered_bytes(fp):
+        return True
     try:
         fd = sock.fileno()
     except Exception:
@@ -2052,6 +2062,43 @@ def _wait_readable(sock, timeout):
         return bool(ready)
     except (OSError, ValueError):
         return None
+
+
+def _buffered_bytes(fp):
+    """``BufferedReader`` 里已经收到、还没交付给调用方的字节数。
+
+    ``peek(0)`` 是唯一能在**不消费**的前提下问「缓冲里有没有东西」的办法。
+    它默认会为了拿到至少一个字节而阻塞读 socket —— 这在这里正好是灾难（那
+    会绕过 select 的静默判定，还可能撞上 SocketIO 的超时毒化）。所以先暂时
+    把 socket 切成非阻塞：有缓冲就当次返回、没有就返回 ``b""``，然后在
+    finally 里恢复原超时。已实测「非阻塞 peek 失败之后连接仍可正常读」，
+    这也是 ``_wait_readable`` 敢碰它的前提。
+
+    拿不到 fp / 不是 BufferedReader / 任何异常 → 返回 0（当作「缓冲里没有」），
+    宁可多走一次 select，也不能在探测上抛错。
+    """
+    peek = getattr(fp, "peek", None)
+    if not callable(peek):
+        return 0
+    sock = None
+    try:
+        # BufferedReader.raw 是 SocketIO，._sock 才是 socket（同 _stream_socket）
+        sock = getattr(getattr(fp, "raw", None), "_sock", None)
+        prev = None
+        if sock is not None:
+            prev = sock.gettimeout()
+            sock.setblocking(False)
+        try:
+            return len(peek(0) or b"")
+        finally:
+            if sock is not None:
+                sock.settimeout(prev)
+    except (BlockingIOError, OSError, ValueError, AttributeError):
+        # 非阻塞 peek 在缓冲为空时可能抛 BlockingIOError（不同版本行为不一），
+        # 那就是「没有缓冲数据」；其余异常同样按「不知道」处理。
+        return 0
+    except Exception:
+        return 0
 
 
 def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
@@ -2093,7 +2140,10 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
         if abort_check is not None and abort_check():
             raise ChatAborted("client gone")
         if sock is not None and idle_timeout:
-            ready = _wait_readable(sock, idle_timeout)
+            # 把 resp.fp 一起传进去：光看 socket 会把「已经在 Python 缓冲里
+            # 的字节」当成静默，首字要等到下一块到达才发得出去（见 _wait_readable）。
+            ready = _wait_readable(sock, idle_timeout,
+                                   getattr(resp, "fp", None))
             if ready is None:
                 # 等不了（假对象 / 已关闭 / 没 fileno）：放弃心跳，退回阻塞读。
                 # 宁可少一条心跳，也不要在这里抛错把好好的流弄断。
