@@ -27,7 +27,7 @@ class RequestWithoutKey(object):
 class HealthAuthTests(unittest.TestCase):
     def test_health_follows_current_settings(self):
         with tempfile.TemporaryDirectory(prefix="health-auth-") as directory:
-            with mock.patch.multiple(proxy, ACCOUNTS_DIR=directory, API_KEY=None, POOL=None):
+            with mock.patch.multiple(proxy, ACCOUNTS_DIR=directory, API_KEY=None):
                 request = RequestWithoutKey()
 
                 def check(required):

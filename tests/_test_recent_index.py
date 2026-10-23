@@ -587,44 +587,23 @@ def write_account_file(uid, realm):
 write_account_file("u9", "cn")
 if os.path.exists(INDEX):
     os.unlink(INDEX)
-# 池是空的、磁盘上有账号：折出来的归属冷进程复现不了 → realm 查询走老路
-P.POOL = None
+# WorkBuddy 账号池删除后，「活池 vs 磁盘」这条不一致不复存在：
+# `_account_realm_map()` 恒为空元组，`_realm_inputs()` 恒等于 (cn, ())，
+# 于是 realm 页一直可以用索引。原来那组「池没就绪 → 必须走老路」的断言
+# 描述的是一个已经不可能出现的状态，删掉；保留「结果与老路一致」这一层。
+if os.path.exists(INDEX):
+    os.unlink(INDEX)
 got, used = call_page(realm="cn", use_index=True, fresh=True)
 want = page(use_index=False, realm="cn")
-check("池没就绪：realm 页与老路一致", got == want, first_diff(want, got))
-check("池没就绪：realm 页走了老路",
-      used["backward"] > 0 and used["index"] == 0, used)
-check("池没就绪：索引没有落盘（写下去别的进程也不敢用）",
-      not os.path.exists(INDEX), os.listdir(USAGE_DIR))
+check("realm 页与老路一致", got == want, first_diff(want, got))
+check("realm 页走了索引", used["index"] > 0, used)
+check("索引落盘了", os.path.exists(INDEX))
 
-# 池与磁盘一致：realm 页可以用索引
-import ca_accounts            # noqa: E402
-P.POOL = ca_accounts.AccountPool(ACCOUNTS_DIR)
-P.POOL.load()
-got, used = call_page(realm="cn", use_index=True, fresh=True)
-want = page(use_index=False, realm="cn")
-check("池与磁盘一致：realm 页与老路一致", got == want, first_diff(want, got))
-check("池与磁盘一致：realm 页走了索引", used["index"] > 0, used)
-check("池与磁盘一致：索引落盘了", os.path.exists(INDEX))
-
-# 「池与磁盘归属不一致 → realm 页不许用索引」这条场景需要同一份磁盘能表达
-# 两种归属。国际版删除后任何写进账号文件的区域读回来都是 cn，差异不复存在，
-# 判据（_realm_fold_reproducible）仍在，但这里没有可构造的对象。
 # 磁盘内容变化（哪怕只是重写）仍然要让页结果与老路一致：
 write_account_file("u9", "cn")
 got, used = call_page(realm="cn", use_index=True, fresh=True)
 want = page(use_index=False, realm="cn")
 check("账号文件改了：realm 页与老路一致", got == want, first_diff(want, got))
-
-# 磁盘归属改了、池也重载了：索引整份重折（老行的归属跟着变），结果仍一致
-P.POOL = ca_accounts.AccountPool(ACCOUNTS_DIR)
-P.POOL.load()
-got, used = call_page(realm="cn", use_index=True, fresh=True)
-want = page(use_index=False, realm="cn")
-check("磁盘归属改了：realm 页与老路一致", got == want, first_diff(want, got))
-check("磁盘归属改了：索引重折后仍然可用", used["index"] > 0, used)
-write_account_file("u9", "cn")
-P.POOL = None
 
 # --------------------------------------------------------------------------
 print()

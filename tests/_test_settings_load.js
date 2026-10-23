@@ -161,12 +161,14 @@ global.__toasts = toasts;
                      'setDailyChatWebAttempts', 'setDailyChatWebTimeout']){
     assert.equal(element(gone), null, gone + ' 应已从设置页删除');
   }
-  assert.equal(element('setLocalWebTools').checked, true);
-  // 限额只剩三条全局护栏：值写回各自的输入框，区块状态跟着亮。
-  assert.equal(element('limitGlobalDailyToken').value, '1000', '每日 Token 限额没写回');
-  assert.equal(element('limitGlobalDailyCredit').value, '0', '每日积分限额没写回');
-  assert.equal(element('limitGlobalModelDailyToken').value, '0', '按模型限额没写回');
-  assert.equal(element('setLimitsState').textContent, '(已启用)');
+  // 账号限额与本地网络工具随 WorkBuddy 账号池一起删除（2026-10-23）：
+  // 面板上不该再有这两个区块，脚本也不该再找它们的控件。
+  for(const gone of ['setLocalWebTools', 'setLocalWebToolsState',
+                     'limitGlobalDailyToken', 'limitGlobalDailyCredit',
+                     'limitGlobalModelDailyToken', 'setLimitsState']){
+    assert.equal(element(gone), null, gone + ' 应已从设置页删除');
+  }
+  assert.ok(!script.includes('local_web_tools'), '脚本里不该再出现 local_web_tools');
   assert.equal(element('setWinMaxHeight').value, '640', '窗口限高输入框没写回');
   assert.equal(element('setWinMaxHeightState').textContent, '(当前 640px)',
     '窗口限高状态文案没写回');

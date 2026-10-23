@@ -182,31 +182,6 @@ class BuildUpstreamBodyReuseTests(unittest.TestCase):
             self.assertEqual(json.dumps(payload, sort_keys=True, ensure_ascii=False),
                              before, "build_upstream_body 不应改动入参")
 
-    def test_open_upstream_reuses_a_prebuilt_body(self):
-        payload = dict(self.PAYLOADS[0])
-        prebuilt = P.build_upstream_body(payload)
-        calls = {"n": 0}
-        real_build = P.build_upstream_body
-        real_pool = P.POOL
-
-        def counting(body):
-            calls["n"] += 1
-            return real_build(body)
-
-        P.build_upstream_body = counting
-        # 没有池子：open_upstream 会在选号前把 body 建好、然后以
-        # RuntimeError("no usable account ...") 结束，全程不碰网络。
-        P.POOL = None
-        try:
-            with self.assertRaises(RuntimeError):
-                P.open_upstream(payload, prebuilt_body=prebuilt)
-            self.assertEqual(calls["n"], 0, "传了 prebuilt_body 就不该再构建")
-            with self.assertRaises(RuntimeError):
-                P.open_upstream(payload)
-            self.assertEqual(calls["n"], 1, "不传 prebuilt_body 时应构建一次")
-        finally:
-            P.build_upstream_body = real_build
-            P.POOL = real_pool
 
 
 class EstimateTokensTests(unittest.TestCase):

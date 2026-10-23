@@ -59,7 +59,6 @@ os.environ["WB_PROXY_USAGE_DIR"] = USAGE_DIR
 os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 
 import ca_proxy as P
-import ca_accounts
 # 这个套件不碰真 accounts/ 目录：ACCOUNTS_DIR 是脚本旁边的硬编码路径，只能
 # 在导入后重绑（_test_analytics_by_key.py 里记过同样的坑）。
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
@@ -1067,7 +1066,7 @@ def write_account(uid, realm):
 # 读回来就被归一）。
 write_account("u-1", "cn")
 write_account("u-2", "cn")
-SAVED_DIR, SAVED_POOL = P.ACCOUNTS_DIR, P.POOL
+SAVED_DIR = P.ACCOUNTS_DIR
 P.ACCOUNTS_DIR = REAL_ACCOUNTS
 try:
     write_log([
@@ -1076,78 +1075,40 @@ try:
         row(FROZEN - 4800, "m-a", "u-2", 300, 30, realm="cn"),
     ])
     cache_env_off()
-    P.POOL = None
     restart()
     NINE_RAW = live()
     NINE = canon(NINE_RAW)
 
-    # 判据：同一份磁盘 + 同一份配置，三种启动状态算出的指纹必须一模一样。
-    fp_none = P._realm_inputs()
-    P.POOL = ca_accounts.AccountPool(REAL_ACCOUNTS)      # 建好了，还没 load()
-    fp_unloaded = P._realm_inputs()
-    P.POOL.load()                                        # 加载完成
-    fp_loaded = P._realm_inputs()
-    check("指纹与池的加载状态无关（未建/未加载/已加载都相同）",
-          fp_none == fp_unloaded == fp_loaded, (fp_none, fp_unloaded, fp_loaded))
-    check("指纹就是磁盘上的 uid→realm",
-          fp_loaded == (P.CURRENT_REALM, (("u-1", "cn"), ("u-2", "cn"))), fp_loaded)
+    # 账号池删除后，realm 归属恒为「磁盘侧也读不到账号」（空元组），指纹只剩
+    # 出口名一个变量：重启前后、冷启动与运行中算出来必须完全一致。
+    fp = P._realm_inputs()
+    check("指纹 = 出口 + 空映射", fp == (P.CURRENT_REALM, ()), fp)
+    restart()
+    check("重启后指纹不变", P._realm_inputs() == fp, P._realm_inputs())
 
-    # 先写一份 checkpoint（池就绪），再用「池未就绪」的状态加载：必须命中。
-    check("池就绪时写盘成功", make_checkpoint())
+    check("checkpoint 写盘成功", make_checkpoint())
     stored = cache_data()
-    check("落盘的 realm 指纹就是磁盘那份",
+    check("落盘的 realm 指纹就是这份",
           _entry(stored, "snapshot", None)["realm_inputs"]
-          == P._realm_inputs_key(fp_loaded),
+          == P._realm_inputs_key(fp),
           _entry(stored, "snapshot", None)["realm_inputs"])
-    P.POOL = ca_accounts.AccountPool(REAL_ACCOUNTS)      # 重启：池还没 load()
     cache_env_nowrite()
     restart()
     got, err = live_canon()
-    check("池未就绪的进程仍然命中 checkpoint（含带 realm 指纹的两份）",
+    check("重启后命中 checkpoint（含带 realm 指纹的两份）",
           adopted_all(P._usage_cache_checkpointed), P._usage_cache_checkpointed)
-    check("池未就绪时的结果与冷折叠一致", got == NINE, err or first_diff(NINE, got or ""))
-    # 池加载完之后：载荷里的 accounts_map/account 由活池派生，数字部分必须仍
-    # 然与全量折叠一致（这一段就是「运行 10 分钟后」的那一态）。
-    P.POOL.load()
-    cache_env_off()
-    restart()
-    NINE_LOADED = canon(live())
-    cache_env_nowrite()
-    restart()
-    got, err = live_canon()
-    check("池加载完之后同样命中且一致", got == NINE_LOADED,
-          err or first_diff(NINE_LOADED, got or ""))
+    check("命中后的结果与冷折叠一致", got == NINE, err or first_diff(NINE, got or ""))
 
-    # 「磁盘改了归属 → 指纹跟着变 → 池没跟上时不许写盘」这一串，前提是同一份
-    # 磁盘能表达出两种归属。国际版删除后只剩一个出口，任何写进账号文件的区域
-    # 读回来都归一到 cn，这个差异不复存在，场景也就无法构造。_realm_fold_
-    # reproducible 仍然保留给「以后再加一个上游」的情形，但这里没有可断言的对象。
     clear_cache_files()
     cache_env_force()
     restart()
     live()
     written = cache_data()
-    check("池与磁盘一致时 snapshot/analytics 照常写盘",
+    check("snapshot/analytics 照常写盘",
           written["snapshot"] != [] and written["analytics"] != [],
-          {k: len(v) for k, v in written.items()})
-    cache_env_off()
-    restart()
-    check("改回来之后指纹回到原值", P._realm_inputs() == fp_loaded, P._realm_inputs())
-
-    # 池整个不存在而磁盘上有账号：折叠根本不查账号映射，这种折叠冷进程复现
-    # 不了 —— 宁可不信任、不写，等池就绪后再用。
-    P.POOL = None
-    clear_cache_files()
-    cache_env_force()
-    restart()
-    live()
-    written = cache_data()
-    check("没有池而磁盘上有账号：snapshot/analytics 不写",
-          written["snapshot"] == [] and written["analytics"] == [],
           {k: len(v) for k, v in written.items()})
 finally:
     P.ACCOUNTS_DIR = SAVED_DIR
-    P.POOL = SAVED_POOL
     write_log(ROWS)
     cache_env_off()
     restart()

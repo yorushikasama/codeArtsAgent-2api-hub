@@ -139,9 +139,9 @@ class AccountsCollapsedTests(unittest.TestCase):
 
     def test_another_setting_write_keeps_the_flag(self):
         S.set_accounts_collapsed(self.dir, True)
-        S.set_local_web_tools(self.dir, False)
+        S.set_section_max_height(self.dir, 555)
         self.assertIs(S.accounts_collapsed(self.dir), True)
-        self.assertIs(self._read()["local_web_tools"], False)
+        self.assertEqual(self._read()["section_max_height"], 555)
 
     def test_concurrent_writes_leave_a_readable_file(self):
         self._write({"user_custom_top": {"keep": 1}})

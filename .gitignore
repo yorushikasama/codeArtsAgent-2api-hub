@@ -60,3 +60,6 @@ desktop.ini
 
 # Local Docker Compose override
 docker-compose.override.yml
+
+# 并发会话用的独立检出（不进仓库）
+.worktrees/
