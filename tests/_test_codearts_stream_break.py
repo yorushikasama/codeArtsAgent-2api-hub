@@ -1608,5 +1608,37 @@ check("工具参数解析：None→{}、dict 原样、非法 JSON→{raw}、标�
       and Q.anthropic_parse_tool_input("[1,2]") == {"value": [1, 2]}
       and Q.anthropic_parse_tool_input(7) == {"value": 7}, None)
 
+# 失败请求的工具定义落盘：默认关闭，开启后只写客户端配置（不含消息正文），
+# 且 5 分钟内最多一份 —— 客户端反复重试时不能把盘刷满。
+import tempfile as _tempfile
+
+_dump_dir = _tempfile.mkdtemp(prefix="dump-")
+_old_usage_log = P.USAGE_LOG
+_old_flag = os.environ.pop("WB_DUMP_FAILED_TOOLS", None)
+try:
+    P.USAGE_LOG = os.path.join(_dump_dir, "usage.jsonl")
+    P.dump_failed_request({"model": "m", "tools": [{"type": "function"}]}, [], 8)
+    check("默认不落盘", os.listdir(_dump_dir) == [], os.listdir(_dump_dir))
+    os.environ["WB_DUMP_FAILED_TOOLS"] = "1"
+    P.dump_failed_request({"model": "m", "tools": [{"type": "function"}]}, [], 8)
+    _files = [f for f in os.listdir(_dump_dir) if f.startswith("failed-req-")]
+    check("开启后落一份", len(_files) == 1, _files)
+    _blob = json.load(io.open(os.path.join(_dump_dir, _files[0]), encoding="utf-8"))
+    check("只落客户端配置（tools/shape，没有 messages）",
+          "messages" not in _blob and _blob.get("tools") and "shape" in _blob,
+          sorted(_blob))
+    P.dump_failed_request({"model": "m", "tools": [{"type": "function"}]}, [], 8)
+    check("5 分钟内不重复落盘",
+          len([f for f in os.listdir(_dump_dir) if f.startswith("failed-req-")]) == 1,
+          os.listdir(_dump_dir))
+finally:
+    if _old_flag is not None:
+        os.environ["WB_DUMP_FAILED_TOOLS"] = _old_flag
+    else:
+        os.environ.pop("WB_DUMP_FAILED_TOOLS", None)
+    P.USAGE_LOG = _old_usage_log
+    import shutil as _shutil_dump
+    _shutil_dump.rmtree(_dump_dir, ignore_errors=True)
+
 print("\nPASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

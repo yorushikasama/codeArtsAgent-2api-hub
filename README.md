@@ -227,6 +227,14 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+**`APIG.0203` 的请求形状可归因，建连预算按「预估下一轮」判断**
+
+- 建连预算的判断时机是错的：原来只看「已经花了多久」，第 1 轮 60 秒 `<` 75 秒预算 → 放行第 2 轮 → 再跑 60 秒，客户端要等 **130 秒**才拿到 504（线上 15:02 实测 129 975 ms）。改成用「再来一轮至少需要一个首字节窗口」预估（`elapsed + min(header_timeout, 60) > CODEARTS_OPEN_BUDGET`），第 1 轮失败后就停；预算日志同时打出 `another attempt needs ~60s, budget 75s`，不用再倒推。
+- 成功请求也开始留一行 `chat stream open: … shape=…`。以前只在失败时打形状，而 0203 的典型现象正是**同一形状时好时坏**（15:04 同 `msgs=27 chars=32077 tchars=92258 tools=55` 的请求 33 秒成功，15:02 那条 130 秒失败），没有成功样本就没法对比。一次请求一行，与 `chat done` 同量级。
+- 请求形状补充 `think=` 与 `keys=`：前者带 `thinking.type` / `budget_tokens` / `reasoning_effort`，后者是顶层出现的所有额外键。以前只有 `thinking=yes`，分不出是「client 给了个巨大的 budget」还是「多带了个 `stream_options`」把上游顶住的。
+- 新增 `dump_failed_request()`：失败时把 **tools / tool_choice / thinking / max_tokens** 落盘到 `usage/failed-req-<ts>.json`，供离线复现（**不含任何消息正文**）。开关 `WB_DUMP_FAILED_TOOLS`，默认关闭，5 分钟内最多一份。实测价值明确：合成的 46KB 工具集永远能过，只有拿到真实的 92 258 字节那套（`CronCreate` 6 239B、`AskUserQuestion` 5 060B…）才确认「形状本身不是根因」。
+- 锁住限流映射：`ModelArts.81111`（按 TPM）与 `81114`（按请求数）是同一种瞬时限流，上游有时把它塞在 HTTP 400 的 body 里，以前缺断言。现在两条都钉死为 **429**，避免客户端把「等几秒就好」当成坏请求丢掉。
+
 **失败记账与响应同源，一次失败只落一行**
 
 - `_codearts_open_lease`（流式建连）以前 `record_error(model, 502, …)` 写死 502，而对外走 `_codearts_fail()` 把 `APIG.0203` 映射成 504：同一个失败，`gw.log` / `usage.jsonl` 记 502、客户端收 504。现在记账用 `_codearts_fail_spec()` 算出的同一个状态码（网络异常仍记 502）。

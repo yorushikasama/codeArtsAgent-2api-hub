@@ -11060,6 +11060,22 @@ def _codearts_request_shape(payload, messages, max_tokens):
                 chars += len(text)
     # 工具的 JSON 字节数单独算：55 个 MCP 工具的 schema 可以轻松上百 KB
     # （约等于几万 token），只看 messages 的字符数会把它当成「请求很小」。
+    # 顶层的「额外键」与 thinking 细节：ZCode 会带 stream_options /
+    # metadata / parallel_tool_calls 之类，也可能给一个很大的
+    # budget_tokens —— 只看 thinking=yes 分不出是哪一项把上游顶死的。
+    extra_keys = ""
+    think = ""
+    if isinstance(payload, dict):
+        extra_keys = ",".join(sorted(
+            k for k in payload if k not in ("messages", "tools", "model")))
+        thinking = (ca_codearts.thinking_extra_from(payload) or {}).get("thinking")
+        if isinstance(thinking, dict):
+            think = str(thinking.get("type") or "")[:8]
+            if thinking.get("budget_tokens") is not None:
+                think += "/%s" % thinking.get("budget_tokens")
+        effort = payload.get("reasoning_effort")
+        if effort:
+            think += "/effort=%s" % str(effort)[:8]
     tools = payload.get("tools") if isinstance(payload, dict) else None
     tchars = 0
     ttypes = {}
@@ -11080,7 +11096,8 @@ def _codearts_request_shape(payload, messages, max_tokens):
         elif isinstance(choice, dict):
             tchoice = str(choice.get("type") or "obj")[:16]
     return ("max_tokens=%s msgs=%d parts=%d chars=%d tchars=%d acall=%d "
-            "images=%d tools=%d ttypes=%s tchoice=%s stream=%s thinking=%s"
+            "images=%d tools=%d ttypes=%s tchoice=%s stream=%s thinking=%s "
+            "think=%s keys=%s"
             % (max_tokens, len(messages or []), parts, chars, tchars, acall,
                images,
                len(tools) if isinstance(tools, list) else 0,
@@ -11088,7 +11105,44 @@ def _codearts_request_shape(payload, messages, max_tokens):
                tchoice or "-",
                bool((payload or {}).get("stream")) if isinstance(payload, dict) else False,
                "yes" if isinstance(payload, dict)
-               and ca_codearts.thinking_extra_from(payload) else "no"))
+               and ca_codearts.thinking_extra_from(payload) else "no",
+               think or "-", extra_keys or "-"))
+
+
+def dump_failed_request(payload, messages, max_tokens):
+    """把失败请求的**工具定义**落盘，供离线复现（不含任何消息正文）。
+
+    只靠 shape 的数字复现不了 0203：92KB 的工具 schema 里可能有 $ref、
+    anyOf、超长 enum，体积相同、结构不同，后端表现完全不同。这里只存
+    tools / tool_choice / thinking —— 都是客户端配置，不是用户内容。
+
+    开关是 ``WB_DUMP_FAILED_TOOLS``，默认关闭；5 分钟内最多留一份，避免
+    客户端反复重试时把盘刷满。
+    """
+    if not os.environ.get("WB_DUMP_FAILED_TOOLS"):
+        return
+    if not isinstance(payload, dict):
+        return
+    try:
+        folder = os.path.dirname(USAGE_LOG) or "."
+        now = time.time()
+        for name in os.listdir(folder):
+            if name.startswith("failed-req-"):
+                if now - os.path.getmtime(os.path.join(folder, name)) < 300:
+                    return
+        path = os.path.join(folder, "failed-req-%d.json" % int(now))
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({
+                "model": payload.get("model"),
+                "shape": _codearts_request_shape(payload, messages, max_tokens),
+                "tool_choice": payload.get("tool_choice"),
+                "thinking": (ca_codearts.thinking_extra_from(payload) or {}).get("thinking"),
+                "max_tokens": max_tokens,
+                "tools": payload.get("tools"),
+            }, fh, ensure_ascii=False)
+        log("codearts failed request dumped: %s" % path)
+    except Exception as exc:                 # noqa: BLE001
+        log("codearts failed request dump skipped: %r" % (exc,))
 
 
 def canonicalize_model(payload):
@@ -19040,10 +19094,19 @@ class Handler(BaseHTTPRequestHandler):
                     % egress_wait)
             # 流式请求的建连重试有总预算：一次 APIG Backend timeout 就 60s，
             # 再试一轮客户端早走了（而且走了我们还在替它占着会话）。
+            #
+            # 关键是要**在开始下一轮之前**算清它装不装得下：只判断「已经花了
+            # 多久」时，第 1 轮 60s（< 75s 预算）会放行第 2 轮，再跑 60s ——
+            # 客户端要等 130s 才拿到 504（线上实测两次）。按「再来一轮至少要
+            # 一个首字节窗口」预估，第 1 轮失败后就该停。
+            expected = min(header_timeout, 60.0)
+            elapsed = time.time() - t_start
             if (retryable and payload.get("stream")
-                    and (time.time() - t_start) > CODEARTS_OPEN_BUDGET):
-                log("codearts open budget exhausted: model=%s %.0fs shape=%s"
-                    % (model, time.time() - t_start,
+                    and (elapsed > CODEARTS_OPEN_BUDGET
+                         or elapsed + expected > CODEARTS_OPEN_BUDGET)):
+                log("codearts open budget exhausted: model=%s %.0fs "
+                    "(another attempt needs ~%.0fs, budget %.0fs) shape=%s"
+                    % (model, elapsed, expected, CODEARTS_OPEN_BUDGET,
                        _codearts_request_shape(payload, messages, max_tokens)))
                 retryable = False
             if not retryable or attempt >= len(delays):
@@ -19075,6 +19138,7 @@ class Handler(BaseHTTPRequestHandler):
         # _codearts_fail 会按表把 APIG.0203 映射成 504 —— gw.log 与
         # usage.jsonl 记 502、客户端收 504，同一个失败两个答案。
         st, _et = _codearts_fail_spec(status, code, detail, anthropic)
+        dump_failed_request(payload, messages, max_tokens)
         record_error(model, st, ("%s %s" % (code, detail))[:200],
                      elapsed_ms=elapsed_ms, account=account_label,
                      key=self._key_id())
@@ -19166,6 +19230,11 @@ class Handler(BaseHTTPRequestHandler):
 
             account_label = lease.account_label
             account_key = lease.account_key
+            # 成功的请求以前不留形状，出问题时无从对比「同样 30KB 上下文，
+            # 为什么这次过了、那次没过」。一行一次，和 chat done 同量级。
+            log("chat stream open: model=%s acct=%s %s"
+                % (model, account_label,
+                   _codearts_request_shape(payload, messages, max_tokens)))
             # 断流时把「已经收了多少字节、断之前静默了多久、心跳有没有真
             # 发出去、socket 拿没拿到」一起打出来 —— 这四项能区分「上游好好的
             # 被中间层掐了」「上游自己回收了会话」和「我们根本没在续期」。
@@ -19306,6 +19375,9 @@ class Handler(BaseHTTPRequestHandler):
             # ——那等于给半截回答盖一个「正常结束」的章，客户端会当成完整结果
             # （CodeArts2api 的 routes/chat.py 也是这个口径）。发一条明确的
             # error 帧再 [DONE]，要不要重试交给客户端决定。
+            # 断流也要留一份请求形状（工具定义），否则「92KB 的 schema 里到
+            # 底有什么」永远只能靠猜 —— 0203 与中途静默都只在这种请求上复现。
+            dump_failed_request(payload, messages, max_tokens)
             # 一次失败只写一行：usage 跟着 record_error 一起落，别在下面再
             # record_usage 一次 —— 那会让同一个请求既算失败又算一条用量，
             # 总量被放大一倍（record_error 的 docstring 写的就是这个约定）。

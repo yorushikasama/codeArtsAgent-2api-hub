@@ -2446,6 +2446,16 @@ check("TM.00001041 认作并发已满",
       P._codearts_concurrency_full(400, '{"error_code":"TM.00001041"}'))
 check("TPM 81114 不算并发已满",
       not P._codearts_concurrency_full(429, '{"error_code":"ModelArts.81114"}'))
+# 81111 和 81114 是同一种瞬时限流（前者按 TPM，后者按请求数），
+# 上游有时把它塞在 HTTP 400 的 body 里，只看状态码会掉进「参数错」分支
+# 回 400 —— 客户端于是把一条本来等几秒就好的请求当成坏请求丢掉。
+check("81114 映射成 429",
+      P._codearts_fail_spec(429, "ModelArts.81114", "")[0] == 429,
+      P._codearts_fail_spec(429, "ModelArts.81114", ""))
+check("81111 即使包在 400 里也映射成 429",
+      P._codearts_fail_spec(400, "InferHub.ModelArts.81111.429",
+                            "TPM limit")[0] == 429,
+      P._codearts_fail_spec(400, "InferHub.ModelArts.81111.429", "TPM limit"))
 check("并发满的退避明显短于 TPU 限流",
       sum(P.CODEARTS_BUSY_DELAYS) < sum(P.CODEARTS_RETRY_DELAYS),
       (P.CODEARTS_BUSY_DELAYS, P.CODEARTS_RETRY_DELAYS))
