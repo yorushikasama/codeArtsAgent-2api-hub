@@ -99,23 +99,11 @@ def detect_model_realm(model_id):
     所以出口名一律过一遍归一——否则 row_realm 会把整批行贴上一个不存在的区域。
     """
     return ca_accounts.normalize_realm(CURRENT_REALM)
-# Models the domestic exit serves exclusively. 国际版已移除，另一半清单
-# （gpt- / gemini- / grok- …）随该区域一并删除；结构保留，方便后续换上游时
-# 重新划界。
-CN_EXCLUSIVE_PREFIXES = ("minimax-", "deepseek-v4-pro")
-CN_EXCLUSIVE = {
-    "deepseek-v4-pro", "glm-5.1", "glm-5v-turbo",
-    "kimi-k3-1", "kimi-k2.7", "minimax-m3",
-    "hy3-x", "hy4-preview-dev", "hy4-preview-x",
-}
-def exclusive_realm(model_id):
-    """"cn" when only the domestic exit serves the model, else ""."""
-    if not model_id:
-        return ""
-    m = str(model_id).lower()
-    if m in CN_EXCLUSIVE or m.startswith(CN_EXCLUSIVE_PREFIXES):
-        return "cn"
-    return ""
+
+
+# 这里原来有一份 CN_EXCLUSIVE 清单和 exclusive_realm()：国际版移除后它们
+# 没有任何调用点（模型到出口的映射已在 detect_model_realm 里恒等于
+# CURRENT_REALM），删掉以免有人以为改清单能改行为。
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 def install_console_close_handler():
@@ -2150,7 +2138,6 @@ def _range_sum_open(buf, lo, hi):
     return buf["cum"][k - 1] - low
 
 
-
 def _merge_event(state, event, source):
     """Add one cap event, deduplicated by (account, model, reset).
 
@@ -3135,12 +3122,6 @@ def _fold_cost(bucket, cost, model):
 # accounts, so keeping one around costs nothing next to the scan it replaces.
 # ---------------------------------------------------------------------------
 
-# What ca_pricing hands back while its file is missing. Without these, every
-# call would get a fresh empty dict, the identity test below would never
-# match, and a deployment with no price files would rescan on every refresh.
-_EMPTY_POLICIES = {}
-_EMPTY_TIMELINE = []
-
 
 def _usage_log_key(path=None):
     """(size, device, inode) of the usage log, or a zero key when it is gone.
@@ -3819,27 +3800,6 @@ def _cost_entry(pricing, cost):
     return (pricing, cost["known"], cost["cny"], cost.get("band"),
             cost.get("rates"), cost.get("source"), cost.get("source_at"),
             cost.get("backfilled"), bool(cost.get("disabled")))
-
-
-def _cost_from_memo(entry):
-    """记忆条目 -> 与 cost_for_row(details=False) 逐键同序的 dict。
-
-    两条分支的形状与原函数一一对应：总开关关掉那一支不带 rates、多一个
-    disabled；有价/没价那一支带 rates。键序照抄原函数的插入顺序，别处
-    按字节对拍时看到的是一样的 dict。
-    """
-    cost = {"cny": entry[2], "known": entry[1], "band": entry[3]}
-    if entry[8]:
-        cost["source"] = "builtin"
-        cost["source_at"] = None
-        cost["backfilled"] = False
-        cost["disabled"] = True
-        return cost
-    cost["rates"] = entry[4]
-    cost["source"] = entry[5]
-    cost["source_at"] = entry[6]
-    cost["backfilled"] = entry[7]
-    return cost
 
 
 #: 价格估算体系已下线（2026-10-22）：这个网关只按码道积分记账，不再折算
@@ -5923,7 +5883,6 @@ def _both(tasks_fn, summary_fn, account):
         tasks_future = pool.submit(tasks_fn, account)
         summary_future = pool.submit(summary_fn, account)
         return tasks_future.result(), summary_future.result()
-
 
 
 PROXY_DISCOVER_HOST = os.environ.get("WB_PROXY_DISCOVER_HOST") or "cli-proxy-mihomo"
@@ -10504,7 +10463,6 @@ def codearts_session_key(headers, payload):
     return None
 
 
-
 class _CodeartsAccountPool:
     """按**账号**分配并发名额，并在账号之间做负载与故障转移。
 
@@ -12631,8 +12589,6 @@ def cleanup_orphan_tool_calls(messages):
     if not changed:
         return messages, False
     return out, True
-
-
 
 
 def drop_truncated_tool_calls(calls):
@@ -14847,34 +14803,14 @@ CUSTOM_TOOL_HINT = (
 
 
 # ---------------------------------------------------------------------------
-# namespace 工具拒绝
+# namespace 工具：只做「展开 + 还原」，没有「直接拒绝」这条分支
 #
-# Codex 会把 MCP server / 外挂工具用 type="namespace" 的形式送出来。实测行为：
-#   反代「接受」namespace 工具 -> app 把 MCP／外挂工具当成不可执行
-#                                -> 每一次呼叫都回 "unsupported call"
-#   反代「拒绝」namespace 工具 -> app 自动 fallback 成 flat function 清单
-#                                -> 全部工具恢复正常
-# （此行为在 Command Code proxy.mjs 的 CC_REJECT_NAMESPACE_TOOLS 实验里有记载，
-#   Agent Router 也是靠直接拒绝这类请求才正常的。）
-#
-# 所以在这里主动回一个格式明确的 400，逼 app 走 fallback。
-# 想还原成「照单全收」就把 REJECT_NAMESPACE_TOOLS 改成 False。
+# 早先试过回一个格式明确的 400 逼 app 退回 flat function 清单（Command Code
+# proxy.mjs 的 CC_REJECT_NAMESPACE_TOOLS 实验里记过这招，Agent Router 也是靠
+# 拒绝这类请求才正常的）。现在正解是网关自己摊平：出程把 namespace 里的函数
+# 展开成普通 function 工具，回程再按 (name, namespace) 还原成客户端的执行器。
+# 那条 400 分支和它的开关一起删了——留着只会让人以为打开它还有用。
 # ---------------------------------------------------------------------------
-
-REJECT_NAMESPACE_TOOLS = False  # 保持关闭：正解是展开+还原 namespace
-
-NAMESPACE_TOOL_MESSAGE = (
-    'Unsupported tool type "namespace": this endpoint only supports flat '
-    '"function" tools. Resend the tools as individual function entries.'
-)
-
-
-def find_namespace_tool(tools):
-    """回传第一个 type=="namespace" 的工具名称，没有就回 None。"""
-    for t in tools or []:
-        if isinstance(t, dict) and str(t.get("type") or "").lower() == "namespace":
-            return str(t.get("name") or t.get("server_label") or "(unnamed)")
-    return None
 
 
 def _is_custom_tool(tool):
@@ -19109,9 +19045,6 @@ class Handler(BaseHTTPRequestHandler):
                 _chat_slots.release()
         finally:
             _release_key_slot(self.key_entry)
-
-    
-
 
 
     # ---- 码道模型：按模型名分流到华为云推理入口 ----

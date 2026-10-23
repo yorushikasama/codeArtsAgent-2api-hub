@@ -621,10 +621,9 @@ def summarize(session, now=None):
 GATEWAY_HOST = "https://opengw.developer.huaweicloud.com"
 GATEWAY_CONFIG_PATH = "/api/v1/gateway/config"
 
-# 出站身份：内核用的就是这两个（OPENCODE_SERVICE_NAME 默认 CodeAgent3.0，
-# tracing 层名 Kernel），照抄以免被网关按客户端特征拦。
+# 出站身份：真正发出去的只有 User-Agent（内核的 OPENCODE_SERVICE_NAME 默认
+# CodeAgent3.0、tracing 层名 Kernel），照抄以免被网关按客户端特征拦。
 GATEWAY_USER_AGENT = "CodeAgent3.0-Kernel"
-GATEWAY_SERVICE_NAME = "w3"
 
 SIGN_ALGORITHM = "SDK-HMAC-SHA256"
 EMPTY_BODY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

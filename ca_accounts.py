@@ -11,7 +11,6 @@ import urllib.parse
 import urllib.request
 import uuid
 from ca_fingerprint import derive_id, generate_request_id, session_id
-import ca_activity
 import ca_atrest
 import ca_identity
 import ca_settings
@@ -185,7 +184,6 @@ ENTERPRISE_USAGE_PATH = "/billing/meter/get-enterprise-user-usage"
 LOGIN_PENDING = 11217
 LOGIN_TTL_SECONDS = 600
 USER_AGENT = REALM_CONFIGS['cn']['chat_ua']
-DEFAULT_UA_VERSION = '5.5.2'
 
 #: 本版本唯一存在的区域。历史上写进账号文件的 intl 等已删区域，读取时统统
 #: 归一到这里——否则老账号会因为「池里找不到 realm=='intl' 的候选」直接消失，
@@ -249,7 +247,6 @@ def normalize_epoch(value):
 #: codebuddy.cn → workbuddy.cn（新版国内客户端的 JWT issuer 就是
 #: https://www.workbuddy.cn/…），三个都得认，少认一个就会把账号判成未识别区域。
 CN_REALM_MARKERS = ("copilot.tencent.com", "codebuddy.cn", "workbuddy.cn")
-REALM_MARKERS = {"cn": CN_REALM_MARKERS}
 
 #: 「限额联动」只覆盖免费模型（用户口径，2026-10-10）：只有这些模型的 6004
 #: 撞线才做「记录 → 跨重启禁用」；付费模型不参与——它们的消耗按积分计费，
@@ -3111,9 +3108,6 @@ def desktop_auth_dirs():
             dirs.append(os.path.join(base, app, "auth"))
     return dirs
 
-def desktop_auth_dir():
-    """First candidate credential directory (kept for older callers)."""
-    return desktop_auth_dirs()[0]
 
 def desktop_credential_candidates():
     out = []

@@ -227,6 +227,14 @@ export OPENAI_API_KEY="你在看板设置中添加并绑定的API_Key"
 
 ### Unreleased
 
+**重构后遗留的死代码清理**
+
+- `ca_proxy`：删掉 `exclusive_realm` + `CN_EXCLUSIVE` 清单（国际版移除后没有任何调用点，模型到出口的映射已恒等于 `CURRENT_REALM`；改那份清单不会影响行为）、namespace「直接拒绝」分支的 `REJECT_NAMESPACE_TOOLS` / `NAMESPACE_TOOL_MESSAGE` / `find_namespace_tool`（正解是展开 + 还原），以及价格体系下线时留下的 `_EMPTY_POLICIES` / `_EMPTY_TIMELINE` / `_cost_from_memo`。
+- `ca_accounts`：`DEFAULT_UA_VERSION`、`REALM_MARKERS`、`desktop_auth_dir`（注释写着「kept for older callers」，但已经没有任何调用方）。
+- `ca_codearts`：`GATEWAY_SERVICE_NAME`——真正发出去的只有 `User-Agent`，留着容易被当成出站头在用。
+- 口径：每个名字都先在 `.py` / `.js` / `.html` / `.md` / `.sh` 全仓搜过「零引用」，再删；`ca_proxy` 现在没有零引用的模块级定义。**保留**了 `poll_ticket` + `TICKET_*` 这一簇（旧的 ticket 登录通道是成组的历史资料，拆一半比留着更糟），也保留了 claim 家族里暂时没接线的 `enable_benefit_claim`。
+- 顺带把这个文件里 5 处「三空行 / 只含空白的行」统一成两个空行。
+
 **协议层 golden：帧序列逐字节钉死**
 
 - 新增 `tests/_test_protocol_golden.py`（套件 133）：把 Anthropic Messages 与 Responses 各 6~7 个场景的**完整帧序列**存成 `tests/golden/*.json`，改完代码一 diff 就知道哪一帧变了。录制时把 `new_id` 与 `time` 打桩，所以能逐字节比。
