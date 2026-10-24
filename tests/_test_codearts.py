@@ -1428,6 +1428,16 @@ def _run_with(payload):
         P.record_usage = saved_rec
 
 
+# 模型名归一：大写变体进、上游真名出（统计/限额/降级链共用同一个桶）
+_seen.clear()
+_run_with({"model": "GLM-5.3", "max_tokens": 100})
+check("客户端写 GLM-5.3，打到上游与用量记录的都是 glm-5.3",
+      _seen.get("model") == "glm-5.3", _seen.get("model"))
+_seen.clear()
+_run_with({"model": "totally-unknown-model"})
+check("认不出的模型名原样放行（不编近似名）",
+      _seen.get("model") == "totally-unknown-model", _seen.get("model"))
+
 check("开思考的请求，extra 传到上游",
       _run_with({"thinking": {"type": "enabled", "budget_tokens": 4096}})
       == {"thinking": {"type": "enabled", "budget_tokens": 4096},

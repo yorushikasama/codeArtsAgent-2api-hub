@@ -9142,6 +9142,10 @@ class Handler(BaseHTTPRequestHandler):
         """
         fail = error_factory or self._error
         model = str(payload.get("model") or "")
+        # 模型名归一（2026-10-25）：客户端大小写混写（GLM-5.3 / glm / glm-5.3）
+        # 曾把统计、限额、降级链分裂成多个桶。这里统一解析成上游真名；
+        # 认不出的原样放行（resolve_model 的既有契约）。
+        model = ca_codearts.resolve_model(model)
         # 角色名归一：OpenAI 的 chat 入口会带 "developer" 角色（Codex CLI 的
         # 系统提示就是这么发的），上游只认 system / user / assistant。
         # WorkBuddy 那条路走 build_upstream_body 时已经归一过一次，码道这条
@@ -9654,6 +9658,10 @@ class Handler(BaseHTTPRequestHandler):
         那就是「半截回答 + 连接凭空消失」。
         """
         model = str(payload.get("model") or "")
+        # 模型名归一（2026-10-25）：客户端大小写混写（GLM-5.3 / glm / glm-5.3）
+        # 曾把统计、限额、降级链分裂成多个桶。这里统一解析成上游真名；
+        # 认不出的原样放行（resolve_model 的既有契约）。
+        model = ca_codearts.resolve_model(model)
         # 角色归一 + 消息修复。修复这一环以前只在 build_upstream_body
         # 里，而码道路径没有调用点 —— 孤立的 tool_call/tool_result、
         # 被拆开的并行批次、deepseek 思考模式缺 reasoning_content 都
@@ -10172,6 +10180,10 @@ class Handler(BaseHTTPRequestHandler):
         # 模型健康降级（chat 入口同一套；就地改 chat_req["model"]）。
         _apply_model_fallback(chat_req)
         model = str(chat_req.get("model") or "")
+        # 模型名归一（2026-10-25）：客户端大小写混写（GLM-5.3 / glm / glm-5.3）
+        # 曾把统计、限额、降级链分裂成多个桶。这里统一解析成上游真名；
+        # 认不出的原样放行（resolve_model 的既有契约）。
+        model = ca_codearts.resolve_model(model)
         # 角色归一 + 消息修复。修复这一环以前只在 build_upstream_body
         # 里，而码道路径没有调用点 —— 孤立的 tool_call/tool_result、
         # 被拆开的并行批次、deepseek 思考模式缺 reasoning_content 都
@@ -10447,6 +10459,10 @@ class Handler(BaseHTTPRequestHandler):
         """Anthropic Messages 协议的码道流式（Claude Code 走这条）。"""
         _apply_model_fallback(chat_req)
         model = str(chat_req.get("model") or "")
+        # 模型名归一（2026-10-25）：客户端大小写混写（GLM-5.3 / glm / glm-5.3）
+        # 曾把统计、限额、降级链分裂成多个桶。这里统一解析成上游真名；
+        # 认不出的原样放行（resolve_model 的既有契约）。
+        model = ca_codearts.resolve_model(model)
         # 角色归一 + 消息修复。修复这一环以前只在 build_upstream_body
         # 里，而码道路径没有调用点 —— 孤立的 tool_call/tool_result、
         # 被拆开的并行批次、deepseek 思考模式缺 reasoning_content 都
