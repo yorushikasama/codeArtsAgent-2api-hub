@@ -512,9 +512,6 @@ _r3.sendall(b"data: after\n\n")
 check("探测之后连接仍然可读（非阻塞 peek 没有毒化 SocketIO）",
       _fp3.read1(100) == b"data: after\n\n", None)
 
-# 拿不到 fp / 不是 BufferedReader → 当作没有缓冲，不抛
-check("fp 为 None 时不抛", C._buffered_bytes(None) == 0, None)
-check("fp 没有 peek 时返回 0", C._buffered_bytes(object()) == 0, None)
 
 for _sock, _f in ((_l, _fp), (_l2, _fp2), (_l3, _fp3)):
     try:

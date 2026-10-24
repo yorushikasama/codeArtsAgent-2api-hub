@@ -69,10 +69,7 @@ import ca_env
 # ---------------------------------------------------------------------------
 
 PORTAL_HOST = "https://codearts.huaweicloud.com/portal"
-SNAP_ENGINE = "https://snap-access.cn-north-4.myhuaweicloud.com/snap-manager"
 IAM_STS = "https://sts.cn-north-4.myhuaweicloud.com"
-IAM_LOGIN = "https://auth.huaweicloud.com/authui/login.html"
-
 CLIENT_ID = "codearts-agent"
 LOGIN_PLUGIN_NAME = "snap_AIIDE"
 PLUGIN_VERSION = "5.4.2"
@@ -857,9 +854,6 @@ BUILTIN_UNROUTABLE = set()
 #: 模型分组。福利（限时福利渠道）已由官方下线，只剩内置一组 —— 留着这个
 #: 常量是因为清单条目、面板与测试都按 ``group`` 字段渲染/断言。
 GROUP_BUILTIN = "builtin"
-MODEL_GROUPS = (GROUP_BUILTIN,)
-
-
 def _model_index():
     """大小写无关的模型名索引：``lower()`` → 上游真名。
 
@@ -2156,7 +2150,6 @@ def apply_stream_idle_timeout(response, seconds):
 #: 挂那么久，默认 180s（ZCode 客户端自己的超时是 4 分钟）。
 QUEUE_ENABLED = ca_env.flag("CODEARTS_QUEUE", True)
 QUEUE_MAX_WAIT = ca_env.number("CODEARTS_QUEUE_MAX_WAIT", 180.0, minimum=1.0)
-QUEUE_MAX_GET_FAILURES = 3
 QUEUE_TRACE_BASE = "/api/v1/concurrency/trace-queues/"
 
 
@@ -2499,16 +2492,6 @@ def _peek_bytes(fp):
         return b""
     except Exception:
         return b""
-
-
-def _buffered_bytes(fp):
-    """``BufferedReader`` 里已经收到、还没交付给调用方的字节数。
-
-    保留给测试与调用方做体积统计；**判断「能不能立刻读出来」请用
-    ``_buffered_payload``** —— 字节非零不代表 read1 不会阻塞（chunked 的分帧
-    字节就是一例）。
-    """
-    return len(_peek_bytes(fp))
 
 
 def _chunk_payload_ready(data, chunk_left):

@@ -53,6 +53,15 @@ def _ref_pct(values, q):
     idx = int(round((q / 100.0) * (len(ordered) - 1)))
     return ordered[max(0, min(len(ordered) - 1, idx))]
 
+
+def _ref_pct_nearest(values, q):
+    """最近秩百分位（ca_proxy._pct 退役后测试自带参照，与 _ref_pct 同式）。"""
+    if not values:
+        return None
+    ordered = sorted(values)
+    idx = int(round((q / 100.0) * (len(ordered) - 1)))
+    return ordered[max(0, min(len(ordered) - 1, idx))]
+
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
 P.POOL = None                     # 归属只走行自己的字段/模型前缀，可确定
 P.CURRENT_REALM = "intl"
@@ -217,7 +226,7 @@ def ref_perf_stats(sample=5000, realm=None, since=None, until=None):
             "avg": round(sum(vals) / len(vals), 1),
             "p50": _ref_pct(vals, 50),
             "p90": _ref_pct(vals, 90),
-            "p99": P._pct(vals, 99),
+            "p99": _ref_pct_nearest(vals, 99),
             "max": max(vals),
             "samples": len(vals),
         }

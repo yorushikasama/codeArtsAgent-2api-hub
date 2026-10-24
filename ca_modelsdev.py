@@ -21,7 +21,6 @@ import urllib.request
 MODELSDEV_URL = "https://models.dev/api.json"
 MODELSDEV_TIMEOUT = 5
 MODELSDEV_FETCH_COOLDOWN = 300        # 5 min process-wide throttle
-MODELSDEV_NEGATIVE_TTL = 24 * 3600    # per-model negative cache
 MODELSDEV_MAX_BODY = 32 * 1024 * 1024
 MODELSDEV_VALUE_MAX = 10 ** 9
 DEFAULT_CONTEXT = 1000000

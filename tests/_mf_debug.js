@@ -1,0 +1,155 @@
+/* Drive the dashboard's matrix filter logic in Node.
+ *
+ * The filter state lives inside the page script's own scope, so the harness
+ * reaches it through accessors defined in that same scope rather than by
+ * poking globals. The dashboard itself is loaded from the file next to this
+ * test, so the assertions run against the shipped code, not a copy of it.
+ *
+ * Requires node (no other dependency); the rest of the suite is Python only.
+ *
+ *   node _test_matrix_filters.js
+ */
+const {dashboardScript} = require('./_dashboard_source.js');
+const code = dashboardScript();
+
+// One shared fake DOM for every dashboard suite: tests/_dom_stub.js.
+const dom = require('./_dom_stub.js');
+dom.installDom({
+  fetch: () => Promise.resolve({ ok:true, status:200, json: () => Promise.resolve({}) }),
+});
+
+var api;
+try {
+  api = new Function(code + `
+    ; return {
+        renderPerfMatrix,
+        fillMatrixFilters,
+        setFilters: (a, m) => { matrixAcctFilter = a; matrixModelFilter = m; },
+        getFilters: () => [matrixAcctFilter, matrixModelFilter],
+      };`)();
+} catch (e) {
+  console.log('LOAD ERROR:', e.message);
+  process.exit(1);
+}
+
+const S = (n) => ({ avg: n, p50: n, samples: 1 });
+const S3 = (n) => ({ avg: n, p50: n, samples: 3 });
+const dsRow = (req, tot, p, c) => ({ requests: req, total_tokens: tot, prompt_tokens: p, completion_tokens: c, reasoning_tokens: 0, cached_tokens: 0 });
+const usage = {
+  requests: 4, total_tokens: 8300, prompt_tokens: 6600, completion_tokens: 1700, reasoning_tokens: 0,
+  by_model: {
+    'deepseek-v4.1-flash': dsRow(3, 5800, 4600, 1200),
+    'glm-5.3':            dsRow(1, 2500, 2000, 500),
+  },
+  by_model_realm: {
+    'deepseek-v4.1-flash': { intl: dsRow(3, 5800, 4600, 1200) },
+    'glm-5.3':            { intl: dsRow(1, 2500, 2000, 500) },
+  },
+  by_model_acct: {
+    'deepseek-v4.1-flash': { intl: { 'acct-A': dsRow(3, 5800, 4600, 1200) } },
+    'glm-5.3':            { intl: { 'acct-B': dsRow(1, 2500, 2000, 500) } },
+  },
+  accounts_map: { 'acct-A': { nickname: 'Hades', realm: 'intl' }, 'acct-B': { nickname: 'lenguedogahz', realm: 'intl' } },
+};
+const perf = {
+  errors: 0, ttft_ms: S(400), tokens_per_sec: S(100), wall_ms: S(1200), cache_hit_pct: { avg: 0, samples: 0 },
+  by_model: {
+    'deepseek-v4.1-flash': { errors: 0, ttft_ms: S3(400), tokens_per_sec: S3(100), wall_ms: S3(1200), cache_hit_pct: { avg: 0, samples: 0 } },
+    'glm-5.3':            { errors: 0, ttft_ms: S(900),  tokens_per_sec: S(50),  wall_ms: S(3000),  cache_hit_pct: { avg: 0, samples: 0 } },
+  },
+  by_model_realm: {
+    'deepseek-v4.1-flash': { intl: { errors: 0, ttft_ms: S3(400), tokens_per_sec: S3(100), wall_ms: S3(1200), cache_hit_pct: { avg: 0, samples: 0 } } },
+    'glm-5.3':            { intl: { errors: 0, ttft_ms: S(900),  tokens_per_sec: S(50),  wall_ms: S(3000),  cache_hit_pct: { avg: 0, samples: 0 } } },
+  },
+  by_model_acct: {},
+};
+
+/* Read a cell out of the matrix's summary row - the row that carries the
+ * summary label. Anchoring on that row is what keeps the numbers honest: every
+ * data row carries a 总 Token cell of its own, so a cell found anywhere else in
+ * the table must not be able to answer for the summary (issue #58). A cell's
+ * inner markup is presentation, not contract - <b> vs <strong>, how an inline
+ * style is spelled or ordered, an extra attribute on the <td> - so only the
+ * cell's visible text is compared.
+ *
+ * The label stays a grouped alternation: ungrouped, a trailing pattern would
+ * bind to the second branch only, the trap the old summaryReq() called out. */
+const SUMMARY_LABEL = /(?:筛选结果合计|全部模型合计)/;
+function summaryRow(out) {
+  const label = SUMMARY_LABEL.exec(out);
+  if (!label) return null;
+  const start = out.lastIndexOf('<tr', label.index);
+  const end = out.indexOf('</tr>', label.index);
+  return (start < 0 || end < start) ? null : out.slice(start, end);
+}
+function summaryCell(out, label) {
+  const row = summaryRow(out);
+  if (!row) return null;
+  const cell = row.match(new RegExp('<td[^>]*data-label="' + label + '"[^>]*>([\\s\\S]*?)</td>'));
+  return cell ? cell[1].replace(/<[^>]*>/g, '').trim() : null;
+}
+const summaryReq = (out) => summaryCell(out, '请求数');
+const summaryTok = (out) => summaryCell(out, '总 Token');
+let pass = 0, fail = 0;
+const check = (label, cond, extra) => { if (cond) { pass++; console.log('  [PASS] ' + label); } else { fail++; console.log('  [FAIL] ' + label + (extra ? '  ' + extra : '')); } };
+
+console.log('[1] no filter: full totals');
+api.setFilters('', '');
+api.fillMatrixFilters(usage);
+api.renderPerfMatrix(usage, perf);
+let out = document.getElementById('perfMatrix').innerHTML;
+check('summary label is Total, not Filtered', out.includes('全部模型合计'));
+check('summary shows all 4 requests', summaryReq(out) === '4', summaryReq(out));
+check('summary shows all 8,300 tokens', summaryTok(out) === '8,300', summaryTok(out));
+check('both models present', out.includes('deepseek-v4.1-flash') && out.includes('glm-5.3'));
+check('account dropdown lists both accounts',
+      document.getElementById('matrixAcctFilter').innerHTML.includes('acct-A') &&
+      document.getElementById('matrixAcctFilter').innerHTML.includes('acct-B'));
+check('model dropdown lists both models',
+      document.getElementById('matrixModelFilter').innerHTML.includes('glm-5.3'));
+
+console.log();
+console.log('[2] filter by model = glm-5.3');
+api.setFilters('', 'glm-5.3');
+api.renderPerfMatrix(usage, perf);
+out = document.getElementById('perfMatrix').innerHTML;
+check('only glm is rendered', out.includes('glm-5.3') && !out.includes('deepseek-v4.1-flash'));
+check('summary switches to Filtered', out.includes('筛选结果合计'));
+check('summary counts only the filtered row (1)', summaryReq(out) === '1', summaryReq(out));
+check('summary tokens are the filtered row (2,500)', summaryTok(out) === '2,500', summaryTok(out));
+
+console.log();
+console.log('[3] filter by account = acct-A');
+api.setFilters('acct-A', '');
+api.renderPerfMatrix(usage, perf);
+out = document.getElementById('perfMatrix').innerHTML;
+console.log('--- [3] out head:', out.slice(0, 500)); check('glm row (acct-B) is dropped', !out.includes('glm-5.3'));
+check('summary switches to Filtered', out.includes('筛选结果合计'));
+check('summary counts only acct-A rows (3)', summaryReq(out) === '3', summaryReq(out));
+check('summary tokens are acct-A only (5,800)', summaryTok(out) === '5,800', summaryTok(out));
+
+console.log();
+console.log('[4] filter combination that matches nothing');
+api.setFilters('acct-B', 'deepseek-v4.1-flash');
+api.renderPerfMatrix(usage, perf);
+out = document.getElementById('perfMatrix').innerHTML;
+check('empty state shown', out.includes('暂无模型请求'), out.slice(0, 120));
+
+console.log();
+console.log('[5] a stale filter is cleared when the range changes the data');
+api.setFilters('acct-A', 'glm-5.3');
+api.fillMatrixFilters(usage);
+const [a, m] = api.getFilters();
+check('acct-A kept (still present)', a === 'acct-A', a);
+check('glm-5.3 kept (still present)', m === 'glm-5.3', m);
+const todayUsage = JSON.parse(JSON.stringify(usage));
+todayUsage.by_model = { 'deepseek-v4.1-flash': usage.by_model['deepseek-v4.1-flash'] };
+todayUsage.by_model_acct = { 'deepseek-v4.1-flash': usage.by_model_acct['deepseek-v4.1-flash'] };
+api.fillMatrixFilters(todayUsage);
+const [a2, m2] = api.getFilters();
+check('dropped model filter is cleared', m2 === '', m2);
+check('still-valid account filter survives', a2 === 'acct-A', a2);
+
+console.log();
+console.log('PASS=' + pass + ' FAIL=' + fail);
+process.exit(fail ? 1 : 0);

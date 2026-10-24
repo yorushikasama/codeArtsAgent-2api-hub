@@ -528,8 +528,6 @@ print()
 print("== 模型清单（内置）==")
 check("内置目录在 PromptCenter 那台主机上",
       C.BUILTIN_MODELS_PATH == "/v1/model/builtin", C.BUILTIN_MODELS_PATH)
-check("分组只剩内置",
-      C.MODEL_GROUPS == (C.GROUP_BUILTIN,), C.MODEL_GROUPS)
 
 # 这几行曾经两次判错过，都是被**假信号**带偏的：
 #   · 限时福利 4 个全 404/429 → 被判「不在推理入口注册」，其实是限流不是不支持

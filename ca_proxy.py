@@ -1156,15 +1156,6 @@ def record_error(model, status, message, elapsed_ms=None, account=None,
     log(f"request error: model={model}{dur}{acc_tag} status={status} outcome={outcome} msg={str(message)[:180]}",
         level="ERROR", tag="chat")
     return row
-def _pct(values, q):
-    """Nearest-rank percentile (no interpolation) - good enough for latency."""
-    if not values:
-        return None
-    ordered = sorted(values)
-    idx = int(round((q / 100.0) * (len(ordered) - 1)))
-    return ordered[max(0, min(len(ordered) - 1, idx))]
-
-
 def perf_stats(sample=5000, realm=None, ttl=None, range=None, since=None, until=None):
     """Cached wrapper: parsing thousands of rows is CPU-heavy, and the
     dashboard polls this endpoint every few seconds.
@@ -2519,7 +2510,8 @@ def _compute_usage_analytics_uncached(realm=None, since=None, until=None):
 # 对不上新判定，采纳端直接拒——升级后第一次刷新一次性重折（与 v3→v4 同处置），
 # 之后价表再变只按「用到的价」判废（无关模型的价变动不再重折）。
 # 升级前唯一布局的版本号：v3 单文件。只出现在只读回退路径上。
-# 五类状态的固定集合（文件名、kind 标签与写盘循环都用它）。
+# 五类状态的固定集合。测试枚举五份缓存文件时以它为唯一契约源（40 处引用
+# 都在测试里）；写盘循环各自按字面量写，别处新增 kind 记得同步这里。
 _USAGE_CACHE_KINDS = ("snapshot", "by_account", "analytics", "series",
                       "remaining")
 
@@ -2843,65 +2835,6 @@ def apply_log_db_settings():
 #: "lite" backs internal helpers (title generation, compaction) and upstream
 #: rejects it with 11102; the codewise/completion entries are text-completion
 #: or IDE-inline models, not chat models.
-# Exclude WorkBuddy virtual aliases / quick presets
-VIRTUAL_ALIAS_MODELS = {
-    "default-model",
-    "fast-model",
-    "balanced-model",
-    "primary-model",
-    "deep-model",
-    # The domestic exit's auto-router entry: the picker shows it, but it is
-    # not a model a client can pin, so it stays out of the advertised list.
-    "auto",
-}
-NON_CHAT_MODELS = {"lite"} | VIRTUAL_ALIAS_MODELS
-NON_CHAT_PREFIXES = ("codewise-", "completion-")
-NON_CHAT_SUFFIXES = ("-image-alpha", "-image-alpha-edit", "-taco-completion")
-def is_chat_model(mid):
-    if not mid:
-        return False
-    if mid in NON_CHAT_MODELS:
-        return False
-    if mid.startswith(NON_CHAT_PREFIXES):
-        return False
-    if mid.endswith(NON_CHAT_SUFFIXES):
-        return False
-    return True
-CN_UI_ORDER = [
-    "hy4-preview-f",
-    "hy3",
-    "deepseek-v4.1-flash",
-    "glm-5.3",
-    "glm-5.3-flash",
-    "glm-5.2",
-    "glm-5.1",
-    "glm-5v-turbo",
-    "minimax-m3",
-    "kimi-k3-1",
-    "kimi-k2.8-preview",
-    "kimi-k2.7",
-    "kimi-k2.6",
-    "deepseek-v4-pro",
-]
-def merge_reasoning(base, live):
-    """Field-level merge of one model's reasoning block.
-
-    The live catalogue is the source of truth, but it does not always restate
-    every field: the desktop endpoint sometimes gives a bare `effort` where the
-    bundled table knows the level is selectable. A top-level update would drop
-    `supportedEfforts`, and an `effort` without it reads as a pin - the model
-    then looks unselectable in /v1/models and every request to it is reported at
-    the wrong level. So the two blocks are merged field by field, and a block
-    that ends up with `supportedEfforts` is selectable: its `effort` is the
-    default restated, not a pin.
-    """
-    out = dict(base) if isinstance(base, dict) else {}
-    if isinstance(live, dict):
-        out.update(live)
-    if out.get("supportedEfforts") and out.get("effort"):
-        out.setdefault("defaultEffort", out["effort"])
-        out.pop("effort", None)
-    return out
 def catalog_meta(realm=None):
     """The provenance of the last list built for a realm, for the panel.
 
@@ -4636,8 +4569,6 @@ def _codearts_choice_count_error(payload):
 
 _CODEARTS_CATALOG = {"at": 0.0, "models": [], "errors": {}}
 _CODEARTS_CATALOG_TTL = 300.0
-_CODEARTS_RR = {"next": 0}
-
 def codearts_catalog(force=False):
     """码道模型目录（内存缓存 5 分钟）。没有账号时返回空，不抛。"""
     now = time.time()

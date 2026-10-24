@@ -73,10 +73,6 @@ import urllib.request
 WEB_SEARCH_NAME = "web_search"
 WEB_FETCH_NAME = "web_fetch"
 
-# 客户端会用这几种 type 宣告同一个工具
-SEARCH_DECL_TYPES = ("web_search", "web_search_preview", "web_search_preview_2025_03_11")
-FETCH_DECL_TYPES = ("web_fetch",)
-
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -957,17 +953,6 @@ def url_arg(args):
         return ""
     return str(raw or "").strip()
 
-
-def max_rounds():
-    """最多代跑几轮网路工具。环境变数可覆盖，方便临时关小。"""
-    try:
-        n = int(os.environ.get("WB_MAX_WEB_ROUNDS", "") or "")
-    except (TypeError, ValueError):
-        n = 0
-    return min(8, n) if n > 0 else 3
-
-
-MAX_WEB_ROUNDS = max_rounds()
 
 # ---------------------------------------------------------------------------
 # 对外动作：search / fetch（execute 永不抛例外，永远回一句能喂回模型的字串）

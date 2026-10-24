@@ -58,12 +58,6 @@ def _bind__line_outside_window(*a, **k):
 def _bind__line_outside_window_bytes(*a, **k):
     return _BINDINGS['_line_outside_window_bytes'](*a, **k)
 
-def _bind__recent_backward_page(*a, **k):
-    return _BINDINGS['_recent_backward_page'](*a, **k)
-
-def _bind__recent_index_page(*a, **k):
-    return _BINDINGS['_recent_index_page'](*a, **k)
-
 def _bind__row_cost(*a, **k):
     return _BINDINGS['_row_cost'](*a, **k)
 

@@ -719,8 +719,6 @@ def set_auth_disabled(accounts_dir, disabled):
 # and the pool both read and write a single value per guard.
 LIMIT_KEYS = ("daily_token_limit", "daily_credit_limit",
               "model_daily_token_limit")
-LIMIT_REALMS = ()
-LIMIT_SCOPES = ("global",)
 LIMITS_KEY = "limits"
 LIMIT_DEFAULTS = {}
 
@@ -808,11 +806,6 @@ def limits_data(accounts_dir):
         return limits
 
 
-def limits_snapshot(accounts_dir):
-    """The panel's view of every guard, keyed by limit then by scope."""
-    return limits_data(accounts_dir)
-
-
 def limit_value(accounts_dir, key, realm=None):
     """One guard's global value.
 
@@ -845,26 +838,6 @@ def limit_values(accounts_dir, key):
     return limit_values_many(accounts_dir, (key,))[key]
 
 
-def set_limit(accounts_dir, key, scope, value):
-    """Persist one guard at the global scope. Returns the stored entry."""
-    if key not in LIMIT_KEYS:
-        raise ValueError("unknown limit: %s" % key)
-    if scope not in LIMIT_SCOPES:
-        raise ValueError("unknown scope: %s" % scope)
-    with _lock:
-        data = load(accounts_dir)
-        raw = data.get(LIMITS_KEY)
-        if isinstance(raw, dict):
-            limits = _normalize_limits(raw)
-        else:
-            _changed, limits = _fold_legacy_limits(data)
-        entry = limits[key]
-        entry["global"] = _coerce_global(value)
-        data[LIMITS_KEY] = limits
-        save(accounts_dir, data)
-    return entry
-
-
 def daily_token_limit(accounts_dir, realm=None):
     """Global daily guard: an account that already burned this many tokens
     today stays idle until local midnight.
@@ -873,11 +846,6 @@ def daily_token_limit(accounts_dir, realm=None):
     behaving exactly as before.
     """
     return limit_value(accounts_dir, "daily_token_limit", realm)
-
-
-def set_daily_token_limit(accounts_dir, value):
-    """Persist the daily token threshold. Returns the stored value."""
-    return set_limit(accounts_dir, "daily_token_limit", "global", value)["global"]
 
 
 def daily_credit_limit(accounts_dir, realm=None):
@@ -892,11 +860,6 @@ def daily_credit_limit(accounts_dir, realm=None):
     return limit_value(accounts_dir, "daily_credit_limit", realm)
 
 
-def set_daily_credit_limit(accounts_dir, value):
-    """Persist the daily credit threshold. Returns the stored value."""
-    return set_limit(accounts_dir, "daily_credit_limit", "global", value)["global"]
-
-
 def model_daily_token_limit(accounts_dir, realm=None):
     """Per-model daily guard: an account that already burned this many
     tokens today on ONE model stops being handed out for that model until
@@ -906,11 +869,6 @@ def model_daily_token_limit(accounts_dir, realm=None):
     behaving exactly as before.
     """
     return limit_value(accounts_dir, "model_daily_token_limit", realm)
-
-
-def set_model_daily_token_limit(accounts_dir, value):
-    """Persist the per-model daily token threshold. Returns the stored value."""
-    return set_limit(accounts_dir, "model_daily_token_limit", "global", value)["global"]
 
 
 def section_max_height(accounts_dir):
