@@ -1998,7 +1998,12 @@ PRICING = None
 CODEARTS_LOGIN = None
 # Release discovery only - the checker never downloads or installs anything.
 UPDATES = None
-ACCOUNTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'accounts')
+#: 账号档案目录。默认是仓库里的 accounts/；测试沙箱（tests/run_all.py）用
+#: ``WB_PROXY_ACCOUNTS_DIR`` 把它指到临时目录，避免套件把 stub 假数据写进
+#: 真实账号 / 用量库（2026-10-25：生产机上跑套件曾写入 8 条假用量行）。
+#: 命令行 --accounts-dir 仍然优先（见 main()）。
+ACCOUNTS_DIR = os.environ.get("WB_PROXY_ACCOUNTS_DIR") \
+    or os.path.join(os.path.dirname(os.path.abspath(__file__)), 'accounts')
 def realm_state_file():
     """Path of the persisted realm switch.
 
@@ -3749,6 +3754,52 @@ class _CodeartsAccountPool:
 
 
 _CODEARTS_POOL = _CodeartsAccountPool()
+
+
+def _codearts_welcome_claim_sync(account_id):
+    """补签的主体（同步）：找到该账号的会话，把当天积分签上。"""
+    if not account_id:
+        return
+    try:
+        for session in ca_codearts.load_sessions(ACCOUNTS_DIR):
+            acct = session.get("account") or {}
+            if acct.get("id") != account_id:
+                continue
+            label = acct.get("label") or account_id
+            try:
+                res = ca_codearts.welfare_claim_daily(
+                    session.get("accessKey"), session.get("secretKey"),
+                    session.get("securitytoken"))
+                msg = ("已签到 +%s 积分" % res.get("amount")) \
+                    if not res.get("already") \
+                    else ("今日已签到（%s 积分）" % (res.get("amount") or "?"))
+                log("welcome    : [%s] %s" % (label, msg))
+                ca_activity.record(account_id, label, "cn",
+                                   ca_activity.TASK_CHECKIN,
+                                   "login", True, msg, usage_dir=USAGE_DIR)
+            except Exception as exc:              # noqa: BLE001 —— 补签失败不碍事
+                log("welcome    : [%s] 签到失败: %s" % (label, exc),
+                    level="WARN")
+                ca_activity.record(account_id, label, "cn",
+                                   ca_activity.TASK_CHECKIN,
+                                   "login", False, str(exc)[:120],
+                                   usage_dir=USAGE_DIR)
+            return
+    except Exception as exc:                      # noqa: BLE001
+        log("welcome claim failed for %s: %s" % (account_id, exc),
+            level="WARN")
+
+
+def _codearts_welcome_claim(account_id):
+    """新账号入池时顺手把当天的积分签上（异步，不拖慢登录响应）。
+
+    签到调度器每天只在 00:05 跑一次，之后新加的账号要等到次日才会被自动
+    签到（2026-10-25 实测：05:36 加入的号当天空窗，全靠手动补）。失败不
+    影响登录结果——积分明天照样有。主体在 _welcome_claim_sync，测试同步打它。
+    """
+    threading.Thread(
+        target=_codearts_welcome_claim_sync,
+        args=(account_id,), name="codearts-welcome-claim", daemon=True).start()
 
 
 def codearts_clear_cooldown_for(label_or_id):
@@ -8321,7 +8372,8 @@ class Handler(BaseHTTPRequestHandler):
         code = (query.get("code") or [""])[0]
         secret = (query.get("secret") or [""])[0]
         redirect_to = (query.get("redirect") or [""])[0]
-        kind, detail = CODEARTS_LOGIN.accept_callback(code=code, secret=secret)
+        kind, detail = CODEARTS_LOGIN.accept_callback(
+            code=code, secret=secret, state=(query.get("state") or [""])[0])
         if kind == "redirect":
             # old_login 的中间一跳：必须把浏览器继续放行，否则流程走不到 code
             if not self._codearts_redirect_ok(redirect_to):
@@ -8338,6 +8390,7 @@ class Handler(BaseHTTPRequestHandler):
             # 说明写的是「容量满」，用户完全看不出真因。按账号 id 清即可
             # （新会话文件的 id 与旧的一致）。
             codearts_clear_cooldown_for(detail)
+            _codearts_welcome_claim(detail)
             return self._codearts_html(200, ca_codearts.callback_page(
                 True, "登录成功", "华为云账号 %s 已加入网关" % (detail or "")))
         return self._codearts_html(400, ca_codearts.callback_page(
@@ -8503,9 +8556,11 @@ class Handler(BaseHTTPRequestHandler):
         params = urllib.parse.parse_qs(qs, keep_blank_values=True)
         code = (params.get("code") or [""])[0].strip()
         secret = (params.get("secret") or [""])[0].strip()
+        state = (params.get("state") or [""])[0].strip()
         if not code and not secret:
             return self._error(400, "回调链接里没有 code / secret 参数")
-        kind, detail = CODEARTS_LOGIN.accept_callback(code=code, secret=secret)
+        kind, detail = CODEARTS_LOGIN.accept_callback(code=code, secret=secret,
+                                                      state=state)
         if kind == "redirect":
             redirect_to = (params.get("redirect") or [""])[0]
             if not self._codearts_redirect_ok(redirect_to):
@@ -8515,6 +8570,7 @@ class Handler(BaseHTTPRequestHandler):
                                     "msg": "请打开下面的链接继续授权，完成后把新的回调 URL 再粘贴回来"})
         if kind == "ok":
             codearts_clear_cooldown_for(detail)
+            _codearts_welcome_claim(detail)
             return self._json(200, {"ok": True, "status": "ok",
                                     "msg": "华为云账号 %s 已加入网关" % (detail or "")})
         return self._error(400, "登录失败：%s" % (detail or "未知错误"))

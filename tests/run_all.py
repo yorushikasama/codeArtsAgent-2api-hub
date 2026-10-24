@@ -246,6 +246,28 @@ def main(argv):
         pass
     have_node = shutil.which("node") is not None
 
+    # Sandbox the suites' data dirs (2026-10-25): suites that exercise the
+    # gateway with default paths used to write stub usage rows and test
+    # settings into the *real* accounts/ and usage/ of whatever checkout they
+    # ran in - on the production box that polluted live usage stats. A shared
+    # per-run tempdir (static catalog files copied in, sessions/settings not)
+    # keeps suites off real data. Opt out with WB_TEST_NO_SANDBOX=1.
+    if not os.environ.get("WB_TEST_NO_SANDBOX"):
+        sandbox = os.path.join(tempfile.gettempdir(),
+                               "codearts-hub-test-%d" % os.getpid())
+        acc = os.path.join(sandbox, "accounts")
+        usg = os.path.join(sandbox, "usage")
+        os.makedirs(acc, exist_ok=True)
+        os.makedirs(usg, exist_ok=True)
+        for name in ("model.json", "model_aliases.json", "README.txt"):
+            src = os.path.join(ROOT, "accounts", name)
+            if os.path.isfile(src):
+                shutil.copy2(src, os.path.join(acc, name))
+        env["WB_PROXY_ACCOUNTS_DIR"] = acc
+        env["WB_PROXY_USAGE_DIR"] = usg
+        print("  sandbox: accounts=%s usage=%s (WB_TEST_NO_SANDBOX=1 to disable)"
+              % (acc, usg))
+
     selected = suites(pattern)
     if not selected:
         # A typo in the filter, or every suite deleted/renamed, would otherwise

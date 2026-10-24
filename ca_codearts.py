@@ -3198,14 +3198,22 @@ class LoginManager:
                 return None
             return max(live, key=lambda r: r["created"])
 
-    def accept_callback(self, code=None, secret=None):
+    def accept_callback(self, code=None, secret=None, state=None):
         """浏览器回跳时调用。返回 (kind, detail)。
 
         kind: 'redirect' 需要把浏览器继续 307 送走；'ok' / 'error' 直接渲染页面。
+
+        ``state``（2026-10-25）：回调 URL 里带着授权时发的 ticket，比对一下。
+        以前只按「唯一 pending」定位，一个陈旧标签页里复制来的旧回调会把
+        当前登录的 PKCE 对顶掉，换 token 阶段才炸出一个费解的错——比对后
+        直接给「这条回调属于另一次登录」。空值（老链路没带）跳过比对。
         """
         record = self._current()
         if record is None:
             return ("error", "没有正在等待的登录请求（可能已超时，或链接是旧的）")
+        if state and state != record["state"]:
+            return ("error", "state 不匹配：这条回调属于另一次登录（当前等待的是 %s…）"
+                    % record["state"][:8])
         if secret and not code:
             # old_login 的第一步：先记下 secret，把浏览器放行去继续走流程
             with self._lock:

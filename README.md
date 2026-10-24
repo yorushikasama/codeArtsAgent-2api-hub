@@ -126,6 +126,10 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
   看板是唯一的凭据来源：只要看板配置过 Key，`--api-key` / `.credentials` 一律忽略；
 - **模型名称**：填 `/v1/models` 里列出的任意模型 ID（如 `glm-5.3`、`deepseek-v4.1-flash`）。
 
+**尽量用流式**：glm-5.3 一类的思考模型单次生成常达数分钟（思考就能写 1-3 万 token），
+非流式请求要等全部生成完才返回，客户端读超时低于 5 分钟基本必超时——官方客户端全程流式
+就是这个原因。能开 `stream: true` 就开。
+
 **OpenAI 兼容客户端（Chat Completions）**
 
 ```bash

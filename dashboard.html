@@ -1814,6 +1814,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '用于打开本看板。默认密码为': 'Used to open this dashboard. The default password is',
     '用量 ≥80%': 'usage ≥80%',
     '用量占比': 'Usage share',
+    '思考占比': 'Thinking share',
     '用量日志目录': 'Usage log directory',
     '由网关代跑': 'run by the gateway',
     '由账号UID稳定派生的专属设备码，防多号关联风控': 'a device code derived stably from the account UID, to avoid multi-account risk control',
@@ -2235,6 +2236,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     "加载中...": "載入中...",
     "可用账号池": "可用帳號池",
     "各账号用量透视与模型消耗分布": "各帳號用量透視與模型消耗分佈",
+    "思考占比": "思考佔比",
     "同一批请求按调用方使用的 API Key 再分一次组，用于把消耗归属到人 / 项目": "同一批請求按呼叫方使用的 API Key 再分一次組，用於把消耗歸屬到人 / 專案",
     "同步完成（上游未返回昵称）": "同步完成（上游未返回暱稱）",
     "后台定时调度器:": "後臺定時排程器:",
@@ -8673,6 +8675,7 @@ function renderPerfMatrix(usage, perf){
           : '<span style="color:var(--dim)">0</span>') + '</td>'
       + '<td data-label="总 Token"><b style="color:var(--accent)">' + fmt(sumTok) + '</b></td>'
       + '<td class="triple" data-label="输入 / 输出 / 思考">' + tripleTokens(sumP, sumC, sumR) + '</td>'
+      + '<td data-label="思考占比">' + (sumC > 0 ? pctThink(sumR, sumC) : '<span style="color:var(--dim)">—</span>') + '</td>'
       + '<td data-label="首字延迟">' + totTtft + '</td>'
       + '<td data-label="生成速度"><b style="color:var(--accent2)">' + totTps + '</b></td>'
       + '<td data-label="端到端耗时">' + totWall + '</td>'
@@ -8733,6 +8736,7 @@ function renderPerfMatrix(usage, perf){
         + '<td data-label="失败">' + errCell + '</td>'
         + '<td data-label="总 Token"><b>' + fmt(m.total_tokens) + '</b></td>'
         + '<td class="triple" data-label="输入 / 输出 / 思考">' + tripleTokens(m.prompt_tokens, m.completion_tokens, m.reasoning_tokens) + '</td>'
+        + '<td data-label="思考占比">' + ((m.completion_tokens || 0) > 0 ? pctThink(m.reasoning_tokens || 0, m.completion_tokens) : '<span style="color:var(--dim)">—</span>') + '</td>'
         + '<td data-label="首字延迟">' + m_ttft + '</td>'
         + '<td data-label="生成速度">' + m_tps + '</td>'
         + '<td data-label="端到端耗时">' + m_wall + '</td>'
@@ -8754,6 +8758,7 @@ function renderPerfMatrix(usage, perf){
       + '<th style="text-align:left">模型名称</th>'
       + '<th style="text-align:left">账号</th>'
       + '<th>请求数</th><th>失败</th><th>总 Token</th><th style="min-width:190px">输入 / 输出 / 思考</th>'
+      + '<th title="思考 token 占输出 token 的比例——越高说明这个模型越「先想后说」，直接拉高延迟与积分（思考型模型长任务实测可过七成）">思考占比</th>'
       + '<th>首字延迟 (TTFT)</th><th>生成速度</th><th>端到端耗时</th><th>缓存命中率</th><th>用量占比</th>'
       + '</tr></thead><tbody>' + summaryRow + rows + '</tbody></table>';
     applyTableSort('perfMatrix');
@@ -8796,6 +8801,17 @@ function fmtTok(v){
   if(Math.abs(n) >= 1e6) return (n / 1e6).toFixed(1) + 'M';
   if(Math.abs(n) >= 1e3) return (n / 1e3).toFixed(1) + 'K';
   return String(n);
+}
+
+/* 思考占比：reasoning_tokens / completion_tokens（usage 行里思考是输出的一部分）。
+   这个数直接决定延迟与积分——glm-5.3 的长任务实测 71-77% 花在思考上。
+   过半标红，提醒「这个模型先想后说」；否则用思考色。 */
+function pctThink(r, c){
+  const cc = Number(c) || 0;
+  if(cc <= 0) return '—';
+  const v = (Number(r) || 0) / cc * 100;
+  const color = v >= 50 ? 'var(--bad)' : 'var(--think)';
+  return '<span style="color:' + color + '">' + v.toFixed(1) + '%</span>';
 }
 
 // 上一轮真正画进 DOM 的载荷指纹（同 refreshInner 里的 recentFp 那套）。

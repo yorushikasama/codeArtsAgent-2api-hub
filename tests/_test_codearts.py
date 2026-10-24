@@ -2113,6 +2113,10 @@ def _sess(aid):
             "expires_at": "2099-01-01T00:00:00.000Z"}
 
 
+# 池的容量来自 codearts_concurrency()（面板值 > 环境变量 > 默认 2）。在面板
+# 改过并发的机器上（生产服务器是 3）这套断言会全部漂移 —— 钉死成 2 再测。
+_saved_cap_fn = P.codearts_concurrency
+P.codearts_concurrency = lambda: 2
 _pool = P._CodeartsAccountPool()
 _pool._usable = lambda: [_sess("a"), _sess("b")]
 _got = [_pool.acquire(0)[1] for _ in range(4)]
@@ -2154,6 +2158,7 @@ _pool4.penalize("b", 60)
 _pick4, _pk4 = _pool4.acquire(2.0)
 check("预算够长时等到解冻再用（不饿死）", _pk4 == "a", _pk4)
 _pool4.release(_pk4)
+P.codearts_concurrency = _saved_cap_fn
 
 # 故障转移：A 号报「并发会话已满」→ 给 A 打冷却、立刻换 B
 _saved_pool, _saved_open, _saved_hb2 = P._CODEARTS_POOL, C.open_chat, C.heartbeat
@@ -2250,7 +2255,7 @@ class _FakeLogin:
         self.kind, self.detail = kind, detail
         self.calls = []
 
-    def accept_callback(self, code=None, secret=None):
+    def accept_callback(self, code=None, secret=None, state=None):
         self.calls.append((code, secret))
         return (self.kind, self.detail)
 
@@ -2320,6 +2325,50 @@ _sent, _calls, _cleared = _run_cb(
     {"url": "https://x/oauth2/continue?secret=abc&redirect=https://evil.example.com/next"},
     kind="redirect", detail="abc")
 check("redirect 目标不可信时拒绝", _sent[0][0] == "error" and _sent[0][1] == 400, _sent)
+
+print()
+print("[state 比对 / 登录补签 2026-10-25]")
+
+_root3 = tempfile.mkdtemp(prefix="wb-codearts-state-")
+_real_exchange3 = C.exchange_code
+C.exchange_code = _stub_exchange          # 复用第 7 节的桩：换 token 不出网
+try:
+    SEEN["fail"] = None
+    _LM = C.LoginManager(_root3, log=lambda *a, **k: None)
+    _st = _LM.start(9000)["state"]
+    _r1 = _LM.accept_callback(code="c1", state=_st)
+    check("state 匹配时正常走换 token（这里被桩成成功）",
+          _r1[0] == "ok", _r1)
+
+    _LM2 = C.LoginManager(_root3, log=lambda *a, **k: None)
+    _LM2.start(9000)
+    _r2 = _LM2.accept_callback(code="c1", state="wrong-state-xyz")
+    check("state 不匹配直接拒绝，不消耗当前 pending",
+          _r2[0] == "error" and "state 不匹配" in _r2[1], _r2)
+    _r3 = _LM2.accept_callback(code="c3")
+    check("state 为空（老链路）跳过比对",
+          _r3[0] == "ok", _r3)
+finally:
+    SEEN["fail"] = None
+    C.exchange_code = _real_exchange3
+
+# 登录成功 → 顺手补签当天积分（异步外壳下面的同步主体）
+_welcome_hits = []
+_saved_wc, _saved_load = C.welfare_claim_daily, C.load_sessions
+C.welfare_claim_daily = lambda ak, sk, st: _welcome_hits.append((ak, sk, st)) or {
+    "ok": True, "already": False, "amount": 1000}
+C.load_sessions = lambda _d: [{
+    "accessKey": "AK-1", "secretKey": "SK-1", "securitytoken": "ST-1",
+    "account": {"id": "acc-1", "label": "acc-1"}}]
+try:
+    P._codearts_welcome_claim_sync("acc-1")
+    P._codearts_welcome_claim_sync("no-such")
+    P._codearts_welcome_claim_sync("")
+finally:
+    C.welfare_claim_daily, C.load_sessions = _saved_wc, _saved_load
+check("登录补签：按账号 id 找到会话并签了一次",
+      len(_welcome_hits) == 1 and _welcome_hits[0][0] == "AK-1", _welcome_hits)
+check("补签找不到账号 / 空 id 时静默（不抛不签）", len(_welcome_hits) == 1)
 
 print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))

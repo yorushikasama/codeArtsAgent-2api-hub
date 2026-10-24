@@ -205,6 +205,11 @@ def _descendants(root, table=None):
     children = {}
     for pid, parent in table.items():
         children.setdefault(parent, []).append(pid)
+    # 同层兄弟按 pid 排序：/proc 的 readdir 顺序随平台 / 文件系统漂移
+    # （2026-10-25：Linux 实测 [33,22,11]、Windows [22,33,11]），深度优先
+    # 的契约不变，同级顺序定死才可断言。
+    for _lst in children.values():
+        _lst.sort()
     levels, frontier, seen = [], [root], {root}
     while frontier:
         levels.append(frontier)
@@ -214,6 +219,7 @@ def _descendants(root, table=None):
                 if child not in seen:
                     seen.add(child)
                     nxt.append(child)
+        nxt.sort()
         frontier = nxt
     order = []
     for level in reversed(levels):
