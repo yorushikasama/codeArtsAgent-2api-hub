@@ -1501,6 +1501,52 @@ def start_checkin_scheduler():
         % (CHECKIN_AT, CHECKIN_TICK_SECONDS))
 
 
+#: STS 巡检间隔（秒）。续期点由 CODEARTS_REFRESH_MARGIN 决定，巡检只要
+#: 显著小于它即可；无账号时一轮空转只是一次目录读。
+CODEARTS_STS_TICK_SECONDS = ca_env.number("CODEARTS_STS_TICK", 30.0,
+                                          minimum=5.0)
+
+
+def _sts_refresher_once():
+    """巡检一遍所有码道账号，STS 快到期的当场续掉。
+
+    请求路径（``_admit`` / 目录刷新）本来就会兜底续，但那是流量驱动的：
+    没人发请求就没人续，账号可以从过期一直躺到下一波流量才被发现
+    （2026-10-24 实测躺过 41/76 分钟，期间所有请求 502）。这个巡检把
+    续期变成时间驱动：空闲也能续，到期前 margin 秒内必然被刷掉。
+    """
+    try:
+        sessions = ca_codearts.load_sessions(ACCOUNTS_DIR)
+    except Exception as exc:                     # noqa: BLE001 —— 目录坏了别死线程
+        log("sts-refresher: cannot load sessions: %s" % exc, level="WARN")
+        return
+    for sess in sessions:
+        if shutting_down():
+            return
+        try:
+            _ensure_fresh(sess)
+        except Exception:                        # noqa: BLE001 —— 失败原因 _ensure_fresh 已记
+            continue
+
+
+def _sts_refresher_loop():
+    while True:
+        try:
+            if not shutting_down():
+                _sts_refresher_once()
+        except Exception as exc:                 # noqa: BLE001 —— 兜底，别死线程
+            log("sts-refresher: loop error: %r" % (exc,), level="WARN")
+        time.sleep(CODEARTS_STS_TICK_SECONDS)
+
+
+def start_sts_refresher():
+    thread = threading.Thread(target=_sts_refresher_loop, name="codearts-sts",
+                              daemon=True)
+    thread.start()
+    log("sts        : refresher on (tick %.0fs, margin %.0fs)"
+        % (CODEARTS_STS_TICK_SECONDS, CODEARTS_REFRESH_MARGIN))
+
+
 def remaining_usage(ttl=None):
     """Cached payload: the panel polls every 5s, the numbers change far slower.
 
@@ -4485,6 +4531,11 @@ def _codearts_extra(payload, cred=None):
                  ca_codearts.sampling_extra_from(payload)):
         if part:
             merged.update(part)
+    # 官方请求体顶层带 user_prompt（当前用户原话，2026-10-24 kernel 日志
+    # 实证）。镜像官方形状；找不到用户正文（纯 tool_result 回合）就不带。
+    prompt_text = ca_codearts.last_user_prompt_text(payload.get("messages"))
+    if prompt_text:
+        merged["user_prompt"] = prompt_text
     dropped = merged.pop("stop_dropped", 0)
     if dropped:
         log("stop_sequences capped: kept first 4, dropped %d (upstream accepts "
@@ -11004,6 +11055,7 @@ def _bootstrap_runtime(args):
     )
     UPDATES.start()
     start_checkin_scheduler()
+    start_sts_refresher()
     return api_key_generated
 
 def _report_first_run(args):

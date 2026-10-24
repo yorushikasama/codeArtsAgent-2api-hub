@@ -439,8 +439,8 @@ check("负数被当成缺省，不透传给上游",
 check("0 同样按缺省（0 个 token 没有意义）",
       P._codearts_max_tokens({"model": "glm-5.3", "max_tokens": 0})
       == _default7)
-check("正常值原样保留",
-      P._codearts_max_tokens({"model": "glm-5.3", "max_tokens": 1234}) == 1234)
+check("小值也钳到官方 32000（2026-10-24 双向钳：思考吃光小额度 → 空正文）",
+      P._codearts_max_tokens({"model": "glm-5.3", "max_tokens": 1234}) == 32000)
 check("明确的值即便很大也不截顶",
       P._codearts_max_tokens({"model": "glm-5.3", "max_tokens": 32000}) == 32000)
 

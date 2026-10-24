@@ -70,7 +70,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- **96 个套件：73 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- **97 个套件：74 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - `tests/_test_protocol_pure.py` 只 import `ca_protocol`，钉住「协议层不依赖 ca_proxy、不碰 I/O」；
   `tests/_test_protocol_golden.py` 对拍两种流式协议的**逐字节帧序列**（`tests/golden/*.json`）。
 - 仓库不含 CI：测试在本地 / 服务器手工跑（`--jobs 4` 可并行）。
@@ -110,7 +110,7 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
   续期必须用同一把私钥签 proof。私钥随会话存在 `accounts/codearts/<账号ID>.json`，别把该目录同步出去。
 - **refresh_token 是一次性轮换**的：每次续期成功都会换一张新的，旧的立即作废。
   若提示 `STS5.1806`，说明这张被别的客户端用掉了或已过 30 天，只能重新登录。
-- **STS 到期不等于账号失效**：AK/SK 只是几小时的临时凭据，到期前网关自动续（`CODEARTS_REFRESH_MARGIN`，默认 300 秒），不需要重新走浏览器。
+- **STS 到期不等于账号失效**：AK/SK 只是几小时的临时凭据，到期前网关自动续（`CODEARTS_REFRESH_MARGIN`，默认 300 秒；后台巡检线程每 `CODEARTS_STS_TICK`（默认 30 秒）扫一遍，空闲也会续），不需要重新走浏览器。
 
 **每日签到**：网关内置调度器，默认每天 **00:05**（`CODEARTS_CHECKIN_AT` 可调）为所有账号签到领积分；
 当天失败的账号低频补试，签到结果在账号卡片上直接可见。

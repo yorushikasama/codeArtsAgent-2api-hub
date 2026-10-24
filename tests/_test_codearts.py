@@ -1432,13 +1432,14 @@ def _run_with(payload):
 
 check("开思考的请求，extra 传到上游",
       _run_with({"thinking": {"type": "enabled", "budget_tokens": 4096}})
-      == {"thinking": {"type": "enabled", "budget_tokens": 4096}},
+      == {"thinking": {"type": "enabled", "budget_tokens": 4096},
+          "user_prompt": "hi"},
       "extra 没传到 chat_for_model")
 check("关思考的请求不再发给上游（避免 81001）",
-      _run_with({"thinking": {"type": "disabled"}}) is None,
+      _run_with({"thinking": {"type": "disabled"}}) == {"user_prompt": "hi"},
       "disabled 不该被透传")
-check("没要求时 extra 为 None（不改变旧行为）",
-      _run_with({}) is None,
+check("没要求时 extra 只剩官方镜像的 user_prompt（2026-10-24 起）",
+      _run_with({}) == {"user_prompt": "hi"},
       "默认请求不该带 thinking")
 
 
@@ -2197,6 +2198,48 @@ finally:
     P.CODEARTS_BUSY_DELAYS = _saved_delays
     P.record_error = _saved_err
 
+
+print()
+print("[官方形状镜像 2026-10-24] max_tokens 双向钳制 / tool_choice 缺省 / user_prompt")
+
+# 官方 kernel 日志（27 条请求体）：glm-5.3 与 openpangu-2.0-pro 一律
+# max_tokens="32000"。双向钳制：小值（思考吃光额度 → 200 OK 0 正文）和
+# 超大值（拉长上游排队）都钳到官方值；没实证的模型原样放行。
+check("glm-5.3 小值上钳到官方 32000",
+      C.cap_output_tokens("glm-5.3", 800) == 32000,
+      C.cap_output_tokens("glm-5.3", 800))
+check("glm-5.3 超大值下钳到官方 32000",
+      C.cap_output_tokens("glm-5.3", 128000) == 32000)
+check("openpangu-2.0-pro 同值双向钳",
+      C.cap_output_tokens("openpangu-2.0-pro", 100) == 32000)
+check("没实证的模型原样放行",
+      C.cap_output_tokens("kimi-k3", 800) == 800)
+check("非 int 原样放行",
+      C.cap_output_tokens("glm-5.3", "32000") == "32000")
+
+# 官方带 tools 时无条件 tool_choice:"auto"；客户端显式 none 仍尊重。
+_body = C.chat_body("glm-5.3", [], max_tokens=256, tools=_TOOLS)
+check("tools 存在而 tool_choice 缺省时补 auto",
+      _body.get("tool_choice") == "auto", _body)
+_body = C.chat_body("glm-5.3", [], max_tokens=256, tools=_TOOLS,
+                    tool_choice="none")
+check("显式 tool_choice=none 不被覆盖",
+      _body.get("tool_choice") == "none", _body)
+
+# user_prompt：倒着找最近一条有正文的 user 消息；tool_result 回合跳过。
+_MS = [{"role": "user", "content": "第一句"},
+       {"role": "assistant", "content": "好的"},
+       {"role": "user", "content": [{"type": "tool_result", "id": "t1"}]},
+       {"role": "user", "content": [{"type": "text", "text": "最新正问"}]}]
+check("取最近一条有正文的 user 消息",
+      C.last_user_prompt_text(_MS) == "最新正问",
+      C.last_user_prompt_text(_MS))
+check("全是 tool_result 时继续往前找",
+      C.last_user_prompt_text(_MS[:3]) == "第一句")
+check("没有用户正文返回空串", C.last_user_prompt_text([]) == "")
+check("超长正文截到 2000 字符",
+      len(C.last_user_prompt_text(
+          [{"role": "user", "content": "x" * 9999}])) == 2000)
 
 print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))

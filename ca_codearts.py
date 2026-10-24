@@ -808,15 +808,26 @@ BUILTIN_MODEL_LIMITS = {
 #: glm-5.3 每轮都带 ``max_tokens:32000``，而目录能力值是 65536）。客户端要
 #: 更大的值时向下钳：官方的请求形状就是上游调度最顺的形状，「按能力值顶满」
 #: 的请求只会拉长上游排队。只钳有实证的模型，没有的原样放行。
+#: 2026-10-24 再补一条：同一份 kernel 日志 27 条请求体里，openpangu-2.0-pro
+#: 也一律 ``"32000"`` —— 连 50 字的起标题小任务都不例外。
 MODEL_OUTPUT_CAPS = {
     "glm-5.3": 32000,
+    "openpangu-2.0-pro": 32000,
 }
 
 
 def cap_output_tokens(model, max_tokens):
-    """按官方口径向下钳输出上限；没有实证值或没超的模型原样返回。"""
+    """按官方口径把输出上限**双向**钳到固定值；没有实证值的模型原样放行。
+
+    只向下钳不够（2026-10-24 网关实测踩坑）：思考模型的推理和正文共用
+    ``max_tokens`` 额度，客户端发小值（400-6000）时思考能把额度整个吃光
+    —— 上游照常 200，usage 里 completion_tokens 恰好等于 max_tokens，
+    正文一个字没有，客户端还照付思考的积分。官方客户端不存在这类「空
+    回答」，靠的就是**预算恒定**：任何请求（含起标题这种小任务）一律
+    32000，思考随便吃，正文永远有余量。双向钳 = 完整镜像官方形状。
+    """
     cap = MODEL_OUTPUT_CAPS.get(str(model or ""))
-    if not cap or not isinstance(max_tokens, int) or max_tokens <= cap:
+    if not cap or not isinstance(max_tokens, int):
         return max_tokens
     return cap
 
@@ -1902,6 +1913,36 @@ def normalize_tools(tools):
     return out
 
 
+def last_user_prompt_text(messages, limit=2000):
+    """从消息列表倒着找最近一条**有正文**的用户消息，返回其纯文本。
+
+    官方请求体顶层带 ``user_prompt``（当前用户原话，2026-10-24 kernel 日志
+    27 条请求体全部如此，起标题/记忆抽取这类客户端自产请求也不例外）。
+    上游拿它做什么没有公开文档；网关能给的最近似值就是消息里最后一条
+    用户正文 —— tool_result 块不算正文，跳过继续往前找。
+
+    ``limit``：官方未观察到截断，但贴码型 prompt 可能有几十 KB，往一个
+    元数据字段里灌全文不妥，2000 字符封顶。
+    """
+    if not isinstance(messages, list):
+        return ""
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = message.get("content")
+        text = ""
+        if isinstance(content, str):
+            text = content
+        elif isinstance(content, list):
+            text = "".join(
+                str(part.get("text") or "") for part in content
+                if isinstance(part, dict) and part.get("type") == "text")
+        text = text.strip()
+        if text:
+            return text[:limit]
+    return ""
+
+
 def chat_body(model, messages, max_tokens=256, stream=True, extra=None,
               tools=None, tool_choice=None):
     """推理请求体。
@@ -1930,8 +1971,12 @@ def chat_body(model, messages, max_tokens=256, stream=True, extra=None,
         shaped = normalize_tools(tools)
         if shaped:
             body["tools"] = shaped
-            if tool_choice:
-                body["tool_choice"] = tool_choice
+            # 官方带 tools 时无条件发 ``tool_choice:"auto"``（2026-10-24
+            # kernel 日志 27 条请求体全部如此）。客户端显式给了 none /
+            # required / 具名函数时仍尊重客户端，只在缺省时补 auto。
+            if not tool_choice:
+                tool_choice = "auto"
+            body["tool_choice"] = tool_choice
             # 官方对 inferhub 供应商无条件开（chat params 钩子
             # ``u.options.tool_stream = !0``，2026-10-24 kernel 日志实证请求体
             # 里带 ``"tool_stream":true``）：上游据此流式下发工具调用增量。

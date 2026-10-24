@@ -22,7 +22,7 @@
 不联网（第 5 条用本地 socketpair）。
 """
 
-import io
+import io
 import copy
 import json
 import os
@@ -736,8 +736,8 @@ check("glm-5.3 max_tokens 65536 → 32000",
       None)
 check("glm-5.3 缺省（目录值 65536）→ 也钳到 32000",
       P._codearts_max_tokens({"model": "glm-5.3"}) == 32000, None)
-check("低于上限的值不动",
-      P._codearts_max_tokens({"model": "glm-5.3", "max_tokens": 1000}) == 1000,
+check("低于官方值的也上钳到 32000（2026-10-24 官方镜像：预算恒定防思考吃光）",
+      P._codearts_max_tokens({"model": "glm-5.3", "max_tokens": 1000}) == 32000,
       None)
 check("没有实证值的模型不钳（显式值透传）",
       P._codearts_max_tokens({"model": "kimi-k3", "max_tokens": 999999})
