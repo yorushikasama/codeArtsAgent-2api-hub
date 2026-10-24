@@ -3942,6 +3942,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <p class="hint" id="codeartsStatus" style="font-weight:500"></p>
     </div>
     <div class="modal-ft">
+      <button class="sec" id="caClaimAllBtn" onclick="claimCodeartsWelfareAll(this)">一键签到全部账号</button>
       <button class="sec" onclick="loadCodeartsAccounts()">刷新列表</button>
       <button class="sec" onclick="closeCodeartsLogin()">关闭</button>
       <button onclick="restartCodeartsLogin()">重新生成链接</button>
@@ -4292,8 +4293,41 @@ async function claimCodeartsWelfare(btn){
   }
 }
 
-async function refreshCodeartsAccount(btn){
-  const id = btn && btn.getAttribute("data-ca-id");
+/* 一键签到：后端 /welfare/claim 不带 accountId 时本来就循环全部账号，
+   这里补一个入口并汇总结果（新增签到 / 已签过 / 失败各几户）。 */
+async function claimCodeartsWelfareAll(btn){
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "签到中…";
+  try{
+    const r = await postJSON("/accounts/codearts/welfare/claim", {});
+    const results = (r && r.results) || [];
+    if(!results.length){ toast("没有可签到的账号", "bad"); return; }
+    let fresh = 0, already = 0, failed = 0, gained = 0;
+    const fails = [];
+    results.forEach(function(res){
+      if(res.ok){
+        if(res.already){ already += 1; }
+        else{ fresh += 1; gained += Number(res.amount || 0); }
+      }else{
+        failed += 1;
+        fails.push((res.label || res.accountId || "账号") + "：" + caWelfareErrText(res.msg || "未知原因"));
+      }
+    });
+    let msg = "签到完成：" + fresh + " 户新增";
+    if(gained) msg += " +" + fmt(gained) + " 积分";
+    if(already) msg += " · " + already + " 户已签过";
+    if(failed) msg += " · " + failed + " 户失败";
+    toast(msg, failed ? "warn" : "ok");
+    if(fails.length && failed <= 3) console.warn("[claim-all]", fails.join("；"));
+    await loadCodeartsAccounts();
+  }catch(e){
+    toast("一键签到失败：" + caWelfareErrText(e.message), "bad");
+  }finally{
+    btn.disabled = false; btn.textContent = old;
+  }
+}
+
+async function refreshCodeartsAccount(btn){  const id = btn && btn.getAttribute("data-ca-id");
   if(!id) return;
   const old = btn.textContent;
   btn.disabled = true; btn.textContent = "续期中…";
