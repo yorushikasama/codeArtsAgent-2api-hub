@@ -5323,36 +5323,6 @@ def sanitize_text(text):
             text = SANITIZE_KV_RE.sub("", text)
     text = SANITIZE_BARE_HDR_RE.sub("x-anthropic-billing-hdr", text)
     return text.strip()
-def sanitize_content(content):
-    if isinstance(content, str):
-        return sanitize_text(content)
-    if isinstance(content, list):
-        out = []
-        for part in content:
-            if isinstance(part, dict) and part.get("type") == "text" and "text" in part:
-                p = dict(part)
-                p["text"] = sanitize_text(p["text"])
-                out.append(p)
-            else:
-                out.append(part)
-        return out
-    return content
-def sanitize_tool_calls(tool_calls):
-    if not isinstance(tool_calls, list):
-        return tool_calls
-    out = []
-    for tc in tool_calls:
-        if isinstance(tc, dict):
-            item = dict(tc)
-            fn = item.get("function")
-            if isinstance(fn, dict) and isinstance(fn.get("arguments"), str):
-                fn = dict(fn)
-                fn["arguments"] = sanitize_text(fn["arguments"])
-                item["function"] = fn
-            out.append(item)
-        else:
-            out.append(tc)
-    return out
 # ---------------------------------------------------------------------------
 # Tool-call pairing repair
 # ---------------------------------------------------------------------------
@@ -5824,17 +5794,6 @@ def key_model_message(entry, model):
             % (name, asked, allowed))
 
 
-def prompt_mode_config():
-    """Prompt mode settings, fail-open to passthrough on any read error."""
-    try:
-        cfg = ca_settings.prompt_config(ACCOUNTS_DIR)
-    except Exception:
-        cfg = None
-    if not isinstance(cfg, dict):
-        cfg = {"mode": "passthrough", "file": ""}
-    return cfg
-
-
 def repair_messages_for_upstream(messages, model=""):
     """送出前把消息历史修成上游能吃的形状（**码道路径也走这里**）。
 
@@ -5925,12 +5884,6 @@ def model_default_max_output_tokens(model):
         except (TypeError, ValueError):
             pass
     return None
-
-
-def model_default_effort(model):
-    """The effort the catalog applies when the client asks for none, or None."""
-    effort = model_reasoning_meta(model).get("defaultEffort")
-    return effort.strip() if isinstance(effort, str) and effort.strip() else None
 
 
 def gateway_hint(status, message):
