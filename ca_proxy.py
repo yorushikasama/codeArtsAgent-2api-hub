@@ -6966,6 +6966,7 @@ def _validate_settings_patch(payload):
         plan["hidden_pages"] = raw
 
     for group_key, validator in (
+            ("limits", ca_settings.validate_limits_patch),
             ("codearts", ca_settings.validate_codearts_patch),
             ("upstream", ca_settings.validate_upstream_patch),
             ("usage", ca_settings.validate_usage_patch),
@@ -6992,6 +6993,10 @@ def _validate_settings_patch(payload):
 def _apply_settings_patch(handler, plan):
     """把校验过的 plan 写盘。走到这里所有值都已合法。"""
     reply = {}
+    if "limits" in plan:
+        saved = ca_settings.apply_limits_patch(ACCOUNTS_DIR, plan["limits"])
+        reply["limits"] = saved
+
     if "api_keys" in plan:
         cleaned, delete_ids = plan["api_keys"]
         ca_settings.set_api_keys(ACCOUNTS_DIR, cleaned, delete_ids=delete_ids)

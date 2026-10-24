@@ -1646,6 +1646,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '单次尝试等上游返回响应头的上限（秒）。拿到响应头之前网关不会向客户端发出任何字节，所以这个值就是客户端要空等的时长：设得比客户端的首字节预算还大时，客户端会先断开（表现为 499 / 首字节迟迟不返回），而网关仍会按这个上限继续换账号重试。默认 120。': 'How long one attempt may wait for the upstream to send response headers (seconds). Nothing is sent to the client before those headers arrive, so this is exactly how long the client can end up waiting: set it above the client\'s first-byte budget and the client disconnects first (seen as a 499, or a first byte that never comes) while the gateway keeps retrying on the next account under the same limit. Default 120.',
     '调小的代价：上游偶尔确实算得慢的正常请求会被提前判失败、换账号重试，多消耗一次额度。建议不高于客户端的首字节预算。': 'The cost of lowering it: a normal request the upstream genuinely takes a long time to compute is failed early and retried on another account, spending one more unit of quota. Prefer a value no higher than the client\'s first-byte budget.',
     '码道并发与冷却': 'CodeArts concurrency & cooldowns',
+    '每日限额': 'Daily guards',
     '每账号并发（上游给 3 个会话名额，默认 2 留余量）、流式期间的会话续期间隔、以及两种失败后的冷却时长。冷却只是「换个号试试」的偏好，不会拒绝请求。': 'Concurrency per account (the upstream grants 3 sessions; the default 2 leaves headroom), the session keep-alive interval while streaming, and how long an account is cooled down after each kind of failure. A cooldown only steers the next pick to another account; it never rejects a request.',
     '四项都是保存后下一个请求即生效，不用重启；并发调小时已经在跑的请求不会被中断。': 'All four take effect on the next request, no restart needed; lowering concurrency never interrupts requests already running.',
     '并发': 'Concurrency',
@@ -3742,6 +3743,30 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
               TPM 冷却 <input id="setCodeartsTpm" type="number" min="5" max="3600" step="1" style="width:70px"> 秒
             </label>
             <button onclick="saveCodeartsTuning(this)">保存</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">每日限额</h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              当日累计撞线后的护栏：token / 积分限额到了就把该账号晾到本地 0 点（积分限额只拦付费模型，免费模型照常）；
+              模型维度限额只停那个模型。0 = 不限（默认）。多账号时每号各算各的。
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              日 token <input id="setLimitTokens" type="number" min="0" step="1000" style="width:110px">
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              日积分 <input id="setLimitCredits" type="number" min="0" step="100" style="width:90px">
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              单模型日 token <input id="setLimitModelTokens" type="number" min="0" step="1000" style="width:110px">
+            </label>
+            <button onclick="saveLimits(this)">保存</button>
           </div>
         </div>
       </section>
@@ -7114,6 +7139,16 @@ async function loadSettings(showToast){
         headerTimeoutState.style.color = headerTimeoutDefault ? 'var(--dim)' : 'var(--accent2)';
       }
       // 码道可调项：后端总是给全四个值，所以直接填。
+      const limitsInputs = {
+        setLimitTokens: data.daily_token_limit,
+        setLimitCredits: data.daily_credit_limit,
+        setLimitModelTokens: data.model_daily_token_limit,
+      };
+      Object.keys(limitsInputs).forEach(function(id){
+        const el = document.getElementById(id);
+        const v = limitsInputs[id];
+        if(el) el.value = (typeof v === 'number' && v > 0) ? v : 0;
+      });
       const codeartsCfg = data.codearts || {};
       const codeartsInputs = {
         setCodeartsConcurrency: codeartsCfg.concurrency,
@@ -7381,6 +7416,34 @@ async function saveUsageKeep(btn){
    配到 4 以上必然撞 TM.00001041。前端区间必须和后端 CODEARTS_RANGES 一致：
    以前这里写 8，用户设 4 能存进去，后端却按 1~3 校验，于是那个值被当成坏值
    退回上一级（默认 2）—— 存了 4，实际是 2，面板上还显示 4。 */
+async function saveLimits(btn){
+  const fields = [
+    ['setLimitTokens', 'daily_token_limit', '日 token 限额'],
+    ['setLimitCredits', 'daily_credit_limit', '日积分限额'],
+    ['setLimitModelTokens', 'model_daily_token_limit', '单模型日 token 限额'],
+  ];
+  const payload = {};
+  for(const [id, key, label] of fields){
+    const el = document.getElementById(id);
+    const value = Math.floor(Number(el && el.value) || 0);
+    if(!isFinite(value) || value < 0 || value > 1e12){
+      toast(label + ' 需要 0 ~ 10^12 之间的整数（0 = 不限）', 'bad');
+      return;
+    }
+    payload[key] = value;
+  }
+  if(btn) btn.disabled = true;
+  try {
+    await postJSON('/settings/save', {limits: payload});
+    toast('已保存：每日限额（下一个请求即生效）', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'bad');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
 async function saveCodeartsTuning(btn){
   const fields = [
     ['setCodeartsConcurrency', 'concurrency', '并发', 1, 3],

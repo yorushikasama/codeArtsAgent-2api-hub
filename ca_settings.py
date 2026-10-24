@@ -1040,6 +1040,45 @@ def _codearts_env_default(key):
         return None
 
 
+#: 面板可写的每日限额键（global 档）。0 = 不限。
+LIMIT_KEYS = ("daily_token_limit", "daily_credit_limit",
+              "model_daily_token_limit")
+
+
+def validate_limits_patch(raw):
+    """Strict validation for a panel-saved daily-limits patch (global scope)."""
+    out = {}
+    for key, value in (raw or {}).items():
+        if key not in LIMIT_KEYS:
+            raise ValueError("unknown limit setting %r" % key)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError("%s must be an integer" % key)
+        if value < 0 or value > 10 ** 12:
+            raise ValueError("%s must be 0 (off) .. 10^12" % key)
+        out[key] = value
+    return out
+
+
+def apply_limits_patch(accounts_dir, patch):
+    """Write the global scope of the daily guards, keeping other scopes.
+
+    限额的读取端（limit_values_many / 池的 acquire 检查）一直在，写入端
+    曾经只有零引用的具名 setter（已删）——值只能手改 settings.json。
+    2026-10-25 面板补上入口后，这里是唯一的写路径。
+    """
+    data = load(accounts_dir)
+    limits = data.get("limits")
+    limits = dict(limits) if isinstance(limits, dict) else {}
+    for key, value in (patch or {}).items():
+        entry = limits.get(key)
+        entry = dict(entry) if isinstance(entry, dict) else {}
+        entry["global"] = value
+        limits[key] = entry
+    data["limits"] = limits
+    save(accounts_dir, data)
+    return limits
+
+
 def validate_codearts_patch(raw):
     """Strict validation for a panel-saved codearts tuning patch."""
     out = {}

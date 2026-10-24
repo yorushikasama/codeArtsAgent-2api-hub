@@ -1166,6 +1166,39 @@ finally:
     import shutil as _shutil3
     _shutil3.rmtree(_tmp12, ignore_errors=True)
 
+# ---------------------------------------------------------------------------
+print()
+print("[每日限侧面板入口 2026-10-25] validate_limits_patch / apply_limits_patch")
+
+_ok_limits = S.validate_limits_patch(
+    {"daily_token_limit": 1000000, "daily_credit_limit": 500, "model_daily_token_limit": 0})
+check("三个合法值通过",
+      _ok_limits == {"daily_token_limit": 1000000, "daily_credit_limit": 500,
+                     "model_daily_token_limit": 0}, _ok_limits)
+for _bad in ({"daily_token_limit": -1}, {"daily_credit_limit": "500"},
+             {"unknown_limit": 1}, {"daily_token_limit": True}):
+    try:
+        S.validate_limits_patch(_bad)
+        check("坏值 %r 应被拒" % (_bad,), False)
+    except ValueError:
+        check("坏值 %r 被拒" % (_bad,), True)
+
+import tempfile as _tf, os as _os, shutil as _shutil
+_lim_dir = _tf.mkdtemp(prefix="wb-limits-")
+try:
+    S.apply_limits_patch(_lim_dir, {"daily_token_limit": 12345})
+    got = S.limit_values_many(_lim_dir, ("daily_token_limit",))
+    check("写后读回同值（global 档）",
+          got["daily_token_limit"]["global"] == 12345, got)
+    S.apply_limits_patch(_lim_dir, {"daily_token_limit": 0, "daily_credit_limit": 77})
+    got = S.limit_values_many(_lim_dir, ("daily_token_limit", "daily_credit_limit"))
+    check("再写只动点名的键，0 = 不限也如实落盘",
+          got["daily_token_limit"]["global"] == 0
+          and got["daily_credit_limit"]["global"] == 77, got)
+finally:
+    _shutil.rmtree(_lim_dir, ignore_errors=True)
+
+
 
 # 并发容量可调：换对象会让「刚 acquire 还没记账」的 release 打到新对象上，
 # 容量凭空长一格；自己记容量/空闲就没有这个窗口。
