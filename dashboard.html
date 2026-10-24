@@ -4038,8 +4038,7 @@ async function startCodeartsLogin(){
     if(box) box.innerHTML =
       '<a class="login-link" id="codeartsLink" href="' + esc(r.authUrl) + '" target="_blank" rel="noopener">' + esc(r.authUrl) + '</a>'
       + '<button class="sec mini" onclick="copyCodeartsLink()">复制授权链接</button>'
-      + '<div class="hint">回调地址固定是 <code>http://127.0.0.1:' + esc(String(r.port)) + '/oauth/callback</code>。'
-      + '浏览器打不开这个地址时（网关在别的机器 / 容器里）：完成授权后把浏览器地址栏里的完整回调 URL 复制下来，粘贴到下面提交即可。</div>'
+      + '<div class="hint">① 打开授权链接，完成华为云登录；② 跳转页打不开时，复制浏览器地址栏的完整 URL；③ 粘贴到下面，点「提交回调」。</div>'
       + '<div id="codeartsManualRow" style="margin-top:6px;display:flex;gap:6px;align-items:center;">'
       + '<input id="codeartsManualCb" type="text" placeholder="手动提交：粘贴回调 URL（http://127.0.0.1:' + esc(String(r.port)) + '/oauth/callback?code=…）" style="flex:1;min-width:0;">'
       + '<button class="sec mini" onclick="submitCodeartsCallback()">提交回调</button>'
