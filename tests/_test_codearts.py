@@ -2242,5 +2242,85 @@ check("超长正文截到 2000 字符",
           [{"role": "user", "content": "x" * 9999}])) == 2000)
 
 print()
+print("[手动回调 2026-10-24] /accounts/codearts/login/callback 逃生通道")
+
+
+class _FakeLogin:
+    def __init__(self, kind="ok", detail="hid_new"):
+        self.kind, self.detail = kind, detail
+        self.calls = []
+
+    def accept_callback(self, code=None, secret=None):
+        self.calls.append((code, secret))
+        return (self.kind, self.detail)
+
+
+class _FakeCbHandler:
+    def __init__(self):
+        self.sent = []
+
+    def _error(self, status, message, *_a):
+        self.sent.append(("error", status, message))
+        return ("error", status, message)
+
+    def _json(self, status, obj):
+        self.sent.append(("json", status, obj))
+        return obj
+
+    def _codearts_redirect_ok(self, target):
+        return P.Handler._codearts_redirect_ok(target)
+
+
+def _run_cb(payload, kind="ok", detail="hid_new"):
+    fake = _FakeLogin(kind, detail)
+    saved_login, saved_clear = P.CODEARTS_LOGIN, P.codearts_clear_cooldown_for
+    cleared = []
+    P.CODEARTS_LOGIN = fake
+    P.codearts_clear_cooldown_for = lambda aid: cleared.append(aid)
+    h = _FakeCbHandler()
+    try:
+        P.Handler._route_codearts_login_callback(h, payload)
+    finally:
+        P.CODEARTS_LOGIN = saved_login
+        P.codearts_clear_cooldown_for = saved_clear
+    return h.sent, fake.calls, cleared
+
+
+_sent, _calls, _cleared = _run_cb(
+    {"url": "http://127.0.0.1:9000/oauth/callback?code=l3m32XZK&state=ad22bb"})
+check("完整 URL：code 提取并送进 accept_callback",
+      _calls == [("l3m32XZK", "")] and _sent[0][0] == "json" and _sent[0][2].get("ok") is True,
+      (_calls, _sent))
+check("成功路径清掉该账号的冷却", _cleared == ["hid_new"], _cleared)
+
+_sent, _calls, _cleared = _run_cb({"url": "?code=abc&state=xyz"})
+check("裸查询串同样可用", _calls == [("abc", "")], _calls)
+_sent, _calls, _cleared = _run_cb({"url": "code=abc&state=xyz"})
+check("不带 ? 前缀的查询串同样可用", _calls == [("abc", "")], _calls)
+
+_sent, _calls, _cleared = _run_cb({"url": "http://127.0.0.1:9000/oauth/callback?state=xyz"})
+check("缺 code/secret 报 400", _sent[0][0] == "error" and _sent[0][1] == 400, _sent)
+_sent, _calls, _cleared = _run_cb({"url": ""})
+check("空 url 报 400", _sent[0][0] == "error" and _sent[0][1] == 400, _sent)
+_sent, _calls, _cleared = _run_cb(
+    {"url": "http://127.0.0.1:9000/oauth/callback?code=x"}, kind="error", detail="STS5.1806")
+check("accept_callback 失败回 400 带原因",
+      _sent[0][0] == "error" and "STS5.1806" in _sent[0][2], _sent)
+
+# old_login 的中间一跳：secret-only → redirect，把 redirect 参数校验后还给面板
+_sent, _calls, _cleared = _run_cb(
+    {"url": "https://login.huaweicloud.com/oauth2/continue?secret=abc"
+            "&redirect=https://snap-access.cn-north-4.myhuaweicloud.com/next"},
+    kind="redirect", detail="abc")
+check("redirect 一跳：可信域名的续走链接还给面板",
+      _sent[0][0] == "json" and _sent[0][2].get("status") == "redirect"
+      and _sent[0][2].get("url", "").startswith("https://snap-access."),
+      _sent)
+_sent, _calls, _cleared = _run_cb(
+    {"url": "https://x/oauth2/continue?secret=abc&redirect=https://evil.example.com/next"},
+    kind="redirect", detail="abc")
+check("redirect 目标不可信时拒绝", _sent[0][0] == "error" and _sent[0][1] == 400, _sent)
+
+print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

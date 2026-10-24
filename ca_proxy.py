@@ -8473,6 +8473,52 @@ class Handler(BaseHTTPRequestHandler):
             return self._json(200, {"cancelled": False})
         return self._json(200, {"cancelled": CODEARTS_LOGIN.cancel(payload.get("state") or "")})
 
+    def _route_codearts_login_callback(self, payload):
+        """手动粘贴回跳 URL 的逃生通道。
+
+        回跳地址写死成 ``127.0.0.1:<port>``（与官方客户端一致），网关跑在
+        远程服务器 / NAS / 容器里时，浏览器根本打不开这个地址 —— 授权在
+        华为云那边其实已经成功，307 只是落不到网关。用户把浏览器地址栏里
+        的完整回调 URL 复制过来，面板代为提交：与 ``/oauth/callback`` 走
+        同一条 ``accept_callback``，成功路径同样清冷却表。
+
+        接受三种形状：完整 URL、``?`` 打头的查询串、裸 ``code=..&state=..``。
+        old_login 的中间一跳（secret + redirect）不能由服务器代访外部地址，
+        校验后把「下一步链接」还给面板让用户继续。
+        """
+        if CODEARTS_LOGIN is None:
+            return self._error(503, "登录管理器尚未初始化")
+        raw = str((payload or {}).get("url") or "").strip()
+        if not raw:
+            return self._error(400, "url required：粘贴浏览器地址栏里的完整回调链接")
+        if len(raw) > 4096:
+            return self._error(400, "url too long")
+        if "://" in raw:
+            try:
+                qs = urllib.parse.urlsplit(raw).query
+            except ValueError:
+                return self._error(400, "无法解析回调链接")
+        else:
+            qs = raw.lstrip("?")
+        params = urllib.parse.parse_qs(qs, keep_blank_values=True)
+        code = (params.get("code") or [""])[0].strip()
+        secret = (params.get("secret") or [""])[0].strip()
+        if not code and not secret:
+            return self._error(400, "回调链接里没有 code / secret 参数")
+        kind, detail = CODEARTS_LOGIN.accept_callback(code=code, secret=secret)
+        if kind == "redirect":
+            redirect_to = (params.get("redirect") or [""])[0]
+            if not self._codearts_redirect_ok(redirect_to):
+                return self._error(400, "回调地址不被信任：%s" % (redirect_to or "空地址"))
+            return self._json(200, {"ok": False, "status": "redirect",
+                                    "url": redirect_to,
+                                    "msg": "请打开下面的链接继续授权，完成后把新的回调 URL 再粘贴回来"})
+        if kind == "ok":
+            codearts_clear_cooldown_for(detail)
+            return self._json(200, {"ok": True, "status": "ok",
+                                    "msg": "华为云账号 %s 已加入网关" % (detail or "")})
+        return self._error(400, "登录失败：%s" % (detail or "未知错误"))
+
     def _route_codearts_refresh(self, payload):
         account_id = str(payload.get("accountId") or "").strip()
         if not account_id:
@@ -8972,6 +9018,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._route_codearts_login_start(payload or {})
         if path == "/accounts/codearts/login/cancel":
             return self._route_codearts_login_cancel(payload or {})
+        if path == "/accounts/codearts/login/callback":
+            return self._route_codearts_login_callback(payload or {})
         if path == "/accounts/codearts/refresh":
             return self._route_codearts_refresh(payload or {})
         if path == "/accounts/codearts/refresh-catalog":

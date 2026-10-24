@@ -105,7 +105,9 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
 拿到的是 **STS 临时 AK/SK + securitytoken**（约 2 小时到期）外加一张 **30 天可续期**的 refresh_token。几个必须知道的边界：
 
 - **浏览器必须能访问到网关端口**。回跳地址写死成 `127.0.0.1:<端口>`（跟官方客户端一致），
-  所以网关跑在 NAS / 容器 / 别的机器上时，要先把该端口映射到你自己这台机器。
+  所以网关跑在 NAS / 容器 / 别的机器上时，要先把该端口映射到你自己这台机器；映射不出来时用
+  弹窗里的**手动提交回调**逃生通道：浏览器完成授权后，把地址栏里完整的
+  `http://127.0.0.1:<端口>/oauth/callback?code=…` 复制进弹窗提交即可（与真实回跳同一条链路）。
 - **DPoP 私钥与 refresh_token 绑定**（`cnf.jkt` 把 token 钉在登录时那把 P-256 私钥上），
   续期必须用同一把私钥签 proof。私钥随会话存在 `accounts/codearts/<账号ID>.json`，别把该目录同步出去。
 - **refresh_token 是一次性轮换**的：每次续期成功都会换一张新的，旧的立即作废。
@@ -164,6 +166,7 @@ export ANTHROPIC_AUTH_TOKEN="你在看板设置中添加的 API Key"
 | GET | /accounts/codearts | 码道账号列表：STS 剩余 / 并发 / 积分与签到状态（需面板会话） |
 | POST | /accounts/codearts/login/start | 生成码道授权链接（PKCE + DPoP），返回 `authUrl` 与 `state`（需面板会话） |
 | GET | /accounts/codearts/login/poll?state= | 轮询码道登录结果：`pending` / `ok` / `error` / `expired`（需面板会话） |
+| POST | /accounts/codearts/login/callback | 手动提交回跳 URL（浏览器够不到网关端口时的逃生通道，需面板会话） |
 | POST | /accounts/codearts/refresh | 用存档里的 DPoP 私钥 + refresh_token 续一次 STS（需面板会话） |
 | POST | /accounts/codearts/delete | 删除某个码道账号的本地会话（需面板会话） |
 | GET | /oauth/callback | 华为云授权回跳端点（**免面板鉴权**：浏览器 307 裸跳转带不上会话） |

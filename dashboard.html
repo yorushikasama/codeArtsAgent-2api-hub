@@ -4038,8 +4038,13 @@ async function startCodeartsLogin(){
     if(box) box.innerHTML =
       '<a class="login-link" id="codeartsLink" href="' + esc(r.authUrl) + '" target="_blank" rel="noopener">' + esc(r.authUrl) + '</a>'
       + '<button class="sec mini" onclick="copyCodeartsLink()">复制授权链接</button>'
-      + '<div class="hint">回调地址固定是 <code>http://127.0.0.1:' + esc(String(r.port)) + '/oauth/callback</code>，'
-      + '所以浏览器必须能访问到本机这个端口。网关跑在别的机器 / 容器里时，先把该端口映射出来再用。</div>';
+      + '<div class="hint">回调地址固定是 <code>http://127.0.0.1:' + esc(String(r.port)) + '/oauth/callback</code>。'
+      + '浏览器打不开这个地址时（网关在别的机器 / 容器里）：完成授权后把浏览器地址栏里的完整回调 URL 复制下来，粘贴到下面提交即可。</div>'
+      + '<div id="codeartsManualRow" style="margin-top:6px;display:flex;gap:6px;align-items:center;">'
+      + '<input id="codeartsManualCb" type="text" placeholder="手动提交：粘贴回调 URL（http://127.0.0.1:' + esc(String(r.port)) + '/oauth/callback?code=…）" style="flex:1;min-width:0;">'
+      + '<button class="sec mini" onclick="submitCodeartsCallback()">提交回调</button>'
+      + '</div>'
+      + '<div id="codeartsManualNext"></div>';
     pollCodeartsLogin();
     caLoginTimer = setInterval(pollCodeartsLogin, 2000);
   }catch(e){
@@ -4055,6 +4060,40 @@ async function copyCodeartsLink(){
     await writeClipboard(link.getAttribute("href"));
     toast("已复制授权链接", "ok");
   }catch(e){ toast("复制失败：" + e.message, "bad"); }
+}
+
+/* 浏览器够不到 127.0.0.1:<port> 时的逃生通道：把地址栏里的完整回调 URL
+   粘贴进来，由面板代为提交（后端与 /oauth/callback 同一条 accept_callback）。 */
+async function submitCodeartsCallback(){
+  const input = document.getElementById("codeartsManualCb");
+  const status = document.getElementById("codeartsStatus");
+  const next = document.getElementById("codeartsManualNext");
+  if(!input || !input.value.trim()){
+    if(status) status.textContent = "先粘贴浏览器地址栏里的完整回调 URL（含 code 参数）";
+    return;
+  }
+  try{
+    const r = await postJSON("/accounts/codearts/login/callback", {url: input.value.trim()});
+    if(r.status === "ok"){
+      caSetStep(3, "done");
+      if(status) status.textContent = "登录成功：账号已加入网关";
+      if(caLoginTimer){ clearInterval(caLoginTimer); caLoginTimer = null; }
+      caLoginState = null;
+      input.value = "";
+      if(next) next.innerHTML = "";
+      toast("码道账号已添加", "ok");
+      loadCodeartsAccounts();
+    }else if(r.status === "redirect"){
+      if(status) status.textContent = r.msg || "还需要一步";
+      if(next) next.innerHTML =
+        '<div style="margin-top:6px;">继续授权：<a class="login-link" href="' + esc(r.url) + '" target="_blank" rel="noopener">' + esc(r.url) + '</a>'
+        + '<div class="hint">打开上面的链接完成后续步骤，然后把浏览器跳到的新回调 URL 再粘贴回来提交。</div></div>';
+    }else{
+      if(status) status.textContent = r.msg || "提交失败";
+    }
+  }catch(e){
+    if(status) status.textContent = "回调提交失败：" + e.message;
+  }
 }
 
 async function pollCodeartsLogin(){
