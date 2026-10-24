@@ -63,6 +63,8 @@ services:
     image: ghcr.io/yorushikasama/codeartsagent-2api-hub:latest
     container_name: codearts-hub
     restart: unless-stopped
+    # 收尾窗口：docker 默认 10 秒就 SIGKILL，网关来不及把在跑的请求写完账。
+    stop_grace_period: 30s
     ports:
       - "8788:8788"
     environment:

@@ -7,6 +7,12 @@ services:
     image: ghcr.io/yorushikasama/codeartsagent-2api-hub:latest
     container_name: codearts-hub
     restart: unless-stopped
+    # 优雅退出窗口。docker stop / compose up -d 先发 SIGTERM，等满这个时间才
+    # SIGKILL —— 默认只有 10 秒，而网关收尾（等在跑的请求写完账、给上游会话
+    # 补发 idle）的预算由 CODEARTS_SHUTDOWN_GRACE 决定。容器里那个默认值已
+    # 按「留出余量」收成 8 秒，所以默认配置不会撞上 SIGKILL；想等更久就把
+    # 这里和 environment 里的 CODEARTS_SHUTDOWN_GRACE 一起放大（只改一个没用）。
+    stop_grace_period: 30s
     # Defaults to root (0:0), i.e. the historical behaviour. To run as your own
     # host user instead, set PUID/PGID (e.g. PUID=$(id -u) PGID=$(id -g)
     # docker compose up -d) and make sure ./accounts and ./usage are writable

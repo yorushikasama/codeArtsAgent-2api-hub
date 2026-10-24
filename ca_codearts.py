@@ -62,6 +62,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import ca_env
+
 # ---------------------------------------------------------------------------
 # 环境常量（prod / cn-north-4）
 # ---------------------------------------------------------------------------
@@ -79,8 +81,6 @@ AUTH_REDIRECT_PATH = "/oauth/callback"
 IAM_TOKEN_API = "/v1/oauth2/tokens"
 
 # 官方轮询节奏，照抄
-TICKET_RETRY_SECONDS = 2.0
-TICKET_MAX_TRIES = 10
 
 DEFAULT_TIMEOUT = 20.0
 
@@ -377,8 +377,16 @@ def authorize_url(port, pkce, ticket_id, theme=1, locale="zh-cn",
     return f"{PORTAL_HOST}/authorize?" + urllib.parse.urlencode(query)
 
 
-def _http(method, url, headers=None, body=None, timeout=DEFAULT_TIMEOUT):
+def _http(method, url, headers=None, body=None, timeout=DEFAULT_TIMEOUT,
+          query=None):
     data = body.encode("utf-8") if isinstance(body, str) else body
+    if query:
+        # query 由调用方交给 aksk_sign 参与签名后，这里按同一排序拼回 URL ——
+        # 两边顺序不一致就是一记 APIG.0301（签名对不上实际请求）。
+        url = url + "?" + "&".join(
+            "%s=%s" % (urllib.parse.quote(str(k), safe=""),
+                       urllib.parse.quote(str(query[k]), safe=""))
+            for k in sorted(query))
     req = urllib.request.Request(url, data=data, method=method.upper())
     for name, value in (headers or {}).items():
         req.add_header(name, value)
@@ -446,22 +454,6 @@ def refresh(key, pkce, refresh_token):
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
     })
-
-
-def poll_ticket(ticket_id, secret, plugin_version=PLUGIN_VERSION,
-                timeout=DEFAULT_TIMEOUT):
-    """old_login 通道：轮询一次性 ticket。
-
-    返回 {user_id, user_name, domain_id, credential:{access, secret,
-    securitytoken, expires_at}}。没有 refresh_token，到期只能重新登录。
-    """
-    url = (f"{SNAP_ENGINE}/v1/login/ticket?"
-           + urllib.parse.urlencode({"ticket_id": ticket_id, "secret": secret}))
-    return _http("GET", url, headers={
-        "Content-Type": "application/json;charset=UTF-8",
-        "plugin-name": LOGIN_PLUGIN_NAME,
-        "plugin-version": plugin_version,
-    }, timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -545,37 +537,6 @@ def session_from_iam_response(response, key, pkce, portal_url=""):
     }
 
 
-def session_from_ticket(ticket, dpop_key=None, pkce=None):
-    """把 old_login 的 ticket 结果整理成同形会话（无 refresh_token）。"""
-    credential = (ticket or {}).get("credential") or {}
-    if not credential.get("access"):
-        raise CodeArtsError("ticket 已确认但没有 credential", payload=ticket)
-    login_context = {}
-    if pkce:
-        login_context["pkcePair"] = pkce
-    if dpop_key is not None:
-        login_context["dpopKeyPair"] = {
-            "privateKeyJwk": dpop_key.private_jwk,
-            "publicKeyJwk": dpop_key.public_jwk,
-        }
-    return {
-        "id": "huawei-cloud-authentication",
-        "account": {
-            "id": ticket.get("user_id") or "",
-            "label": ticket.get("user_name") or "",
-        },
-        "scopes": [],
-        "accessToken": "",
-        "accessKey": credential.get("access"),
-        "secretKey": credential.get("secret"),
-        "securitytoken": credential.get("securitytoken"),
-        "expires_at": credential.get("expires_at"),
-        "domainId": ticket.get("domain_id") or "",
-        "refresh_token": "",
-        "loginContext": login_context,
-    }
-
-
 def summarize(session, now=None):
     """给人看的摘要，面板上直接显示。"""
     now = now if now is not None else time.time()
@@ -622,6 +583,28 @@ def summarize(session, now=None):
 # CodeAgent3.0、tracing 层名 Kernel），照抄以免被网关按客户端特征拦。
 GATEWAY_USER_AGENT = "CodeAgent3.0-Kernel"
 
+
+def _local_client_ip():
+    """本机 IP（client-ip 头用，官方传的是局域网 IP，纯遥测）。
+
+    UDP connect 探针不发任何包，只让内核选默认路由的源地址 —— 比
+    gethostbyname(hostname) 靠谱（后者在云主机上常解析成 127.0.1.1）。
+    """
+    import socket
+    sock = None
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        if sock is not None:
+            try:
+                sock.close()
+            except Exception:
+                pass
+
 SIGN_ALGORITHM = "SDK-HMAC-SHA256"
 EMPTY_BODY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
@@ -651,9 +634,12 @@ def aksk_sign(access_key, secret_key, method, url, query=None, headers=None,
               payload_hash=None):
     """给请求补上 Authorization / X-Sdk-Date / Host。
 
-    逐条对齐官方 AKSKSigner：头名小写排序后用 ; 拼成 SignedHeaders，
-    canonical headers 的**值不裁空白**，query 取自 query_params 而不是
-    url 里的原始顺序。
+    逐条对齐官方 AKSKSigner：头名小写排序后用 ; 拼成 SignedHeaders，canonical
+    headers 的值做 ``.trim()``（官方 signer 原文如此），并且**实际发送的头也用
+    裁过的值** —— 签名覆盖的是服务端收到的字节，两边不一致就是 401。
+    （2026-10-24 更正：以前这里不裁空白，靠的是我们自己构造的头恰好没有首尾
+    空白；哪个头哪天带进空白就是一记 ``APIG.0301``。）
+    query 取自 query_params 而不是 url 里的原始顺序。
     """
     if not access_key or not secret_key:
         raise CodeArtsError("缺少 AK/SK，无法给业务接口签名")
@@ -664,7 +650,8 @@ def aksk_sign(access_key, secret_key, method, url, query=None, headers=None,
         netloc = "%s:%d" % (netloc, parts.port)
 
     now = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    merged = dict(headers or {})
+    merged = {str(k): str(v).strip()
+              for k, v in dict(headers or {}).items()}
     merged["X-Sdk-Date"] = now
     merged["Host"] = netloc
 
@@ -684,9 +671,7 @@ def aksk_sign(access_key, secret_key, method, url, query=None, headers=None,
     signature = hmac.new(secret_key.encode("utf-8"),
                          string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
 
-    signed = dict(headers or {})
-    signed["Host"] = netloc
-    signed["X-Sdk-Date"] = now
+    signed = dict(merged)
     signed["Authorization"] = "%s Access=%s, SignedHeaders=%s, Signature=%s" % (
         SIGN_ALGORITHM, access_key, signed_headers, signature)
     return signed
@@ -759,7 +744,7 @@ CHAT_MODELS = ("deepseek-v4.1-flash",
 #: 实测 GLM-5.2 单次回答要 17 秒以上，从远端机房打过去更慢，20 秒会稳定超时。
 #: 推理是「等它把话说完」，不是「探测对方在不在」，所以给足。
 #: 可用 CODEARTS_CHAT_TIMEOUT 环境变量覆盖。
-CHAT_TIMEOUT = float(os.environ.get("CODEARTS_CHAT_TIMEOUT") or 180.0)
+CHAT_TIMEOUT = ca_env.number("CODEARTS_CHAT_TIMEOUT", 180.0, minimum=1.0)
 
 BUILTIN_MODELS_PATH = "/v1/model/builtin"
 
@@ -811,8 +796,29 @@ BUILTIN_MODEL_LIMITS = {
     # 所以输出上限就是 65536，和 GLM-5.2 / glm-5.3 一致。
     # 输入窗口**上游不返回**（`/v1/model/builtin` 没有这一项，远端目录也没给），
     # 按本文件的口径留 0 —— 不拿同厂兄弟的 1M 顶替，那是在编数字。
-    "kimi-k3": (0, 65536),
+    "kimi-k3": (1044480, 65536),
 }
+
+#: kimi-k3 的输入窗口 2026-10-23 之前写 0（上游不返回）。真值来自本机官方
+#: kernel 日志 ``provider models replace body``（2026-10-23）：input=1044480、
+#: context=1048576、output=65536 —— 与 GLM-5.2 / glm-5.3 / deepseek-v4.1-flash
+#: 同一套 1M 窗口。
+
+#: 官方客户端**实际发送**的输出上限（kernel 日志 requestBodyValues 实证：
+#: glm-5.3 每轮都带 ``max_tokens:32000``，而目录能力值是 65536）。客户端要
+#: 更大的值时向下钳：官方的请求形状就是上游调度最顺的形状，「按能力值顶满」
+#: 的请求只会拉长上游排队。只钳有实证的模型，没有的原样放行。
+MODEL_OUTPUT_CAPS = {
+    "glm-5.3": 32000,
+}
+
+
+def cap_output_tokens(model, max_tokens):
+    """按官方口径向下钳输出上限；没有实证值或没超的模型原样返回。"""
+    cap = MODEL_OUTPUT_CAPS.get(str(model or ""))
+    if not cap or not isinstance(max_tokens, int) or max_tokens <= cap:
+        return max_tokens
+    return cap
 
 #: 内置模型的缺省采样参数 (temperature, top_p)。
 #:
@@ -871,7 +877,7 @@ def resolve_model(model_id):
 
       1. 分流判错（最严重）：``is_codearts_model("glm-5.2")`` 为假，请求掉进
          WorkBuddy 账号池；那个池在这个部署里是空的，于是回
-         ``503 no usable account for realm 'cn'`` —— 一个和模型名毫无关系的
+         ``503 no usable account`` —— 一个和模型名毫无关系的
          报错，用户根本看不出是自己把大写写成了小写。
       2. ``max_tokens`` 夹不住：``BUILTIN_MODEL_LIMITS`` 查不到 → 客户端发
          128000 原样上去 → ``InferHub.001001005.400``，这条路还会被当成
@@ -919,7 +925,6 @@ def clamp_max_tokens(model_id, max_tokens):
     return value, False
 
 #: UI 的两分组，与客户端侧一致。
-
 
 
 def builtin_models(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
@@ -985,6 +990,15 @@ def credit_package(access_key, secret_key, security_token, timeout=DEFAULT_TIMEO
                 "total": m.get("package_credit_amount"),
                 "remaining": m.get("package_credit_remain")}
 
+    # usageTokenChatMessages：套餐 token 用量的主指标（官方 fetchSubscriptionInfo
+    # 用它算「>80% / ≥100%」告警）。字段名与 credit 那组不同：usage_token_num /
+    # package_token_amount。show=False 表示账号没有 token 包（值为 -1），不返回。
+    tokens = metrics.get("usageTokenChatMessages") or {}
+    token_usage = None
+    if tokens.get("show") and tokens.get("usage_token_num") is not None:
+        token_usage = {"used": tokens.get("usage_token_num"),
+                       "amount": tokens.get("package_token_amount"),
+                       "show": True}
     return {
         "used": used,
         "total": amount,
@@ -999,6 +1013,7 @@ def credit_package(access_key, secret_key, security_token, timeout=DEFAULT_TIMEO
         "basic": part("usageBasicPackageCredit"),
         "bonus": part("usageBonusPackageCredit"),
         "ondemand": part("usageOnDemandPackageCredit"),
+        "token_usage": token_usage,
     }
 
 
@@ -1184,6 +1199,58 @@ THINKING_STRENGTHS = {}
 THINKING_VARIANTS_PATH = "/v1/model/thinking-variants"
 
 
+AGENT_CENTER_USERAGENTS_PATH = "/v1/agent-center/agents/useragents"
+AGENT_CENTER_DETAIL_PATH = "/v1/agent-center/agents/detail"
+
+
+def agent_center_agents(access_key, secret_key, security_token,
+                        timeout=DEFAULT_TIMEOUT):
+    """AgentCenter：当前账号可用的 agent 清单（含 agent_id）。
+
+    逆自 kernel 的 agent-center 模块：GET {snap}/v1/agent-center/agents/
+    useragents?offset=0&limit=100，头必须带 ``Agent-Type: AgentCenter`` +
+    ``X-Language`` + ``plugin-version``；**query 必须进签名**（传给
+    ``aksk_sign`` 的 query 参数，不是拼进 URL）—— 否则 APIG.0301
+    ``verify ak sk signature fail``（2026-10-24 线上实测，docs 里也记过这个坑）。
+    """
+    query = {"offset": "0", "limit": "100"}
+    url = SNAP_HOST + AGENT_CENTER_USERAGENTS_PATH
+    headers = {
+        "Agent-Type": "AgentCenter",
+        "X-Language": "zh-cn",
+        "Content-Type": "application/json",
+        "plugin-version": "26.10.0",
+        "User-Agent": GATEWAY_USER_AGENT,
+    }
+    if security_token:
+        headers["X-Security-Token"] = security_token
+    headers = aksk_sign(access_key, secret_key, "GET", url, query, headers)
+    return _http("GET", url, headers=headers, timeout=timeout,
+                 query=query)
+
+
+def agent_center_agent_detail(access_key, secret_key, security_token,
+                              agent_id, timeout=DEFAULT_TIMEOUT):
+    """AgentCenter：单个 agent 的详情（``gpts.models[]`` 是模型真值来源）。
+
+    同一签名口径；``agent_id`` 来自 :func:`agent_center_agents`。
+    """
+    query = {"agent_id": str(agent_id)}
+    url = SNAP_HOST + AGENT_CENTER_DETAIL_PATH
+    headers = {
+        "Agent-Type": "AgentCenter",
+        "X-Language": "zh-cn",
+        "Content-Type": "application/json",
+        "plugin-version": "26.10.0",
+        "User-Agent": GATEWAY_USER_AGENT,
+    }
+    if security_token:
+        headers["X-Security-Token"] = security_token
+    headers = aksk_sign(access_key, secret_key, "GET", url, query, headers)
+    return _http("GET", url, headers=headers, timeout=timeout,
+                 query=query)
+
+
 def thinking_variants(access_key, secret_key, security_token, model_names,
                       timeout=DEFAULT_TIMEOUT):
     """每个模型能选哪些思考档位。
@@ -1216,6 +1283,148 @@ def thinking_variants(access_key, secret_key, security_token, model_names,
         strengths = [str(x) for x in (info.get("strengths") or []) if x]
         out[name] = {"strengths": strengths,
                      "default": info.get("default_strength") or ""}
+
+
+#: 各模型的思考档位白名单：``reasoning_effort`` 只允许取列表里的值。
+#:
+#: 种子抄自本机官方客户端的档位缓存（``state.vscdb →
+#: hc-thinking-variants-cache-key``，2026-10-23）。关键的一条：**glm-5.3 的
+#: strengths 是空的** —— 官方对它永远不发 ``reasoning_effort``（kernel 日志
+#: ``reasoningEffort=undefined``），UI 上连档位选择器都不出现。我们以前把
+#: 客户端发来的 effort=max 原样转发，上游深度思考几十秒不吐首字节，正好撞进
+#: APIG 的 ~60s 空闲上限（2026-10-23 线上同一请求连断四次就是这么来的）。
+#: 上游档位表会覆盖种子（TTL 见 ``THINKING_STRENGTHS_TTL``，拉取失败沿用
+#: 种子）；两头都没有的模型返回 None = 不约束，维持「客户端给什么发什么」。
+THINKING_STRENGTHS_SEED = {
+    "glm-5.2": ("high", "max"),
+    "glm-5.3": (),
+    "glm-5.3-flash": ("low", "high", "max"),
+    "openpangu-2.0-pro": (),
+    "kimi-k3": (),
+    "deepseek-v4.1-flash": (),
+}
+
+#: 档位表的缓存时长（秒）。官方客户端缓存 24h；1h 足够跟上上游改配置。
+THINKING_STRENGTHS_TTL = 3600.0
+
+_THINKING_STRENGTHS_LOCK = threading.Lock()
+_THINKING_STRENGTHS = {}      # model -> (expires_at, strengths 元组或 None)
+
+
+def refresh_thinking_strengths(access_key, secret_key, security_token,
+                               model, timeout=8.0):
+    """查一个模型的思考档位白名单：tuple（可为空）或 None（未知）。
+
+    带 TTL 缓存；上游拉取失败时回落到种子表 —— 种子来自官方客户端本地缓存，
+    比「查不到就照发 effort」安全：官方自己就不给这些模型开档位。
+    """
+    model = str(model or "")
+    now = time.time()
+    with _THINKING_STRENGTHS_LOCK:
+        hit = _THINKING_STRENGTHS.get(model)
+        if hit and hit[0] > now:
+            return hit[1]
+    resolved = None
+    try:
+        info = thinking_variants(access_key, secret_key, security_token,
+                                 [model], timeout=timeout).get(model)
+        if info is not None:
+            resolved = tuple(str(x) for x in (info.get("strengths") or []))
+    except Exception:                      # noqa: BLE001 —— 网络失败回落种子
+        resolved = None
+    if resolved is None:
+        resolved = THINKING_STRENGTHS_SEED.get(model)
+    with _THINKING_STRENGTHS_LOCK:
+        _THINKING_STRENGTHS[model] = (now + THINKING_STRENGTHS_TTL, resolved)
+    return resolved
+
+
+#: 模型真值的 AgentCenter 刷新：种子（BUILTIN_MODEL_LIMITS 手表）→ 活数据。
+#: ``gpts.models[].model_parameters`` 里有 context_window / input_length /
+#: max_tokens / truncate_length / enable_queue / temperature 等全套字段
+#: （2026-10-24 线上实测）。成功后**直接写回 BUILTIN_MODEL_LIMITS** ——
+#: resolve_model 的大小写归一和 _codearts_max_tokens / prune 的查表全都
+#: 自动受益，调用点一行不用改。失败（网络/鉴权/形状不对）保留旧值。
+MODEL_LIMITS_TTL = 3600.0
+_MODEL_LIMITS_REFRESHED_AT = [0.0]
+
+#: 模型选模真值（官方 model-selector 用）：flagship/fallback 标签与场景。
+#: 来自 agent-center ``gpts.models[].model_parameters.custom_config.tags``
+#: （逗号分隔字符串）与 ``scenario``。官方选模就是「先 tags 含 flagship 的，
+#: 再 fallback 的」——这份元数据随 refresh_model_limits 一起刷。
+_MODEL_META = {}
+
+
+def model_truth_meta(model_id):
+    """模型的官方选模元数据（tags/scenario）；没拉到返回空 dict。"""
+    m = _MODEL_META.get(str(model_id or ""))
+    return dict(m) if m else {}
+
+
+def refresh_model_limits(access_key, secret_key, security_token,
+                         timeout=15.0):
+    """从 AgentCenter 拉模型真值并写回 BUILTIN_MODEL_LIMITS（TTL 1h）。
+
+    挑 agent：名字叫 ``CodeAgent`` 的第一个（官方默认），否则清单第一个。
+    每条 ``model_parameters`` 只要 input_length / max_tokens 都能读出数字
+    就收录 —— 上游哪天上新模型，网关不用等手表更新。
+    """
+    now = time.time()
+    if now - _MODEL_LIMITS_REFRESHED_AT[0] < MODEL_LIMITS_TTL:
+        return
+    try:
+        agents = agent_center_agents(access_key, secret_key, security_token,
+                                     timeout=timeout) or {}
+        listing = agents.get("agents") or []
+        agent_id = next((a.get("agent_id") for a in listing
+                         if isinstance(a, dict)
+                         and str(a.get("agent_name") or "") == "CodeAgent"
+                         and a.get("agent_id")),
+                        listing[0].get("agent_id") if listing else None)
+        if not agent_id:
+            return
+        detail = agent_center_agent_detail(access_key, secret_key,
+                                           security_token, agent_id,
+                                           timeout=timeout) or {}
+        models = ((detail.get("gpts") or {}).get("models")) or []
+        fresh = 0
+        for item in models:
+            mp = (item or {}).get("model_parameters") or {}
+            mid = str(mp.get("model_id") or "").strip()
+            try:
+                inp = int(mp.get("input_length") or 0)
+                out = int(mp.get("max_tokens") or 0)
+            except (TypeError, ValueError):
+                continue
+            tags_raw = ((mp.get("custom_config") or {}).get("tags"))
+            tags = ([t.strip() for t in str(tags_raw).split(",")
+                     if t.strip()] if tags_raw else [])
+            if mid:
+                _MODEL_META[mid] = {"tags": tags,
+                                    "scenario": str(mp.get("scenario") or "")}
+            if mid and inp > 0 and out > 0:
+                BUILTIN_MODEL_LIMITS[mid] = (inp, out)
+                fresh += 1
+        if fresh:
+            _MODEL_LIMITS_REFRESHED_AT[0] = now
+            # resolve_model 的大小写索引是模块级缓存，表变了不重建的话，
+            # 新收录的模型永远走不到归一（查表/钳制全部 miss）。
+            global _MODEL_INDEX
+            _MODEL_INDEX = None
+            _qlog("model limits refreshed from AgentCenter: %d models" % fresh)
+    except Exception:                      # noqa: BLE001 —— 刷新失败保留旧值
+        pass
+
+
+def thinking_strengths_for(model):
+    """只读缓存/种子的档位白名单，不发起网络请求；None = 未知。"""
+    model = str(model or "")
+    now = time.time()
+    with _THINKING_STRENGTHS_LOCK:
+        hit = _THINKING_STRENGTHS.get(model)
+        if hit and hit[0] > now:
+            return hit[1]
+    return THINKING_STRENGTHS_SEED.get(model)
     return out
 
 
@@ -1508,7 +1717,8 @@ def model_catalog(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOU
 
 
 def chat_headers(access_key, secret_key, security_token, payload_hash,
-                 stream=False, model=None, session_id=None):
+                 stream=False, model=None, session_id=None, session_retry=None,
+                 msg_id=None):
     """推理请求头：与网关配置同一套签名，只是多一个 Accept。
 
     **不再有 ``maas_type``**：那是限时福利渠道的分组开关，官方已下线
@@ -1522,8 +1732,19 @@ def chat_headers(access_key, secret_key, security_token, payload_hash,
     上游按签名覆盖的头集合校验，改了头不重签会直接 401。带上它，这次推理才
     会计入我们已 busy 的那条会话，收尾的 idle 才能真正归还名额。
 
-    客户端还带一套 x-ot-* 观测头（trace/span/model-name 等），实测**不带也通**，
-    这里就不复制了 —— 复制只会让签名串更长、排障更难。
+    客户端还带一套 x-ot-* 观测头（trace/span 等），实测**不带也通**，这里就
+    不复制了 —— 复制只会让签名串更长、排障更难。
+
+    下面这一族是官方 opencode 路径真发的（2026-10-24 逆向 ``chat.headers``
+    钩子 + doStream 合并点；HC 白名单路径会把它们滤掉，但网关对齐的就是
+    opencode/Bearer 形态，那一条是全量合并）：
+
+      · ``x-session-affinity`` = 会话 id（同一会话每轮稳定，新会话才换）——
+        上游网关按它做会话粘性路由，同会话命中同一后端实例的 prompt cache；
+      · ``user-msg-id`` / ``x-message-id`` = 本轮用户消息 id（同一用户回合内
+        稳定，官方一个回合内的子代理调用共享同一个值；重试也复用）；
+      · ``created-time`` = 每次请求的 ISO8601 UTC 秒级时间戳；
+      · ``model-id`` / ``model-name``（name 做 URL 编码）。
     """
     headers = {
         "Content-Type": "application/json",
@@ -1535,6 +1756,36 @@ def chat_headers(access_key, secret_key, security_token, payload_hash,
         headers["X-Security-Token"] = security_token
     if session_id:
         headers["user-session-id"] = session_id
+        # 会话粘性路由（官方 x-session-affinity = sessionID；普通会话与
+        # user-session-id 同值，agent-team 子会话才分叉 —— 网关没有子会话）。
+        headers["x-session-affinity"] = session_id
+    if msg_id:
+        # 官方两头同值：user-msg-id 与 x-message-id 都是「本轮用户消息 id」。
+        headers["user-msg-id"] = msg_id
+        headers["x-message-id"] = msg_id
+    headers["created-time"] = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                                            time.gmtime())
+    if model:
+        headers["model-id"] = str(model)
+        headers["model-name"] = urllib.parse.quote(str(model), safe="")
+    # 官方 HC 白名单路径的头（2026-10-24 对照官方 kernel 日志 header-debug）：
+    # APIG 可能按 plugin/ide 身份区分请求待遇 —— 我们此前一个都不带，上游
+    # 眼里是个「不明客户端」。值照抄官方（plugin-version/ide-version 26.10.1）。
+    headers["plugin-name"] = "codemate_vscode"
+    headers["plugin-version"] = "26.10.1"
+    headers["ide-name"] = "VSCode"
+    headers["ide-version"] = "26.10.1"
+    headers["X-Language"] = "zh-cn"
+    headers["client-ip"] = _local_client_ip()
+    if session_retry is not None:
+        # 官方重试协议：第 N 次尝试带 N，服务端据此调度/限流（x-session-retry
+        # <10 才肯重试 BusyException）。首次尝试是 0。
+        headers["x-session-retry"] = str(int(session_retry))
+    if QUEUE_ENABLED:
+        # 官方两个头一起设：声明参与服务端排队。不带它们时 429 是硬失败，
+        # 带了才可能收到 queue-status: queued（见 open_chat 的排队重发）。
+        headers["app-id"] = "CodeAgent3.0"
+        headers["is-need-queue"] = "true"
     return aksk_sign(access_key, secret_key, "POST", CHAT_PATH, {}, headers,
                      payload_hash=payload_hash)
 
@@ -1681,10 +1932,15 @@ def chat_body(model, messages, max_tokens=256, stream=True, extra=None,
             body["tools"] = shaped
             if tool_choice:
                 body["tool_choice"] = tool_choice
+            # 官方对 inferhub 供应商无条件开（chat params 钩子
+            # ``u.options.tool_stream = !0``，2026-10-24 kernel 日志实证请求体
+            # 里带 ``"tool_stream":true``）：上游据此流式下发工具调用增量。
+            # 我们本来就消费 delta.tool_calls，声明它让行为与官方完全一致。
+            body["tool_stream"] = True
     return body
 
 
-def thinking_extra_from(payload):
+def thinking_extra_from(payload, effort_allowed=None):
     """客户端请求 → 上游思考参数。没有可用项时返回 None（沿用上游默认）。
 
     **重要更正（2026-10-20 实测）**：上游**不接受关掉思考**。
@@ -1694,6 +1950,11 @@ def thinking_extra_from(payload):
 
     所以这里只透传「打开 + 预算」这一类真的能用的参数，关思考的请求被丢弃
     （思考保持默认开启），避免把客户端默认发出的 disabled 变成 502。
+
+    ``effort_allowed``：该模型的思考档位白名单（官方档位表，见
+    ``refresh_thinking_strengths``）。``None`` = 未知，沿用旧行为原样转发；
+    tuple（可以为空）= 白名单，之外的 effort 一律不发 —— 官方对档位表为空的
+    模型（glm-5.3）永远不发 effort，深思考 60s 静默就是 effort=max 引出来的。
     """
     if not isinstance(payload, dict):
         return None
@@ -1713,6 +1974,11 @@ def thinking_extra_from(payload):
 
     if effort is not None:
         effort = str(effort).strip().lower()
+        if effort and effort != "none":
+            # 白名单之外的 effort 不发（None = 未知，维持转发）。effort 被丢
+            # 时思考保持上游默认 —— 官方的请求形状就是这个。
+            if effort_allowed is not None and effort not in effort_allowed:
+                effort = None
         if effort and effort != "none":
             extra.setdefault("thinking", {"type": "enabled"})
             extra["reasoning_effort"] = effort
@@ -1740,8 +2006,10 @@ def sampling_extra_from(payload):
     实际还在生成。
 
     ``stop`` 单独处理：实测上游**只收数组**（``stop="END"`` 回 001001005），
-    所以字符串要包成单元素列表。OpenAI 的语义上限是 4 条，多发的我们裁掉，
-    不去赌上游的边界。
+    所以字符串要包成单元素列表。OpenAI 的语义上限是 4 条，多出来的我们裁掉
+    —— 但**不再悄悄裁**：以前静默丢弃，客户端传 6 条时会以为全生效，实际
+    只有前 4 条（2026-10-23）。裁掉的部分由 ``stop_dropped`` 带出去，调用方
+    记一行日志。
     """
     if not isinstance(payload, dict):
         return None
@@ -1760,6 +2028,8 @@ def sampling_extra_from(payload):
         items = [s for s in stop if isinstance(s, str) and s]
         if items:
             extra["stop"] = items[:4]
+            if len(items) > 4:
+                extra["stop_dropped"] = len(items) - 4
     return extra or None
 
 
@@ -1829,10 +2099,98 @@ def apply_stream_idle_timeout(response, seconds):
         return False
 
 
+#: 官方服务端排队叫号协议（逆自 kernel 的 queue-retry：函数 Z3/B8/cz/kCn）。
+#:
+#: 请求带 ``app-id: CodeAgent3.0`` + ``is-need-queue: true`` 声明参与；撞上
+#: 429 且响应头 ``queue-status: queued`` 时，改按服务端给的节奏轮询
+#: ``GET /api/v1/concurrency/trace-queues/{traceId}``（头 ``trace-id`` 必需，
+#: ``retry-after`` 秒，缺省 5），响应体 ``{status, queue_length,
+#: queue_wait_time, retry_after}``，``status=="promoted"`` 后**原样重发**请求。
+#: ``not_found`` / 连续 3 次 GET 失败 / 超时上限 → 按 429 失败交回上层退避。
+#: 排队**不计入** ``x-session-retry``。官方总上限 12h，网关不能把客户端连接
+#: 挂那么久，默认 180s（ZCode 客户端自己的超时是 4 分钟）。
+QUEUE_ENABLED = ca_env.flag("CODEARTS_QUEUE", True)
+QUEUE_MAX_WAIT = ca_env.number("CODEARTS_QUEUE_MAX_WAIT", 180.0, minimum=1.0)
+QUEUE_MAX_GET_FAILURES = 3
+QUEUE_TRACE_BASE = "/api/v1/concurrency/trace-queues/"
+
+
+def _qlog(msg):
+    """排队路径的可观测性：gw.log 由 systemd 收 stdout/stderr，这里带前缀即可。"""
+    print("[codearts-hub] queue: %s" % msg, flush=True)
+
+
+def _queue_info_from_headers(headers):
+    """429 响应头 → 排队参数；不可排队（缺 trace-id / 不是 queued）返回 None。
+
+    头名全小写比较（http.client 的 HTTPMessage 大小写不敏感，但统一掉最稳）。
+    ``retry-after`` 单位是**秒**（官方 sleep 内部 ×1000）；数值坏掉按官方缺省。
+    """
+    h = {}
+    try:
+        for key, value in (headers.items() if headers is not None else []):
+            h[str(key).lower()] = str(value)
+    except Exception:
+        return None
+    if h.get("queue-status", "").lower() != "queued":
+        return None
+    trace_id = (h.get("trace-id") or "").strip()
+    if not trace_id:
+        return None
+
+    def _num(name, default):
+        try:
+            return float(h.get(name))
+        except (TypeError, ValueError):
+            return default
+
+    try:
+        retry_after = float(h.get("retry-after"))
+        if retry_after <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        retry_after = 5.0
+    return {"trace_id": trace_id,
+            "retry_after": min(retry_after, 30.0),
+            "length": _num("queue-length", 1),
+            "wait": _num("queue-wait-time", 0)}
+
+
+def _retry_after_hint(exc, code):
+    """HTTPError 的响应头 → ``[server-retry-after: Ns]`` 标记；没有返回 ""。
+
+    只看 429/503。``retry-after-ms`` 是毫秒直读（官方 rS.delay 优先级一），
+    ``retry-after`` 数字按秒、HTTP-date 不解析（网关场景里没有出现过）。
+    """
+    if code not in (429, 503) or exc.headers is None:
+        return ""
+    h = {}
+    try:
+        for key, value in exc.headers.items():
+            h[str(key).lower()] = str(value)
+    except Exception:
+        return ""
+    ms = 0.0
+    try:
+        if h.get("retry-after-ms"):
+            ms = float(h["retry-after-ms"])
+    except (TypeError, ValueError):
+        ms = 0.0
+    if ms <= 0:
+        try:
+            if h.get("retry-after"):
+                ms = float(h["retry-after"]) * 1000.0
+        except (TypeError, ValueError):
+            ms = 0.0
+    if ms <= 0 or ms > 600000.0:
+        return ""
+    return " [server-retry-after: %.1fs]" % (ms / 1000.0)
+
+
 def open_chat(access_key, secret_key, security_token, model, messages,
               max_tokens=256, stream=True, timeout=None, extra=None,
               tools=None, tool_choice=None, session_id=None,
-              idle_timeout=None):
+              idle_timeout=None, session_retry=None):
     """建立一次推理连接，**不读响应体**。返回 (status, resp, text)。
 
     - 200：resp 是未读的响应句柄，**调用方负责 close()**；text 为空串。
@@ -1852,18 +2210,124 @@ def open_chat(access_key, secret_key, security_token, model, messages,
                                 stream=stream, extra=extra, tools=tools,
                                 tool_choice=tool_choice),
                       ensure_ascii=False).encode("utf-8")
-    headers = chat_headers(access_key, secret_key, security_token,
-                           hashlib.sha256(body).hexdigest(),
-                           stream=stream, session_id=session_id)
-    req = urllib.request.Request(CHAT_PATH, data=body, headers=headers,
-                                 method="POST")
-    try:
-        resp = urllib.request.urlopen(req, timeout=timeout)
-    except urllib.error.HTTPError as exc:
-        return exc.code, None, exc.read().decode("utf-8", "replace")
-    if idle_timeout is not None:
-        apply_stream_idle_timeout(resp, idle_timeout)
-    return getattr(resp, "status", 200), resp, ""
+
+    # 本轮用户消息 id：一次生成、各次尝试与排队重发复用（官方同一回合稳定）。
+    msg_id = "msg-" + secrets.token_hex(10)
+
+    def _send():
+        """按同一 body/参数重发一次（promoted 后的「原样重发」，签名重新算）。"""
+        fresh = chat_headers(access_key, secret_key, security_token,
+                             hashlib.sha256(body).hexdigest(),
+                             stream=stream, model=model,
+                             session_id=session_id,
+                             session_retry=session_retry, msg_id=msg_id)
+        return urllib.request.urlopen(
+            urllib.request.Request(CHAT_PATH, data=body, headers=fresh,
+                                   method="POST"), timeout=timeout)
+
+    def _poll_queue(info):
+        """按服务端节奏轮询一次 trace-queue。返回 (状态, 新info或None)。"""
+        url = SNAP_HOST + QUEUE_TRACE_BASE + urllib.parse.quote(
+            info["trace_id"], safe="")
+        poll_headers = {"User-Agent": GATEWAY_USER_AGENT,
+                        "x-snap-traceid": info["trace_id"],
+                        "Accept": "application/json"}
+        if security_token:
+            poll_headers["X-Security-Token"] = security_token
+        poll_headers = aksk_sign(access_key, secret_key, "GET", url, {},
+                                 poll_headers)
+        req = urllib.request.Request(url, headers=poll_headers, method="GET")
+        with urllib.request.urlopen(req, timeout=15) as r:
+            payload = json.loads(r.read().decode("utf-8", "replace") or "{}")
+        if not isinstance(payload, dict):
+            return "queued", info
+        for key in ("retry_after",):
+            value = payload.get(key)
+            if isinstance(value, (int, float)) and value > 0:
+                info = dict(info, retry_after=min(float(value), 30.0))
+                break
+        status = str(payload.get("status") or "queued")
+        return status, info
+
+    def _cancel_queue(trace_id):
+        """退出排队时 best-effort 注销（官方只在 abort/超时路径发 DELETE）。"""
+        try:
+            url = SNAP_HOST + QUEUE_TRACE_BASE + urllib.parse.quote(
+                trace_id, safe="")
+            h = {"User-Agent": GATEWAY_USER_AGENT}
+            if security_token:
+                h["X-Security-Token"] = security_token
+            h = aksk_sign(access_key, secret_key, "DELETE", url, {}, h)
+            urllib.request.urlopen(
+                urllib.request.Request(url, headers=h, method="DELETE"),
+                timeout=10).close()
+        except Exception:                     # noqa: BLE001 —— 取消失败无所谓
+            pass
+
+    deadline = time.time() + QUEUE_MAX_WAIT
+    get_failures = 0
+    while True:
+        try:
+            resp = _send()
+        except urllib.error.HTTPError as exc:
+            if not QUEUE_ENABLED or exc.code != 429:
+                plain = exc.read().decode("utf-8", "replace")
+                hint = _retry_after_hint(exc, exc.code)
+                return (exc.code, None,
+                        (plain[:200] + hint) if hint else plain)
+            info = _queue_info_from_headers(exc.headers)
+            body_text = exc.read().decode("utf-8", "replace")
+            if info is None:
+                # 429 但不带排队头（或 queue-status: rejected）：保持旧行为，
+                # 原样交回错误体，由上层退避；rejected 时补一句便于归因。
+                note = ""
+                try:
+                    qs = str((exc.headers or {}).get("queue-status") or "").strip()
+                except Exception:
+                    qs = ""
+                if qs and qs.lower() != "queued":
+                    note = " (queue-status=%s)" % qs
+                # 服务端退避提示（官方 rS 策略：retry-after-ms 毫秒优先、
+                # retry-after 秒次之）：折成秒追加到文本尾部，上层重试取
+                # max(自家退避, 服务端提示)。只有 429/503 带；400 的 1041
+                # 虽然也带 retry-after-ms: 2000，但官方**不睡它**（并发上限
+                # 只能靠关会话解除），我们照办 —— BUSY 退避本来就起步 2s。
+                hint = _retry_after_hint(exc, exc.code)
+                if hint:
+                    note += hint
+                if note:
+                    return exc.code, None, body_text[:200] + note
+                return exc.code, None, body_text
+            _qlog("joined trace=%s retry_after=%.0fs length=%s wait=%ss"
+                  % (info["trace_id"], info["retry_after"], info["length"],
+                     info["wait"]))
+            status = "queued"
+            while status not in ("promoted", "not_found") and get_failures < 3:
+                now = time.time()
+                if now >= deadline:
+                    _qlog("gave up after %.0fs cap (trace=%s)"
+                          % (QUEUE_MAX_WAIT, info["trace_id"]))
+                    _cancel_queue(info["trace_id"])
+                    return 429, None, (
+                        "429 queued upstream; promotion did not arrive "
+                        "within %.0fs" % QUEUE_MAX_WAIT)
+                # 最多睡到上限为止：服务端给的间隔可能比网关能等的时间长。
+                time.sleep(min(info["retry_after"], deadline - now))
+                try:
+                    status, info = _poll_queue(info)
+                except Exception as exc:       # noqa: BLE001 —— GET 失败可重试
+                    get_failures += 1
+                    _qlog("poll failed (%d/3): %r" % (get_failures, exc))
+            if status != "promoted":
+                _qlog("left queue without promotion (status=%s, failures=%d)"
+                      % (status, get_failures))
+                return 429, None, (
+                    "429 queued upstream; queue status=%s" % status)
+            _qlog("promoted (trace=%s)" % info["trace_id"])
+            continue          # promoted：原样重发（循环顶重签新请求）
+        if idle_timeout is not None:
+            apply_stream_idle_timeout(resp, idle_timeout)
+        return getattr(resp, "status", 200), resp, ""
 
 
 #: ``iter_sse`` 的空闲哨兵：上游 ``idle_timeout`` 秒没吐字节时 yield 它。
@@ -1877,10 +2341,18 @@ def open_chat(access_key, secret_key, security_token, model, messages,
 KEEPALIVE = object()
 
 #: 一次空闲等待的默认秒数。15s 足够小于常见中间层的 60s，又不会太碎。
-STREAM_IDLE_TIMEOUT = float(os.environ.get("CODEARTS_STREAM_IDLE") or 15.0)
+STREAM_IDLE_TIMEOUT = ca_env.number("CODEARTS_STREAM_IDLE", 15.0, minimum=0.5)
 
 #: 连续静默多少次之后认定上游卡死（次数 × STREAM_IDLE_TIMEOUT = 总静默上限）。
-STREAM_MAX_IDLE = int(os.environ.get("CODEARTS_STREAM_MAX_IDLE") or 40)
+STREAM_MAX_IDLE = ca_env.number("CODEARTS_STREAM_MAX_IDLE", 40,
+                                minimum=0, integer=True, zero_ok=True)
+
+#: 静默总时长的**硬上限**（秒）。``STREAM_MAX_IDLE=0``（或面板把次数配成 0）
+#: 表示「关掉这个看门狗」，但本地不能真让一条静默的流无限挂下去 —— 上游
+#: 会话名额会被它一直占着，而本地没有任何东西会来回收。这里给个物理上限：
+#: 超过它就是上游已经不要这条流了。
+IDLE_HARD_CEILING = ca_env.number("CODEARTS_STREAM_IDLE_CEILING", 900.0,
+                                  minimum=1.0)
 
 
 def _stream_socket(resp):
@@ -1895,7 +2367,7 @@ def _stream_socket(resp):
     return getattr(raw, "_sock", None)
 
 
-def _wait_readable(sock, timeout, fp=None):
+def _wait_readable(sock, timeout, fp=None, resp=None):
     """等 socket 变可读，**不碰 socket 自己的读超时**。
 
     返回 True（有数据）/ False（等满了 timeout，上游静默）/ None（这个 socket
@@ -1909,13 +2381,21 @@ def _wait_readable(sock, timeout, fp=None):
     这根连接就永久废了。所以空闲只能靠 select 看 fd，读写超时交还给
     open_chat 的兜底值。
 
-    ``fp`` 是 ``resp.fp``（BufferedReader）。**必须一起看**：socket 可读只说明
-    「内核里有字节」，而 HTTPResponse 读的是上面那层 Python 缓冲 —— 响应头和
-    头几个 body 块常常在同一个 TCP 包里到达，``readline()`` 解析响应头时把
-    body 一起读进了缓冲。此时 fd 上已经没有新字节，select 会一直等到超时，
-    这段时间里明明有数据可读却发不出去（本地 socket 实测首字被推迟 6 秒）；
-    更糟的是连续空等到 max_idle 就把一条完好的流误报成断流。
-    所以先看缓冲里有没有已经收到的字节。
+    ``fp`` / ``resp`` 是 ``resp.fp``（BufferedReader）与响应对象。**必须一起
+    看**：socket 可读只说明「内核里有字节」，而 HTTPResponse 读的是上面那层
+    Python 缓冲 —— 响应头和头几个 body 块常常在同一个 TCP 包里到达，
+    ``readline()`` 解析响应头时把 body 一起读进了缓冲。此时 fd 上已经没有新
+    字节，select 会一直等到超时，这段时间里明明有数据可读却发不出去（本地
+    socket 实测首字被推迟 6 秒）；更糟的是连续空等到 max_idle 就把一条完好的
+    流误报成断流。
+
+    **只看「缓冲里有没有字节」不够**（2026-10-23 的回归）：chunked 每块数据
+    后面跟着 ``\\r\\n``，那一块载荷被 ``read1`` 取走之后，缓冲里还剩着这两个
+    分帧字节。``peek(0)`` 非空 → 判可读 → ``read1`` 进去先吃掉 ``\\r\\n``、
+    再去读下一块的长度行，于是**阻塞在 socket 上**：心跳不再发、静默看门狗
+    与客户端断开检测一起失效（模型长思考时中间层 60~100 秒就切断连接）。
+    所以这里判断的是「缓冲里有没有**可以交付的载荷**」，见
+    ``_buffered_payload``。
     """
     try:
         # TLS 把明文解在内存里时，fd 上可能暂时没有新字节，select 会误判成
@@ -1925,7 +2405,8 @@ def _wait_readable(sock, timeout, fp=None):
             return True
     except Exception:
         pass
-    if _buffered_bytes(fp):
+    buffered = _buffered_payload(fp, resp)
+    if buffered:
         return True
     try:
         fd = sock.fileno()
@@ -1940,22 +2421,20 @@ def _wait_readable(sock, timeout, fp=None):
         return None
 
 
-def _buffered_bytes(fp):
-    """``BufferedReader`` 里已经收到、还没交付给调用方的字节数。
+def _peek_bytes(fp):
+    """非阻塞地看一眼 ``BufferedReader`` 里已收到、尚未交付的字节。
 
-    ``peek(0)`` 是唯一能在**不消费**的前提下问「缓冲里有没有东西」的办法。
-    它默认会为了拿到至少一个字节而阻塞读 socket —— 这在这里正好是灾难（那
-    会绕过 select 的静默判定，还可能撞上 SocketIO 的超时毒化）。所以先暂时
-    把 socket 切成非阻塞：有缓冲就当次返回、没有就返回 ``b""``，然后在
-    finally 里恢复原超时。已实测「非阻塞 peek 失败之后连接仍可正常读」，
-    这也是 ``_wait_readable`` 敢碰它的前提。
+    ``peek(0)`` 是唯一能在**不消费**的前提下看缓冲内容的办法。它默认会为了
+    拿到至少一个字节而阻塞读 socket —— 这在这里正好是灾难（那会绕过 select
+    的静默判定，还可能撞上 SocketIO 的超时毒化）。所以先暂时把 socket 切成
+    非阻塞：有缓冲就当次返回、没有就返回 ``b""``，然后在 finally 里恢复原
+    超时。已实测「非阻塞 peek 失败之后连接仍可正常读」。
 
-    拿不到 fp / 不是 BufferedReader / 任何异常 → 返回 0（当作「缓冲里没有」），
-    宁可多走一次 select，也不能在探测上抛错。
+    拿不到 fp / 不是 BufferedReader / 任何异常 → 返回 ``b""``。
     """
     peek = getattr(fp, "peek", None)
     if not callable(peek):
-        return 0
+        return b""
     sock = None
     try:
         # BufferedReader.raw 是 SocketIO，._sock 才是 socket（同 _stream_socket）
@@ -1965,16 +2444,94 @@ def _buffered_bytes(fp):
             prev = sock.gettimeout()
             sock.setblocking(False)
         try:
-            return len(peek(0) or b"")
+            return peek(0) or b""
         finally:
             if sock is not None:
                 sock.settimeout(prev)
     except (BlockingIOError, OSError, ValueError, AttributeError):
         # 非阻塞 peek 在缓冲为空时可能抛 BlockingIOError（不同版本行为不一），
         # 那就是「没有缓冲数据」；其余异常同样按「不知道」处理。
-        return 0
+        return b""
     except Exception:
-        return 0
+        return b""
+
+
+def _buffered_bytes(fp):
+    """``BufferedReader`` 里已经收到、还没交付给调用方的字节数。
+
+    保留给测试与调用方做体积统计；**判断「能不能立刻读出来」请用
+    ``_buffered_payload``** —— 字节非零不代表 read1 不会阻塞（chunked 的分帧
+    字节就是一例）。
+    """
+    return len(_peek_bytes(fp))
+
+
+def _chunk_payload_ready(data, chunk_left):
+    """按 chunked 分帧判断：``read1`` 能不能只靠缓冲就返回载荷。
+
+    ``data`` 是缓冲里的全部字节（未消费），``chunk_left`` 是
+    ``HTTPResponse.chunk_left``（None = 还没读长度行，0 = 当前块读完了，
+    正数 = 当前块还剩这么多载荷）。
+
+    只有三种情况 ``read1`` 不碰 socket：
+      · 当前块还有载荷（``chunk_left > 0``）且缓冲里有字节 —— read1 直接取；
+      · 缓冲里有一整行长度声明，**且声明后面还有载荷字节**；
+      · 末块（长度 0）且它的结束空行也在缓冲里 —— 只做收尾，不发数据。
+
+    其余一律判「不能立刻读」，交回 select：多等一次 select 的代价是零，而误
+    判一次的代价是心跳停摆、看门狗失效。
+    """
+    if not data:
+        return False
+    pos = 0
+    if isinstance(chunk_left, int):
+        if chunk_left > 0:
+            # 当前块还有载荷：缓冲里有任何字节都能立刻交出去。
+            return True
+        # chunk_left == 0：缓冲以本块的结束 CRLF 开头。
+        if len(data) < 2:
+            return False
+        if data[:2] != b"\r\n":
+            return False
+        pos = 2
+    # 解析下一块的长度声明（允许 chunk-extension，分号之后忽略）
+    end = data.find(b"\r\n", pos)
+    if end < 0:
+        return False
+    size_text = data[pos:end].split(b";")[0].strip()
+    try:
+        size = int(size_text, 16)
+    except ValueError:
+        return False
+    rest = data[end + 2:]
+    if size == 0:
+        # 末块：read1 会读掉 trailer，缓冲里得有它的结束空行才不算阻塞。
+        return rest.startswith(b"\r\n") or rest.startswith(b"\n")
+    return len(rest) > 0
+
+
+def _buffered_payload(fp, resp=None):
+    """缓冲里有没有**可以立刻交付**的载荷字节（而不是分帧/协议开销）。
+
+    ``resp`` 为空时退回「有字节就算有」（老调用方 / 测试的假对象）。
+    """
+    data = _peek_bytes(fp)
+    if not data:
+        return False
+    if resp is None:
+        return True
+    try:
+        if getattr(resp, "chunked", False):
+            return _chunk_payload_ready(data, getattr(resp, "chunk_left", None))
+        # 定长响应：length 是「还剩多少」，读完了就不再有载荷。
+        length = getattr(resp, "length", None)
+        if isinstance(length, int) and length <= 0:
+            return False
+        return True
+    except Exception:
+        # 形状认不出来时按「有载荷」处理：这只会让调用方多试一次 read1，
+        # 而 read1 在缓冲非空时不会阻塞。
+        return True
 
 
 def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
@@ -2006,6 +2563,13 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
     sock = _stream_socket(resp) if idle_timeout else None
     idle_streak = 0
     limit = max_idle if max_idle is not None else STREAM_MAX_IDLE
+    # 0 / 负数一律按「上限关掉了」，但**不能真的无限等**：一条静默的流会挂到
+    # 上游自己超时（实测可达分钟级），这期间账号的并发名额一直被它占着，
+    # 而本地又没有看门狗会回收它。以前 max_idle=0 就是 `if limit and ...`
+    # 永远为假，于是「无限挂着」。
+    # 这里给一个硬上限：IDLE_HARD_CEILING 秒（按硬上限/单次等待折算成次数）。
+    if not limit or limit <= 0:
+        limit = max(1, int(IDLE_HARD_CEILING / max(1.0, float(idle_timeout))))
     # 三个只用于断流归因的计数：socket 到底拿没拿到（拿不到就没有心跳、
     # 也不会续期）、发了几次心跳、最后一次收到字节是什么时候。
     stats["sock"] = sock is not None
@@ -2016,10 +2580,11 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
         if abort_check is not None and abort_check():
             raise ChatAborted("client gone")
         if sock is not None and idle_timeout:
-            # 把 resp.fp 一起传进去：光看 socket 会把「已经在 Python 缓冲里
-            # 的字节」当成静默，首字要等到下一块到达才发得出去（见 _wait_readable）。
+            # 把 resp 与 resp.fp 一起传进去：光看 socket 会把「已经在 Python
+            # 缓冲里的字节」当成静默（见 _wait_readable）；只看「缓冲里有字节」
+            # 又会被 chunked 的分帧 CRLF 骗到（见 _buffered_payload）。
             ready = _wait_readable(sock, idle_timeout,
-                                   getattr(resp, "fp", None))
+                                   getattr(resp, "fp", None), resp)
             if ready is None:
                 # 等不了（假对象 / 已关闭 / 没 fileno）：放弃心跳，退回阻塞读。
                 # 宁可少一条心跳，也不要在这里抛错把好好的流弄断。
@@ -2076,7 +2641,7 @@ def iter_sse(resp, abort_check=None, read_size=8192, stats=None,
 def chat_for_model(access_key, secret_key, security_token, model, messages,
                    max_tokens=256, stream=True, timeout=None, extra=None,
                    tools=None, tool_choice=None, abort_check=None,
-                   session_id=None, idle_timeout=None):
+                   session_id=None, idle_timeout=None, session_retry=None):
     """发一次真实推理，返回 (http 状态码, 原始响应体)。
 
     福利渠道下线后所有模型都走内置通道，不再需要按分组挑请求头。
@@ -2092,7 +2657,7 @@ def chat_for_model(access_key, secret_key, security_token, model, messages,
         access_key, secret_key, security_token, model, messages,
         max_tokens=max_tokens, stream=stream, timeout=timeout, extra=extra,
         tools=tools, tool_choice=tool_choice, session_id=session_id,
-        idle_timeout=idle_timeout)
+        idle_timeout=idle_timeout, session_retry=session_retry)
     if resp is None:
         return status, text
     try:
@@ -2131,8 +2696,36 @@ WELFARE_DAILY_TYPE = "USER_LOGIN"
 #: 失败也缓存（更短），免得接口坏掉时每次轮询都多打一次上游。
 WELFARE_CACHE_TTL = 60.0
 WELFARE_ERROR_TTL = 30.0
+#: **永久失败**（渠道被收回 / 活动下线 / 参数永远不成立）的缓存时长。
+#:
+#: 这类错误重试再多次也是同一句话：上游回的是 ``[4000] invalid channel,
+#: group not found`` 或「活动清单里没有每日签到」，与时间、限流、网络都无关。
+#: 按 30 秒缓存时，面板每 5 秒一次轮询 = 每 30 秒一次必然失败的上游请求，
+#: 一天两千多次，日志与活动历史里堆了几百条一模一样的失败（2026-10-23 实测
+#: 攒到 100 条）。这里按小时级缓存，同时**不再记活动历史**（见
+#: ``welfare_permanent_failure``）—— 同一句永久失败记一次是证据，记一百次是噪声。
+WELFARE_PERMANENT_TTL = 6 * 3600.0
 
 _welfare_cache = {}
+
+
+def welfare_permanent_failure(exc):
+    """这个失败是「上游不会变」的那种吗？
+
+    只有明确的**渠道 / 活动不存在**才算：``invalid channel``、``group not
+    found``、``activity not found``、清单里根本没有每日签到那一条。判据必须
+    窄 —— 把 401（STS 过期，重新授权就好）、429（限流，等一会儿就好）、
+    5xx（抖动）算成永久失败，等于把一个能自愈的问题永久钉死。
+    """
+    text = str(getattr(exc, "message", "") or exc or "")
+    low = text.lower()
+    return any(marker in low for marker in (
+        "invalid channel",
+        "group not found",
+        "activity not found",
+        "没有「每日签到」",
+        "活动清单里没有",
+    ))
 
 
 def _welfare_item(raw):
@@ -2192,7 +2785,9 @@ def welfare_activities(access_key, secret_key, security_token,
     """积分活动清单。返回 {"channel", "items", "daily"}。
 
     ``daily`` 是「每日签到」那一条（type=USER_LOGIN），没有就是 None。
-    结果按 AK 缓存 WELFARE_CACHE_TTL 秒；失败缓存 WELFARE_ERROR_TTL 秒。
+    结果按 AK 缓存 WELFARE_CACHE_TTL 秒；失败缓存 WELFARE_ERROR_TTL 秒，
+    **永久失败**（渠道被收回之类）缓存 WELFARE_PERMANENT_TTL 秒 —— 见
+    welfare_permanent_failure 的说明。
     """
     key = access_key or ""
     now = time.time()
@@ -2208,7 +2803,9 @@ def welfare_activities(access_key, secret_key, security_token,
                                 query={"channel": WELFARE_CHANNEL},
                                 timeout=timeout)
     except Exception as exc:
-        _welfare_cache[key] = (now + WELFARE_ERROR_TTL, None, str(exc))
+        ttl = (WELFARE_PERMANENT_TTL if welfare_permanent_failure(exc)
+               else WELFARE_ERROR_TTL)
+        _welfare_cache[key] = (now + ttl, None, str(exc))
         raise
     items = [_welfare_item(raw) for raw in (data.get("items") or [])
              if isinstance(raw, dict)]
@@ -2349,15 +2946,36 @@ def load_sessions(accounts_dir):
 
 
 def save_session(accounts_dir, session, path=None):
-    """原子落盘。返回文件路径。"""
+    """原子落盘。返回文件路径。
+
+    **权限收紧到 0600**（2026-10-23）：这个文件里躺着 accessKey / secretKey /
+    securitytoken / refresh_token 和 DPoP 私钥 —— 等于账号的完整所有权。
+    以前用 ``open()`` 默认权限（Linux/macOS 上受 umask 影响，通常 0644），
+    同一台机器上的任何用户都能读走它。``os.open`` 带 ``mode=0o600`` 才是
+    真的收得住：``open()`` 的 mode 参数不存在，事后 ``chmod`` 又有窗口期。
+    """
     directory = session_dir(accounts_dir)
     os.makedirs(directory, exist_ok=True)
     account_id = (session.get("account") or {}).get("id") or "unknown"
     target = path or session_path(accounts_dir, account_id)
     tmp = "%s.%d.%d.tmp" % (target, os.getpid(), threading.get_ident())
     try:
-        with open(tmp, "w", encoding="utf-8") as fh:
-            json.dump(session, fh, ensure_ascii=False, indent=2)
+        raw = json.dumps(session, ensure_ascii=False, indent=2).encode("utf-8")
+        # 0o600 在 Windows 上会被忽略（Windows 用 ACL，没有 POSIX 位），
+        # 那里靠 %APPDATA% / %LOCALAPPDATA% 的用户隔离，行为与以前一致。
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+        fd = os.open(tmp, flags, 0o600)
+        try:
+            os.write(fd, raw)
+        finally:
+            os.close(fd)
+        try:
+            # umask 会从 0o600 里再抹掉位（常见 022 不影响，077 会变成 0o600
+            # 本身 —— 已经够紧）；无条件再 chmod 一次，避免 umask 0177 把
+            # 文件写成 0o400 之后续期写不进去。
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
         os.replace(tmp, target)
     except Exception:
         try:
@@ -2377,7 +2995,8 @@ def delete_session(accounts_dir, account_id):
 
 
 #: STS 剩余寿命低于这个值就自动续期。码道 STS 只有约 2 小时寿命。
-REFRESH_MARGIN_SECONDS = float(os.environ.get("CODEARTS_REFRESH_MARGIN") or 300)
+REFRESH_MARGIN_SECONDS = ca_env.number("CODEARTS_REFRESH_MARGIN", 300.0,
+                                       minimum=0.0, zero_ok=True)
 
 #: refresh_token 一次性轮换：两个线程同时拿同一个旧 token 去换，后到的必然
 #: 1806。这里把「重读存档 → 换 token → 落盘」整段串行化，进程内只可能有一个
@@ -2512,9 +3131,24 @@ class LoginManager:
                 "mode": "new_iam_login", "expiresIn": LOGIN_TTL_SECONDS}
 
     def _current(self):
-        """回调不带 state，只能按「唯一 pending」定位。"""
+        """回调不带 state，只能按「唯一 pending」定位。
+
+        **过期在取用时就判**：``/oauth/callback`` 是免鉴权入口，以前只有
+        ``poll()`` 和 ``sweep()`` 看 TTL，而 ``accept_callback`` 不看 ——
+        一条发起后放弃的登录链接会永远有效。结果是任何人都能拿它把自己
+        的华为云账号塞进网关（或把真正在登录的那个人挤掉）。
+        """
+        now = time.time()
         with self._lock:
-            live = [r for r in self._pending.values() if r["status"] == "pending"]
+            live = []
+            for record in self._pending.values():
+                if record["status"] != "pending":
+                    continue
+                if now - record["created"] > LOGIN_TTL_SECONDS:
+                    record["status"] = "expired"
+                    record["message"] = "登录窗口已过期（10 分钟），请重新发起"
+                    continue
+                live.append(record)
             if not live:
                 return None
             return max(live, key=lambda r: r["created"])
@@ -2576,10 +3210,16 @@ class LoginManager:
                 "status": record["status"],
                 "message": record["message"],
                 "error": record.get("error") or "",
-                "account": record.get("account"),
+                # **只给摘要，不给凭据**（2026-10-23）。以前这里返回完整的
+                # session：accessKey / secretKey / securitytoken / refresh_token
+                # / DPoP 私钥。这条路是面板轮询用的，而面板只是个浏览器页面 ——
+                # 一次 XSS、一个扩展、一段被截的 HAR 就能把账号整个搬走。
+                # 面板真正需要的只有「成功没成功、是哪个号」。
+                "account": (summarize(record["account"])
+                            if record.get("account") else None),
             }
-        if snapshot["account"]:
-            snapshot["summary"] = summarize(snapshot["account"])
+        # 面板读的是 summary.account（老字段名），保持兼容：两个键同一个值。
+        snapshot["summary"] = snapshot["account"]
         return snapshot
 
     def cancel(self, state):
@@ -2595,8 +3235,21 @@ class LoginManager:
                 self._pending.pop(state, None)
 
 
+def _html_escape(value):
+    """HTML 转义。回调页把上游错误文本、跳转地址写进页面，那些都是外部输入。"""
+    import html as _html
+    return _html.escape(str(value or ""), quote=True)
+
+
 def callback_page(ok, title, detail):
-    """回调落地页。浏览器里直接看到，所以要写成人话。"""
+    """回调落地页。浏览器里直接看到，所以要写成人话。
+
+    **所有插值都转义**：``detail`` 里可能带上游回显的错误文本，而
+    ``/oauth/callback`` 是**免鉴权**的路由（浏览器跳回来时带不了面板令牌）。
+    以前直接 ``%`` 插进 HTML，一个精心构造的错误说明就是一段可执行的脚本，
+    能读走 localStorage 里的 API key。``title`` 虽然只有内部常量，也一并转义
+    —— 「只有常量」这种假设迟早会被下一个改动打破。
+    """
     color = "#16a34a" if ok else "#dc2626"
     icon = "✓" if ok else "✕"
     hint = ("可以关闭此页面，回到网关面板查看账号。"
@@ -2620,5 +3273,6 @@ body{background:#0d1117;color:#e6edf3}
 p{color:#8b949e}.tip{color:#6e7681}}
 </style></head><body><div class="card">
 <div class="badge">%s</div><h1>%s</h1><p>%s</p><div class="tip">%s</div>
-</div></body></html>""" % (title, color, icon, title, detail or "", hint)
+</div></body></html>""" % (_html_escape(title), color, icon, _html_escape(title),
+                          _html_escape(detail), _html_escape(hint))
 

@@ -273,15 +273,6 @@ check("摘要模式为 new_iam_login", _sum["mode"] == "new_iam_login")
 _expired = C.summarize(_session, now=C.parse_iso8601("2026-10-17T05:40:18.715Z"))
 check("过期后摘要标记 sts_expired", _expired["sts_expired"] is True)
 
-_ticket = C.session_from_ticket({
-    "user_id": "u1", "user_name": "hid_x", "domain_id": "d1",
-    "credential": {"access": "AK", "secret": "SK", "securitytoken": "ST",
-                   "expires_at": "2026-10-17T10:00:00Z"},
-}, dpop_key=_key, pkce=_pkce)
-check("ticket 通道也归一出会话", _ticket["accessKey"] == "AK" and _ticket["accessKey"] != "")
-check("ticket 通道没有 refresh_token", _ticket["refresh_token"] == "")
-check("ticket 通道摘要为 old_login", C.summarize(_ticket)["mode"] == "old_login")
-
 try:
     C.session_from_iam_response({"refresh_token": ""}, _key, _pkce)
     check("缺少 credentials 时抛错", False)
@@ -865,59 +856,6 @@ check("过期但可续期的会话仍能刷新出模型",
 # 但前提是部署真的配了码道账号：纯 WorkBuddy 部署里这些名字在 /v1/models
 # 挂的是 WorkBuddy 条目，拐去码道只会让清单里列得出来的模型必然 503。
 
-print()
-print("== 重名模型的归属 ==")
-
-_ROUTE_DIR = tempfile.mkdtemp(prefix="wb-codearts-route-")
-os.makedirs(os.path.join(_ROUTE_DIR, C.SESSION_SUBDIR), exist_ok=True)
-with open(os.path.join(_ROUTE_DIR, C.SESSION_SUBDIR, "acct.json"), "w",
-          encoding="utf-8") as _fh:
-    json.dump({"accessKey": "AK", "secretKey": "SK", "securitytoken": "TK",
-               "account": {"id": "acct", "label": "acct"},
-               "expires_at": "2099-01-01T00:00:00.000Z"}, _fh)
-_saved_acc_dir = P.ACCOUNTS_DIR
-P.ACCOUNTS_DIR = _ROUTE_DIR
-check("配了码道账号后重名模型归码道",
-      P.routes_to_codearts("deepseek-v4.1-flash"))
-check("非码道模型永远不归码道", not P.routes_to_codearts("hy4-preview"))
-
-_NO_CS_DIR = tempfile.mkdtemp(prefix="wb-no-codearts-")
-P.ACCOUNTS_DIR = _NO_CS_DIR
-check("没有码道账号时重名模型留在 WorkBuddy 池",
-      not P.routes_to_codearts("deepseek-v4.1-flash"))
-P.ACCOUNTS_DIR = _ROUTE_DIR
-
-
-# ---------------------------------------------------------------------------
-# 清单归属必须跟分流一致
-# ---------------------------------------------------------------------------
-#
-# /v1/models 里那个 owned_by 是给客户端看的：它说这条模型归谁，请求就会发给谁。
-# 归属原来只跟着「码道目录这次取到了没有」走，上游抖动 / STS 过期时目录取空，
-# 条目就留在 owned_by=workbuddy 上，而请求其实拐去了码道 —— 清单在撒谎。
-
-print()
-print("== 清单归属跟着分流走 ==")
-
-_owned = [
-    {"id": "deepseek-v4.1-flash", "owned_by": "workbuddy"},
-    {"id": "hy4-preview", "owned_by": "workbuddy"},
-]
-P.mark_codearts_ownership(_owned)
-check("配了码道账号时重名条目标成 codearts",
-      _owned[0].get("owned_by") == "codearts"
-      and _owned[0].get("routed_via") == "codearts", _owned)
-check("不归码道的模型归属不动",
-      _owned[1].get("owned_by") == "workbuddy", _owned)
-
-P.ACCOUNTS_DIR = _NO_CS_DIR
-_owned2 = [{"id": "deepseek-v4.1-flash", "owned_by": "workbuddy"}]
-P.mark_codearts_ownership(_owned2)
-check("没有码道账号时归属保持 workbuddy",
-      _owned2[0].get("owned_by") == "workbuddy", _owned2)
-P.ACCOUNTS_DIR = _ROUTE_DIR
-
-
 # ---------------------------------------------------------------------------
 # /v1/models：只列码道（WorkBuddy 池已移除）
 # ---------------------------------------------------------------------------
@@ -1359,7 +1297,7 @@ _seen = {}
 def _fake_chat(ak, sk, tok, model, messages, max_tokens=None, stream=True,
                extra=None, timeout=None, tools=None, tool_choice=None,
                abort_check=None, aborted=None, session_id=None,
-               header_timeout=None, idle_timeout=None):
+               header_timeout=None, idle_timeout=None, session_retry=None):
     # 桩要跟上真实签名：tools / tool_choice（2026-10-21 透传）、
     # abort_check（2026-10-22 客户端断开感知）。漏一个关键字参数就是
     # TypeError，测出来像「角色归一坏了」，其实是桩老了。
@@ -1372,6 +1310,7 @@ def _fake_chat(ak, sk, tok, model, messages, max_tokens=None, stream=True,
     _seen["tool_choice"] = tool_choice
     _seen["abort_check"] = abort_check
     _seen["session_id"] = session_id
+    _seen["session_retry"] = session_retry
     return 200, (
         'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n'
         'data: {"usage":{"prompt_tokens":1,"completion_tokens":1,'
@@ -1381,9 +1320,8 @@ def _fake_chat(ak, sk, tok, model, messages, max_tokens=None, stream=True,
 class _FakePool:
     """测试替身：固定给同一个会话，不碰真实账号目录。
 
-    2026-10-22 起码道路径每轮都向 _CODEARTS_POOL 要号（多账号负载/故障转移），
-    不再直接调 pick_codearts_session —— 桩要打在新接缝上，否则会真读磁盘、
-    拿不到账号就直接 503。
+    码道路径每轮都向 _CODEARTS_POOL 要号（多账号负载/故障转移）——
+    桩要打在这条接缝上，否则会真读磁盘、拿不到账号就直接 503。
     """
 
     def __init__(self, sess):
@@ -1412,7 +1350,6 @@ class _FakePool:
         return {"a": {"in_flight": 0, "cooling_s": 0.0}}
 
 
-_saved_pick = P.pick_codearts_session
 _saved_pool = P._CODEARTS_POOL
 _saved_chat, _saved_hb = C.chat_for_model, C.heartbeat
 _saved_record = P.record_usage
@@ -1434,7 +1371,6 @@ try:
         want_stream=False)
 finally:
     P._CODEARTS_POOL = _saved_pool
-    P.pick_codearts_session = _saved_pick
     C.chat_for_model = _saved_chat
     C.heartbeat = _saved_hb
     P.record_usage = _saved_record
@@ -1470,8 +1406,7 @@ for payload, expect, label in _mapping:
 def _run_with(payload):
     """跑一次码道聚合，返回 fake 收到的 extra。"""
     _seen.clear()
-    saved_pick, saved_chat, saved_rec = (P.pick_codearts_session,
-                                         C.chat_for_model, P.record_usage)
+    saved_chat, saved_rec = C.chat_for_model, P.record_usage
     saved_hb = C.heartbeat
     C.heartbeat = lambda *a, **k: (True, "ok")
     saved_pool = P._CODEARTS_POOL
@@ -1490,7 +1425,6 @@ def _run_with(payload):
         return _seen.get("extra")
     finally:
         P._CODEARTS_POOL = saved_pool
-        P.pick_codearts_session = saved_pick
         C.chat_for_model = saved_chat
         C.heartbeat = saved_hb
         P.record_usage = saved_rec
@@ -1568,8 +1502,9 @@ check("正好等于模型上限的值不动（65536 是能力，不是错值）"
 check("kimi-k3 的 128000 也夹到 65536",
       C.clamp_max_tokens("kimi-k3", 128000) == (65536, True),
       C.clamp_max_tokens("kimi-k3", 128000))
-check("kimi-k3 输入窗口不编数字（上游没给，留 0）",
-      C.BUILTIN_MODEL_LIMITS["kimi-k3"][0] == 0,
+check("kimi-k3 输入窗口 = kernel 真值 1044480（2026-10-24 从官方 kernel 日志补全；"
+      "AgentCenter 真值刷新上线后此表会自动跟活数据走）",
+      C.BUILTIN_MODEL_LIMITS["kimi-k3"][0] == 1044480,
       C.BUILTIN_MODEL_LIMITS["kimi-k3"])
 check("表里没有的模型不夹（别用猜的数改坏本来能过的请求）",
       C.clamp_max_tokens("kimi-k2.6-vl", 128000) == (128000, False),
@@ -1658,9 +1593,6 @@ check("无 tool 调用时返回空列表", S2.collect_sse(
 
 # ---------------------------------------------------------------------------
 
-P.ACCOUNTS_DIR = _saved_acc_dir
-shutil.rmtree(_ROUTE_DIR, ignore_errors=True)
-shutil.rmtree(_NO_CS_DIR, ignore_errors=True)
 
 # ---------------------------------------------------------------------------
 # 体验版积分：credit_package 的解析口径
@@ -2208,9 +2140,19 @@ _pool3 = P._CodeartsAccountPool()
 _pool3._usable = lambda: [_sess("a"), _sess("b")]
 _pool3.penalize("a", 30)
 _pool3.penalize("b", 60)
+# 全在冷却时**不再直接拿最早解冻的那个**：那等于冷却没作用（单账号部署里
+# 就是每次都撞同一堵墙）。等不到就如实返回「没有可用号」，由调用方回 429。
 _pick3, _pk3 = _pool3.acquire(0)
-check("全在冷却时挑最早解冻的（不饿死）", _pk3 == "a", _pk3)
-_pool3.release(_pk3)
+check("全在冷却时如实返回没有可用号（不再硬塞一个进冷却的号）",
+      _pick3 is None and _pk3 is None, (_pick3, _pk3))
+# 预算够长时会等到最早的那条解冻
+_pool4 = P._CodeartsAccountPool()
+_pool4._usable = lambda: [_sess("a"), _sess("b")]
+_pool4.penalize("a", 0.1)
+_pool4.penalize("b", 60)
+_pick4, _pk4 = _pool4.acquire(2.0)
+check("预算够长时等到解冻再用（不饿死）", _pk4 == "a", _pk4)
+_pool4.release(_pk4)
 
 # 故障转移：A 号报「并发会话已满」→ 给 A 打冷却、立刻换 B
 _saved_pool, _saved_open, _saved_hb2 = P._CODEARTS_POOL, C.open_chat, C.heartbeat

@@ -133,11 +133,6 @@ def _has_cjk(text):
 _LOGGER = None
 
 
-def set_logger(fn):
-    global _LOGGER
-    _LOGGER = fn if callable(fn) else None
-
-
 def _log(msg, level="INFO", tag="webtools"):
     logger = _LOGGER
     if logger is None:
@@ -323,6 +318,26 @@ def _egress_proxy():
     return raw
 
 
+def _connected_peer_is_public(resp):
+    """连接**实际用的**对端地址是不是公网。拿不到就返回 None（不妄下结论）。
+
+    为什么要在连上之后再看一次：``_guard_url(resolve=True)`` 校验的是它自己
+    那次 DNS 解析的结果，而 urllib 随后会**再解析一次**。中间这点时间足够
+    一次 DNS rebinding 把同一个域名指到 169.254.169.254（云元数据）或内网
+    地址上 —— 校验全过，连接却落在内网（2026-10-23 审查提到的那条竞态）。
+    连上之后问内核「你到底连到哪了」，是唯一没有窗口的判据。
+    """
+    try:
+        sock = resp.fp.raw._sock
+        peer = sock.getpeername()
+    except Exception:
+        return None
+    addr = peer[0] if isinstance(peer, tuple) and peer else ""
+    if not addr:
+        return None
+    return _ip_is_public(addr)
+
+
 def _open_url(url, timeout=HTTP_TIMEOUT, max_bytes=MAX_BODY_BYTES, accept=None):
     """GET 一个网址，回传 (raw_bytes, status, content_type, charset)。失败抛例外。"""
     headers = {
@@ -339,6 +354,12 @@ def _open_url(url, timeout=HTTP_TIMEOUT, max_bytes=MAX_BODY_BYTES, accept=None):
     opener = urllib.request.build_opener(*handlers)
     _throttle()
     with opener.open(req, timeout=timeout) as resp:
+        # 连上之后复核对端：DNS 在「校验」与「连接」之间被换掉时，这一条是
+        # 最后一道、也是唯一没有时间窗的闸（见 _connected_peer_is_public）。
+        peer_ok = _connected_peer_is_public(resp)
+        if peer_ok is False:
+            raise _UnsafeRedirectError(
+                "connected peer is not a public address (DNS rebinding?)")
         raw = resp.read(max_bytes + 1)
         if len(raw) > max_bytes:
             raw = raw[:max_bytes]
@@ -865,25 +886,6 @@ def web_fetch_tool_def():
 # 宣告替换（照旧）
 # ---------------------------------------------------------------------------
 
-def _declared(tools, types):
-    for t in tools or []:
-        if not isinstance(t, dict):
-            continue
-        if str(t.get("type") or "").strip().lower() in types:
-            return True
-        # 有些客户端会把它包成 function 形状
-        if str(t.get("name") or "").strip().lower() in types:
-            return True
-    return False
-
-
-def client_wants_web(tools):
-    """客户端宣告了哪几个网路工具（伺服器端或 function 形状都算）。"""
-    return {
-        "search": _declared(tools, SEARCH_DECL_TYPES + (WEB_SEARCH_NAME,)),
-        "fetch": _declared(tools, FETCH_DECL_TYPES + (WEB_FETCH_NAME,)),
-    }
-
 
 def install_tool_defs(chat_tools, wants):
     """把客户端的网路工具宣告换成我们的 function。
@@ -1059,22 +1061,6 @@ def fetch(url, start_index=0):
     return head + chr(10) + chr(10) + text[start:end] + tail
 
 
-def sources_from_result(result):
-    """把搜寻结果里的 (标题, 网址) 读回来。
-
-    喂给模型的是文字，但客户端要画引用来源需要结构化资料，所以在这里从我们
-    自己产出的格式反解，不必另外保存状态。
-    """
-    out = []
-    pattern = r"(?m)^\d+\.\s*(.+?)\s*\n\s*(https?://\S+)\s*$"
-    for m in re.finditer(pattern, str(result or "")):
-        url = m.group(2).strip().rstrip(".,;:!?")
-        title = m.group(1).strip()
-        if url and not any(s["url"] == url for s in out):
-            out.append({"title": title or url, "url": url})
-    return out
-
-
 def execute(name, args_raw):
     """执行一次内部网路工具。永不抛例外，永远回一句能喂回模型的字串。"""
     name = str(name or "").strip()
@@ -1098,3 +1084,4 @@ def execute(name, args_raw):
         return "Error: %s is not a tool this gateway runs." % name
     except Exception as exc:
         return "Error running %s: %s: %s" % (name, type(exc).__name__, exc)
+

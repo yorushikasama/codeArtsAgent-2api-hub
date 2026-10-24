@@ -39,8 +39,6 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import ca_codearts as C        # noqa: E402
-import ca_protocol as Q        # noqa: E402
 import ca_proxy as P           # noqa: E402
 import ca_stream as S          # noqa: E402
 
@@ -235,6 +233,14 @@ class _Lease:
 
     def close(self):
         self.closed = True
+
+    # 真实租约把「关连接」和「idle + 还名额」拆开了（见 _CodeartsLease）：
+    # close_upstream 先执行，[DONE] 之后才 release_slot。
+    def close_upstream(self):
+        self.closed = True
+
+    def release_slot(self):
+        self.slot_released = True
 
 
 def _run_chat(lines):

@@ -6,6 +6,8 @@ services:
     image: codearts-hub:local
     container_name: codearts-hub
     restart: unless-stopped
+    # 同 docker-compose.yml：给收尾留出超过 docker 默认 10 秒 SIGKILL 的窗口。
+    stop_grace_period: 30s
     ports:
       - "8788:8788"
     environment:

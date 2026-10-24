@@ -185,7 +185,7 @@ check("the launcher key gets a row when it is configured",
 # 也归一到这一侧，于是两行落在同一个 realm 上。
 check("no key can span exits any more",
       by_key["k-follow"]["cross_realm"] is False
-      and sorted(by_key["k-follow"]["realms"]) == ["cn"])
+      and sorted(by_key["k-follow"]["realms"]) == [P.DEFAULT_REALM])
 check("a key that only ever used one exit is not",
       by_key["k1"]["cross_realm"] is False)
 check("the model list is capped", len(by_key["k-wide"]["models"]) == P.KEY_MODEL_TOP_N)

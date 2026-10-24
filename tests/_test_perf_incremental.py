@@ -46,6 +46,13 @@ os.environ["ACCOUNTS_DIR"] = ACCOUNTS_DIR
 
 import ca_proxy as P
 
+
+def _ref_pct(values, q):
+    """与生产同口径的最近秩百分位（perf 测试的参照实现）。"""
+    ordered = sorted(values)
+    idx = int(round((q / 100.0) * (len(ordered) - 1)))
+    return ordered[max(0, min(len(ordered) - 1, idx))]
+
 P.ACCOUNTS_DIR = ACCOUNTS_DIR
 P.POOL = None                     # 归属只走行自己的字段/模型前缀，可确定
 P.CURRENT_REALM = "intl"
@@ -208,8 +215,8 @@ def ref_perf_stats(sample=5000, realm=None, since=None, until=None):
             return None
         return {
             "avg": round(sum(vals) / len(vals), 1),
-            "p50": P._pct(vals, 50),
-            "p90": P._pct(vals, 90),
+            "p50": _ref_pct(vals, 50),
+            "p90": _ref_pct(vals, 90),
             "p99": P._pct(vals, 99),
             "max": max(vals),
             "samples": len(vals),

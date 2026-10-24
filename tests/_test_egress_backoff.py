@@ -13,21 +13,15 @@ credential); 401/403/429 already have their own paths.
 No network: accounts are built from dicts, the upstream call is stubbed, and
 time.sleep is recorded instead of slept.
 """
-import io
-import json
 import os
 import sys
-import tempfile
 import time
 import unittest
-import urllib.error
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import ca_egress
-import ca_proxy
-import ca_settings
 import ca_upstream_pool
 
 

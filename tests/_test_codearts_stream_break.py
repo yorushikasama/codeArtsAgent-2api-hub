@@ -174,6 +174,14 @@ class _Lease:
     def close(self):
         self.closed = True
 
+    # 真实租约把「关连接」和「idle + 还名额」拆开了（见 _CodeartsLease）：
+    # close_upstream 先执行，[DONE] 之后才 release_slot。
+    def close_upstream(self):
+        self.closed = True
+
+    def release_slot(self):
+        self.slot_released = True
+
 
 def _run(leases):
     """依次把 leases 发给 handler，返回 handler 与解码后的 SSE 文本。"""
@@ -636,13 +644,22 @@ class _DataResp:
     def close(self):
         self.closed = True
 
+    # 真实租约把「关连接」和「idle + 还名额」拆开了（见 _CodeartsLease）：
+    # close_upstream 先执行，[DONE] 之后才 release_slot。
+    def close_upstream(self):
+        self.closed = True
+
+    def release_slot(self):
+        self.slot_released = True
+
 
 _wait_script = []
 
 
-def _fake_wait(_sock, _timeout, _fp=None):
-    # 第三个参数是 resp.fp（见 _wait_readable：光看 socket 会把 Python 缓冲里
-    # 已收到的字节当成静默）。桩按剧本返回，不关心 fp。
+def _fake_wait(_sock, _timeout, _fp=None, _resp=None):
+    # 第三个参数是 resp.fp、第四个是 resp（见 _wait_readable：光看 socket 会把
+    # Python 缓冲里已收到的字节当成静默；而 chunked 分帧的 \r\n 又不能当载荷）。
+    # 桩按剧本返回，不关心这两个。
     return _wait_script.pop(0) if _wait_script else True
 
 
@@ -940,7 +957,15 @@ check("两个 penalty 都带上", _s.get("presence_penalty") == 0.5
       and _s.get("frequency_penalty") == -0.5, _s)
 
 _s2 = C.sampling_extra_from({"stop": ["a", "b", "c", "d", "e", "f"]})
-check("stop 超过 4 条裁掉", _s2 == {"stop": ["a", "b", "c", "d"]}, _s2)
+check("stop 超过 4 条裁掉（并报告裁了几条，不再静默）",
+      _s2 == {"stop": ["a", "b", "c", "d"], "stop_dropped": 2}, _s2)
+check("4 条以内不带 stop_dropped",
+      C.sampling_extra_from({"stop": ["a", "b"]}) == {"stop": ["a", "b"]},
+      C.sampling_extra_from({"stop": ["a", "b"]}))
+check("stop_dropped 是内部标记，不会发给上游",
+      "stop_dropped" not in (P._codearts_extra({"stop": ["a", "b", "c", "d", "e"]})
+                             or {}),
+      P._codearts_extra({"stop": ["a", "b", "c", "d", "e"]}))
 
 _s3 = C.sampling_extra_from({"temperature": "abc", "top_p": [1], "seed": True,
                              "stop": 3, "n": 2})
@@ -1083,7 +1108,7 @@ try:
     check("合法补丁原样收下", _ok == {"concurrency": 3, "tpm_cooldown": 45}, _ok)
 
     for _bad, _why in (({"concurrency": 0}, "下限"),
-                       ({"concurrency": 9}, "上限"),
+                       ({"concurrency": 4}, "上限（上游只有 3 个会话名额）"),
                        ({"concurrency": True}, "布尔"),
                        ({"concurrency": 2.5}, "小数"),
                        ({"nope": 1}, "未知键")):
@@ -1123,10 +1148,10 @@ try:
         check("未知键退回内置默认",
               P._codearts_seconds("nope", 12) == 12.0,
               P._codearts_seconds("nope", 12))
-        S.set_codearts_config(_tmp12, {"concurrency": 5})
+        S.set_codearts_config(_tmp12, {"concurrency": 3})
         P._CODEARTS_TUNING.update({"at": 0.0, "cfg": None})
         check("每账号并发实时读面板值（不用重启）",
-              P.codearts_concurrency() == 5, P.codearts_concurrency())
+              P.codearts_concurrency() == 3, P.codearts_concurrency())
         with open(os.path.join(_tmp12, "settings.json"), "w",
                   encoding="utf-8") as _fh:
             json.dump({"codearts": {"concurrency": 99}}, _fh)
@@ -1149,10 +1174,12 @@ check("信号量：取满后非阻塞取不到",
       _sem.acquire(False) and _sem.acquire(False) and not _sem.acquire(False), None)
 _sem.release()
 check("信号量：释放一个就能再取一个", _sem.acquire(False), None)
+# 上限是上游名额数（3），不是 8：retune(4) 会被夹到 3。
+# 此刻在跑 2 个（取满后又 release+acquire 过一次），所以调到 3 只能再进 1 个。
 _sem.retune(4)
-check("信号量：调大后空闲数按在跑数换算",
-      _sem.capacity == 4 and _sem.acquire(False) and _sem.acquire(False)
-      and not _sem.acquire(False), None)
+check("信号量：调大后空闲数按在跑数换算（上限夹到上游名额 3）",
+      _sem.capacity == 3 and _sem.acquire(False)
+      and not _sem.acquire(False), (_sem.capacity, P.CODEARTS_UPSTREAM_SLOTS))
 _sem.retune(1)
 check("信号量：调小不踢在跑的，只收紧新名额",
       _sem.capacity == 1 and not _sem.acquire(False), None)
@@ -1160,6 +1187,23 @@ for _ in range(3):
     _sem.release()
 check("信号量：多还的不会把容量撑大",
       _sem.capacity == 1 and _sem.acquire(False), None)
+
+# 缩容再扩容**不能**凭空多放行一个：容量 2 改成 1、再改回 2，实际最多还是 2。
+# 旧实现用 capacity-free 反推在跑数，缩容时把 free 压到 0，之后任意一个
+# release 都会把名额加回去，扩回来就成了 3 —— 正好打满上游的 3 个会话名额。
+_sem_shrink = P._ResizableSemaphore(2)
+_sem_shrink.acquire(False)
+_sem_shrink.acquire(False)
+_sem_shrink.retune(1)
+_sem_shrink.release()
+_sem_shrink.retune(2)
+_admitted = 0
+while _sem_shrink.acquire(False):
+    _admitted += 1
+    if _admitted > 4:        # 防死循环：真坏了也别把套件挂住
+        break
+check("信号量：缩容再扩容不会多放行（2→1→2 仍是最多 2）",
+      _admitted == 1, (_admitted, _sem_shrink.capacity))
 
 # 面板要显示「在跑几条 / 容量几格」，容量必须取信号量的实时值，
 # 不能是进程启动时的配置快照。
@@ -1169,9 +1213,10 @@ try:
     _snap = _pool_snap.snapshot()
     check("snapshot 带每号实时容量",
           _snap.get("acct-x", {}).get("capacity") == _sem_snap.capacity, _snap)
+    # retune 的上限是上游名额数（3）：面板填 5 也只会被夹到 3。
     _sem_snap.retune(5)
-    check("容量调过之后 snapshot 跟着变",
-          _pool_snap.snapshot()["acct-x"]["capacity"] == 5,
+    check("容量调过之后 snapshot 跟着变（并被夹到上游名额 3）",
+          _pool_snap.snapshot()["acct-x"]["capacity"] == P.CODEARTS_UPSTREAM_SLOTS,
           _pool_snap.snapshot())
 finally:
     import shutil as _shutil5
@@ -1308,8 +1353,11 @@ check("model 透传、id 补 msg_ 前缀",
       _start["model"] == "deepseek-v3" and _start["id"].startswith("msg_"), _start)
 _delta = [d for n, d in _ev if n == "message_delta"][0]
 check("stop_reason=end_turn 且用量含缓存命中",
+      # input_tokens 是「新读入」的部分：上游 prompt_tokens=11 里已包含
+      # 命中的 7，而 Anthropic 的 input_tokens 不含缓存（缓存另计）。
+      # 18 - 7 = 11... 这里上游给的是 11/3/cache 7，所以新读入是 4。
       _delta["delta"]["stop_reason"] == "end_turn"
-      and _delta["usage"]["input_tokens"] == 11
+      and _delta["usage"]["input_tokens"] == 4
       and _delta["usage"]["output_tokens"] == 3
       and _delta["usage"]["cache_read_input_tokens"] == 7, _delta)
 check("上游原始用量交回调用方（否则用量行全空）",
@@ -1751,7 +1799,8 @@ check("tool_use 的 input 被解析成对象、id 原样保留",
       _msg["content"][2]["input"] == {"tz": "CST"}
       and _msg["content"][2]["id"] == "call_1", _msg["content"][2])
 check("stop_reason 与 usage 都映射到 Anthropic 口径",
-      _msg["stop_reason"] == "tool_use" and _msg["usage"]["input_tokens"] == 9
+      # input_tokens 不含缓存（9 = 7 新读入 + 2 命中）。
+      _msg["stop_reason"] == "tool_use" and _msg["usage"]["input_tokens"] == 7
       and _msg["usage"]["cache_read_input_tokens"] == 2, (_msg["stop_reason"], _msg["usage"]))
 check("id 补 msg_ 前缀、model 透传",
       _msg["id"].startswith("msg_") and _msg["model"] == "glm-5.3", _msg["id"])

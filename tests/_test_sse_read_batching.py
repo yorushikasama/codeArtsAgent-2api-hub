@@ -30,7 +30,6 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # Its own directories, removed when this process exits.
 _TMP = isolated_data_dirs("wb-sse-read-batching-")
 
-import ca_proxy as P
 import ca_protocol as Q  # noqa: E402
 
 PASS = 0

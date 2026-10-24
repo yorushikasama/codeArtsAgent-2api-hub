@@ -127,6 +127,27 @@ def _digest(password, salt_hex, rounds=PBKDF2_ROUNDS):
 # （现网所有 setter 都只改顶层键再 save()，嵌套值按约定只读），改返回值也不会
 # 弄脏缓存。
 _load_cache = {"key": None, "value": {}}
+#: 上一次读盘是不是「文件在、但读不出来」。鉴权侧必须区分这两件事：
+#: 全新安装（文件不存在）该当成没配置；而**文件损坏 / 读失败**绝不能当成
+#: 「没配置」—— 那样一次磁盘抖动就把 API key 与面板密码一起关掉了。
+_load_error = {"path": None, "message": "", "at": 0.0}
+
+
+def last_load_error():
+    """上一次 load() 的读失败信息（没有失败时返回 None）。
+
+    鉴权路径用它决定「fail closed」而不是「当成空配置」：空配置意味着
+    「不需要 key、密码是默认的 admin」—— 那是最危险的一种误解。
+    """
+    return dict(_load_error) if _load_error.get("path") else None
+
+
+def _note_load_error(path, exc):
+    _load_error.update({"path": path, "message": str(exc), "at": time.time()})
+
+
+def _clear_load_error():
+    _load_error.update({"path": None, "message": "", "at": 0.0})
 
 
 def load(accounts_dir):
@@ -134,28 +155,64 @@ def load(accounts_dir):
 
     Cached on (path, mtime, size); the returned dict is a fresh top-level copy
     so callers keep the previous "mutate freely" semantics.
+
+    **读失败不是空配置**：文件存在但解析不了（半截写入、被截断、权限）时
+    返回空 dict 会让鉴权退化成「不需要 key + 密码是 admin」。这里仍然返回
+    空 dict（调用方的类型契约不变），但把失败记进 ``_load_error``；鉴权侧
+    用 ``last_load_error()`` 判「读不出来」并 fail closed。
     """
     path = settings_path(accounts_dir)
     try:
         info = os.stat(path)
         key = (path, info.st_mtime, info.st_size)
-    except OSError:
-        key = (path, None, None)
+    except FileNotFoundError:
+        # 全新安装：这**真的**是没有配置，不是读失败。
+        _clear_load_error()
+        with _lock:
+            _load_cache.update({"key": (path, None, None), "value": {}})
+        return {}
+    except OSError as exc:
+        # 目录不可读之类的系统错误：文件可能在，但我们看不见它。
+        _note_load_error(path, exc)
+        with _lock:
+            _load_cache.update({"key": None, "value": {}})
+        return {}
     with _lock:
-        if _load_cache["key"] == key:
+        # 缓存命中也要先确认「上一次读是成功的」：坏文件的 (mtime, size) 没变，
+        # 命中旧缓存就会把失败信号抹掉。
+        cached_key = _load_cache["key"]
+    if cached_key == key:
+        if _load_error.get("path") and _load_error.get("path") == path:
+            # 之前坏过、文件内容又没变（同一份坏文件）：继续按失败返回，
+            # 但仍要重新读一次以更新 mtime/size —— 否则报错永远不消失。
+            pass
+        else:
             return dict(_load_cache["value"])
     data = {}
+    failed = False
     try:
         with open(path, encoding="utf-8") as fh:
             parsed = json.load(fh)
         if isinstance(parsed, dict):
             data = parsed
+            _clear_load_error()
+        else:
+            # 能被 json 解析但顶层不是对象：同样按「读不懂」处理。
+            raise ValueError("settings.json is not a JSON object")
     except FileNotFoundError:
-        pass
-    except Exception:
-        pass
+        # stat 之后、open 之前被删了：按全新安装处理。
+        _clear_load_error()
+    except Exception as exc:
+        failed = True
+        _note_load_error(path, exc)
     with _lock:
-        _load_cache.update({"key": key, "value": data})
+        # **坏结果不进缓存**：以前读失败也会把 {} 按 (mtime, size) 存下来，
+        # 于是「文件坏了 → 鉴权关着」会一直保持，即便调用方后来做了 fail
+        # closed 判断也拿不到失败信号（缓存直接返回空 dict）。
+        if not failed:
+            _load_cache.update({"key": key, "value": data})
+        else:
+            _load_cache.update({"key": None, "value": {}})
     return dict(data)
 
 
@@ -194,15 +251,25 @@ def deep_merge(base, patch):
 
 def panel_password_is_default(accounts_dir):
     data = load(accounts_dir)
+    if last_load_error():
+        # 配置读不出来：**不能**说「还是默认密码」——调用方（启动横幅、
+        # 登录页提示）据此会认为「admin 还能进」，而 verify 那边已经拒绝。
+        return False
     if not data.get("panel_password_hash"):
         return True
     return data.get("panel_password_default") is True
 
 
 def verify_panel_password(accounts_dir, password):
-    """True when `password` opens the web panel."""
+    """True when `password` opens the web panel.
+
+    **配置读不出来时一律拒绝**：空 dict 会让下面第一条分支判成「还没设过
+    密码」并接受默认的 admin —— 一次文件损坏就等于面板门户洞开。
+    """
     password = password or ""
     data = load(accounts_dir)
+    if last_load_error():
+        return False
     stored = data.get("panel_password_hash")
     if not stored:
         return password == DEFAULT_PANEL_PASSWORD
@@ -953,15 +1020,66 @@ CODEARTS_DEFAULTS = {
     "session_ping": 30,     # 流式期间 busy 续期间隔（秒）
     "busy_cooldown": 5,     # 撞 TM.00001041（并发会话满）后晾多久
     "tpm_cooldown": 20,     # 撞 ModelArts.811（TPM 限流）后晾多久
+    # 流式读的心跳间隔与静默次数上限。这两个以前只读环境变量/模块常量，
+    # 面板改了不生效 —— 实际静默上限永远是 15 s × 40 = 600 s。
+    # 0 表示「关掉看门狗」，但 ca_codearts.IDLE_HARD_CEILING 仍有一道物理上限。
+    "stream_idle": 15,
+    "stream_max_idle": 40,
+    # 模型健康降级链（学习官方 smart-router + flagship/fallback 标签制）：
+    # 请求的模型连败进熔断时，按这条链换成第一个健康的模型。空串 = 关掉换模，
+    # 只保留健康度展示。链里的段用逗号分隔，模型 id 必须能过 _FALLBACK_NAME_RE。
+    "model_fallbacks": "glm-5.3,openpangu-2.0-flash,deepseek-v4.1-flash",
+    "model_fallback_enabled": True,
+}
+
+#: 非数值型的 codearts 键：bool 与字符串各一张表，validate/config 分支用。
+CODEARTS_BOOL_KEYS = {"model_fallback_enabled"}
+CODEARTS_STR_KEYS = {"model_fallbacks"}
+import re as _re
+_FALLBACK_NAME_RE = _re.compile(r"^[A-Za-z0-9._-]+$")
+
+#: 每个键对应的环境变量。**面板没设过这个键时**才用它。
+#:
+#: 以前 codearts_config() 直接拿 CODEARTS_DEFAULTS 兜底，环境变量只在
+#: ca_proxy 的模块级常量里读了一次 —— 而 codearts_tuning() 读的永远是
+#: settings（合并后必有一个值），于是 CODEARTS_CONCURRENCY 这类变量设了也不
+#: 生效。现在把它们放进同一个合并顺序里：面板 > 环境变量 > 内置默认。
+CODEARTS_ENV_KEYS = {
+    "concurrency": "CODEARTS_CONCURRENCY",
+    "session_ping": "CODEARTS_SESSION_PING",
+    "busy_cooldown": "CODEARTS_BUSY_COOLDOWN",
+    "tpm_cooldown": "CODEARTS_TPM_COOLDOWN",
+    "stream_idle": "CODEARTS_STREAM_IDLE",
+    "stream_max_idle": "CODEARTS_STREAM_MAX_IDLE",
 }
 
 #: 每个键的合法区间。面板可以调，但别让一次手滑把网关配成不可用。
+#:
+#: ``concurrency`` 上限是 **3**：上游每个账号只给 3 个会话名额，配到 4 以上
+#: 必然撞 TM.00001041（以前面板允许 1~8，设 4 就等于每次都有一路在撞限流）。
 CODEARTS_RANGES = {
-    "concurrency": (1, 8),
+    "concurrency": (1, 3),
     "session_ping": (5, 600),
     "busy_cooldown": (1, 300),
     "tpm_cooldown": (5, 3600),
+    "stream_idle": (1, 300),
+    "stream_max_idle": (0, 600),
 }
+
+
+def _codearts_env_default(key):
+    """环境变量给的默认值；没设 / 坏值返回 None。"""
+    import os as _os
+    name = CODEARTS_ENV_KEYS.get(key)
+    if not name:
+        return None
+    raw = _os.environ.get(name)
+    if raw is None or raw == "":
+        return None
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        return None
 
 
 def validate_codearts_patch(raw):
@@ -970,6 +1088,24 @@ def validate_codearts_patch(raw):
     for key, value in (raw or {}).items():
         if key not in CODEARTS_DEFAULTS:
             raise ValueError("unknown codearts setting %r" % key)
+        if key in CODEARTS_BOOL_KEYS:
+            if not isinstance(value, bool):
+                raise ValueError("%s must be a boolean" % key)
+            out[key] = value
+            continue
+        if key in CODEARTS_STR_KEYS:
+            text = str(value or "").strip()
+            segs = []
+            for seg in text.split(","):
+                seg = seg.strip()
+                if not seg:
+                    continue
+                if not _FALLBACK_NAME_RE.match(seg):
+                    raise ValueError(
+                        "%s contains an invalid model id %r" % (key, seg))
+                segs.append(seg)
+            out[key] = ",".join(segs)   # 规范化：去空白、去空段
+            continue
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError("%s must be a whole number" % key)
         low, high = CODEARTS_RANGES[key]
@@ -980,16 +1116,33 @@ def validate_codearts_patch(raw):
 
 
 def codearts_config(accounts_dir):
-    """码道并发 / 续期 / 冷却的可调项（坏值退回默认）。"""
+    """码道并发 / 续期 / 冷却的可调项。
+
+    优先级：**面板保存的值 > 环境变量 > 内置默认**。三者都过一遍区间校验，
+    坏值一律退回下一级 —— 手改 settings.json 塞进 999 也不会把上游那 3 个
+    会话名额一次打穿。
+    """
     stored = load(accounts_dir).get("codearts")
     stored = stored if isinstance(stored, dict) else {}
     out = {}
     for key, default in CODEARTS_DEFAULTS.items():
-        value = stored.get(key, default)
+        if key in CODEARTS_BOOL_KEYS:
+            value = stored.get(key)
+            out[key] = value if isinstance(value, bool) else default
+            continue
+        if key in CODEARTS_STR_KEYS:
+            value = stored.get(key)
+            out[key] = value if isinstance(value, str) else default
+            continue
         low, high = CODEARTS_RANGES[key]
-        ok = (isinstance(value, int) and not isinstance(value, bool)
-              and low <= value <= high)
-        out[key] = value if ok else default
+        value = stored.get(key)
+        if not (isinstance(value, int) and not isinstance(value, bool)
+                and low <= value <= high):
+            value = _codearts_env_default(key)
+        if not (isinstance(value, int) and not isinstance(value, bool)
+                and low <= value <= high):
+            value = default
+        out[key] = value
     return out
 
 

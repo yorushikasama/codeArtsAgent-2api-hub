@@ -4,9 +4,8 @@ No network and no upstream account needed: the functions under test are pure
 body transformations, so each case feeds a synthetic request and asserts the
 shape that leaves for the upstream.
 
-  1. prompt_cache_key injection  - reuse the upstream prefix cache, account scoped
-  2. deepseek thinking + effort  - thinking.type alone does not enable the trace
-  3. tool-call pairing repair    - orphaned calls / split results kill a session
+  1. deepseek thinking + effort  - thinking.type alone does not enable the trace
+  2. tool-call pairing repair    - orphaned calls / split results kill a session
 """
 import copy
 import json
@@ -46,63 +45,6 @@ def tool_result(tid):
     return {"role": "tool", "tool_call_id": tid, "content": "ok"}
 
 
-print("[1] prompt_cache_key: account scoped, stable per session (opt-in helper)")
-
-body = {"model": "m", "messages": [{"role": "user", "content": "hi"}]}
-out = P.inject_prompt_cache_key(body, "abcdef1234567890", "conv-1")
-key = out.get("prompt_cache_key")
-check("key is injected", isinstance(key, str) and key, key)
-check("key carries the account prefix", key.startswith("wb2a-abcdef12-"), key)
-check("source body is not mutated", "prompt_cache_key" not in body)
-
-same = P.inject_prompt_cache_key(body, "abcdef1234567890", "conv-1")
-check("same account + same session is stable",
-      same["prompt_cache_key"] == key)
-
-other_conv = P.inject_prompt_cache_key(body, "abcdef1234567890", "conv-2")
-check("different session -> different key",
-      other_conv["prompt_cache_key"] != key)
-
-other_uid = P.inject_prompt_cache_key(body, "9999999999999999", "conv-1")
-check("different account -> different key (no cross-account cache reads)",
-      other_uid["prompt_cache_key"] != key)
-check("different account -> different prefix",
-      other_uid["prompt_cache_key"].startswith("wb2a-99999999-"),
-      other_uid["prompt_cache_key"])
-
-client_key = {"model": "m", "prompt_cache_key": "client-chose-this",
-              "messages": [{"role": "user", "content": "hi"}]}
-kept = P.inject_prompt_cache_key(client_key, "abcdef1234567890", "conv-1")
-check("an explicit client key is never overwritten",
-      kept["prompt_cache_key"] == "client-chose-this")
-
-blank_key = {"model": "m", "prompt_cache_key": "   ",
-             "messages": [{"role": "user", "content": "hi"}]}
-filled = P.inject_prompt_cache_key(blank_key, "abcdef1234567890", "conv-1")
-check("a blank client key is treated as absent",
-      filled["prompt_cache_key"] == key)
-
-by_conv_id = {"model": "m", "conversation_id": "from-body",
-              "messages": [{"role": "user", "content": "hi"}]}
-via_body = P.inject_prompt_cache_key(by_conv_id, "abcdef1234567890", "conv-1")
-via_arg = P.inject_prompt_cache_key(
-    {"model": "m", "messages": [{"role": "user", "content": "hi"}]},
-    "abcdef1234567890", "from-body")
-check("body conversation_id outranks the session key argument",
-      via_body["prompt_cache_key"] == via_arg["prompt_cache_key"])
-
-camel = P.inject_prompt_cache_key(
-    {"model": "m", "conversationId": "from-body",
-     "messages": [{"role": "user", "content": "hi"}]},
-    "abcdef1234567890", "conv-1")
-check("camelCase conversationId is recognised too",
-      camel["prompt_cache_key"] == via_arg["prompt_cache_key"])
-
-empty_uid = P.inject_prompt_cache_key(body, "", "")
-check("an empty account still yields a key with a placeholder prefix",
-      empty_uid["prompt_cache_key"].startswith("wb2a---"), empty_uid["prompt_cache_key"])
-
-print()
 print("[2] deepseek thinking: effort is filled in, explicit choices are honoured")
 
 
@@ -282,48 +224,9 @@ check("valid JSON scalar is complete", not Q.is_truncated_arguments("null"))
 check("half-written JSON is truncated", Q.is_truncated_arguments('{"a":'))
 check("plain text is not silently accepted", Q.is_truncated_arguments("not json"))
 
-mixed_calls = [{"id": "ok", "function": {"name": "f", "arguments": '{"a":1}'}},
-               {"id": "cut", "function": {"name": "f", "arguments": '{"a":'}},
-               {"id": "noargs", "function": {"name": "f", "arguments": ""}}]
-kept_calls = P.drop_truncated_tool_calls(mixed_calls)
-check("only the truncated call is dropped",
-      [c["id"] for c in kept_calls] == ["ok", "noargs"])
-
 def sse_line(obj):
     return ("data: " + json.dumps(obj) + "\n\n").encode("utf-8")
 
-
-truncated_stream = [
-    sse_line({"choices": [{"delta": {"tool_calls": [
-        {"index": 0, "id": "call_t", "function": {"name": "f",
-                                                  "arguments": '{"a":'}}]},
-        "finish_reason": "length"}]}),
-]
-agg = P.aggregate_stream(iter(truncated_stream), "m", None)
-check("aggregate_stream drops a truncated call at max_tokens",
-      "tool_calls" not in agg["choices"][0]["message"])
-check("aggregate_stream keeps the length finish reason",
-      agg["choices"][0]["finish_reason"] == "length")
-
-complete_stream = [
-    sse_line({"choices": [{"delta": {"tool_calls": [
-        {"index": 0, "id": "call_c", "function": {"name": "f",
-                                                  "arguments": '{"a":1}'}}]},
-        "finish_reason": "length"}]}),
-]
-agg2 = P.aggregate_stream(iter(complete_stream), "m", None)
-check("aggregate_stream keeps a complete call even at max_tokens",
-      [tc["id"] for tc in agg2["choices"][0]["message"].get("tool_calls", [])] == ["call_c"])
-
-eof_stream = [
-    sse_line({"choices": [{"delta": {"tool_calls": [
-        {"index": 0, "id": "call_e", "function": {"name": "f",
-                                                  "arguments": '{"a":'}}]},
-        "finish_reason": "tool_calls"}]}),
-]
-agg3 = P.aggregate_stream(iter(eof_stream), "m", None)
-check("aggregate_stream drops a truncated call on EOF without [DONE]",
-      "tool_calls" not in agg3["choices"][0]["message"])
 
 resp_stream = [
     sse_line({"choices": [{"delta": {"tool_calls": [
@@ -373,21 +276,5 @@ check("both calls survive the merge",
       [tc["id"] for tc in split_assistants[0].get("tool_calls", [])] == ["c0", "c1"],
       split_assistants[0].get("tool_calls"))
 
-print()
-print("[5] prompt_cache_key is off by default")
-
-check("the injection is opt-in, not always-on",
-      P.prompt_cache_key_enabled() is False,
-      P.prompt_cache_key_enabled())
-
-import os as _os
-_os.environ["WB_PROMPT_CACHE_KEY"] = "1"
-check("it can be switched on with WB_PROMPT_CACHE_KEY=1",
-      P.prompt_cache_key_enabled() is True)
-_os.environ["WB_PROMPT_CACHE_KEY"] = "0"
-check("and switched back off", P.prompt_cache_key_enabled() is False)
-del _os.environ["WB_PROMPT_CACHE_KEY"]
-
-print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

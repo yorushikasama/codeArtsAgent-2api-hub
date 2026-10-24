@@ -107,8 +107,13 @@ section("4. 用量映射")
 _u = Q.anthropic_usage({"prompt_tokens": 10, "completion_tokens": 3,
                         "prompt_tokens_details": {"cached_tokens": 7}})
 check("Anthropic 口径字段齐全",
-      _u == {"input_tokens": 10, "output_tokens": 3,
+      # input_tokens 是「新读入」的部分：OpenAI 的 prompt_tokens 含缓存，
+      # Anthropic 的 input_tokens 不含（缓存另列）。10 - 7 = 3。
+      _u == {"input_tokens": 3, "output_tokens": 3,
              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 7}, _u)
+check("没有缓存计数时 input_tokens 原样照搬（不会把输入抹成 0）",
+      Q.anthropic_usage({"prompt_tokens": 10, "completion_tokens": 3})["input_tokens"]
+      == 10, None)
 check("非 dict 用量给全零", Q.anthropic_usage(None)["input_tokens"] == 0, None)
 check("缓存命中取值优先级（首个正数胜出）",
       Q.best_cached_tokens({"prompt_cache_hit_tokens": 2,

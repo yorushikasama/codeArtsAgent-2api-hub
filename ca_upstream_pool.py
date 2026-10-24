@@ -321,8 +321,8 @@ class _KeepAlivePool(object):
                 conn = None
             else:
                 # 复用前把读超时重设回本次请求的超时：上一位使用者可能是流式请求，
-                # _apply_stream_idle_timeout 把 socket 超时改成了 idle 值（默认
-                # 300s）；不重置的话这次请求连响应头也会按 300s 等，线程被拖住。
+                # 曾把 socket 超时改成空闲上限那么长；不重置的话这次请求连响应
+                # 头也会按那个值等，线程被拖住。
                 try:
                     conn.sock.settimeout(timeout)
                 except Exception:

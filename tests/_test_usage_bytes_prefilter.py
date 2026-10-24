@@ -25,7 +25,6 @@ decode 照付；而窄窗口在几万行的日志上把绝大部分行都判在�
 
 No network: the log is synthesised in a temp directory.
 """
-import io
 import json
 import os
 import shutil

@@ -139,8 +139,15 @@ check("tool_use block is present",
       msg["content"][2]["type"] == "tool_use" and msg["content"][2]["input"] == {"cmd": "ls"}, msg["content"])
 check("stop_reason maps tool_calls -> tool_use", msg["stop_reason"] == "tool_use", msg["stop_reason"])
 check("usage maps cache fields",
-      msg["usage"] == {"input_tokens": 10, "output_tokens": 5,
+      # input_tokens 是「新读入」的部分：OpenAI 的 prompt_tokens 含缓存命中，
+      # 而 Anthropic 的 input_tokens 不含（缓存另计）。以前照搬，Claude Code
+      # 会把缓存部分算两遍。10 = 4 命中 + 2 写入 + 4 新读入。
+      msg["usage"] == {"input_tokens": 4, "output_tokens": 5,
                        "cache_read_input_tokens": 4, "cache_creation_input_tokens": 2}, msg["usage"])
+# 上游没给缓存计数时必须原样照搬，否则输入会被抹成 0。
+_nocache = Q.anthropic_usage({"prompt_tokens": 10, "completion_tokens": 5})
+check("no cache counters -> input_tokens stays the full prompt",
+      _nocache["input_tokens"] == 10, _nocache)
 check("no thinking block without reasoning_content",
       all(b["type"] != "thinking" for b in
           Q.chat_to_messages({"choices": [{"message": {"content": "hi"}}]})["content"]),

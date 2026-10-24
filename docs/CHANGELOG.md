@@ -1,3 +1,322 @@
+## Unreleased
+
+**官方协议对齐、韧性栈与大文件拆分（2026-10-24）**
+
+- **逆向官方 CodeArts Agent 客户端并对齐出站形状**：chat_headers 头族（`x-session-affinity` / `user-msg-id` / `plugin-name=codemate_vscode` / `ide-name=VSCode` 等）、思考档位白名单（glm-5.3 的 strengths 为空 → 不再发送 `reasoning_effort`）、逐模型 `max_tokens` 上限（glm-5.3 = 32000）、带工具的请求自动携带 `tool_stream: true`。此前缺失这套形状正是线上 APIG.0203 / 反复断流的根因；对齐后同一条 9 万 token 会话稳定通过。
+- **服务器排队协议（`x-session-retry`）**：撞并发 / TPM 时按官方形状进入排队轮询拿回最终结果，而不是立刻回 429 让客户端自己重试。
+- **flow-control 429 分流**：只对 RPM/TPM 限流做退避重试（错误文案按官方 UK 表映射为中文），`Retry-After` 一律遵从。
+- **模型健康熔断 + 可配置降级链**：同一模型连续失败 3 次熔断 60 秒；面板「模型降级链」可开关、自选模型与顺序（默认 `glm-5.3 → openpangu-2.0-flash → deepseek-v4.1-flash`，设置键 `model_fallback_enabled` / `model_fallbacks`）。
+- **大上下文 history-snip 软剪枝**：窗口压力超过 0.1（`CODEARTS_PRUNE_SOFT_PCT`）时把最早的工具结果替换为占位符，保护最近 12 个用户轮次 —— 长会话不再被上游按形状拒答。
+- **每日签到调度器**：默认 00:05（`CODEARTS_CHECKIN_AT` 可调）自动为所有码道账号签到领积分，账号卡片显示「积分签到：今日已领」；失败当天低频补试。
+- **建连预算 210 秒**（`CODEARTS_OPEN_BUDGET`）：按「预估下一轮首字节窗口」判断是否还有预算，不再让客户端干等 4 分钟。
+- **Anthropic Messages 接口实测**：面板开关（`enable_anthropic_messages`，默认关闭）打开后，非流式 / 流式 / count_tokens 三路全通；Claude Code 可直接把 `ANTHROPIC_BASE_URL` 指向网关。
+- **ca_proxy.py 拆分**：18221 → 11176 行 + 新 `ca_usage.py`（用量读取 / 聚合域 ~7 150 行），测试缝走「`_bind__` 包装 + 默认绑定 + `bind()` 条目」三件套；拆分在「本地文件 + 服务器其余模块」的组合树上全量 96 套验证后部署。
+
+**死代码清理第二轮：面板 JS / CSS 与方法级（约 1 200 行）**
+
+第一轮只扫了 Python 顶层符号；这轮把口径推到剩余三个角落，口径同前（全文检索 + 逐个读定义 + 删到不动点）。
+
+- **dashboard.html 死 JS（15 个函数，级联到不动点）**：`setViewRealm` / `coolPills` / `modelLimitPills` / `activityStatusChip` / `loadActivityToday` / `onCreditsSearchInput` / `onCreditsSortChange` / `onKeyBeforeToggle`（第一波，全文只出现定义处一次），删后级联出 `activityStatusOf` / `openActivityHistory` / `renderDisabled` / `renderCreditsPackagesTable` → `todayStamp` / `renderActivityFilters` / `loadActivityHistory` / `disabledRows` / `activityHistoryRow` / `activityFilterQuery` / `renderActivityHistory` / `fmtCoolAt`（第二、三、四波）。这些全是签到卡片、积分明细弹窗、禁用账号关注面板、realm 视图切换等**标记早已删掉**的功能留下的渲染函数。`_test_panel_subsystems.js` 的重复定义检查与排序扫描同步受益（54 个内联 handler 全数通过）。`SORT_DENY_TABLES` 里 `disabledList` 表的死条目一并删。
+- **「(切换前)」开关的 UI 缺口（如实记录，不在本轮修）**：`renderKeyTable` 在找 `#keyBeforeSwitch` / `#keyBeforeToggle`，但标记里根本没有这两个元素（`if(box)` 全在防空），于是 `key_before_hidden` 目前**只能手改 settings.json**；唯一会把它 POST 回服务端的 `onKeyBeforeToggle` 生产无人调用（死代码，已删）。要恢复这个开关得把标记加回来 —— 那是行为改动，等确认。
+- **死 CSS（43 个类，68.3KB → 59.4KB）**：`account-cards` / `topbar` / `brand` / `toolbar` / `limits-cards` / `realm-*` 静态族等 —— 标记重构后没跟着清的样式。按**选择器级**过滤：逗号组里只删引用死类的那个选择器，`@media` 内递归、`@keyframes` / `@font-face` 原样保留。`tag-*` / `lvl-*` 前缀是 JS 动态拼接的（`'tag-' + module`），识别为活。
+- **i18n 词条不清理**：`translate()` 对运行时文本做**子串扫描**（逐位置查最长键），「词条原文只在字典出现」不代表死 —— 动态拼出来的串也能命中。静态判定不了，不动。
+- **保留**：`hiddenPages()`（活状态 `_hiddenPages` 的 3 行只读访问器，`_test_page_visibility.js` 的观察点）、`_CodeartsAccountPool.cooling_for()`（冷却状态的只读观察口，docstring 已改为如实描述）、`EcKey.thumbprint()`（RFC 7638 指纹，DPoP 测试的 oracle）、`_fixbats.py`（三个 .bat 启动器的生成器，输出就在仓库里）。
+- 反向核对：删完 JS fixpoint 清零（只剩两个 IIFE 自执行函数的误报与有意保留项）；`node` 全部面板套件与 Python 全量绿。
+
+**死代码清理（约 2 300 行 / 80 个符号 + 2 个测试文件）**
+
+口承上一轮（「重构后遗留的死代码清理」）：每个名字都先在 `.py` / `.js` / `.html` / `.md` / `.sh` 全仓搜过「零引用」再删；删完跑 AST 扫描到不动点（被删函数独占的常量、辅助函数跟着浮出来，一并删）。上一轮**有意保留**的 `poll_ticket` + `TICKET_*` 一簇这次一并删掉 —— 当时留着是因为「成组的历史资料拆一半更糟」，但 WorkBuddy 移除后现行登录只走 `new_ticket_id` / `authorize_url` + `/oauth/callback` 回调通道，旧轮询通道已经只剩这两具遗骸，「成组」的前提没了。
+
+- `ca_ipintel.py` **整个模块**零 import（WorkBuddy 出口 IP 情报，随出口体系一起失效），107 行全删。
+- **WorkBuddy 远程目录簇**：`read_product_config_models` / `parse_remote_catalog` / `curate_remote_catalog` / `note_remote_catalog` / `catalog_daily_due` / `_read_product_config_dir` / `_agent_model_lists` / `snapshot_credits`（ca_codearts 的 `model_truth_meta` 同簇）。现行目录只从码道内置清单来。
+- **WorkBuddy 错误分类簇**：`ContentRejected` / `RateLimited` / `LocalNetworkError` / `is_transient` / `looks_like_local_network` / `exc_detail` / `rate_limit_is_soft_shape` / `rate_limit_is_cap` / `rate_limit_is_account_level` / `restriction_is_account_level` / `rate_limit_code` / `credential_scope_phrase`。现行的分类在 `ca_stream.frame_status` / `slow_failure`。
+- **旧流式聚合簇**：`aggregate_stream` / `clean_chunk` / `chat_text_chunk` / `chat_tool_call_chunks` / `chat_finish_chunk` / `chat_chunk` / `LeakedToolCallStreamFilter` / `could_be_leaked_call` / `_normalize_dsml_bars` / `_strip_spans` / `parse_leaked_tool_calls` / `repair_leaked_tool_calls` / `drop_truncated_tool_calls`。非流式聚合生产走 `ca_stream.collect_sse`，DSML 兜底生产走 `ca_protocol.parse_dsml_tool_calls`（有 `tests/_test_protocol_pure.py` 等三处覆盖）；`tests/_test_dsml_chat_fallback.py` 整个文件测的全是死路径，删除。
+- **prompt_cache_key 实验簇**：`prompt_cache_key_enabled` / `inject_prompt_cache_key`。docstring 自己写着「实测对上游缓存命中与计费都没有影响，仅留作实验」—— 实验已有结论，30 行 + 环境变量 `WB_PROMPT_CACHE_KEY` 退场。
+- **前缀亲和旧机制**：`affinity_route` 与 `AFFINITY_BY_PREFIX` / `AFFINITY_DEBUG` / `AFFINITY_MAX_MSGS` / `AFFINITY_PAGE_SIZE`。现行粘性走 `codearts_session_key`（显式会话键 → user 字段 → 首条 user 指纹）+ 池子里的 `CODEARTS_AFFINITY_*` 粘性表，那条链是活的；旧的「消息条数分页」机制没有生产调用点。
+- **WorkBuddy 积分/限额簇**：`_grant_status` / `_grant_actions` / `_grant_action` / `_parse_stamp_epoch` / `daily_tokens_by_account` / `seconds_until_local_midnight` / `_save_account_caps` / `_account_files_key` / `record_attempt`（ca_activity）；ca_settings 的 `set_limit` / `set_daily_token_limit` / `set_daily_credit_limit` / `set_model_daily_token_limit` / `limits_snapshot` —— 面板的限额编辑界面已经不在（dashboard.html 只剩 4 行 `.limit-input` 死 CSS，一并删），写路径无人调用；**限额的读取与执行路径保留**（`limit_values_many` → `_limit_blocked` 仍在挡请求）。
+- **旧会话挑选**：`pick_codearts_session`（测试自己注释着「2026-10-22 起不再直接调」）、`Handler._codearts_session_of`、`Handler._download`（导出功能随账号面板移除）、`mark_codearts_ownership` / `routes_to_codearts`（归属现在由 `model_entry()` 直接写）、`resize_chat_slots`（`_chat_slots` 信号量本身保留）。
+- 其他零引用：`record_upstream_usage` / `prompt_fingerprint` / `note_bundled_reasoning` / `upstream_effort_of` / `client_effort_of` / `model_fixed_effort` / `_apply_stream_idle_timeout` / `_is_public_addr`（ca_webtools 有自己的实现）/ `save_persisted_realm` / ca_webtools 的 `set_logger` / `client_wants_web` / `sources_from_result` / `_declared`；6 个测试文件里 12 个未使用的 import。
+- **有意保留**（docstring 写明用途的测试缝）：`_usage_cache_forget`（模拟重启）、`_buffered_bytes`（体积统计）、`reset_state`（测试与面板重设）、`_pct`（perf 测试的参照实现）。
+- 反向核对：删完 AST 扫描到不动点，生产侧零引用名单清空；`python tests/run_all.py` 全绿。套件 98 → 96（75→73 个 Python：`tests/_test_dsml_chat_fallback.py` 整文件、`tests/_test_affinity_length_cap.py` 整文件退场 —— 前者测的全是死的 DSML 旧路径，后者的在跑数保护已由 `tests/_test_concurrency_lifecycle.py` 的 `_ResizableSemaphore` 段覆盖）。
+
+**chunked 分帧让心跳与看门狗一起失效（回归，最优先）**
+
+- 现象：模型长时间思考时客户端被中间层（nginx / Cloudflare 的 60~100 秒空闲上限）切断；客户端中途断开后账号名额一直被占；面板里配的静默上限完全不起作用，实际变成 socket 读超时。
+- 根因：`_wait_readable` 用 `peek(0)` 判断「Python 缓冲里有没有数据」，而 chunked 每块载荷后面跟着两个字节的分帧 `\r\n`。`read1` 取走载荷后缓冲里还剩这两个字节 → 判定「可读」→ `read1` 进去先吃掉 `\r\n`、再读下一块的长度行，于是**阻塞在 socket 上**。它一阻塞，`iter_sse` 的心跳、静默看门狗、`abort_check`（客户端断开检测）全部停摆 —— 三件事都挂在这一处判断上。
+- 修法：新增 `_chunk_payload_ready(data, chunk_left)`，按 HTTP 分帧语义判断缓冲里有没有**可以立刻交付的载荷**：当前块还有载荷（`chunk_left > 0`）且缓冲非空 / 缓冲里有完整的长度行且其后还有载荷 / 末块（长度 0）且结束空行也在缓冲里。三种以外一律判「不能立刻读」交回 `select` —— 多等一次 select 的代价是零，误判一次的代价是心跳停摆。定长响应仍按 `resp.length` 判断；形状认不出来时退回「有字节就算有」（`read1` 在缓冲非空时不会阻塞）。TLS 原有的 `pending()` 先手判断保留在最前面。
+- 复现与验证：明文与 TLS 各跑一遍，回退后 `_test_round5_regressions.py` 第 1 段报红。`_wait_readable` 的签名加上 `resp`，两处测试桩同步改。
+
+**单账号 1041 退避从来没真正重试过**
+
+- 现象：单账号部署撞一次 1041（名额满）之后，客户端拿到 429「every account is at capacity」—— 与事实不符（其实只有它自己在等 5 秒冷却），而且这条 429 **不记账**，统计里看不到。
+- 根因：所有号都在冷却时走 `soonest_ready()` 分支，判据是「冷却剩余 ≤ 等待预算」。而预算被压到 2 秒，1041 冷却恰好是 5 秒 → 永远不成立，直接返回 429。
+- 修法：冷却剩余 ≤ 整套退避之和（`sum(CODEARTS_RETRY_DELAYS)`）时返回 `None` 让调用方退避再试，只有比整套退避加起来还久（401 的 300 秒那种）才如实回 429 + `Retry-After`。两种出口都记账。
+- 401/403 走完冷却后重新登录不再被旧冷却挡住：`codearts_clear_cooldown_for()` 在续期成功与登录成功两处调用。
+
+**SIGTERM 处理器把主线程堵住（`docker stop` 必然 SIGKILL）**
+
+- 现象：进程收到 SIGTERM 后在主线程里等满 25 秒，那段时间 `accept` 根本不跑 —— 注释承诺的「新连接拿 503」没人应答，连接堆在 backlog 里，进程退出时被 RST；第二次 Ctrl+C 落在同一个处理器上被直接吞掉；Docker 只给 10 秒就 SIGKILL，收尾永远跑不完；`restart-codearts-hub.sh` 是 `pkill` + `sleep 1`，新进程大概率绑不上端口。
+- 修法：处理器只置关闭标志 + 起一个收尾线程（微秒级返回），主线程继续 `accept` 由 `_serve_forever` 的关闭标志回 503；收尾线程等在跑请求跑完才 `server.shutdown()`；第二个信号立刻 `os._exit(1)`。收尾预算跟着部署形态走 —— 容器里默认 8 秒（`running_in_container()` 看 `/.dockerenv` / `/run/.containerenv`），宿主机仍是 25 秒；`CODEARTS_SHUTDOWN_GRACE` 可覆盖。
+- 部署侧：`docker-compose.yml` / `docker-compose.build.yml` / `quick-deploy.sh` 补 `stop_grace_period: 30s`；`restart-codearts-hub.sh` 改成 SIGTERM 起手、按 `pgrep` 轮询等收尾完成（`GRACE+5`s）再启动，超时才 SIGKILL。
+- 实测：收尾期间新的 chat 请求拿到 503；第二个信号 0.30 秒退出、退出码 1。
+
+**客户端会拿到错误结果（5 项）**
+
+- **非流式 `/v1/messages` 丢掉 tool_calls**：只塞了 `content` 与 `reasoning`，Claude Code 拿到的永远是 `content: []` + `stop_reason: end_turn`，Agent 以为模型说完了，一次工具都不会调。现在把 `tool_calls` 一起带上，`finish_reason` 走 `_chat_finish_reason(...)` —— 有工具调用就是 `tool_use`。
+- **`finish_reason=error` 被当成正常完成**：Messages 与 Responses 两个翻译器都不认这个收尾，Claude Code 看到 `end_turn`、Codex 看到 `completed`，半截回答变成「最终答案」。现在 `ca_stream` 的 `tap_lines` 遇到错误帧直接抛 `UpstreamErrorFrame` **打断翻译器**，由调用方按本协议发错误终态。Chat 路径本来就走 `tail_kind()`，不受影响。
+- **`tool_result` 里的图片被拼成 base64 文本**：模型看不到图，还要收几十万个 `data:image/png;base64,…` 字符。现在换成 `[image omitted from tool result]` 占位（上游这条通道不接受 tool_result 内嵌图）。
+- **非流式 Chat / Responses 丢掉 `finish_reason=length`**：截断被报成 `stop`，被截断的工具参数（坏 JSON）原样交给客户端。`collect_sse` 现在回填 `sink["finish_reason"]`，三条入口同口径。
+- **`/v1/chat/completions` 的 `max_tokens` 默认 4096**：另外两个入口用的是目录值（glm-5.3 = 65536），思考模型共用这个上限时正文被挤掉。现在三个入口都走 `_codearts_max_tokens()`；负数与坏值按缺省处理，不再透传。
+- 新增 `tests/_test_round5_regressions.py`（125 项、15 段）逐条钉住，前五项做过反向验证（回退后报红）。
+
+**安全（3 项）**
+
+- **`settings.json` 读失败等于关掉鉴权**：`load()` 解析失败返回空 dict，而空 dict 的语义是「全新安装、没配过」→ 不需要 API key、面板密码退回默认 `admin`；这个空结果还按 (mtime, size) 缓存，故障过去后只要文件没变就一直是关的。新增 `ca_settings.last_load_error()`，鉴权侧 `auth_required()` 判「读不出来」一律 **fail closed**；文件不存在仍按「真的没配置」处理（两者必须区分）。
+- **`/oauth/callback` 三个洞**：`callback_page()` 把上游错误文本与跳转地址直接插进 HTML → 反射型 XSS（能读走 localStorage 里的 API key）；`Location` 头没过滤 `\r\n` → 响应头注入（可塞 `Set-Cookie`）；白名单比对用 `\@` 可以骗过 → 开放重定向。现在全部 HTML 转义、跳转地址拒控制字符/空白/反斜杠/userinfo、`netloc` 与 `host[:port]` 归一比对（含 IPv6 方括号）。另外 `_current()` 在**取用时**也校验 `LOGIN_TTL_SECONDS`（以前只有 `poll()` / `sweep()` 校验，未完成的登录永不过期）。
+- **面板登录限速可被并发绕过**：`attempts.append(now)` 在锁外，40 个并发错误密码拿到 40×401、零 429。现在移到锁内再验密码。`login_rate_limit_key` 的 docstring 补上 Cloudflare 场景的正确配法（`set_real_ip_from` + `real_ip_header CF-Connecting-IP`），并明确不要直接信客户端给的 `CF-Connecting-IP`。
+- 实测：40 路并发 → 5×401 + 35×429。
+
+**流式收尾与心跳（5 项）**
+
+- **Responses 在读上游之前就发 200**：首帧即 1041 时只能以「200 + 空流」收场，既不能重试也不能换号。现在与 Messages / Chat 一致 —— **收到第一帧才提交 200**，首帧前失败回真正的错误码（新增 `_DeferredHTTPError`：先决定、后写出）。
+- **Messages / Responses 吞掉上游心跳**：翻译器把 `: keepalive` 行当注释丢弃，长思考期间客户端零字节，最容易被中间层切。现在两个翻译器都把它转成各自协议的合法帧（Responses 的 `: keepalive` 只在本轮 `response.created` 已发出后才转发，避免开场前空转）。
+- **断流重开失败时往已开的 200 流里写 503**：一条已经开始的 SSE 响应里塞完整 HTTP 响应，客户端只能看到乱码。现在按协议发 `response.failed` / `event: error`。
+- **Messages 在首帧前遇泛异常写裸 SSE**：没有状态行、没有帧头。现在先判 `headers_sent`，未提交就回真正的错误码。
+- **Chat 在 `[DONE]` 之前同步发 idle**（最长 6 秒）：客户端要等到 idle 超时才收尾。改成写完 `[DONE]` 之后再 `close_upstream()` + `release_slot()`；`hold_slot` 这段死代码换成每轮的 `finished_normally` 标志（原测试只 grep 源码里的字符串，等于没测）。
+
+**预算、设置与配置（6 项）**
+
+- **预算估算没算下一段退避 sleep**：75 秒与 240 秒两个预算都被突破，TPM 退避实际只剩约 82 秒可用。两处重试循环改成 `need = expected + next_sleep`（`next_sleep = max(delays[attempt], egress_wait)`）。
+- **面板并发输入 1–8，后端已收到 1–3**：设 4–8 保存不报错，运行时静默回落到 2。面板输入框与 `saveCodeartsTuning` 的范围一起改成 1–3。
+- **按 key 的并发上限保存不生效**：`_validate_settings_patch` 漏写回，每次保存都把 `concurrency_limit` 清掉。现在随 `api_keys` 一起落盘。
+- **`auth_disabled` 用 `bool()`**：字符串 `"false"` 是真值 → 鉴权被关掉。改成严格布尔（只认 `True` / `False`，其余按缺省）。
+- **`/settings/save` 非原子**：前面的字段已经写盘，后面某个字段校验失败返回 400，磁盘上留着一半新一半旧。拆成 `_validate_settings_patch()`（纯校验，算出完整 plan）+ `_apply_settings_patch()`（一次性落盘），校验失败时磁盘零字节变化。
+- 新增 `_SettingsError`（校验失败，还没写）与 `_DeferredHTTPError`（已决定、还没写响应）两个异常类型，把「决定」与「写出」彻底分开。
+
+**凭据与连接（4 项）**
+
+- **`login/poll` 把完整凭据回给浏览器**：SK、securitytoken、refresh_token、DPoP 私钥全在下发对象里，面板前端只用到摘要。现在只返回 `summarize()` 的结果（`snapshot["summary"]` 保留旧字段名供面板读取）。
+- **凭据文件默认 0644**：`save_session()` 改成 `os.open(..., 0o600)` + `os.write` + `os.chmod` + `os.replace`（实测落盘 0600）。
+- **没有 socket 读超时**：慢连接（连上不发）能永久占住线程 —— 100 个不发字节的连接 8 秒后依然全部存活。新增 `WB_REQUEST_READ_TIMEOUT`（默认 60 秒），在 `handle_one_request` 里设、`end_headers()` 里清（响应开始写之后就不再限速，避免打断长响应）。
+- **实测**：5 个空闲连接 1.01 秒内被关闭，`/health` 仍 200，慢但持续发送的 POST 仍能正常走到 401。
+
+**工具调用（3 项）**
+
+- **缺少 `index` 的并行工具调用全归 0**：两个并行调用被并成一个，参数变成 `{"a":1}{"b":2}` 这种坏 JSON。`merge_tool_call` 改成三分支判据（有 `index` 按 index / 有新 `id` 开新槽 / 其余归最后一槽），两个翻译器同步。
+- **跨 namespace 同名工具只留第一个**：Codex 挂多个 MCP server 时，第二个 server 的同名工具对模型完全不可见。`expand_namespace_tools` 现在记 `owner[name]`，跨 namespace 冲突时发 `ns__name`；`resolve_namespaced_name` 负责还原时剥掉网关自己加的前缀。
+- **码道路径的消息修复是死代码**：`repair_messages_for_upstream`（孤立 tool_call/tool_result 修复、并行批次重组、`reasoning_content` 回填、`<tool_call>` 泄漏解析）只有测试在调，生产不经过 —— 那批测试什么也没保护。现在 4 个码道调用点都走它（`ca_proxy.py` 里 5 处引用：定义 + 4 个调用点）。
+
+**低危一批**
+
+- `/catalog/refresh` 调的是不存在的方法（WorkBuddy 目录接口下线时删了实现、路由留着）→ 点刷新直接 `AttributeError`，连接被掐断，面板看到「网络错误」。转发到 `_route_codearts_refresh_catalog()`。
+- Anthropic 的 `input_tokens` 含缓存部分：Anthropic 语义里 `input_tokens` **不含** cache read/write，OpenAI 的 `prompt_tokens` **含**。现在减掉已知的缓存量（`max(0, prompt_total - known_cache)`）。
+- Responses 的 usage 兜底会盖掉真实值：上游回了真实 usage 但 `total_tokens == 0` 时，兜底逻辑把 prompt/completion 一起改写。`total` 改成 `prompt + completion`；估算只在「三个都是 0」时生效。
+- `stop_sequences` 超过 4 条被静默丢弃：现在把丢掉的条数记下来（`extra["stop_dropped"]`）并打一条日志。
+- `ca_webtools` 的 SSRF 竞态：DNS 校验与实际连接之间地址可以变（DNS rebinding）。新增 `_connected_peer_is_public()`，连上之后核 `getpeername()`，不公网就报 `_UnsafeRedirectError`（这段目前是死代码，先补上）。
+
+**测试口径**
+
+- 新增 `tests/_test_round5_regressions.py`（125 项、15 段），覆盖上面最危险的一批；31 条关键修复全部做过**反向验证** —— 把源码改回旧行为，对应断言必须报红，确认测试真的钉在修好的那一行上。
+- 全套 98 个套件（75 Python + 23 JS），`python tests/run_all.py --jobs 4` 约 60 秒全绿。
+
+**日志、配置与落盘配额（7 项）**
+
+- **`log()` 不转义换行，一条消息被拆成两条**：上游错误体是自由文本，`{"error_msg": "bad request\r\n at line 3"}` 会让 stderr、sqlite 与面板各多出一条**没有时间戳的行**，看日志的人以为那是另一个事件（线上已出现 14 次）。`_one_line()` 把 `\r` / `\n` / `\t` 转成字面转义、其余 C0 控制字符转成 `\xNN`，`log()` 与 `add_log_entry()` 共用同一条规则 —— 所以面板与落库里的 `msg` 也是一行。
+- **重试日志的「N/3」分母与实际轮数不符**：TPM 限流那条走的是 4 轮退避（5/12/25/40），日志照样写 `/3`；名额满那条是 3 轮。两处都改成带上退避类型（`retry 1/4 (tpm)` / `retry 2/3 (busy)`），分母跟着当前生效的那套序列走。
+- **日志里没有请求 id**：一次请求的重试、断流、失败是三条独立日志，并发一上来就串不起号。新增按线程记的请求 id（8 位十六进制），在 chat 分发入口设一次，之后这条请求打出的每一行日志都自动带 `[id]` 前缀；`finally` 里清掉，线程复用不会串号。
+- **环境变量设成 `"0"` 会悄悄关掉功能，设成非数字则启动即崩**：`float(os.environ.get("X") or 30.0)` 里 `"0"` 是非空字符串（真值），于是 `float("0")` 得 0 —— 一个「没打算改」的 0 变成了「关掉超时」；而 `CODEARTS_SLOT_WAIT=20s` 这种带单位的值会在 import 阶段抛 `ValueError`，网关连端口都没开始监听。新增 `ca_env.py`：`number()` 对「没设 / 空串 / 解析不出来 / 低于下限」一律回落默认值，只有显式 `zero_ok=True` 时 0 才生效（流式重开次数这类真的需要 0 的开关），`flag()` 单独处理布尔开关。`ca_proxy` / `ca_codearts` 里 30 多个数值常量全部改走它。
+- **会话登记表**三个问题：
+  - 坏数据会让清理线程崩掉。以前只检查「顶层是不是 dict」，于是 `{"abc": "oops"}` 或 `at: "yesterday"` 这类条目会在 `float(item.get("at"))` 抛异常，**整轮 reap 中止**，剩下的会话一条都不补发 —— 正是这个登记表要防的事。现在读取侧逐条洗形状（坏条目丢掉、`at` 读不出来按 0），单条心跳异常也只跳过它自己。
+  - 凭据按 `label` 索引，两个账号同名时会拿到**另一个号**的凭据，那条 idle 必然失败并被打上「这个号有问题」。现在按账号 id（`uid`）索引，label 只用于展示；老条目没写 uid 时按 label 兜底，但只在该 label 唯一时才认。
+  - 每次心跳都要整文件读 + 整文件写。一条跑两小时的流按 30 秒续期就是 240 次全量读写，全压在一次只有 2 秒预算的心跳上。现在进程内维护副本，写盘仍是原子替换。
+- **`failed-req-*.json` 没有总数上限**：只按「5 分钟内一份」限速，长期运行的部署会攒出一堆没人管的快照。落新的一份时顺手按数量（`CODEARTS_DUMP_MAX`，默认 20）与年龄（`CODEARTS_DUMP_MAX_AGE`，默认 7 天）淘汰；刚写下的那份不参与年龄淘汰，免得把上限调小时自己删自己。
+- **签到永久失败被无限重试**：`invalid channel, group not found` 这类错误与时间、限流、网络都无关，按 30 秒缓存等于每 30 秒必然失败一次 —— 面板每 5 秒轮询一次，一天两千多次，历史里攒了 100 条一模一样的原因。`welfare_permanent_failure()` 只认「渠道 / 活动不存在」这一窄类（401、429、5xx 一律不算，它们会自愈），这类失败按 6 小时缓存。
+- **WorkBuddy 残留**：`PRODUCT_CONFIG_CACHE`（桌面端 `acc-product-config-v3.json` 的路径）、`credits_is_free()` / `free_models_by_realm()`（账号池的日积分护栏）、`read_cached_remote_catalog()` 三个零引用的死代码删除；`model_entry()` 的 `owned_by` 从 `workbuddy` 改成 `codearts`。
+- **出口名从 `cn` 改成 `codearts`**：账号池删掉之后，码道请求的每一行仍然被贴着 WorkBuddy 时代的 `cn`，面板上写的也是「国内版 (China)」，与实际在跑的上游对不上。现在 `DEFAULT_REALM = "codearts"`，`cn` / `intl` 作为**历史行别名**由 `normalize_realm()` 归一（查询侧 `match_realm()` 同样归一），旧行不会因为区域名改了就从视图里消失；活动历史的 `REALMS` 同时认新名与老名。面板的 `VIEW_REALM`、剩余用量的分块、`updateUI()` 一起改。
+- **面板里一段死代码**：`updateUI()` 还在为已删除的 WorkBuddy 账号卡片（`tabCnAccts` / `tabCnCredits` / `tabCnAvailCred` / `tabCnKeyBadge` 等）算数字 —— 那些节点在 HTML 里一个都不存在，每次刷新都在白算；`/usage` 那条渲染路径还在从 `window.ACCOUNTS` 里筛 `realm === 'cn'` 拼两个没有任何使用点的变量，而那个数组从来没有被填过。两段都删掉，账号卡片回到它唯一的数据源（`/accounts/codearts`）。
+- 新增 `tests/_test_log_registry_env.py`（68 项）覆盖以上七条；8 条关键修复都做过反向验证（回退后 1~4 项报红，其中「非数字环境变量」回退后是 import 阶段直接抛）。套件 97。
+
+**福利渠道下线：删掉 benefit 通道与「每日额度领取」**
+
+- 触发：`deepseek-v4.1-flash` 一直回 `InferHub.4004.200 benefit not found`。归因不是「今天的额度没领」，而是**请求带错了分组开关**：`BENEFIT_MODELS` 里还把它算成福利模型，于是每个请求都带 `maas_type: benefit`，而上游的福利渠道已被官方收回。
+- 实测（2026-10-23，同一账号、同一请求形状，只改一个头）：
+  - `deepseek-v4.1-flash` 不带 `maas_type` → **200 正常出字**；带上 → `4004.200 benefit not found`。它已经内置化。
+  - `deepseek-v4-flash-0731` / `glm-5.3-flash` / `deepseek-v4-pro-0813`：不带 → `002002009 model is not registered`；带上 → `4004.200`。**两条通道都不通**，已从 `CHAT_MODELS` 移除。
+  - 权益网关 `opengw /api/v1/gateway/config` 直接回 `[4000] invalid channel, group not found` —— 不是「没领」，是这条账号没有这个渠道。
+- 删除：
+  - `ca_codearts`：`GATEWAY_HOST`、`gateway_config()`、`normalize_models()`、`BENEFIT_MODELS`、`model_group()`、`MAAS_BENEFIT`、`GROUP_BENEFIT`、`credit_headers()`、`claim_benefit()`、`enable_benefit_claim()`、`tokens_balance()`、`balance_summary()`、`_is_full()`、`record_claim()`、`claim_and_verify()` 全部退场。`model_catalog()` 只取内置目录；`chat_headers()` 不再接受 `maas_type`。
+  - `ca_proxy`：`/accounts/codearts/claim`、账号面板的 `balance` 字段，以及 `mark_benefit_missing()` 那套「撞到 4004.200 就把它从清单里临时摘掉」的补丁 —— 福利模型都没了，没有可摘的对象，而且它治的是症状（真因是分组判错）。
+  - `ca_scheduler.py` **整个删除**：它唯一的任务是每日 09:00 / 21:00 领额度，渠道没了就是空转。
+  - 面板：调度器状态条与「立即巡检保活 / 暂停调度」两个按钮、`loadSchedulerStatus` / `triggerSchedulerNow` / `toggleScheduler`、token 额度行与「领取今日额度」按钮，以及为「渠道没了」准备的「重新授权」分支。
+- 保留：**积分两条线不受影响** —— `credit_package()`（snap-manager 的「总已用积分」）与 `welfare_*`（snap-access 的每日签到）。加上已删的 opengw token 额度，原本是三个独立体系；现在账号面板只显示积分与签到状态。
+- 测试口径：`_test_codearts.py` 删掉「每日领取」「调度领取前先续期」两段（-64 项），清单段改成「只有内置一组」；`_test_activity_history.py` 只留持久化与读取 API（领取记录三组用例退场）；`_test_codearts_stream_break.py` / `_test_panel_route_auth.py` / `_test_key_model_limits.py` / `_test_dashboard_scope.py` 去掉对已删符号的引用。
+
+**并发、生命周期与统计口径（13 项）**
+
+- **信号量缩容再扩容会多放行**：容量 2 → 1 → 2 之后实际能跑到 3，正好打满上游的 3 个会话名额。根因是用 `capacity - free` 反推在跑数 —— 缩容时 `free` 被压到 0，之后任意一次 `release` 都把名额加回去。现在在跑数单独记（`_used`），`retune` 不碰它。
+- **单账号冷却完全不起作用**：所有号都在冷却时，代码直接把最早解冻的那个拿去用（注释写着「别去撞刚被限流的号」，代码却在撞）。现在等到最早解冻、且不超过本次 acquire 预算；等不及就如实返回「没有可用号」，由调用方回 429 + Retry-After。
+- **预算估算把每次失败都当 60 秒**：过了 15 秒之后，连 0.1 秒就返回的 1041 也不再重试 —— TPM 退避设计 4 次（5/12/25/40），实际只能用 2 次。`ca_stream.slow_failure()` 把失败分成快慢两类，只有 5xx / 网络异常 / APIG.0203 才按满窗口估。
+- **非流式重试没有总时长上限**：一次 0203 就 60 秒，加上退避与 4 轮首字节窗口最坏 4 分钟以上，超过 ZCode 自己的超时（10-22 实测 346s / 405s）。新增 `CODEARTS_TOTAL_BUDGET`（240 秒）。
+- **并发上限是 8，上游每号只有 3 个名额**：设到 4 以上必然撞 1041。面板区间与运行时夹取都收到 3（`CODEARTS_UPSTREAM_SLOTS`）。
+- **`CODEARTS_CONCURRENCY` 等环境变量设了不生效**：`codearts_config()` 直接拿内置默认兜底，而运行时读的永远是合并后的 settings。现在合并顺序是**面板 > 环境变量 > 内置默认**，超范围的值按坏值处理（退回上一级，而不是夹）。
+- **错误分类的子串匹配太宽**：文本里只要含「参数」就判 400 —— 于是网关自己重试 4 轮，最后却告诉客户端「是你的请求错了」；5xx 的说明里含 `authentication` 会被判成凭据失效。现在只认明确的错误码。
+- **`_CodeartsLease.close()` 的顺序与调用位置**：先还本地名额再发 idle，与聚合路径正好相反（会让新人撞上还没注销的旧会话，白吃 1041）。拆成 `close_upstream()` / `release_slot()` 两步，chat 流式改成写完 `[DONE]` 之后才 idle + 还名额（idle 是最长 6 秒的同步 HTTP，排在前面就是让客户端白等）。
+- **流式路径的面板 idle 设置不生效**：实际静默上限永远是 15 × 40 = 600 秒。`stream_idle` / `stream_max_idle` 进 `ca_settings`，租约带着它们进读循环。`max_idle=0` 仍有一道物理硬上限（`IDLE_HARD_CEILING`），不会真让一条静默的流把名额挂死。
+- **busy 心跳同步阻塞请求**：超时 6 秒挡在请求发出之前（15:14 有一个请求白等 6 秒）；超时的那条还没进登记表，重启补不了 idle。超时降到 2 秒，且「超时 / 未确认」也登记（上游可能已经开了会话，补 idle 是幂等的），只有明确 4xx 才不记。
+- **本地拒绝的请求不进统计**：排不上队的 503 一行账都不落；没有可用账号的 503 同样。两者现在都记账。429 / 503 统一补 `Retry-After`（以前本地拒绝一个都没有，客户端只能盲猜）。
+- **Responses / Messages 一拿到连接就发 200**：首帧即 1041 时既不能重试也不能换号，只能以「200 + 空流」收场。两个入口都改成**收到第一帧才提交 200**，首帧前失败回真正的错误码。
+- **客户端取消 / 泛异常不记账**：两个流式入口的 `ChatAborted` 与兜底 `except` 都只补一个结束帧就返回，请求从统计里整个消失（10-23 有 6 个请求就是这么没的）。现在取消落 `client_aborted`，异常落 `upstream_aborted`。
+- **SIGTERM 没有处理**：进程收到信号 0.1 秒就退出，在跑的请求既没有错误记录也没有用量记录，`finally` 里的 idle 发不出去（10-22 每次重启后跟着一串 1041 就是这么来的；76f7a2b 的启动补发 idle 只是事后止损）。现在装 SIGTERM/SIGINT：置关闭标志（新请求回 503）→ 等在跑请求跑完 → 补发 idle → 退出。
+- **SIGTERM 处理本身把主线程堵住了**：处理器在主线程里等满 25 秒，那段时间 `accept` 根本不跑 —— 注释承诺的「新连接拿 503」没人应答，连接堆在 backlog 里，进程退出时被 RST；第二次 Ctrl+C 落在同一个处理器上被直接吞掉。现在处理器只置位 + 起收尾线程（微秒级返回），主线程继续 accept，由收尾线程等在跑的请求跑完后才 `server.shutdown()`。第二个信号立刻 `os._exit(1)`。收尾预算也跟着部署形态走：容器里默认 8 秒（docker 只给 10 秒就 SIGKILL），宿主机仍是 25 秒；`docker-compose.yml` / `quick-deploy.sh` 补 `stop_grace_period: 30s`，`restart-codearts-hub.sh` 改成 `SIGTERM` 起手、等收尾完成再启动（原来 `pkill` 后 `sleep 1` 就起，端口还占着会直接绑定失败）。
+- **WorkBuddy 上游常量清理**：`UPSTREAM` / `CHAT_PATH` / `MODELS_PATH` 三个零引用常量随账号池一起删除。
+- 新增 `tests/_test_concurrency_lifecycle.py`（76 项），8 条关键修复都做过反向验证（回退后报红）。套件 96。
+
+**流式收尾的四个漏判（工具调用粘接、凭据不冷却、Codex 无预算、首字延迟）**
+
+- **断流重开没把 `tool_calls` 算作「已输出」**：重开条件只数 `content` / `reasoning`。断流前只吐了半个工具调用时，新流又从 `index=0` 发同一个调用，客户端按 index 归并参数分片，两段首尾相接 —— 半截 `{"path": "a"` 接上重开的 `{"path": "a"}` 就是坏 JSON。现在 `tool_calls` 的 delta 也计入「已输出」，吐过就不重开，按断流收尾。
+- **401/403 的冷却永远不执行**：那条分支套在 `if retryable` 里面，而 401 恰好是**不可重试**的，于是永远进不去。服务端吊销凭据后，那个号不会被晾起来，有两个号时约一半请求报 `credentials_error`。现在把「冷却」与「这一条要不要重试」拆开：401/403 不重试，但账号照样进 `CODEARTS_AUTH_COOLDOWN` 冷却。聚合与流式两条路径都改。
+- **Codex 链路不受 75 秒建连预算约束**：`responses_to_chat()` 转换时没带 `stream` 字段，而预算判断读的正是它 —— 于是永远不成立，一次 `APIG.0203` 能重试 4 轮、客户端干等约 255 秒。`29ba103` 修掉的症状在 Codex 上仍在且更久；Messages 链路不受影响（`messages_to_chat` 一直有拷贝）。现在补上拷贝，三条入口同口径。
+- **`iter_sse` 判断静默只看 socket**：看不到 Python 读缓冲里已经收到的数据。响应头与前几块 body 常在同一个 TCP 包里到达，解析响应头时 body 已进缓冲，此时 fd 上没有新字节、`select` 一路等到超时 —— 本地 socket 实测首字被推迟 6 秒；连续空等到上限还会把一条完好的流**误报成断流**（实测缓冲里躺着 50 字节，却报 `upstream silent`）。现在先查 `BufferedReader` 缓冲（非阻塞 `peek(0)`，用完立刻恢复原超时），再退回 `select`。
+- 新增 `tests/_test_stream_retry.py`（35 项）覆盖这四条，含反向验证（每条回退都能报红）与「别把重开 / 限流重试一起关掉」的对照。
+
+**中途错误帧不再被当成正常结束（半截回答不盖章）**
+
+- 现象：上游先吐正文、再塞一个 `error_code` 帧时，客户端收到的是 `200` + `finish_reason=stop` + `[DONE]`，没有 error 帧；`usage.jsonl` 只有一条 `completed`。客户端把半截回答当完整结果，错误不进日志、账上算成功。
+- 根因是 chat 流式的收尾只写了「一个字都没出就报错」这一条分支（`frame_err and not content_parts and not reasoning_parts`），**出过内容时没有分支接住 `frame_err`**，直接落到 `emit(frame({}, finish_reason or "stop", …))` + `record_usage(outcome="completed")` —— 正是那段注释里说要避免的「给半截回答盖章」。
+- 另外两条入口漏得更彻底：`tap` 只把错误记进 sink 就照常喂给翻译器，翻译器不知道这件事，补了 `response.completed` / `message_stop`；收尾处还是 `if tap["error"] and not usage` —— 上游只要回过 usage，失败就被记成成功，而且失败/成功各落一行（同一请求账上算两次）。
+- 聚合路径（非流式）同样有 `and not content and not reasoning`：拼出来的残句被当成完整答案回 200。
+- 现在：错误帧一律压过完成。`ca_stream.tail_kind()` 把这条优先级写成显式规则（`error_frame > upstream_aborted > complete`），三个入口共用；`tap_lines` 遇到错误帧直接抛 `UpstreamErrorFrame` **打断翻译器**，由调用方按本协议发错误终态 —— chat 发 `{"error": …}` + `[DONE]`，Responses 发 `response.failed`，Messages 发 `event: error`。失败只落一行账，usage 跟着 `record_error` 走。
+- 状态码不再写死 502：过 `frame_status` 那张表，被 TPM 限流就回 429 语义，客户端知道该等而不是该改请求。
+- 顺带认两种以前漏掉的失败表达：`{"error": {"code": …, "message": …}}`（OpenAI 兼容层的错误帧）与 `finish_reason="error"`（以前只有 WorkBuddy 那条路认，#389）。
+- **分层**：帧解析、收尾判定、上游错误码 → 状态码的映射整块搬进新模块 `ca_stream.py`（360 行，纯函数，只 import `json`），`ca_proxy.py` 20 647 → 19 740 行。以前这套判断散在三个 handler 里，同一种 bug 要修三遍，于是两遍没修。新增 `tests/_test_stream_tail.py`（57 项）钉住三态优先级、两种错误形状、三条入口各自的错误终态，以及「映射表只剩一份」的静态约束。
+
+**移除 WorkBuddy 账号池：网关只服务码道**
+
+- `POOL` 不再创建（恒为 `None`），启动不再读 `accounts/*.json` 的 WorkBuddy 凭据、不再扫桌面端会话、不再有 `--info` / `--import-desktop` / `--user-agent` 三个参数；`/health` 的 `accounts` 语义改成「码道会话数」。
+- `/v1/models` 只从码道目录生成：不再合并 WorkBuddy 目录，也不再拿内置快照兜底（没有码道账号就回空清单，并在 `codearts.errors.sessions` 里说明原因）。每条都是 `owned_by=codearts`。
+- 三个协议入口（`/v1/chat/completions`、`/v1/responses`、`/v1/messages`）非码道模型一律 **404 `model_not_found`**，不再有「转发到 WorkBuddy 上游」的分支。
+- 面板删掉 WorkBuddy 那一整套接口：`/accounts`、`/accounts/export`、`/accounts/credits*`、`/accounts/login/*`、`/accounts/import*`、`/accounts/refresh`、`/accounts/sync-profile`、`/accounts/test`、`/accounts/set*`、`/accounts/delete`、`/accounts/product`、`/tasks*`、`/realm`、`/catalog/refresh`。
+- 关键顺序：码道那组 `/accounts/codearts/*` 路由必须排在任何「账号池」判断**之前**。以前那段 `if POOL is None: 503` 会把「加一个码道账号」也一起打死，报错文案还写着 `account pool unavailable` —— 跟码道毫无关系，极难查。
+- **代码层同步删干净**（第二步，同一个 2026-10-23）：`ca_accounts.py`（2 929 行）、`ca_identity.py`、`ca_atrest.py`、`ca_tasks.py`、`ca_fingerprint.py` 整体删除；`ca_proxy` 去掉 `open_upstream` 及其调用树（含 `fetch_models` / 产品目录拉取 / 账号探针 / 亲和分页），本地只留一支 `normalize_realm`（单出口下恒为 `cn`）；`ca_scheduler` 只保留码道每日领取。
+- **顺带删掉两个「执行器在 WorkBuddy 那边」的功能**：本地网络工具（`ca_webtools` 的代跑循环只存在于已删的 Responses 转发里，留着开关只会注入没人执行的工具定义）与账号日限额三道护栏（`apply_daily_guard*` 全部作用在账号池上，池没了就是空操作）。
+- **面板**：删掉积分获取历史、积分与套餐明细弹窗、账号限额、本地网络工具、成长任务、WorkBuddy 账号列表与登录/导入/刷新/导出/删除等一整套 `loadAccounts` / `fetchCredits` / `toggleAccount` / … 脚本与 `/realm` 启动调用；账号页只剩码道账号。
+- 随功能一起退场的套件共 33 个（它们测的路径已经不存在），包括 `_test_account_proxy*.py`、`_test_affinity_pages.py`、`_test_balance_park.py`、`_test_catalog_refresh.py`、`_test_credit_grants.js`、`_test_daily_credit_limit.py`、`_test_daily_token_limit.py`、`_test_desktop_*.py`、`_test_error_persistence.py`、`_test_limit_realms.js`、`_test_local_web_tools.py`、`_test_pool_diagnostics.py`、`_test_product_persistence.py`、`_test_prompt_modes.py`、`_test_remaining_*.py`、`_test_restricted_403.py`、`_test_streak_report.py`、`_test_upstream_pool.py`、`_test_upstream_timeouts.py` 等。Anthropic 的协议面仍由 `_test_protocol_golden.py` + `_test_codearts.py` 覆盖，出口退避保留 `_test_egress_backoff.py` 的纯退避那一半。
+- **保留但已无调用方**：`ca_settings` 里的三组日限额键与 `limits_data` 迁移（老 `settings.json` 里的历史值仍能读、不被当成坏数据；写入入口只剩设置文件本身）。
+
+
+**模型清单补上上游新出现的 `kimi-k3`**
+
+- 逐条对过：上游 `/v1/model/builtin` 返回 **9** 个内置模型，网关只广告 **8** 个，缺 `kimi-k3`（上游 `display_enabled=true`，官方 IDE 的模型选择器里看得到）。原因不是取数失败，而是它不在 `CHAT_MODELS` 这张「实测可路由」白名单里 —— 后果很隐蔽：`is_codearts_model("kimi-k3")` 为假，请求掉进 WorkBuddy 池，只配码道账号的部署回 `503 no usable account`，报错和模型名毫无关系。
+- 输出上限是**实测**的，不是抄兄弟模型：`65536` → 200 正常出字；`81920` / `100000` / `131072` / `262144` → 全部 `InferHub.001001005.400 The request param is invalid`。所以 `BUILTIN_MODEL_LIMITS["kimi-k3"] = (0, 65536)`：输出 65536，输入窗口留 0（上游不返回，本项目自己不编数字）。
+- 这件事顺带证明「实测表必须压过模型知识库」：`ca_modelsdev.CONTEXT_FALLBACK` 里 `kimi-k3` 是 `(1048576, 131072)`，而 **131072 上游必拒**。`lookup()` 的优先级是 `remote > table > cache > default`，我们这条 65536 作为 remote 值生效，清单上的 `max_output_tokens` 才是对的；没这条就会给客户端报一个上游不认的数。上下文 1M 仍由 knowledge table 提供，`context_source` 标成 `table`（面板据此区分「上游说了」和「按 1M 兜底」）。
+- 顺带核对了其余 8 条的字段：`count` 与清单一致（8 条码道模型 + 2 条别名 `gpt-5-codex → glm-5.2`、`claude-sonnet-4-5-20250929 → glm-5.3`，目标都在清单里）；`codearts.errors.benefit = [4000] invalid channel` 是这条账号没有福利渠道，属预期（福利组那 3 个模型因此不广告）；`GLM-5.2` 这类大写 id 与小写请求之间由 `resolve_model` 做大小写无关归一，分流不受影响。
+- 未修的一条：`kimi-k2.6-vl` 不在 `BUILTIN_MODEL_LIMITS` 里，清单上 `max_output_tokens` 是 null，客户端发大 `max_tokens` 不会被夹。它是上游 `display_enabled=false` 的视觉模型，实测上限还没测到干净值，等有需要再补。
+
+**「静默 60 秒被切」是上游的空闲超时，不是网络抖动**
+
+- 15:15–15:20 同一条请求（`msgs=33 chars=32568 tchars=92258 tools=55`）连撞四次，每次先吐 5.4 / 6.4 / 7.1 / 9.1 KB，然后**一个字节都没有** 59.8 / 59.8 / 60.0 / 60.0 秒，被掐。心跳三条全发出去（`pings=3`）、socket 也在（`sock=True`）—— 与续期无关；同一账号上有 **616 秒成功**的请求，所以也不是「总时长超 60 秒」的限制。结论：上游（APIG 的「后端超时」，默认 60 s）只按**有没有输出**计时。
+- 这类失败有个很坑的性质：**同一个请求会一直在同一处被切**。客户端自动重试，表现就是「反复回复同一句话」（用户看到的正是这个）。所以错误帧不再只给 `IncompleteRead(0 bytes read)`，静默 ≥50 s 时补一句 `upstream sent no bytes for 60s and was cut by its ~60s idle limit; … split this turn into smaller steps or lower the thinking budget`，让上层改策略而不是原样重试。
+- 三个入口都带上这句（`chat` 用 `stream_stats`；`messages` / `responses` 原来根本不传 stats，现在也传了，于是它们的断流错误里同样看得到 `silent_s`）。
+- 诊断口径：`silent_s` 按**任何字节**（含 SSE 注释）更新（见 `ca_codearts.iter_sse`），所以 `silent=60.0` 是真的零字节，不是「没解析出 data 帧」。我们自己的静默上限（`STREAM_IDLE_TIMEOUT` 15 s × `STREAM_MAX_IDLE` 40 = 600 s）比上游宽 10 倍，永远轮不到它先触发。
+
+**重启不再把会话名额丢在上游**
+
+- `idle` 注销写在 `finally` 里，只挡得住异常，挡不住 `systemctl restart` / OOM / 断电。进程一死，那几条 `busy` 就挂在上游直到它自己超时；账号只有 3 个名额，**一次部署就能全占掉**，之后一律 `TM.00001041`，而我们的退避等的是「别人释放」（2026-10-23 15:00–15:03 连着重启五次，那一小时的 1041 全出自这里）。
+- 现在把自造过的 `user-session-id` 落盘（`accounts/codearts_sessions.json`，与 `codearts_affinity.json` 同目录、已被 `accounts/*.json` 忽略），`busy` 成功才记、`idle` 成功就销账；启动后由后台线程逐条补发 `idle`，best-effort，不拖启动。
+- 三条保守设定：没凭据的条目留到超龄（1 小时）为止，别静默丢账；`idle` 失败的留一会还能再试；清理收尾是**合并写**而不是覆盖 —— 清理期间新登记的会话不会被抹掉（那正好是下一次重启要泄漏的那批）。
+
+**`APIG.0203` 的请求形状可归因，建连预算按「预估下一轮」判断**
+
+- 建连预算的判断时机是错的：原来只看「已经花了多久」，第 1 轮 60 秒 `<` 75 秒预算 → 放行第 2 轮 → 再跑 60 秒，客户端要等 **130 秒**才拿到 504（线上 15:02 实测 129 975 ms）。改成用「再来一轮至少需要一个首字节窗口」预估（`elapsed + min(header_timeout, 60) > CODEARTS_OPEN_BUDGET`），第 1 轮失败后就停；预算日志同时打出 `another attempt needs ~60s, budget 75s`，不用再倒推。
+- 成功请求也开始留一行 `chat stream open: … shape=…`。以前只在失败时打形状，而 0203 的典型现象正是**同一形状时好时坏**（15:04 同 `msgs=27 chars=32077 tchars=92258 tools=55` 的请求 33 秒成功，15:02 那条 130 秒失败），没有成功样本就没法对比。一次请求一行，与 `chat done` 同量级。
+- 请求形状补充 `think=` 与 `keys=`：前者带 `thinking.type` / `budget_tokens` / `reasoning_effort`，后者是顶层出现的所有额外键。以前只有 `thinking=yes`，分不出是「client 给了个巨大的 budget」还是「多带了个 `stream_options`」把上游顶住的。
+- 新增 `dump_failed_request()`：失败时把 **tools / tool_choice / thinking / max_tokens** 落盘到 `usage/failed-req-<ts>.json`，供离线复现（**不含任何消息正文**）。开关 `WB_DUMP_FAILED_TOOLS`，默认关闭，5 分钟内最多一份。实测价值明确：合成的 46KB 工具集永远能过，只有拿到真实的 92 258 字节那套（`CronCreate` 6 239B、`AskUserQuestion` 5 060B…）才确认「形状本身不是根因」。
+- 锁住限流映射：`ModelArts.81111`（按 TPM）与 `81114`（按请求数）是同一种瞬时限流，上游有时把它塞在 HTTP 400 的 body 里，以前缺断言。现在两条都钉死为 **429**，避免客户端把「等几秒就好」当成坏请求丢掉。
+
+**失败记账与响应同源，一次失败只落一行**
+
+- `_codearts_open_lease`（流式建连）以前 `record_error(model, 502, …)` 写死 502，而对外走 `_codearts_fail()` 把 `APIG.0203` 映射成 504：同一个失败，`gw.log` / `usage.jsonl` 记 502、客户端收 504。现在记账用 `_codearts_fail_spec()` 算出的同一个状态码（网络异常仍记 502）。
+- 流式断流分支以前先 `record_error` 再 `record_usage(..., outcome="upstream_aborted")`，一次失败在 `usage.jsonl` 里落**两行**（同 `iso`、同 `elapsed_ms`，一行 `failed`、一行 `upstream_aborted`）。这违背了 `record_error` 自己的约定（docstring 写明「usage 随行带上，不再单独记一条」，`usage=` 参数此前零调用）。现在 usage 跟着 `record_error` 一起落，只写一行；token 不丢。
+- 影响：总量不再被放大一倍；成功率口径不再分裂（矩阵口径把 aborted 算 err 得 34/31≈52%，而按 `outcome=="failed"` 数错误会得 45/20≈69%，同一份数据两个答案）。
+
+**断流归因与续期改造（`IncompleteRead(0 bytes read)`）**
+
+- 2026-10-23 09:11–09:29 出现 11 次 `upstream closed early: IncompleteRead(0 bytes read)`，同一时段还有 APIG 的 `APIG.0203 Backend timeout`（实测约 60 秒一刀）。两者指向同一件事：**上游后端长时间没有输出**——0203 发生在建连阶段（响应头都没来），`IncompleteRead` 发生在流中途的 chunk 边界。
+- **会话续期改成独立线程**：原来挂在读循环上（每收一行试一次、按 30 秒节流），模型思考期间上游不吐字节时只能靠 `KEEPALIVE` 哨兵带动；哨兵拿不到 socket 就完全没续期。另外带签名的 HTTP PUT 塞在收帧路径上，一次慢心跳会让读停住，反过来顶满上游写缓冲。现在线程每 5 秒醒一次、到点续 busy，`close()` 先等可能在途的 busy 落地再发 idle。
+- 断流日志带归因：`bytes`（收了多少）、`silent`（断前静默多久）、`pings`（心跳发了几次）、`sock`（socket 拿没拿到）、`shape`（消息数 / 字符数 / 工具数 / max_tokens）。
+- `APIG.0203` 映射为 **504**（不再含糊地报 502）；流式请求的建连重试增加 **75 秒总预算**——一次 0203 就花掉 60 秒，再重试时客户端早已离开（线上实测 `open retry 1/3 → 2/3 → client gone`），继续试只是替没人要的回答占着会话。非流式不受这条限制。
+
+**价格系统的设置面收干净（面板 + `/settings` + `ca_settings`）**
+
+- 价格估算 2026-10-22 下线时，设置页的控件删了，但配套 JS（约 230 行）、`/settings/save` 的三个分支、`ca_settings` 的四个读写函数都还留着：面板每次加载都在操作不存在的 DOM，服务端每次保存都在写一个没人读的键。
+- 现在这条链只留「只读答复」：面板不再读写 `pricing_*`；`/settings/save` 收到这三个键按未知键忽略（老页面不报错，只是不再有效果）；`ca_settings` 里的键常量、小时→分钟迁移函数与 getter/setter 一并删除。老 `settings.json` 里的残留键不读不写，保存时原样保留，回滚旧版本仍能读到。
+- `/pricing`、`/pricing/refresh`、`/pricing/mapping` 三个接口**保留**：仍在运行的老页面加载时还会去拉一次，返回 404 会让它弹网络错误。它们本来就只有「已移除」这一种答复。
+- 成本列与 `PRICING_ON` 开关已随本轮看板重构整体删除；旧分支不再残留。
+
+**重构后遗留的死代码清理**
+
+- `ca_proxy`：删掉 `exclusive_realm` + `CN_EXCLUSIVE` 清单（国际版移除后没有任何调用点，模型到出口的映射已恒等于 `CURRENT_REALM`；改那份清单不会影响行为）、namespace「直接拒绝」分支的 `REJECT_NAMESPACE_TOOLS` / `NAMESPACE_TOOL_MESSAGE` / `find_namespace_tool`（正解是展开 + 还原），以及价格体系下线时留下的 `_EMPTY_POLICIES` / `_EMPTY_TIMELINE` / `_cost_from_memo`。
+- `ca_accounts`：`DEFAULT_UA_VERSION`、`REALM_MARKERS`、`desktop_auth_dir`（注释写着「kept for older callers」，但已经没有任何调用方）。
+- `ca_codearts`：`GATEWAY_SERVICE_NAME`——真正发出去的只有 `User-Agent`，留着容易被当成出站头在用。
+- 口径：每个名字都先在 `.py` / `.js` / `.html` / `.md` / `.sh` 全仓搜过「零引用」，再删；`ca_proxy` 现在没有零引用的模块级定义。**保留**了 `poll_ticket` + `TICKET_*` 这一簇（旧的 ticket 登录通道是成组的历史资料，拆一半比留着更糟），也保留了 claim 家族里暂时没接线的 `enable_benefit_claim`。
+- 顺带把这个文件里 5 处「三空行 / 只含空白的行」统一成两个空行。
+
+**协议层 golden：帧序列逐字节钉死**
+
+- 新增 `tests/_test_protocol_golden.py`（套件 133）：把 Anthropic Messages 与 Responses 各 6~7 个场景的**完整帧序列**存成 `tests/golden/*.json`，改完代码一 diff 就知道哪一帧变了。录制时把 `new_id` 与 `time` 打桩，所以能逐字节比。
+- 覆盖：正文 + 缓存用量、思考 + 正文、单/多工具调用（参数分片）、`max_tokens`、空流、上游错误帧、`stop_sequence` 命中、只有工具没有正文。
+- 反向验证过：把 `message_start` 改成 `message_startX`，6 个场景当场变红。
+- 顺带补三条纯度断言：`ca_protocol` 里不许出现 `log(` / `logging`、不许读 `ca_settings` / `ACCOUNTS_DIR`、只依赖 `json` / `re` / `time` / `uuid` 四个标准库模块。
+
+**Messages 的 `stop_sequence` 回填（尽力而为）与面板并发可见**
+
+- Anthropic 的 `stop_sequence` 以前恒为 `null`。现在非流式回包与流式 `message_delta` 都会拿请求里的 `stop_sequences` 去匹配输出**结尾**，命中就填上（多串命中取最长）。**但码道上游实测会把命中的串丢掉**：2026-10-23 直连 `stop=["六"]`，正文/思考里都没有「六」，只有 `finish_reason=stop` —— 没有信号能反推是哪条命中，所以这种情况仍保持 `null`，绝不猜。
+- 面板账号卡片新增运行期一行：`并发 在跑/容量 · 冷却 Ns`。容量取自信号量的**实时值**，面板改并发后立刻反映，不用重启。
+- `/accounts/codearts` 与 `/codearts/pool` 的 `runtime` 增加 `capacity` 字段。
+
+**请求形状校验与 Responses 帧格式收口**
+
+- **只有 system 消息 / 空 messages**：以前原样转给上游，回 `ModelArts.81001.400 messages 参数非法`，报错点离真正原因很远（Responses 只发 `instructions` 时最容易撞上）。现在三条协议（Chat / Responses / Messages）都在请求阶段回 400，文案说明「至少要有一条 user 或 assistant 消息」。
+- **`clean_responses_frame` 少一个换行**：以前对每个被清洗的帧固定追加 `\n\n`，输入本来以空行结尾时会多出一个换行（SSE 能容忍，但按行对拍帧时会看到漂移）。现在补回**恰好一个**空行。
+- **排障速查**：README 新增一节，写清「正文空但 finish=stop（stop 命中思考内容）」「`response_format` 为什么 400」和 `: keepalive` 注释行的含义。
+
+**码道每账号并发改完即生效（不用重启）**
+
+- 信号量改成容量可调的实现：面板把并发从 2 调到 4，**下一个取号就按 4**；调小时只收紧新名额，已经在跑的请求不受影响。
+- 以前的「已有账号要重启才生效」不再成立；顺带把 429 文案与 `/codearts/pool` 里的 `concurrency_per_account` 也改成读实时值。
+
+**码道并发与冷却可在面板调**
+
+- 设置页新增「码道并发与冷却」四项：每账号并发（1~8，默认 2；上游给 3 个会话名额，留一个余量）、流式会话续期间隔、并发满（1041）冷却、TPM 限流冷却。
+- 四项保存后**下一个请求即生效**（5 秒缓存）；每账号并发由容量可调的信号量承载，改完不用重启，调小也不打断在跑的请求。
+- 后端按区间校验，越界回 400；`settings.json` 被手改坏的值退回默认，不会把网关配成不可用。
+
+**码道协议补齐：采样参数、多模态错误、`n` / `response_format`**
+
+- **采样参数以前被白名单挡掉**：码道路径只转发 `model/messages/max_tokens/stream/thinking/tools/tool_choice`，`temperature` / `top_p` / `stop` / `seed` / `presence_penalty` / `frequency_penalty` 全部丢弃。上游实测（用非法值验证）是真解析这些字段的，现在原样转发；`stop` 字符串会包成数组（上游只收数组），超过 4 条按 OpenAI 语义裁掉。Anthropic 的 `stop_sequences` 因此也真正生效了。
+- **图片发给纯文本模型**（`InferHub.001001020.406` "not multimodal"）从 502 改成 400，并直接提示改用 `Qwen3-VL-235B` / `kimi-k2.6-vl`——以前客户端会当成网关抖动，反复重试同一张图。
+- **`n>1`** 与 **`response_format=json_object/json_schema`** 现在在请求阶段就回 400 说明原因（上游分别只给一条 choice、以及直接忽略该字段），不再静默降级：客户端拿到形状不符的结果比拿到明确错误更难查。
+- **TPM 限流按模型冷却**：`glm-5.3` 撞限流只晾这个模型，不再连带停掉同一账号上的其它模型（1041 并发满与凭据失效仍是账号级）。
+
+**移除全部 GitHub Actions 工作流**
+
+- 删掉 `.github/workflows/`（`tests` / `release` / `release-checksums` / `docker-publish` / `revert-guard`），
+  以及只为它们服务的 `release/` 打包工具（`matrix_legs.py` / `release_tools.py` / `portable_runtime.py` / `portable.txt`）
+  与 `tests/_test_release_assets.py`；
+- 测试不再自动跑：`python tests/run_all.py` 由本地/服务器手工执行；
+- 发布改为手工：打 `v*` tag 前先本地跑全量，`.ipk` / `.apk` 用 `wrt/openwrt/*.sh` 本地构建后上传；
+- 代价要说清：没有三平台（Ubuntu 3.9 / 3.12、Windows 3.12）矩阵，也没有合并前的自动回滚检查（revert guard）——
+  合并前请自己核对合并结果里 base 的新增代码是否还在。
+
+**项目身份从 WorkBuddy 改为 CodeArts（码道）**
+
+- 运行模块 `wb_*.py` → `ca_*.py`（21 个），启动脚本 `start-/restart-wb-proxy*` → `*-codearts-hub*`；
+- 服务名、部署目录、`server_version`：`wb-proxy` / `wbhub` → `codearts-hub`；
+- OpenWrt 包名 `workbuddy2api` → `codearts2api`；Docker 镜像与 quick-deploy 改为指向本仓库自己的产物；
+- **保留不动**（属于上游协议标识，改名会打断线上部署）：桌面缓存目录 `~/.workbuddy`、`WB_*` 环境变量（含 `WB_PROXY_KEY`）、上游账号域名 `www.workbuddy.cn`、`owned_by=workbuddy`、微信成长任务 id `wb_wechat_oa_subscribe_task`，以及上游仓库链接与 `docs/CHANGELOG.md` 历史记录。
+
+---
+
 ## v1.7.10
 
 协议与并发控制重大增强（修复与发布）：系统设置新增「启用 Anthropic Messages 接口 (Claude)」与「免费额度耗尽回退积分版」两个可视化开关，默认关闭；支持为每个 API Key 配置独立最大并发数（#359）；一键配置 DeepSeek Harness 默认开启视觉识图能力（#385）；修复流式 finish_reason: error 被误记为成功的问题（#389）；修复类内方法缩进保证全量套件全绿。

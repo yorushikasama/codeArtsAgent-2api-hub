@@ -43,30 +43,7 @@ class BestCachedTokensTests(unittest.TestCase):
         self.assertEqual(ca_protocol.best_cached_tokens({"cached_tokens": "x"}), 0)
 
 
-class NormalizeAliasesTests(unittest.TestCase):
-    def test_best_value_is_written_into_every_alias(self):
-        usage = {"prompt_tokens_details": {"cached_tokens": 42},
-                 "cache_read_input_tokens": 0, "cached_tokens": 0}
-        proxy.normalize_usage_cache_aliases(usage)
-        self.assertEqual(usage["cached_tokens"], 42)
-        self.assertEqual(usage["cache_read_input_tokens"], 42)
-        self.assertEqual(usage["prompt_cache_hit_tokens"], 42)
-        self.assertEqual(usage["prompt_tokens_details"]["cached_tokens"], 42)
-
-    def test_input_details_are_updated_only_when_present(self):
-        usage = {"cached_tokens": 7}
-        proxy.normalize_usage_cache_aliases(usage)
-        self.assertNotIn("input_tokens_details", usage)
-        usage2 = {"cached_tokens": 7, "input_tokens_details": {"cached_tokens": 0}}
-        proxy.normalize_usage_cache_aliases(usage2)
-        self.assertEqual(usage2["input_tokens_details"]["cached_tokens"], 7)
-
-    def test_no_hit_leaves_the_payload_untouched(self):
-        usage = {"cached_tokens": 0, "prompt_tokens": 10}
-        before = dict(usage)
-        proxy.normalize_usage_cache_aliases(usage)
-        self.assertEqual(usage, before)
-
+class ExtractUsageTests(unittest.TestCase):
     def test_extract_usage_uses_the_best_alias(self):
         usage = {"prompt_tokens": 100, "completion_tokens": 5,
                  "total_tokens": 105, "cached_tokens": 0,

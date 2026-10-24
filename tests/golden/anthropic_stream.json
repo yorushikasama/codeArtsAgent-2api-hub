@@ -7,7 +7,7 @@
    "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"你\"},\"type\":\"content_block_delta\"}\n\n",
    "event: content_block_delta\ndata: {\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"好\"},\"type\":\"content_block_delta\"}\n\n",
    "event: content_block_stop\ndata: {\"index\":0,\"type\":\"content_block_stop\"}\n\n",
-   "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":11,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":7,\"output_tokens\":3},\"type\":\"message_delta\"}\n\n",
+   "event: message_delta\ndata: {\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"input_tokens\":4,\"cache_creation_input_tokens\":0,\"cache_read_input_tokens\":7,\"output_tokens\":3},\"type\":\"message_delta\"}\n\n",
    "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"
   ]
  },

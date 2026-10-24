@@ -33,7 +33,9 @@ RESULTS = ("ok", "failed")
 RESULT_ALIASES = {"ok": "ok", "success": "ok", "succeeded": "ok",
                   "failed": "failed", "fail": "failed", "failure": "failed"}
 
-REALMS = ("cn",)
+#: 认得的出口名。码道是现在唯一的上游；``cn`` 保留是因为历史 JSONL 里写着
+#: 它（WorkBuddy 国内出口时代），读取侧不能把老行整批扔成空区域。
+REALMS = ("codearts", "cn")
 
 # 允许出现在 API 响应里的字段，一个不多。JSONL 是磁盘上的文件而不是我们的内存，
 # 一行里完全可能多出别的键（别的写入方、手工补的行、被塞进来的凭证），读取侧
@@ -206,28 +208,6 @@ def record(uid, nickname, realm, task, trigger, ok, message, usage_dir=None):
     return row
 
 
-def record_attempt(account, task, trigger, result):
-    """把一次账号尝试的结果记成一行；trigger 为 None 表示这一步不单独记。
-
-    trigger=None 表示这一步属于外层同一次尝试，由外层记一次就够，不该在历史里
-    多出一行（嵌套调用的场景）。
-
-    码道领取走 ca_codearts.record_claim 而不走这里：会话不是 Account 实例，
-    属性名（account.id / account.label）对不上。留这个函数是因为它仍是「把一个
-    Account 的动作记成一行」的正确写法，将来账号侧再新增会记历史的任务时不必
-    重造一遍。
-    """
-    if trigger is None:
-        return None
-    result = result if isinstance(result, dict) else {}
-    ok = bool(result.get("ok"))
-    message = result.get("msg") or result.get("error") or ("成功" if ok else "失败")
-    return record(uid=getattr(account, "uid", ""),
-                  nickname=getattr(account, "nickname", ""),
-                  realm=getattr(account, "realm", ""),
-                  task=task, trigger=trigger, ok=ok, message=message)
-
-
 def _read_rows(path):
     """按写入顺序读出全部记录；坏行跳过，不让一条截断的行毁掉整个文件。"""
     rows = []
@@ -389,3 +369,4 @@ def _compact_locked(path, max_records=None, max_age_days=None):
         _log("整理失败: %s" % exc)
         return (len(rows), 0)
     return (len(keep), len(rows) - len(keep))
+

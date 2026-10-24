@@ -232,10 +232,6 @@ th.sortable:focus-visible .sort-arrow.idle{opacity:1}
 #recent table th, #recent table td{text-align:center}
 #recent table th:first-child, #recent table td:first-child{text-align:center}
 #recent table td.mono{font-variant-numeric:tabular-nums}
-/* 限额表：一列一个作用域，输入框右对齐，同列数字才对得齐 */
-.limit-input{width:100%;max-width:200px;background:var(--panel2);border:1px solid var(--line);
-  border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit;text-align:right}
-.limit-input::placeholder{color:var(--dim);opacity:.75}
 @media (max-width: 860px){
   header{padding:12px 16px}
   main{padding:16px 12px 60px}
@@ -3732,7 +3728,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
           </div>
           <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
             <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-              并发 <input id="setCodeartsConcurrency" type="number" min="1" max="8" step="1" style="width:70px">
+              并发 <input id="setCodeartsConcurrency" type="number" min="1" max="3" step="1" style="width:70px">
             </label>
             <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
               续期 <input id="setCodeartsPing" type="number" min="5" max="600" step="1" style="width:70px"> 秒
@@ -3744,6 +3740,34 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
               TPM 冷却 <input id="setCodeartsTpm" type="number" min="5" max="3600" step="1" style="width:70px"> 秒
             </label>
             <button onclick="saveCodeartsTuning(this)">保存</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">模型降级链 <em id="setFallbackState"></em></h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              请求的模型连败进熔断（连败 3 次且 60 秒内）时，按下面这条链换第一个健康的模型继续服务；
+              链耗尽或未启用时照发原模型，绝不硬拒。模型健康度见「模型」页的 health 列。
+            </div>
+          </div>
+          <button onclick="saveModelFallback(this)">保存</button>
+        </div>
+        <div class="card" style="padding:14px 16px">
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px">
+            <input id="setFallbackEnabled" type="checkbox" style="width:16px;height:16px">
+            启用降级链（关掉只保留健康度展示，不换模型）
+          </label>
+          <div style="margin-top:10px;font-size:13px">
+            链与顺序（逗号分隔，从左到右依次尝试）：
+            <input id="setFallbackChain" type="text" spellcheck="false"
+                   placeholder="glm-5.3,openpangu-2.0-flash,deepseek-v4.1-flash"
+                   style="width:100%;margin-top:6px">
+          </div>
+          <div style="margin-top:8px;font-size:12px;color:var(--dim)">
+            可用模型（点击追加到链尾）：<span id="setFallbackChips"></span>
           </div>
         </div>
       </section>
@@ -4272,19 +4296,15 @@ async function deleteCodeartsAccount(btn){
 
 
 
-window.ACTIVE_GATEWAY_REALM = "cn";
-window.VIEW_REALM = "cn";
+// 出口只有一个（华为云码道）。realm 值跟着服务端走：历史行里的 cn / intl
+// 会被 ca_proxy.normalize_realm 归一成 codearts，面板也用同一个名字取数。
+window.ACTIVE_GATEWAY_REALM = "codearts";
+window.VIEW_REALM = "codearts";
 window.REALM_FILTER = "all";
 window.MODELS_DATA = [];
 window.ACCOUNTS = [];
 
 function updateUI(){
-  // 国际版已移除：只剩国内版一张卡片，视图恒为 cn。
-  const tCn = document.getElementById("tabCn");
-  if(tCn) tCn.className = "realm-card active";
-  const vbCn = document.getElementById("tabCnViewBadge");
-  if(vbCn) vbCn.style.display = "inline-block";
-
   // 区块标题上的出口标签：这几个区块的内容都按当前视图区域取（账号、禁用汇总、
   // 最近请求、模型清单），标出来免得把数字看成全局的。用 <em> 承载：
   // 侧栏导航由 h2 生成时会剥掉 <em>，所以标签不会串进导航项。
@@ -4294,23 +4314,17 @@ function updateUI(){
     if(el) el.textContent = sectionRealm;
   });
 
-  const dbCn = document.getElementById("tabCnDefaultBadge");
-  if(dbCn) dbCn.style.display = "inline-block";
-
   const gwName = document.getElementById("activeGatewayName");
   if(gwName) {
-    gwName.textContent = "国内版 (China)";
-    gwName.style.color = "var(--bad)";
+    gwName.textContent = "华为云码道 (CodeArts)";
+    gwName.style.color = "var(--accent)";
   }
-  const ep = document.getElementById("activeEndpoint");
-  // 网关出口信息卡已移除（原显示旧上游地址）
 
   const cardGw = document.getElementById("cardGatewayCtrl");
   if(cardGw){
-    cardGw.style.borderColor = "color-mix(in srgb,var(--bad) 45%,var(--line))";
-    cardGw.style.background = "var(--bad-soft)";
+    cardGw.style.borderColor = "color-mix(in srgb,var(--accent) 45%,var(--line))";
+    cardGw.style.background = "var(--accent-soft)";
   }
-
 
   // 计算当前生效的 Key 数量
   const keys = (typeof API_KEY_ROWS !== 'undefined' && API_KEY_ROWS.length) ? API_KEY_ROWS : (window.API_KEY_ROWS || []);
@@ -4318,34 +4332,6 @@ function updateUI(){
 
   const elGwKeyBadge = document.getElementById("activeGatewayKeyCount");
   if(elGwKeyBadge) elGwKeyBadge.textContent = activeKeysTotal + ' 个 Key 生效';
-
-  const elCnKey = document.getElementById("tabCnKeyBadge");
-  if(elCnKey) elCnKey.textContent = activeKeysTotal + ' 个 Key';
-
-  // 左侧卡片账号数与积分统计：大数字是「总剩余」（含停用账号），副行的
-  // 「可用」只算 isAcctActive（启用且未触发限额护栏）的账号——与旁边
-  // 的 N/M 账号计数同一个口径，两个数字才有可比性。
-  const allAccts = window.ACCOUNTS || [];
-  const cnAccts = allAccts.filter(a => a.realm === 'cn');
-
-  const isAcctActive = a => a.enabled && !a.dailyLimitBlocked && !a.creditLimitReached;
-
-  let cnCred = 0, hasCnCred = false, cnAvailCred = 0, hasCnAvail = false;
-  cnAccts.forEach(a => {
-    if(a.credits && a.credits.remain != null){
-      cnCred += a.credits.remain; hasCnCred = true;
-      if(isAcctActive(a)){ cnAvailCred += a.credits.remain; hasCnAvail = true; }
-    }
-  });
-
-  const cnActive = cnAccts.filter(isAcctActive).length;
-
-  const elCnCred = document.getElementById("tabCnCredits");
-  if(elCnCred) elCnCred.textContent = hasCnCred ? fmt(cnCred) : "—";
-  const elCnAvail = document.getElementById("tabCnAvailCred");
-  if(elCnAvail) elCnAvail.innerHTML = '可用 <b style="color:var(--accent2)">' + (hasCnAvail ? fmt(cnAvailCred) : "—") + '</b>';
-  const elCnAcct = document.getElementById("tabCnAccts");
-  if(elCnAcct) elCnAcct.innerHTML = '<b style="color:var(--accent)">' + cnActive + '</b>/' + cnAccts.length + ' 账号';
 };
 
 // 切换视图的唯一入口：改完 VIEW_REALM 立刻重画「当前禁用账号与模型」。
@@ -4482,7 +4468,7 @@ function renderAvailableModels(){
     } else if(credText){
       // 统一成倍率写法：'x0.79' / '0.79' / 数字 0.5 都显示成 '0.79x' / '0.5x'。
       const raw = credText.replace(/^x/i, '') + 'x';
-      const night = ((m.id === 'glm-5.2' || m.id === 'deepseek-v4-pro') && window.VIEW_REALM === 'cn')
+      const night = ((m.id === 'glm-5.2' || m.id === 'deepseek-v4-pro') && (window.VIEW_REALM === 'cn' || window.VIEW_REALM === 'codearts'))
         ? ' <span style="font-size:10px;color:var(--accent)">(夜间0.5x)</span>' : '';
       credBadge = '<span class="badge s">' + esc(raw) + night + '</span>';
     }
@@ -5392,7 +5378,7 @@ function ensureHoverTip(){
 // 全页只留这一处 realm 过滤表达式 —— 账号卡片与「当前禁用账号与模型」都走它，
 // 两处不会各写一份、然后各自漂移。视图的真源是 window.VIEW_REALM。
 function accountsInView(){
-  const view = window.VIEW_REALM || "cn";
+  const view = window.VIEW_REALM || "codearts";
   return (window.ACCOUNTS || []).filter(a => !a.realm || a.realm === view);
 }
 
@@ -5971,26 +5957,11 @@ async function refreshInner(gen){
   document.getElementById('logfile').textContent = t.log_file || '';
   const rEl = document.getElementById('realm'); if(rEl) rEl.textContent = t.realm ? ' · ' + t.realm : '';
 
-  // 账号与积分统计（国际版已移除，只剩国内版一份）
-  const accts = window.ACCOUNTS || [];
-  const cnAccts = accts.filter(a => a.realm === 'cn');
-
-  const isAcctActive = a => a.enabled && !a.dailyLimitBlocked && !a.creditLimitReached;
-  const cnActive = cnAccts.filter(isAcctActive).length;
-
-  let cnRemain = 0;
-  cnAccts.forEach(a => { if(a.credits) cnRemain += (a.credits.remain || 0); });
-
-  const poolHtml =
-    '<div class="v-split">' +
-      '<div class="v-row"><span class="v-label">国内</span><span class="v-num" style="color:var(--accent)">' + cnActive + '<span class="v-unit">/' + cnAccts.length + '</span></span></div>' +
-    '</div>';
-
-  const credHtml =
-    '<div class="v-split">' +
-      '<div class="v-row"><span class="v-label">国内</span><span class="v-num" style="color:var(--accent2)">' + fmt(cnRemain) + '</span></div>' +
-    '</div>';
-
+  // 账号与积分统计：账号卡片由 loadCodeartsAccounts() → caUpdateCardSummary()
+  // 按 /accounts/codearts 的实时结果画。这里原来还从 window.ACCOUNTS 里筛
+  // realm === 'cn' 拼一份 poolHtml / credHtml —— 那个数组从来没有被填充过
+  // （账号池移除后没人写它），两个变量也没有任何使用点，等于每次刷新都白算
+  // 一遍并把「国内 0/0」的空字符串留在页面上。
   const succStr = (perf.success_rate_pct != null ? pct(perf.success_rate_pct) : '100.0%');
 
   // 这三张卡的数字都按当前视图区域取（/usage 等接口带 realm）。原先标题带
@@ -7076,6 +7047,18 @@ async function loadSettings(showToast){
         setCodeartsBusy: codeartsCfg.busy_cooldown,
         setCodeartsTpm: codeartsCfg.tpm_cooldown,
       };
+      // 模型降级链：开关 + 顺序输入框 + 可点选追加的模型 chips。
+      const fbEnabled = codeartsCfg.model_fallback_enabled !== false;
+      const fbEnabledInput = document.getElementById('setFallbackEnabled');
+      if(fbEnabledInput) fbEnabledInput.checked = fbEnabled;
+      const fbState = document.getElementById('setFallbackState');
+      if(fbState){
+        fbState.textContent = fbEnabled ? '(已启用)' : '(未启用)';
+        fbState.style.color = fbEnabled ? 'var(--accent2)' : 'var(--dim)';
+      }
+      const fbChainInput = document.getElementById('setFallbackChain');
+      if(fbChainInput) fbChainInput.value = codeartsCfg.model_fallbacks || '';
+      renderFallbackChips();
       Object.keys(codeartsInputs).forEach(function(id){
         const el = document.getElementById(id);
         if(el && typeof codeartsInputs[id] === 'number') el.value = codeartsInputs[id];
@@ -7319,10 +7302,14 @@ async function saveUsageKeep(btn){
 }
 /* 上游响应头超时。后端只接受 >=1 的整数秒，所以先把输入收成整数再发：空值、
    小数、非数字就地拦下，而不是送上去换一个 400 回来。 */
-/* 码道并发 / 续期 / 冷却。四项一起提交：后端按区间校验，越界会回 400。 */
+/* 码道并发 / 续期 / 冷却。四项一起提交：后端按区间校验，越界会回 400。
+   并发上限是 3 —— 上游每个账号只给 3 个会话名额（CODEARTS_UPSTREAM_SLOTS），
+   配到 4 以上必然撞 TM.00001041。前端区间必须和后端 CODEARTS_RANGES 一致：
+   以前这里写 8，用户设 4 能存进去，后端却按 1~3 校验，于是那个值被当成坏值
+   退回上一级（默认 2）—— 存了 4，实际是 2，面板上还显示 4。 */
 async function saveCodeartsTuning(btn){
   const fields = [
-    ['setCodeartsConcurrency', 'concurrency', '并发', 1, 8],
+    ['setCodeartsConcurrency', 'concurrency', '并发', 1, 3],
     ['setCodeartsPing', 'session_ping', '续期间隔', 5, 600],
     ['setCodeartsBusy', 'busy_cooldown', '并发满冷却', 1, 300],
     ['setCodeartsTpm', 'tpm_cooldown', 'TPM 冷却', 5, 3600],
@@ -7341,6 +7328,62 @@ async function saveCodeartsTuning(btn){
   try {
     await postJSON('/settings/save', {codearts: payload});
     toast('已保存：码道并发与冷却', 'ok');
+    loadSettings();
+  } catch(e) {
+    toast('保存失败: ' + e.message, 'bad');
+  } finally {
+    if(btn) btn.disabled = false;
+  }
+}
+
+function renderFallbackChips(){
+  const host = document.getElementById('setFallbackChips');
+  const input = document.getElementById('setFallbackChain');
+  if(!host || !input) return;
+  const inChain = new Set(
+    input.value.split(',').map(x => x.trim()).filter(Boolean));
+  host.textContent = '';
+  (window.MODELS_DATA || []).forEach(function(m){
+    if(!m || !m.id) return;
+    const chip = document.createElement('span');
+    chip.textContent = m.id;
+    chip.title = '点击追加到链尾';
+    chip.dataset.modelId = m.id;
+    chip.style.cssText = ('display:inline-block;margin:2px 6px 2px 0;padding:1px 8px;'
+        + 'border:1px solid var(--border);border-radius:10px;font-size:12px;cursor:pointer;'
+        + (inChain.has(m.id) ? 'color:var(--accent2);border-color:var(--accent2);' : ''));
+    chip.onclick = function(){
+      const parts = input.value.split(',').map(x => x.trim()).filter(Boolean);
+      if(parts.indexOf(m.id) < 0) parts.push(m.id);
+      input.value = parts.join(',');
+      renderFallbackChips();
+    };
+    host.appendChild(chip);
+  });
+  if(!host.childNodes.length){
+    host.textContent = '（模型清单加载后可点选）';
+  }
+}
+
+async function saveModelFallback(btn){
+  const enabledInput = document.getElementById('setFallbackEnabled');
+  const chainInput = document.getElementById('setFallbackChain');
+  const enabled = !!(enabledInput && enabledInput.checked);
+  const segs = (chainInput && chainInput.value || '').split(',')
+    .map(x => x.trim()).filter(Boolean);
+  for(const seg of segs){
+    if(!/^[A-Za-z0-9._-]+$/.test(seg)){
+      toast('链里有非法模型名：' + seg, 'bad');
+      return;
+    }
+  }
+  if(btn) btn.disabled = true;
+  try {
+    await postJSON('/settings/save', {codearts: {
+      model_fallbacks: segs.join(','),
+      model_fallback_enabled: enabled,
+    }});
+    toast('已保存：模型降级链' + (enabled ? '' : '（未启用）'), 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');
@@ -8698,7 +8741,7 @@ function toggleRemainingModelFilter(model){
 // 剩余用量按区域分块：各自的徽章、统计与表格；区域列
 // 因此不再需要——区块标签已经说明了区域。
 const REMAINING_REALMS = [
-  {realm: 'cn', budgets: 'remainingBudgetsCn',
+  {realm: 'codearts', budgets: 'remainingBudgetsCn',
    summary: 'remainingSummaryCn', tbody: 'remainingTbodyCn'},
 ];
 

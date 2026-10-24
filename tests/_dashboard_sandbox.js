@@ -1,6 +1,6 @@
 /* 把看板页面脚本装进一个**显式沙箱**，返回沙箱（也就是页面的 window/global）。
  *
- * 看板套件都需要拿页面顶层的函数（accountRow / renderDisabled / testAccounts…）
+ * 看板套件都需要拿页面顶层的函数（accountRow / testAccounts…）
  * 配一套假 DOM 跑一遍。此前两种写法并存：`new Function(script + ...)` 和
  * `vm.runInThisContext(script)`——前者要拼字符串，后者直接跑在宿主上下文里。
  * 这里把沙箱写明白：上下文里只有 _dom_stub 造的假 DOM 与一点最小运行环境，页面

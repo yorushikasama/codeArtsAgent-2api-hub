@@ -77,6 +77,18 @@ def best_cached_tokens(usage):
 
 
 def anthropic_usage(usage):
+    """Chat 的 usage → Anthropic 的 usage。
+
+    **``input_tokens`` 不含缓存部分**（2026-10-23）。Anthropic 的语义是
+    ``input_tokens`` = 这次真正「新读入」的 token，缓存命中/写入另计
+    （``cache_read_input_tokens`` / ``cache_creation_input_tokens``）；
+    OpenAI 形状的 ``prompt_tokens`` 是**总数，已经包含**缓存命中。以前这里
+    直接照搬，Claude Code 的用量面板会把缓存部分算两遍 —— 显示的成本比实际
+    高一大截（缓存读通常便宜 10 倍，重复计费看着像账单暴涨）。
+
+    只有上游**明确给出**了缓存计数时才做减法：没给的时候就无从区分，此时
+    照搬 prompt_tokens 才是对的（否则会把输入整个抹成 0）。
+    """
     out = {
         "input_tokens": 0,
         "cache_creation_input_tokens": 0,
@@ -86,9 +98,9 @@ def anthropic_usage(usage):
     if not isinstance(usage, dict):
         return out
     try:
-        out["input_tokens"] = int(usage.get("prompt_tokens") or 0)
+        prompt_total = int(usage.get("prompt_tokens") or 0)
     except (TypeError, ValueError):
-        pass
+        prompt_total = 0
     try:
         out["output_tokens"] = int(usage.get("completion_tokens") or 0)
     except (TypeError, ValueError):
@@ -104,6 +116,11 @@ def anthropic_usage(usage):
         out["cache_creation_input_tokens"] = int(usage.get("prompt_cache_write_tokens") or 0)
     except (TypeError, ValueError):
         pass
+    # 只有真的知道缓存是多少，才能从总数里把它扣掉；否则保持原值。
+    known_cache = (out["cache_read_input_tokens"]
+                   + out["cache_creation_input_tokens"])
+    out["input_tokens"] = (max(0, prompt_total - known_cache)
+                           if known_cache else prompt_total)
     service_tier = usage.get("service_tier")
     if service_tier:
         out["service_tier"] = service_tier
@@ -410,7 +427,18 @@ def stream_messages_events(raw_iter, model, holder=None):
     for line in iter_sse_lines(raw_iter):
         if state["done"] or state["failed"]:
             break
-        data = strip_data_prefix(line.decode("utf-8", "replace"))
+        text_line = line.decode("utf-8", "replace")
+        if text_line.lstrip().startswith(":"):
+            # 上游静默时 tap_lines 把 KEEPALIVE 翻成一条 SSE 注释行。Anthropic
+            # 的协议里有自己的心跳事件（``event: ping``），Claude Code 认它；
+            # 以前这一行被 strip_data_prefix 当空行丢掉，模型长思考时客户端
+            # 收不到任何字节，nginx 60s 空闲就把连接切了。
+            # **开场之前不发**：第一帧要留给 message_start，否则调用方的
+            # 「首帧才提交 200」会先被心跳兑现掉（那正是要避免的事）。
+            if state["started"]:
+                yield anthropic_sse_frame("ping", {})
+            continue
+        data = strip_data_prefix(text_line)
         if not data:
             continue
         if data == "[DONE]":
@@ -465,10 +493,24 @@ def stream_messages_events(raw_iter, model, holder=None):
         for call in delta.get("tool_calls") or []:
             if not isinstance(call, dict):
                 continue
-            try:
-                idx = int(call.get("index") or 0)
-            except (TypeError, ValueError):
-                idx = 0
+            # **缺 index 时不能一律归 0**：并行两个调用且都不带 index 时，
+            # 第二个会被并进第一个的槽位 —— 两个工具合成一个，参数拼成坏
+            # JSON。判据与 ca_stream.merge_tool_call 一致：带 index 按 index；
+            # 没 index 但有新 id → 新开一个；都没有（纯参数续片）→ 续在最后
+            # 一个上。
+            raw_idx = call.get("index")
+            idx = None
+            if raw_idx is not None:
+                try:
+                    idx = int(raw_idx)
+                except (TypeError, ValueError):
+                    idx = None
+            if idx is None:
+                if call.get("id") or not state["tool_order"]:
+                    idx = (max(state["tool_order"]) + 1
+                           if state["tool_order"] else 0)
+                else:
+                    idx = state["tool_order"][-1]
             entry = state["tools"].get(idx)
             if entry is None:
                 entry = {"idx": idx, "block": None, "id": "", "name": "", "opened": False}
@@ -614,8 +656,11 @@ def anthropic_content_to_text(value, is_error=None):
                 continue
             typ = str(item.get("type") or "")
             if typ == "image":
-                part = anthropic_image_part(item)
-                parts.append(anthropic_text((part.get("image_url") or {}).get("url")))
+                # 图片不能拼进文本：data URL 动辄几十万字符，塞进 tool 消息
+                # 既让模型看不到图，又很容易把上下文撑爆。真正的图由调用方
+                # 取出去放进紧随其后的一条 user 消息（Chat 的 tool 消息
+                # content 只接受字符串），这里只留一个占位。
+                parts.append("[image omitted from tool result]")
             elif typ == "document":
                 parts.append(anthropic_document_text(item))
             else:
@@ -628,6 +673,31 @@ def anthropic_content_to_text(value, is_error=None):
     if is_error is True:
         return "error: " + text
     return text
+
+
+def anthropic_images_in(value):
+    """取出 content 里的图片块，转成 Chat 的 image_url 分片。
+
+    tool 消息只能带字符串，所以这些分片要放进**紧随其后**的一条 user 消息：
+    Claude Code 读图、MCP 截图都是这个形状，丢掉就等于模型收不到图。
+    """
+    out = []
+    if not isinstance(value, list):
+        return out
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        typ = str(item.get("type") or "")
+        if typ == "image":
+            part = anthropic_image_part(item)
+            if (part.get("image_url") or {}).get("url"):
+                out.append(part)
+        elif typ == "document":
+            # 文档本身也可能套着一层 content（里面还有图）。
+            source = item.get("source")
+            if isinstance(source, dict):
+                out.extend(anthropic_images_in(source.get("content")))
+    return out
 
 
 def anthropic_system_text(value):
@@ -727,6 +797,10 @@ def anthropic_blocks_to_messages(role, blocks):
     tool_messages = []
     content_parts = []
     texts = []
+    # 工具结果里的图片：tool 消息只能带字符串，所以这些分片单独攒起来，
+    # 在最后追加一条 user 消息。丢掉它们等于模型收不到图（Claude Code 读图、
+    # MCP 截图都是这个形状）。
+    tool_images = []
     has_non_text = False
     for block in blocks:
         if not isinstance(block, dict):
@@ -751,6 +825,7 @@ def anthropic_blocks_to_messages(role, blocks):
                 "content": anthropic_content_to_text(block.get("content"),
                                                       block.get("is_error")),
             })
+            tool_images.extend(anthropic_images_in(block.get("content")))
             continue
         if typ == "image":
             part = anthropic_image_part(block)
@@ -767,7 +842,7 @@ def anthropic_blocks_to_messages(role, blocks):
         texts.append(text)
         content_parts.append({"type": "text", "text": text})
     out = list(tool_messages)
-    if not tool_calls and not texts and not has_non_text:
+    if not tool_calls and not texts and not has_non_text and not tool_images:
         return out
     msg = {"role": role or "user"}
     if tool_calls:
@@ -778,7 +853,15 @@ def anthropic_blocks_to_messages(role, blocks):
         msg["content"] = "".join(texts)
     else:
         msg["content"] = ""
-    out.append(msg)
+    # 一条只有图片的 user 消息是空正文：给一句说明，否则有的实现会把它当
+    # 空消息丢掉，图又看不到。
+    if tool_images:
+        out.append({"role": "user",
+                    "content": [{"type": "text",
+                                 "text": "Images returned by the tool result above:"}]
+                               + tool_images})
+    if msg.get("content") or tool_calls:
+        out.append(msg)
     return out
 
 
@@ -937,12 +1020,25 @@ NS_SEP = "__"
 
 
 def resolve_namespaced_name(name, mapping):
-    """把模型回传的名字解析回 (bare_name, namespace)。接受 js / ns__js / ns::js。"""
+    """把模型回传的名字解析回 (bare_name, namespace)。接受 js / ns__js / ns::js。
+
+    还有一种**网关自己造出来**的形态：两个 namespace 下有同名工具时，
+    ``expand_namespace_tools`` 把后来的那个送出成 ``ns__tool``（否则第二个
+    server 的工具对模型完全不可见）。它的 mapping 值是 namespace，所以这里
+    命中后要把自己加的前缀剥掉，否则回程会把 ``server_b__search`` 原样当成
+    工具名派发，客户端找不到它。
+    """
     if not name:
         return name, ""
     name = str(name)
     if name in mapping:
-        return name, mapping[name]
+        ns = mapping[name]
+        # 网关加的前缀：ns + "__" 正好是这个名字的开头。真·工具名以自己
+        # namespace 加下划线开头的概率可以忽略，而丢掉一整个 server 的工具
+        # 是线上真会遇到的（Codex 接两个 MCP server）。
+        if ns and name.startswith(str(ns) + NS_SEP):
+            return name[len(str(ns)) + len(NS_SEP):], ns
+        return name, ns
     if "::" in name:
         idx = name.find("::")
         if idx > 0:
@@ -1084,19 +1180,33 @@ def web_tools_active(body):
 
 
 def responses_usage(u):
+    """Chat 的 usage → Responses 的 usage。
+
+    ``total_tokens`` 缺失时用 prompt + completion 补上：上游有只给前两项的
+    收尾帧，而 Responses 形状要求这三项自洽。以前这里是 ``or 0`` 直接照搬，
+    客户端看到的是「输入 12 / 输出 2 / 合计 0」（2026-10-23）。
+    """
     if not u:
         return None
     det = u.get("completion_tokens_details") or {}
     pdet = u.get("prompt_tokens_details") or {}
+    prompt = u.get("prompt_tokens") or 0
+    completion = u.get("completion_tokens") or 0
+    total = u.get("total_tokens") or 0
+    if not total:
+        try:
+            total = int(prompt) + int(completion)
+        except (TypeError, ValueError):
+            total = 0
     return {
-        "input_tokens": u.get("prompt_tokens") or 0,
+        "input_tokens": prompt,
         "input_tokens_details": {
             "cached_tokens": u.get("prompt_cache_hit_tokens")
             or det.get("cached_tokens") or pdet.get("cached_tokens") or 0,
         },
-        "output_tokens": u.get("completion_tokens") or 0,
+        "output_tokens": completion,
         "output_tokens_details": {"reasoning_tokens": det.get("reasoning_tokens") or 0},
-        "total_tokens": u.get("total_tokens") or 0,
+        "total_tokens": total,
     }
 
 
@@ -1183,6 +1293,10 @@ def stream_responses_events(upstream, model, holder, webtools=None):
         # Close out the stream: reasoning item, structured tool calls,
         # DSML fallback, the message item and response.completed.
         nonlocal msg_index, text_buffer
+        # 若一帧上游数据都没到（空流），开场事件还得补上 —— 否则客户端收到
+        # 的第一帧就是 response.completed，既没有 response.created 也没有
+        # in_progress，部分客户端会把它当成协议错误丢掉。
+        yield from _lifecycle()
         if reason_index is not None and outputs[reason_index] is None:
             full_r = "".join(reason_parts)
             yield ev("response.reasoning_summary_text.done", {
@@ -1368,7 +1482,14 @@ def stream_responses_events(upstream, model, holder, webtools=None):
             outputs[msg_index] = msg_item("completed")
             yield ev("response.output_item.done", {"output_index": msg_index, "item": outputs[msg_index]})
         nonlocal usage
-        if usage is None or (usage.get("total_tokens") or 0) == 0:
+        # 只有**完全没有**上游用量时才估算。以前的条件是「total_tokens 为 0
+        # 也估算」，而上游回一条 usage 但 total_tokens 恰好是 0（空回答 /
+        # 只回思考内容的收尾帧）时，真实的 prompt/completion 会被一份估算值
+        # 整个盖掉 —— 账上记的和上游算的不是一回事（2026-10-23）。
+        _has_real_usage = isinstance(usage, dict) and (
+            usage.get("prompt_tokens") or usage.get("completion_tokens")
+            or usage.get("total_tokens"))
+        if not _has_real_usage:
             out_txt = "".join(text_parts)
             rs_txt = "".join(reason_parts)
             if out_txt or rs_txt:
@@ -1392,11 +1513,34 @@ def stream_responses_events(upstream, model, holder, webtools=None):
 
     # 只有第一轮开场。第二轮以后再送一次 response.created，客户端会
     # 看到同一则回应被开了两次。
-    if not holder.get("suppress_lifecycle"):
+    #
+    # **推迟到第一帧上游数据**（2026-10-23）：这两个事件以前在 for 循环之前
+    # 就 yield 了，而码道流式路径是「翻译器产出的第一帧才提交 200」。于是
+    # 200 在读上游之前就发出去了 —— 首帧即 1041（限流）时既不能重试也不能
+    # 换号，只能以「200 + 空流」收场，README 里那句「收到第一帧才提交 200」
+    # 对 Responses 根本不成立。现在第一帧真的到了才开场。
+    started_lifecycle = False
+
+    def _lifecycle():
+        nonlocal started_lifecycle
+        if started_lifecycle or holder.get("suppress_lifecycle"):
+            return
+        started_lifecycle = True
         yield ev("response.created", {"response": resp_obj("in_progress")})
         yield ev("response.in_progress", {"response": resp_obj("in_progress")})
+
     for raw in upstream:
-        data = strip_data_prefix(raw.decode("utf-8", "replace"))
+        text_line = raw.decode("utf-8", "replace")
+        if text_line.strip().startswith(":"):
+            # 上游静默时 tap_lines 会把 KEEPALIVE 哨兵翻成一条 SSE 注释行。
+            # 以前这一行被 strip_data_prefix 当成空行丢掉，于是模型长思考
+            # 期间客户端一个字节都收不到 —— 叠加 nginx 60s / CF 100s 的空闲
+            # 超时，Codex 这条链最容易被中间层切断。**只在开场之后发**：
+            # 开场之前发就等于把 200 提前承诺了（见上面）。
+            if started_lifecycle:
+                yield b": keepalive\n\n"
+            continue
+        data = strip_data_prefix(text_line)
         if not data or data == "[DONE]":
             if data == "[DONE]":
                 saw_done = True
@@ -1405,6 +1549,8 @@ def stream_responses_events(upstream, model, holder, webtools=None):
             chunk = json.loads(data)
         except Exception:
             continue
+        if not started_lifecycle:
+            yield from _lifecycle()
         u = chunk.get("usage")
         if u:
             if usage is None or (u.get("total_tokens") or 0) >= (usage.get("total_tokens") or 0):
@@ -1429,7 +1575,20 @@ def stream_responses_events(upstream, model, holder, webtools=None):
                     "summary_index": 0, "delta": piece,
                 })
             for tc in delta.get("tool_calls") or []:
-                idx = tc.get("index", 0)
+                # 缺 index 的判据同 merge_tool_call：带 index 按 index；
+                # 没 index 但有新 id 就新开；都没有就续在最后一个上。
+                # 以前这里 `tc.get("index", 0)` 会把并行的多个调用全并进 0。
+                idx = tc.get("index")
+                if idx is None:
+                    if tc.get("id") or not tool_calls_map:
+                        idx = (max(tool_calls_map) + 1) if tool_calls_map else 0
+                    else:
+                        idx = max(tool_calls_map)
+                else:
+                    try:
+                        idx = int(idx)
+                    except (TypeError, ValueError):
+                        idx = (max(tool_calls_map) + 1) if tool_calls_map else 0
                 fn = tc.get("function") or {}
                 fn_name = fn.get("name") or ""
                 fn_args = fn.get("arguments") or ""

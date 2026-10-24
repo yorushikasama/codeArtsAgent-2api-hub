@@ -114,13 +114,33 @@ def merge_tool_call(calls, call):
 
     同一个 index 会分多帧到达：第一帧带 id/type/name，后面的帧只带 arguments
     的增量片段。按 index 归并，缺失字段沿用已有值。
+
+    **缺 index 时不能一律归 0**（2026-10-23）。以前 ``int(call.get("index")
+    or 0)``：上游并行发两个调用、都没写 index 时，第二个的 name/arguments
+    会被并进第一个的槽位 —— 两个调用合成一个，参数拼成 ``{"a":1}{"b":2}``
+    这种坏 JSON。现在的判据：
+
+      · 带了 index → 按 index；
+      · 没带 index，但带了新的 ``id``（一个新的调用开始）→ 新开槽位；
+      · 没带 index 也没 id（纯参数续片）→ 接在**最后一个**槽位上。
+
+    最后这条是关键：上游常把 arguments 分片成多帧而只在第一帧给 index，
+    后面各帧省略它 —— 那些帧必须续在同一个调用上，不能各开一个。
     """
     if not isinstance(call, dict):
         return
-    try:
-        index = int(call.get("index") or 0)
-    except (TypeError, ValueError):
-        index = len(calls)
+    raw_index = call.get("index")
+    index = None
+    if raw_index is not None:
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            index = None
+    if index is None:
+        if call.get("id") or not calls:
+            index = len(calls)
+        else:
+            index = len(calls) - 1
     while len(calls) <= index:
         calls.append({"id": "", "type": "function",
                       "function": {"name": "", "arguments": ""}})
@@ -136,7 +156,7 @@ def merge_tool_call(calls, call):
         target["arguments"] = (target.get("arguments") or "") + fn["arguments"]
 
 
-def collect_sse(text):
+def collect_sse(text, sink=None):
     """把码道的 SSE 流聚合成 (正文, 推理, usage, 帧内错误, tool_calls)。
 
     码道回的是 OpenAI 形状的 chunk，但错误可能藏在帧里而 HTTP 仍是 200，
@@ -148,6 +168,11 @@ def collect_sse(text):
     tool_calls 被整段丢掉 —— 上游明明正确地请求了工具，网关聚合完就把
     delta 清空，于是渲染层永远看不到调用，模型自己编的 ``<tool_call>`` 文本
     反而被当成正文发出去。
+
+    ``sink``（2026-10-23 补）：可选字典，回填 ``finish_reason``。以前这里完全
+    不看收尾原因，于是 ``length``（撞 max_tokens 被截断）在非流式路径上被渲染
+    成 ``stop`` —— 客户端以为回答说完了，截断的工具参数当成完整 JSON 去解析。
+    返回值保持五个元素，老调用点不用动。
     """
     content, reasoning, usage, err = "", "", {}, ""
     tool_calls = []
@@ -171,6 +196,9 @@ def collect_sse(text):
         for choice in piece.get("choices") or []:
             if finish_error(choice):
                 err = err or "upstream finished with finish_reason=error"
+            elif sink is not None and choice.get("finish_reason"):
+                # error 已经进了 err，不该同时当成一个正常收尾原因。
+                sink["finish_reason"] = choice["finish_reason"]
             delta = choice.get("delta") or {}
             content += delta.get("content") or ""
             reasoning += delta.get("reasoning_content") or ""
@@ -215,6 +243,17 @@ def tap_lines(lines, sink, keepalive=None, keepalive_frame=b": keepalive\n\n"):
                     if u is not None:
                         sink["usage"] = u
                     bad = frame_error(piece)
+                    if not bad:
+                        # **finish_reason=error 也算失败**，而且必须在这里
+                        # 拦下来：它不带任何错误码，翻译器只会把它当成一个
+                        # 普通的收尾原因，于是 Messages 补 message_stop
+                        # （Claude Code 看到 end_turn）、Responses 补
+                        # response.completed（Codex 看到 completed）—— 半截
+                        # 回答被当成完整结果。Chat 那条路自己判了，这两条没有。
+                        for choice in piece.get("choices") or []:
+                            if finish_error(choice):
+                                bad = "upstream finished with finish_reason=error"
+                                break
                     if bad:
                         sink["error"] = bad
                         raise UpstreamErrorFrame(bad)
@@ -269,9 +308,20 @@ def fail_spec(status, code, detail, anthropic=False):
             or "rate limit" in low or "too many requests" in low
             or "并发会话数已达上限" in text):
         return 429, "rate_limit_error"
+    # TM.00001054 内容安全拦截：请求本身被审掉了，换号、重试都不会变。以前
+    # 落进 502 让客户端当网关抖动重试，同一句话会被反复送审。
+    if "00001054" in low or "content moderation" in low or "内容安全" in text:
+        return 400, "invalid_request_error"
+    # TM.00020005 租户被冻结（账号侧状态，见官方 Kernel 的 tenant frozen 拦截）：
+    # 重试同一请求永远不会成，要人去面板续费/解冻。502 只会让它一直退避。
+    if "00020005" in low or "tenant frozen" in low:
+        return 403, "invalid_request_error"
     if (status in (401, 403) or "apig.0301" in low or "apig.0303" in low
-            or "sts5.18" in low or "security token" in low
-            or "authentication" in low or "authorization" in low):
+            or "sts5.18" in low or "security token" in low):
+        # 只看**明确的凭据错误码**。以前还匹配裸的 "authentication" /
+        # "authorization"：5xx 的说明里只要出现 "authentication service
+        # unavailable" 这类字样，就会被判成「你的凭据失效了」，把一个上游
+        # 故障说成用户要重新登录 —— 客户端于是不会重试，只会提示去重新授权。
         return 502, ("authentication_error" if anthropic else "credentials_error")
     if (status == 404 or "002002009" in low or "model is not registered" in low
             or "model not found" in low or "模型不存在" in text):
@@ -293,7 +343,11 @@ def fail_spec(status, code, detail, anthropic=False):
     if "apig.0203" in low or "backend timeout" in low:
         return 504, ("overloaded_error" if anthropic else "upstream_error")
     if (status == 400 or "001001005" in low or "param is invalid" in low
-            or "malformed_json" in low or "参数" in text):
+            or "malformed_json" in low):
+        # 不再匹配裸的「参数」两个字：错误说明里只要提到「参数」就被判成
+        # 400，会让「网关自己重试了 4 轮、最后却告诉客户端是你的请求错了」
+        # 这种情况发生。真正该判 400 的是**明确的参数错误码**（001001005）
+        # 与上游参数校验失败的原文（param is invalid / malformed_json）。
         return 400, "invalid_request_error"
     return 502, ("overloaded_error" if anthropic else "upstream_error")
 
@@ -315,6 +369,121 @@ def frame_status(text, anthropic=False):
     return fail_spec(200, code or body, detail or body, anthropic)
 
 
+def slow_failure(status, text, exc=None):
+    """这次失败会不会「耗掉一整个首字节窗口」？
+
+    用来估「再来一轮要多久」。分两类：
+
+      · **快**：1041（并发会话满）、429（TPM / 请求数限流）、参数错、模型
+        不存在 —— 上游毫秒级就回，再试一次几乎不花时间。
+      · **慢**：5xx、网络异常、APIG.0203 Backend timeout —— 要等满首字节
+        超时（实测约 60 秒）。
+
+    以前一律按 60 秒估，于是「已经花了 15 秒」之后连 0.1 秒就返回的 1041
+    也不再重试：TPM 退避设计 4 次（5/12/25/40），实际只能用 2 次。
+    """
+    if exc is not None:
+        return True
+    body = str(text or "")
+    low = body.lower()
+    # flow-control 429 是 APIG 毫秒级回的（不是等首字节超时），按快失败估。
+    if flow_control_from(body) is not None:
+        return False
+    if (status == 429 or status in (400, 404)
+            or "tm.00001041" in low or "modelarts.811" in low
+            or "rate limit" in low or "too many requests" in low
+            or "并发会话数已达上限" in body
+            or "002002009" in low or "001001005" in low
+            or "4004.200" in low or "001001020" in low
+            or "00001054" in low or "00020005" in low
+            or "param is invalid" in low or "benefit not found" in low):
+        return False
+    return True
+
+
+#: 429 flow-control 的八种 type（官方 FCn 表，逆自 kernel）。
+FLOW_CONTROL_TYPES = ("RPM", "RPH", "RP6H", "RPD", "TPM", "TPH", "TP6H", "TPD")
+#: 官方 ``h_()``：只有**分钟级**（RPM=请求数 / TPM=token 数）值得退避重试；
+#: 小时/日配额重试也不会变，官方直接终止并展示配额文案。
+FLOW_CONTROL_RETRYABLE = ("RPM", "TPM")
+#: 官方限流 FAQ（codeartsagent_faq_0015）口径：额度按「用户 × 模型」独立
+#: 计算，5 小时 / 7 天滑动窗口，恢复是**滑动释放**（整点滑出最早 1 小时、
+#: 每日零点滑出最早 1 天，所以是「陆续恢复」）；官方对超限的第一推荐就是
+#: 「切换其他模型」—— 不同模型额度独立，立即恢复。降级链正是这条建议的
+#: 自动化。补一句恢复语义到客户端错误里，比干等有方向。
+FLOW_CONTROL_HINT = (" (per-model sliding-window quota: switch to another "
+                     "model for immediate capacity, or wait - it recovers "
+                     "gradually as old usage slides out of the window)")
+#: 官方 kernel UK map 的中文文案（一字不差；TPD 的 ``{quota}`` 运行时替换）。
+#: 注意这是 kernel 侧的口径 —— extension.js 的 FU map 里 RP6H 的 l10n key
+#: 与英文值对不上（官方自己的 bug，中文环境会显示英文），别抄那份。
+FLOW_CONTROL_MESSAGES = {
+    "RPM": "您最近的操作有点快哦⚡️系统需要喘口气，请稍等几秒后重试😊",
+    "RPH": "您本小时的额度已用完 ⏰ 我先去充个电，一小时后满格归来！🔋",
+    "RP6H": "这6小时的额度已用完 ⏰ 我先去充个电，6小时后满格归来！🔋",
+    "RPD": "今天的额度已经用完啦 🌙 辛苦了一天！明天额度刷新后我们再继续 ✨",
+    "TPM": "信息量有点大哦 📚 我需要缓一缓，请稍等片刻再试～ ✨",
+    "TPH": "这一小时咱们聊得真尽兴！🎉 我的小脑袋需要休息一下，一小时后满血回归！💡",
+    "TP6H": "这段时间咱们聊得真充实！🎉 我需要休息一下，6小时后满血回归！💡",
+    "TPD": ("您的请求消耗Token过快，已达每日{quota} Token上限，请24:00点后"
+            "再试，或切换模型以继续。"),
+}
+
+
+def flow_control_from(text):
+    """429 错误体 → flow-control 信息（type/quota/used）；不是则返回 None。
+
+    服务端把 ``{"type","message","identity","quota","used"}`` 作为 **JSON
+    字符串**塞在 ``error_msg`` 里（官方解析函数 ``i0()``），兼容 ``error``
+    包一层与顶层两种包裹。type 不在官方八种之列的一律不当 flow-control。
+    """
+    body = str(text or "")
+    candidates = []
+    try:
+        whole = json.loads(body)
+    except Exception:
+        whole = None
+    if isinstance(whole, dict):
+        # 官方 zod schema（ACn）兼容两种包裹：顶层 {error_code,error_msg} 与
+        # {error:{error_code,error_msg}} —— error_detail 只认前者，这里自己认全。
+        for holder in (whole, whole.get("error")):
+            if isinstance(holder, dict):
+                msg = holder.get("error_msg") or holder.get("message")
+                if isinstance(msg, str):
+                    candidates.append(msg)
+    code, msg = error_detail(body)
+    candidates.extend(x for x in (msg, body) if x)
+    for candidate in candidates:
+        if not candidate:
+            continue
+        try:
+            data = json.loads(candidate)
+        except Exception:
+            continue
+        if not isinstance(data, dict):
+            continue
+        kind = str(data.get("type") or "")
+        if kind in FLOW_CONTROL_TYPES:
+            return {
+                "type": kind,
+                "quota": (data.get("quota")
+                          if isinstance(data.get("quota"), (int, float)) else 0),
+                "used": (data.get("used")
+                         if isinstance(data.get("used"), (int, float)) else 0),
+            }
+    return None
+
+
+def flow_control_message(info):
+    """flow-control 信息 → 官方中文文案（TPD 的 {quota} 已替换）。"""
+    text = FLOW_CONTROL_MESSAGES.get((info or {}).get("type")) or ""
+    text = text.replace("{quota}", str(int((info or {}).get("quota") or 0)))
+    # 日级配额（RPD/TPD）补滑动窗口的恢复语义；分钟级加等待即可。
+    if (info or {}).get("type") in ("RPD", "TPD", "RPH", "TPH", "RP6H", "TP6H"):
+        text += FLOW_CONTROL_HINT
+    return text
+
+
 def retryable(status, text):
     """这个失败值得等一下重试吗？
 
@@ -324,12 +493,24 @@ def retryable(status, text):
                                         上一个请求还没从上游释放就会撞上）
     网关连着发几个请求必然撞第二种，所以必须自己退避重试，
     否则用户侧看到的是「这个模型坏了」。
+
+    **429 的 flow-control 分流**（官方 ``h_()``，2026-10-24 逆向）：APIG 层的
+    429 把 ``{"type":RPM..TPD,...}`` 塞在 error_msg 里，只有**分钟级**的
+    RPM/TPM 值得退避重试；小时/日配额（RPH/RP6H/RPD/TPH/TP6H/TPD）重试一
+    万次也不会变，官方直接终止并展示配额文案。
     """
+    fc = flow_control_from(text)
+    if fc is not None and fc["type"] not in FLOW_CONTROL_RETRYABLE:
+        return False
     if status == 429:
         return True
+    body = text or ""
+    # 这两类是**确定性拒绝**：再试一次还是同样的结果，重试只是白等。
+    if ("00001054" in body or "00020005" in body
+            or "tenant frozen" in body.lower()):
+        return False
     if status and status >= 500:
         return True
-    body = text or ""
     return ("TM.00001041" in body or "ModelArts.811" in body
             or "rate limit" in body.lower()
             or "too many requests" in body.lower()
@@ -345,6 +526,28 @@ def concurrency_full(status, text):
     """
     body = text or ""
     return ("TM.00001041" in body or "并发会话数已达上限" in body)
+
+
+def server_retry_after(text):
+    """从错误文本里读出 open_chat 附加的服务端退避提示（秒）；没有返回 0。
+
+    open_chat 在 429/503 的响应头里有 ``retry-after-ms``（毫秒）或
+    ``retry-after``（秒）时，把它折算成秒并追加 ``[server-retry-after: Ns]``
+    标记 —— 官方 rS 策略的读取顺序就是 ms 头优先、秒头次之；服务端说等多
+    久比我们猜的 5/12/25/40 靠谱，取较大者用。
+    """
+    body = str(text or "")
+    if "server-retry-after" not in body:
+        return 0.0
+    cut = body.rfind("[server-retry-after: ")
+    if cut < 0:
+        return 0.0
+    tail = body[cut + len("[server-retry-after: "):]
+    end = tail.find("s]")
+    try:
+        return float(tail[:end]) if end > 0 else 0.0
+    except ValueError:
+        return 0.0
 
 
 def error_detail(text):

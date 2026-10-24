@@ -29,6 +29,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -324,6 +325,40 @@ class LoginFlowTests(unittest.TestCase):
         # 预热器直连 8788（无代理头）：同样 200。
         status, _ = self.login(RIGHT_PASSWORD, None, ("127.0.0.1", 40003))
         self.assertEqual(status, 200)
+
+
+    def test_concurrent_wrong_passwords_are_counted(self):
+        """并发绕过：同一 IP 同时发 40 个错密码，必须只放过去 5 个。
+
+        修复前的真机行为：40 个请求全部 401，一次 429 都没有。因为「查计数」
+        与「记失败」分别在两把锁里，中间还夹着 0.5 秒反爆破睡眠 —— 40 个线程
+        都在计数为 0 的那一刻通过了检查。现在计数在放锁之前占位。
+        """
+        client = {"X-Real-IP": "203.0.113.7"}
+        statuses = []
+        lock = threading.Lock()
+
+        def attempt():
+            status, _ = self.login(WRONG_PASSWORD, client)
+            with lock:
+                statuses.append(status)
+
+        threads = [threading.Thread(target=attempt) for _ in range(40)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(len(statuses), 40)
+        self.assertLessEqual(statuses.count(401), 5,
+                             "超过 5 个请求通过了限流检查：%r" % (statuses,))
+        self.assertGreaterEqual(statuses.count(429), 35)
+
+    def test_a_concurrent_success_is_not_locked_out_by_its_own_attempt(self):
+        """并发里成功的那一次要把自己刚占的位清掉，不留旧账。"""
+        client = {"X-Real-IP": "203.0.113.7"}
+        status, _ = self.login(RIGHT_PASSWORD, client)
+        self.assertEqual(status, 200)
+        self.assertNotIn("203.0.113.7", proxy._login_attempts)
 
 
 if __name__ == "__main__":

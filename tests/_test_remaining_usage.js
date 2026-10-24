@@ -66,8 +66,11 @@ const budgetsCn = document.getElementById('remainingBudgetsCn');
 const budgetsEl = {get innerHTML(){ return budgetsCn.innerHTML; }};
 const summaryEl = document.getElementById('remainingUsageSummary');
 
+// realm 跟着页面走：出口只剩码道，渲染按 window.REALM_FILTER 那份
+// REMAINING_REALMS 过滤，测试数据必须用同一个名字。
+const ROW_REALM = 'codearts';
 const row = (over) => Object.assign({
-  uid: 'uid-1', nickname: 'meyadi', realm: 'cn', model: 'deepseek-v4.1-flash',
+  uid: 'uid-1', nickname: 'meyadi', realm: ROW_REALM, model: 'deepseek-v4.1-flash',
   used: 50000000, budget: 200000000, budget_min: 190000000, budget_max: 200000000,
   samples: 4, remaining: 150000000, used_pct: 25.0,
   window_start: 1, window_iso: '2026-10-09 23:05:35',
@@ -76,7 +79,7 @@ const row = (over) => Object.assign({
 
 api.renderRemainingUsage({
   window_seconds: 86400,
-  budgets: [{realm: 'cn', model: 'deepseek-v4.1-flash', avg: 200000000,
+  budgets: [{realm: ROW_REALM, model: 'deepseek-v4.1-flash', avg: 200000000,
              min: 190000000, max: 200000000, n: 4}],
   rows: [
     row({}),
@@ -146,13 +149,13 @@ api.renderRemainingUsage({
   window_seconds: 86400,
   activity_floor: 1, activity_floor_iso: '2026-10-09 00:00:00',
   budgets: [
-    {realm: 'cn', model: 'deepseek-v4.1-flash', avg: 200000000,
+    {realm: ROW_REALM, model: 'deepseek-v4.1-flash', avg: 200000000,
      min: 190000000, max: 200000000, n: 4, active: true},
-    {realm: 'cn', model: 'glm-5.3', avg: 5000, min: 5000, max: 5000,
+    {realm: ROW_REALM, model: 'glm-5.3', avg: 5000, min: 5000, max: 5000,
      n: 1, active: false},
   ],
   models: [
-    {realm: 'cn', model: 'deepseek-v4.1-flash', total_remaining: 380000000,
+    {realm: ROW_REALM, model: 'deepseek-v4.1-flash', total_remaining: 380000000,
      budget: 200000000, pairs: 3, available: 2, cooling: 1, unknown: 0, estimated: 1},
   ],
   rows: [
@@ -199,7 +202,7 @@ check('冷却行的已用标出撞线截断时刻',
 api.renderRemainingUsage({
   window_seconds: 86400, budgets: [], models: [],
   rows: [row({uid: 'uid-1', model: 'deepseek-v4.1-flash'}),
-         row({uid: 'uid-2', model: 'glm-5.3', realm: 'cn', nickname: 'acct-2'})],
+         row({uid: 'uid-2', model: 'glm-5.3', realm: ROW_REALM, nickname: 'acct-2'})],
 });
 check('筛选前两个模型的行都在',
       tbody.innerHTML.includes('deepseek-v4.1-flash') && tbody.innerHTML.includes('glm-5.3'),

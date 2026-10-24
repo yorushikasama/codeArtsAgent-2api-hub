@@ -31,7 +31,7 @@ let api;
 try {
   api = new Function(code + `
     ; return { renderKeyTable, keyModelPills,
-               onKeyBeforeToggle, applyKeyBeforeHidden };`)();
+               applyKeyBeforeHidden };`)();
 } catch (e) {
   console.log('LOAD ERROR:', e.message);
   process.exit(1);
@@ -179,7 +179,7 @@ const box = document.getElementById('keyBeforeToggle');
 check('the row is shown by default',
       document.getElementById('analyticsKeyTbody').innerHTML.includes('(切换前)'));
 check('the switch starts off', box.checked === false);
-box.checked = true; api.onKeyBeforeToggle(box);
+api.applyKeyBeforeHidden(true);
 out = document.getElementById('analyticsKeyTbody').innerHTML;
 check('flipping it on removes exactly that one row',
       !out.includes('(切换前)') && (out.match(/<tr>/g) || []).length === 5,
@@ -190,18 +190,11 @@ check('the row count follows the visible rows',
 check('the footer stops explaining a row that is no longer there',
       !document.getElementById('analyticsKeyNote').innerHTML.includes('(切换前)'));
 check('the checkbox stays in sync with the state', box.checked === true);
-const saved = fetchCalls[fetchCalls.length - 1];
-check('the choice is saved server-side through the settings channel',
-      !!saved && /\/settings\/save$/.test(saved.url)
-      && JSON.parse(saved.body).key_before_hidden === true,
-      saved && (saved.url + ' ' + saved.body));
-check('nothing is written to the browser store',
+check('the choice is not written to the browser store',
       localStorage.getItem('ca-key-hide-before') === null);
-box.checked = false; api.onKeyBeforeToggle(box);
+api.applyKeyBeforeHidden(false);
 check('flipping it back restores the row',
       document.getElementById('analyticsKeyTbody').innerHTML.includes('(切换前)'));
-check('the off choice is saved too, not just applied',
-      JSON.parse(fetchCalls[fetchCalls.length - 1].body).key_before_hidden === false);
 check('a payload with no such row hides the switch entirely',
       (api.renderKeyTable({ keys: [key({ name: 'x' })] }),
        wrap.style.display === 'none'));

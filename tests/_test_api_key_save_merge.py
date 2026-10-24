@@ -32,7 +32,11 @@ import ca_settings as S
 
 
 class FakeRequest(object):
-    """Just enough of the handler for the pieces under test."""
+    """Just enough of the handler for the pieces under test.
+
+    ``_handle_settings_save`` 现在是两段式（模块级 ``_validate_settings_patch``
+    先校验、``_apply_settings_patch`` 再写），Handler 上只留入口。
+    """
 
     _handle_settings_save = proxy.Handler._handle_settings_save
 
