@@ -217,7 +217,7 @@ out = P.backfill_reasoning_content(
 check("junk entry preserved", "junk" in out, out)
 
 print()
-print("[10] build_upstream_body wires thinking_enabled through")
+print("[10] repair_messages_for_upstream wires thinking through (build_upstream_body 退役后)")
 payload = {
     "model": "deepseek-v4.1-flash",
     "messages": [
@@ -226,23 +226,23 @@ payload = {
         {"role": "user", "content": "q2"},
     ],
 }
-body = P.build_upstream_body(copy.deepcopy(payload))
-a = [m for m in body["messages"] if m.get("role") == "assistant"][0]
+msgs = P.repair_messages_for_upstream(copy.deepcopy(payload["messages"]),
+                                      payload["model"])
+a = [m for m in msgs if m.get("role") == "assistant"][0]
 check(
     "deepseek payload backfilled end to end",
     isinstance(a.get("reasoning_content"), str),
     sorted(a),
 )
-check(
-    "thinking enabled injected",
-    (body.get("thinking") or {}).get("type") == "enabled",
-    body.get("thinking"),
-)
 
 payload2 = copy.deepcopy(payload)
-payload2["thinking"] = {"type": "disabled"}
-body2 = P.build_upstream_body(payload2)
-a2 = [m for m in body2["messages"] if m.get("role") == "assistant"][0]
+_saved_te = P._thinking_enabled
+P._thinking_enabled = lambda model, payload=None: False   # 显式 disabled 的口径
+try:
+    msgs2 = P.repair_messages_for_upstream(payload2["messages"], payload2["model"])
+finally:
+    P._thinking_enabled = _saved_te
+a2 = [m for m in msgs2 if m.get("role") == "assistant"][0]
 check(
     "explicit thinking disabled is respected", "reasoning_content" not in a2, sorted(a2)
 )

@@ -7,7 +7,7 @@ import os
 import re
 import sys
 
-ROOT = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODULES = [f for f in os.listdir(ROOT)
            if f.startswith("ca_") and f.endswith(".py")]
 

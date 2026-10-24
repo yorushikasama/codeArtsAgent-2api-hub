@@ -119,9 +119,12 @@ check("only one web_search reaches the chat body",
           if t.get("type") == "web_search" or t.get("name") == "web_search") == 1,
       tools_off)
 
-body = P.build_upstream_body(dict(chat))
+# build_upstream_body 退役后，出站包装由 ca_codearts.chat_body 的
+# normalize_tools 承担（码道路径的唯一入口）。
+import ca_codearts as CC
+body = CC.chat_body("m", [], tools=chat.get("tools"))
 up = {t.get("function", {}).get("name"): t for t in body["tools"] if isinstance(t, dict)}
-check("upstream body wraps the flattened tools as chat functions",
+check("ca_codearts.chat_body wraps the flattened tools as chat functions",
       isinstance(up.get("js", {}).get("function"), dict)
       and isinstance(up["js"]["function"].get("parameters"), dict), up.get("js"))
 

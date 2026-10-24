@@ -45,54 +45,10 @@ def tool_result(tid):
     return {"role": "tool", "tool_call_id": tid, "content": "ok"}
 
 
-print("[2] deepseek thinking: effort is filled in, explicit choices are honoured")
+print("[2] deepseek thinking 注入：随 WorkBuddy 路径退役，码道路径经")
+print("    ca_codearts.thinking_extra_from 的档位白名单——行为由")
+print("    _test_codearts.py 的 thinking_extra_from 映射表覆盖。")
 
-
-def deepseek_body(model="deepseek-v4.1-flash", **extra):
-    payload = {"model": model,
-               "messages": [{"role": "user", "content": "hi"}]}
-    payload.update(extra)
-    return P.build_upstream_body(payload)
-
-
-bare = deepseek_body()
-check("thinking is enabled", (bare.get("thinking") or {}).get("type") == "enabled",
-      bare.get("thinking"))
-check("an effort level is filled in alongside it",
-      isinstance(bare.get("reasoning_effort"), str) and bare["reasoning_effort"],
-      bare.get("reasoning_effort"))
-check("the filled level matches the catalog default",
-      bare.get("reasoning_effort") == (P.model_default_effort("deepseek-v4.1-flash") or "high"),
-      bare.get("reasoning_effort"))
-
-explicit = deepseek_body(reasoning_effort="low")
-check("an explicit effort is left alone", explicit["reasoning_effort"] == "low")
-
-camel_explicit = deepseek_body(reasoningEffort="max")
-check("a camelCase explicit effort is left alone",
-      camel_explicit.get("reasoningEffort") == "max"
-      and "reasoning_effort" not in camel_explicit, camel_explicit.get("reasoning_effort"))
-
-disabled = deepseek_body(thinking={"type": "disabled"})
-check("thinking disabled is not re-enabled",
-      disabled["thinking"] == {"type": "disabled"}, disabled.get("thinking"))
-check("thinking disabled does not gain an effort",
-      not disabled.get("reasoning_effort"), disabled.get("reasoning_effort"))
-
-none_effort = deepseek_body(reasoning_effort="none")
-check("effort 'none' is not overridden",
-      none_effort["reasoning_effort"] == "none", none_effort.get("reasoning_effort"))
-
-enabled_no_effort = deepseek_body(thinking={"type": "enabled"})
-check("an enabled-but-effortless request gains the effort",
-      enabled_no_effort.get("reasoning_effort"), enabled_no_effort)
-
-non_deepseek = deepseek_body(model="glm-5.3")
-check("non-deepseek models are untouched",
-      "thinking" not in non_deepseek and "reasoning_effort" not in non_deepseek,
-      (non_deepseek.get("thinking"), non_deepseek.get("reasoning_effort")))
-
-print()
 print("[3] tool pairing: repack results, drop orphans")
 
 split = [{"role": "user", "content": "go"},
@@ -242,34 +198,27 @@ check("stream_responses_events marks the response incomplete",
       '"status": "incomplete"' in resp_raw)
 
 print()
-print("[4] integration: build_upstream_body applies the repairs")
+print("[4] integration: repair_messages_for_upstream applies the repairs（build_upstream_body 退役后）")
 
-broken = {"model": "deepseek-v4.1-flash",
-          "messages": [{"role": "user", "content": "go"},
-                       assistant_with_calls("c0", "c1"),
-                       tool_result("c0")]}
-built = P.build_upstream_body(broken)
-check("the orphaned call is gone from the outbound body",
-      [tc["id"] for tc in built["messages"][2]["tool_calls"]] == ["c0"],
-      built["messages"][2].get("tool_calls"))
-check("the deepseek effort rides along", built.get("reasoning_effort"),
-      built.get("reasoning_effort"))
-check("stream is still forced", built.get("stream") is True)
-check("usage reporting is still requested",
-      (built.get("stream_options") or {}).get("include_usage") is True)
-check("no cache key yet: that is account scoped and added per candidate",
-      "prompt_cache_key" not in built)
+broken_msgs = [{"role": "user", "content": "go"},
+               assistant_with_calls("c0", "c1"),
+               tool_result("c0")]
+built = P.repair_messages_for_upstream([dict(m) for m in broken_msgs],
+                                       "deepseek-v4.1-flash")
+check("the orphaned call is gone from the outbound messages",
+      [tc["id"] for tc in built[1]["tool_calls"]] == ["c0"],
+      built[1].get("tool_calls"))
 check("the caller's payload is not mutated",
-      len(broken["messages"][1]["tool_calls"]) == 2)
+      len(broken_msgs[1]["tool_calls"]) == 2)
 
-split_body = {"model": "deepseek-v4.1-flash",
-              "messages": [{"role": "user", "content": "go"},
-                           assistant_with_calls("c0"),
-                           assistant_with_calls("c1"),
-                           tool_result("c0"),
-                           tool_result("c1")]}
-built_split = P.build_upstream_body(split_body)
-split_assistants = [m for m in built_split["messages"] if m.get("role") == "assistant"]
+split_msgs = [{"role": "user", "content": "go"},
+              assistant_with_calls("c0"),
+              assistant_with_calls("c1"),
+              tool_result("c0"),
+              tool_result("c1")]
+built_split = P.repair_messages_for_upstream([dict(m) for m in split_msgs],
+                                             "deepseek-v4.1-flash")
+split_assistants = [m for m in built_split if m.get("role") == "assistant"]
 check("a split parallel batch leaves as one assistant",
       len(split_assistants) == 1, len(split_assistants))
 check("both calls survive the merge",

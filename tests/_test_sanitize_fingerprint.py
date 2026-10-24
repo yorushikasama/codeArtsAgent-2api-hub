@@ -31,33 +31,6 @@ class FingerprintSanitizationTests(unittest.TestCase):
         self.assertEqual(P.sanitize_text("from OhMyOpenCode alone"), "from OhMyOpenCode alone")
         self.assertEqual(P.sanitize_text("Sisyphus master agent"), "Sisyphus master agent")
 
-    def test_sanitize_messages_covers_all_roles_and_tool_args(self):
-        fp = "Sisyphus-Junior - Focused executor from OhMyOpenCode"
-        clean = "Sisyphus-Junior - Focused executor"
-        messages = [
-            {"role": "system", "content": f"System: {fp}"},
-            {"role": "user", "content": f"User: {fp}"},
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": [{
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "run", "arguments": json.dumps({"query": fp})}
-                }]
-            },
-            {"role": "tool", "tool_call_id": "call_1", "content": f"Tool output: {fp}"}
-        ]
-        sanitized = P.sanitize_messages(messages)
-        self.assertIn(clean, sanitized[0]["content"])
-        self.assertNotIn("from OhMyOpenCode", sanitized[0]["content"])
-        self.assertIn(clean, sanitized[1]["content"])
-        self.assertNotIn("from OhMyOpenCode", sanitized[1]["content"])
-        args = json.loads(sanitized[2]["tool_calls"][0]["function"]["arguments"])
-        self.assertEqual(args["query"], clean)
-        self.assertIn(clean, sanitized[3]["content"])
-        self.assertNotIn("from OhMyOpenCode", sanitized[3]["content"])
-
 if __name__ == "__main__":
     unittest.main()
 

@@ -1,32 +1,16 @@
-"""Regression tests for the `stop` string -> []string normalization (code 11101).
+"""stop 字段的出站形状回归（上游 code 11101：Go 端只收 []string）。
 
-Reported symptom: a Go client sent `"stop": "END"` — legal, because OpenAI
-declares the field as `string | array` — and every single call came back
-
-    upstream 400: {"code":11101,"msg":"Unmarshal chat params failed with error:
-    json: cannot unmarshal string into Go struct field Request.stop of type
-    []string"}
-
-Measured against the live upstream (deepseek-v4.1-flash, same prompt, same
-account) before the fix:
-
-    "stop": "END"     -> 400 / code 11101
-    "stop": ["END"]   -> 200
-
-The gateway forwarded the field untouched, so a client that followed the OpenAI
-spec could not use it at all. These tests pin the outbound shape: a single
-string becomes a one-element array, and empty / null / non-string values are
-dropped instead of being forwarded for upstream to reject a second time.
+原修复钉在 WorkBuddy 路径的 normalize_stop 上；路径退役后活入口是
+ca_codearts.sampling_extra_from（还多一条「最多 4 条」的上游限制）。
+这些断言改打活函数：单字符串包成数组、数组保序过滤、垃圾值不发、
+没带 stop 不发明。
 """
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
-# Its own directories, removed when this process exits.
-_TMP = isolated_data_dirs("wb-stop-normalization-")
 
-import ca_proxy as P
+import ca_codearts as C
 
 PASS = FAIL = 0
 
@@ -41,64 +25,33 @@ def check(label, cond, extra=""):
         print("  [FAIL] " + label + ("  " + str(extra) if extra else ""))
 
 
-def norm(stop, present=True):
-    obj = {"model": "deepseek-v4.1-flash"}
-    if present:
-        obj["stop"] = stop
-    P.normalize_stop(obj)
-    return obj
+def extra_with(stop):
+    return C.sampling_extra_from({"stop": stop}) or {}
 
 
-print("[1] a single string becomes a one-element array")
-o = norm("END")
-check("string wrapped", o.get("stop") == ["END"], o.get("stop"))
-o = norm("\n\n")
-check("whitespace string survives as one element", o.get("stop") == ["\n\n"], o.get("stop"))
+print('[1] 单字符串包成单元素数组（Go 客户端 stop 单字符串曾整站 400）')
+e = extra_with("END")
+check("string wrapped", e.get("stop") == ["END"], e)
+e = extra_with(chr(10) + chr(10))
+check("whitespace string survives", e.get("stop") == [chr(10) + chr(10)], e)
 
-print()
-print("[2] the array form is left semantically intact")
-o = norm(["END", "STOP"])
-check("two elements kept in order", o.get("stop") == ["END", "STOP"], o.get("stop"))
-o = norm(["END", "", "STOP"])
-check("empty elements dropped", o.get("stop") == ["END", "STOP"], o.get("stop"))
-o = norm(["END", 7, None])
-check("non-string elements dropped", o.get("stop") == ["END"], o.get("stop"))
+print("[2] 数组保序 + 过滤垃圾元素 + 最多 4 条")
+e = extra_with(["END", "STOP"])
+check("order kept", e.get("stop") == ["END", "STOP"], e)
+e = extra_with(["END", "", 7, None, "STOP"])
+check("junk dropped, strings kept", e.get("stop") == ["END", "STOP"], e)
+e = extra_with(["a", "b", "c", "d", "e", "f"])
+check("capped at four", e.get("stop") == ["a", "b", "c", "d"], e)
 
-print()
-print("[3] empty and invalid values delete the field instead of forwarding junk")
-for label, value in (("empty string", ""), ("empty array", []), ("null", None),
-                     ("number", 7), ("object", {"a": 1}), ("bool", True)):
-    o = norm(value)
-    check("%s -> field removed" % label, "stop" not in o, o.get("stop"))
+print("[3] 空值 / 非法值不转发")
+for label, v in (("empty string", ""), ("empty array", []), ("null", None),
+                 ("number", 7), ("bool", True), ("object", {"a": 1})):
+    e = extra_with(v)
+    check("%s -> no stop key" % label, "stop" not in e, e)
 
-print()
-print("[4] a body without stop never gains one")
-o = norm(None, present=False)
-check("no stop invented", "stop" not in o, o.get("stop"))
+print("[4] 不带 stop 不发明")
+e = C.sampling_extra_from({"temperature": 0.5}) or {}
+check("no stop invented", "stop" not in e, e)
 
-print()
-print("[5] build_upstream_body normalizes end to end")
-def body_with(stop):
-    return P.build_upstream_body({
-        "model": "deepseek-v4.1-flash",
-        "messages": [{"role": "user", "content": "hi"}],
-        "stop": stop,
-    })
-
-check("string -> array through the full pipeline",
-      body_with("END").get("stop") == ["END"], body_with("END").get("stop"))
-check("array -> array through the full pipeline",
-      body_with(["END"]).get("stop") == ["END"], body_with(["END"]).get("stop"))
-check("empty string -> field gone through the full pipeline",
-      "stop" not in body_with(""), body_with("").get("stop"))
-check("no stop stays absent through the full pipeline",
-      "stop" not in body_with(None), body_with(None).get("stop"))
-
-print()
-print("[6] a tuple (Python-side caller) is normalized like a list")
-o = norm(("END", "STOP"))
-check("tuple becomes a list", o.get("stop") == ["END", "STOP"], o.get("stop"))
-
-print()
 print("SUMMARY: PASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

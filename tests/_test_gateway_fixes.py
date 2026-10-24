@@ -12,17 +12,14 @@ class GatewayFixesTest(unittest.TestCase):
         self.assertIn("raise it and restart", hint)
 
     def test_gpt_max_tokens_clamping(self):
-        body = {"model": "gpt-6-luna", "messages": [], "max_tokens": 1}
-        upstream = ca_proxy.build_upstream_body(body)
-        self.assertEqual(upstream["max_tokens"], 16)
-
-        body_ds = {"model": "deepseek-v4.1-flash", "messages": [], "max_tokens": 1}
-        upstream_ds = ca_proxy.build_upstream_body(body_ds)
-        self.assertEqual(upstream_ds["max_tokens"], 1)
-
-        body_ok = {"model": "gpt-6.1-sol", "messages": [], "max_tokens": 32}
-        upstream_ok = ca_proxy.build_upstream_body(body_ok)
-        self.assertEqual(upstream_ok["max_tokens"], 32)
+        # 钳制随 build_upstream_body 退役移植进了 _codearts_max_tokens（活入口）
+        self.assertEqual(
+            ca_proxy._codearts_max_tokens({"model": "gpt-6-luna", "max_tokens": 1}), 16)
+        self.assertEqual(
+            ca_proxy._codearts_max_tokens(
+                {"model": "deepseek-v4.1-flash", "max_tokens": 1}), 1)
+        self.assertEqual(
+            ca_proxy._codearts_max_tokens({"model": "gpt-6.1-sol", "max_tokens": 32}), 32)
 
 if __name__ == "__main__":
     unittest.main()

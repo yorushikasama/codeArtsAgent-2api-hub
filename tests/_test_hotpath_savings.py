@@ -4,9 +4,7 @@
 
   1. has_fingerprint 的字面量快路径与原来的两个 (?i) 正则逐字等价 —— 含 re.I 的
      Unicode 特例（'ſ' 能替 s、'İ'/'ı' 能替 i）、大小写混排、内嵌长文本；
-  2. build_upstream_body 幂等，open_upstream(prebuilt_body=...) 不再重复构建
-     （/v1/chat/completions 每请求只构建一次）；
-  3. estimate_tokens 的单遍实现与原来的逐字符循环逐值相等（含 CJK 边界、代理对、
+  2. estimate_tokens 的单遍实现与原来的逐字符循环逐值相等（含 CJK 边界、代理对、
      非字符串输入）；
   4. ca_settings.load 的 (path, mtime, size) 缓存：外部改写后失效、save() 写后
      立即可见（含 limits_data 首读迁移的写）、返回的是顶层拷贝；
@@ -171,18 +169,6 @@ class BuildUpstreamBodyReuseTests(unittest.TestCase):
          "messages": [{"role": "user", "content": FP}],
          "_internal_marker": True, "reasoning_effort": "high"},
     ]
-
-    def test_build_upstream_body_is_idempotent(self):
-        # 复用 prebuilt 的前提：同一个 payload 连建两次结果一致，且不改入参。
-        for payload in self.PAYLOADS:
-            before = json.dumps(payload, sort_keys=True, ensure_ascii=False)
-            first = P.build_upstream_body(payload)
-            second = P.build_upstream_body(payload)
-            self.assertEqual(first, second, payload.get("model"))
-            self.assertEqual(json.dumps(payload, sort_keys=True, ensure_ascii=False),
-                             before, "build_upstream_body 不应改动入参")
-
-
 
 class EstimateTokensTests(unittest.TestCase):
     def test_matches_the_character_loop(self):

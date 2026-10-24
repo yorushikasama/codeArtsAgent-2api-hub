@@ -1937,6 +1937,27 @@ def last_user_prompt_text(messages, limit=2000):
     return ""
 
 
+def normalize_tool_choice_value(tool_choice):
+    """上游的 tool_choice 只收字符串；对象形式（OpenAI 官方拼写）会 11101。
+
+    ``{"type":"none"}`` → ``"none"``、``{"type":"auto"}`` → ``"auto"``、
+    ``{"type":"function","function":{"name":N}}`` → ``N``；字符串原样放行。
+    原修在 WorkBuddy 路径的 ca_proxy.normalize_tool_choice（2026-10-23 的
+    「tool_choice=none 删掉 tools、模型永远口嗨」事故），路径退役后移植到
+    码道唯一入口 chat_body（2026-10-25）。
+    """
+    if isinstance(tool_choice, dict):
+        typ = str(tool_choice.get("type") or "").strip().lower()
+        if typ == "function":
+            fn = tool_choice.get("function") or {}
+            name = str(fn.get("name") or "").strip()
+            return name or "auto"
+        if typ in ("none", "auto", "required"):
+            return typ
+        return "auto"
+    return tool_choice
+
+
 def chat_body(model, messages, max_tokens=256, stream=True, extra=None,
               tools=None, tool_choice=None):
     """推理请求体。
@@ -1967,7 +1988,9 @@ def chat_body(model, messages, max_tokens=256, stream=True, extra=None,
             body["tools"] = shaped
             # 官方带 tools 时无条件发 ``tool_choice:"auto"``（2026-10-24
             # kernel 日志 27 条请求体全部如此）。客户端显式给了 none /
-            # required / 具名函数时仍尊重客户端，只在缺省时补 auto。
+            # required / 具名函数时仍尊重客户端，只在缺省时补 auto；对象
+            # 形式（OpenAI 官方拼写）先降级成字符串——上游 11101 只收字符串。
+            tool_choice = normalize_tool_choice_value(tool_choice)
             if not tool_choice:
                 tool_choice = "auto"
             body["tool_choice"] = tool_choice

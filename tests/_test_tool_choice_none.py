@@ -6,13 +6,12 @@ messages per turn until the context reached ~297k tokens and the user had to
 abort the request by hand (usage.jsonl recorded outcome=client_aborted,
 gen_ms=128262, usage_missing=true).
 
-Root cause: normalize_tool_choice() deleted the whole `tools` declaration when
-the client sent tool_choice="none". Without the function schema the model could
-not use the structured tool channel, so it downgraded the call into DSML /
-pseudo-JSON text inside `content` (tool_calls empty, finish_reason=stop). The
-client parsed no call, asked again, and the model repeated itself forever.
-
-These tests pin the outbound shape so the deletion cannot come back.
+Root cause: the WorkBuddy-path normalizer deleted the whole `tools` declaration
+when the client sent tool_choice="none" (model degraded calls to text, looped
+forever); its object-form downgrade also stopped the upstream's 11101 on the
+official OpenAI spelling {"type":"none"}. That path retired with
+build_upstream_body, so both protections now live in ca_codearts.chat_body /
+normalize_tool_choice_value (ported 2026-10-25). These tests pin the live shape.
 """
 import json, os, sys
 
@@ -23,7 +22,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402  (its own data root)
 # to run at the same time and left directories in the repo after a run.
 _TMP = isolated_data_dirs("wb-tool-choice-")
 
-import ca_proxy as P
+import ca_codearts as CC
 import ca_protocol as Q
 
 PASS = FAIL = 0
@@ -46,11 +45,10 @@ TOOLS = [{
 }]
 
 def norm(tool_choice):
-    obj = {"model": "deepseek-v4.1-flash", "tools": json.loads(json.dumps(TOOLS))}
-    if tool_choice is not None:
-        obj["tool_choice"] = tool_choice
-    P.normalize_tool_choice(obj)
-    return obj
+    tools = json.loads(json.dumps(TOOLS))
+    body = CC.chat_body("deepseek-v4.1-flash", [], tools=tools,
+                        tool_choice=tool_choice)
+    return body
 
 print("[1] tool_choice='none' must NOT delete the tools declaration")
 o = norm("none")
@@ -79,20 +77,17 @@ check("named function choice becomes the bare name",
 check("named choice keeps tools", "tools" in named)
 
 print()
-print("[4] a body with no tool_choice is left alone")
-o = {"model": "m", "tools": json.loads(json.dumps(TOOLS))}
-P.normalize_tool_choice(o)
-check("no tool_choice invented", "tool_choice" not in o, o.get("tool_choice"))
+print("[4] 缺省时按官方形状补 auto（2026-10-24 kernel 日志实证）")
+o = norm(None)
+check("tool_choice defaults to auto", o.get("tool_choice") == "auto", o.get("tool_choice"))
 check("tools untouched", len(o["tools"]) == 1)
 
 print()
-print("[5] build_upstream_body keeps tools end to end under tool_choice=none")
-body = P.build_upstream_body({
-    "model": "deepseek-v4.1-flash",
-    "messages": [{"role": "user", "content": "do the thing"}],
-    "tools": json.loads(json.dumps(TOOLS)),
-    "tool_choice": "none",
-})
+print("[5] chat_body keeps tools end to end under tool_choice=none")
+body = CC.chat_body("deepseek-v4.1-flash",
+                    [{"role": "user", "content": "do the thing"}],
+                    tools=json.loads(json.dumps(TOOLS)),
+                    tool_choice="none")
 check("full pipeline retains tools", bool(body.get("tools")), body.get("tools"))
 check("full pipeline keeps a string tool_choice",
       body.get("tool_choice") == "none", body.get("tool_choice"))

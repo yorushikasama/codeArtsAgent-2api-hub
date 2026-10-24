@@ -470,7 +470,6 @@ ca_usage.bind(
     _usage_cache_read_legacy_file=lambda *a, **k: _usage_cache_read_legacy_file(*a, **k),
     _usage_timeseries_scan=lambda *a, **k: _usage_timeseries_scan(*a, **k),
 )
-import ca_prompt
 import ca_modelsdev
 import ca_probes
 import ca_updates
@@ -4470,6 +4469,11 @@ def _codearts_max_tokens(payload):
         else:
             if value <= 0:
                 value = default
+    # GPT 系强制最小输出 16：更小的值（探针爱发 max_tokens=1）上游直接
+    # 400 integer_below_min_value（#364、#252）。原修在 WorkBuddy 路径的
+    # build_upstream_body 里，路径退役后移植到这个活入口（2026-10-25）。
+    if str(resolved).lower().startswith("gpt-") and value < 16:
+        value = 16
     # 官方口径钳制（ca_codearts.MODEL_OUTPUT_CAPS）：glm-5.3 官方每轮都发
     # 32000，我们以前按能力值 65536 顶满 —— 拉长上游排队，0203 的一部分。
     capped = ca_codearts.cap_output_tokens(resolved, value)
@@ -5349,23 +5353,6 @@ def sanitize_tool_calls(tool_calls):
         else:
             out.append(tc)
     return out
-def sanitize_messages(messages):
-    out = []
-    for m in messages or []:
-        if isinstance(m, dict):
-            item = dict(m)
-            if "content" in item:
-                item["content"] = sanitize_content(item["content"])
-            if isinstance(item.get("reasoning_content"), str):
-                item["reasoning_content"] = sanitize_text(item["reasoning_content"])
-            if "tool_calls" in item:
-                item["tool_calls"] = sanitize_tool_calls(item["tool_calls"])
-            out.append(item)
-        else:
-            out.append(m)
-    return out
-
-
 # ---------------------------------------------------------------------------
 # Tool-call pairing repair
 # ---------------------------------------------------------------------------
@@ -5641,110 +5628,6 @@ def backfill_reasoning_content(messages, model, thinking_enabled=None):
             out.append(m)
     return out
 # ---------------------------------------------------------------------------
-# Tool & Tool Choice Normalization (avoids code 11101 on object tool_choice)
-# ---------------------------------------------------------------------------
-def normalize_tool_choice(obj):
-    if "tool_choice" not in obj:
-        return
-    tc = obj["tool_choice"]
-    if isinstance(tc, str):
-        val = tc.strip().lower()
-        if val == "none":
-            # 这里曾经把 tools/functions 一起删掉，那正是 Agent 死循环的成因：
-            # 工具声明没了，模型拿不到函数签名、又没有结构化工具通道，却仍被要求
-            # 完成任务，于是把调用降级成 DSML / 伪 JSON 文本塞进 content
-            # （tool_calls 为空、finish_reason=stop）。客户端解析不到调用只能再
-            # 追问一轮，模型又重复一遍 "I'll do it"，上下文每轮 +2 条消息、token
-            # 线性膨胀，直到撑爆窗口或用户手动断开。
-            #
-            # tool_choice="none" 的语义是「本轮不许调用工具」，这层意思由
-            # tool_choice 字段本身表达就够了，不需要抹掉能力声明。
-            # 上游把 tool_choice 声明为 string（发对象会 11101），所以保持字符串
-            # 原样透传，同时保留 tools。
-            #
-            # 取舍：实测本上游并不真正遵守 tool_choice="none"（保留 tools 后它
-            # 仍返回 tool_calls）。但对比两条路 —— 删 tools 会让模型输出不可解析
-            # 的文本、Agent 原地空转；留 tools 则走正常 tool_calls 通道，客户端能
-            # 正常执行与回填 —— 后者明显更好。确实需要禁止调用时，客户端不传
-            # tools 即可。
-            obj["tool_choice"] = "none"
-        return
-    if isinstance(tc, dict):
-        typ = (tc.get("type") or "").strip().lower()
-        if typ == "none":
-            # 同上：保留 tools 声明。上游只认字符串，对象形式必须降级成
-            # "none"，否则 11101。
-            obj["tool_choice"] = "none"
-        elif typ in ("auto", "required"):
-            obj["tool_choice"] = typ
-        elif typ == "function":
-            name = (tc.get("function") or {}).get("name") or tc.get("name") or ""
-            obj["tool_choice"] = name.strip() or "auto"
-        else:
-            obj.pop("tool_choice", None)
-    else:
-        obj.pop("tool_choice", None)
-def normalize_tools(obj):
-    tools = obj.get("tools")
-    if not tools or not isinstance(tools, list):
-        return
-    norm = []
-    for t in tools:
-        if not isinstance(t, dict):
-            continue
-        # Wrap top-level name tool definition into Chat Completions function schema
-        if "name" in t and "function" not in t and t.get("type") == "function":
-            fn = {
-                "name": t.get("name") or "",
-                "description": t.get("description") or "",
-                "parameters": t.get("parameters") or {},
-            }
-            if "strict" in t:
-                fn["strict"] = t["strict"]
-            norm.append({"type": "function", "function": fn})
-        else:
-            norm.append(t)
-    obj["tools"] = norm
-# ---------------------------------------------------------------------------
-# Stop Sequence Normalization (avoids code 11101 on a string stop)
-# ---------------------------------------------------------------------------
-def normalize_stop(obj):
-    # OpenAI 把 stop 声明成 string | array，客户端传单个字符串完全合法；本上游的
-    # Go 端却把该字段定死为 []string，收到字符串直接 400：
-    #   Unmarshal chat params failed with error: json: cannot unmarshal string
-    #   into Go struct field Request.stop of type []string   (code 11101)
-    # 实测（deepseek-v4.1-flash，同一条 prompt，同一个上游账号）：
-    #   "stop": "END"     -> 400 / code 11101
-    #   "stop": ["END"]   -> 200
-    # 归一化成数组后语义完全等价：OpenAI 里单字符串就是单元素数组，模型侧看到的
-    # 停止序列一模一样。空字符串 / 空数组 / null / 非法类型一律删字段——它们的实际
-    # 含义都是「没有停止序列」，而空值本身在上游同样会被判参数不合法。
-    if "stop" not in obj:
-        return
-    val = obj["stop"]
-    if isinstance(val, str):
-        val = [val] if val else []
-    elif isinstance(val, (list, tuple)):
-        val = [s for s in val if isinstance(s, str) and s]
-    else:
-        val = []
-    if val:
-        obj["stop"] = val
-    else:
-        obj.pop("stop", None)
-def translate_max_completion_tokens(obj):
-    alias = obj.pop("max_completion_tokens", None)
-    if alias is None:
-        return
-    if "max_tokens" in obj:
-        return
-    try:
-        val = int(alias)
-        if val > 0:
-            obj["max_tokens"] = val
-    except (TypeError, ValueError):
-        pass
-# ---------------------------------------------------------------------------
 # 模型封锁表
 #
 # 背景：客户端除了使用者的对话，还会自己发背景请求（记忆整理、自动复核等）。
@@ -5941,13 +5824,6 @@ def key_model_message(entry, model):
             % (name, asked, allowed))
 
 
-# Process-memory degradation window: content-blocked passthrough/append
-# traffic switches to the minimal neutral prompt until the next 00:00 CST
-# (panel degrade.go). Restarts clear it, which is fine - the next rejection
-# re-triggers it.
-PROMPT_DEGRADE = ca_prompt.DegradeGate()
-
-
 def prompt_mode_config():
     """Prompt mode settings, fail-open to passthrough on any read error."""
     try:
@@ -5957,30 +5833,6 @@ def prompt_mode_config():
     if not isinstance(cfg, dict):
         cfg = {"mode": "passthrough", "file": ""}
     return cfg
-
-
-def apply_prompt_mode(messages):
-    """Apply the configured prompt mode to one request's messages.
-
-    passthrough is the legacy behaviour (client system prompts ride through);
-    custom/append are opt-in. While the degrade window is active, passthrough
-    and append switch to the minimal neutral prompt; custom never degrades.
-    An unreadable prompt file fails open to passthrough rather than blocking.
-    """
-    cfg = prompt_mode_config()
-    mode = cfg.get("mode") or "passthrough"
-    degraded = PROMPT_DEGRADE.active()
-    if mode in ("custom", "append"):
-        try:
-            text = ca_prompt.load_prompt(mode, cfg.get("file"))
-        except Exception:
-            text = ""
-        if text:
-            return ca_prompt.apply_mode(messages, mode, text, degraded=degraded)
-        return messages
-    if degraded:
-        return ca_prompt.apply_mode(messages, mode, "", degraded=True)
-    return messages
 
 
 def repair_messages_for_upstream(messages, model=""):
@@ -6029,84 +5881,6 @@ def _thinking_enabled(model, payload):
     if thinking_type == "enabled":
         return True
     return thinking_type != "disabled" and str(effort or "").strip().lower() != "none"
-
-
-def build_upstream_body(payload):
-    model = payload.get("model") or ""
-    # Resolve the effective thinking state before the backfill below: while
-    # thinking is on, the upstream requires reasoning_content on every
-    # assistant message, whether or not the client kept a reasoning trace.
-    thinking_enabled = _thinking_enabled(model, payload)
-    messages = ca_protocol.normalize_roles(payload.get("messages") or [])
-    # Prompt mode runs before sanitize/backfill so the gateway prompt is the
-    # one the upstream sees, with the client's fingerprint-y system text gone.
-    messages = apply_prompt_mode(messages)
-    messages = sanitize_messages(messages)
-    messages = backfill_reasoning_content(
-        messages, model, thinking_enabled=thinking_enabled
-    )
-    if not messages or (messages[0].get("role") != "system"):
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}] + messages
-    body = dict(payload)
-    # Private request markers ride along on the chat body for the Responses
-    # path (the namespace map, the local-web-tools flag). They are not part of
-    # the upstream protocol, so drop them here rather than trusting the
-    # upstream to ignore unknown keys.
-    for _marker in [k for k in body if str(k).startswith("_")]:
-        body.pop(_marker, None)
-    # dict(payload) 会把原始模型名一起带过去，所以别名要在这里覆盖回去
-    body["model"] = model
-    body["messages"] = messages
-    # Repair tool-call pairing before the body leaves: a call whose result never
-    # came back, results split from their batch by an interleaved message, or a
-    # parallel batch split into adjacent assistant messages makes the upstream
-    # reject every later turn of that conversation. Order matters: merge the
-    # split declarations first, so repack sees one complete batch.
-    repaired, _merged = merge_adjacent_tool_calls(body["messages"])
-    repaired, _repacked = repack_tool_result_blocks(repaired)
-    repaired, _cleaned = cleanup_orphan_tool_calls(repaired)
-    body["messages"] = repaired
-    translate_max_completion_tokens(body)
-    # Upstream GPT-family models enforce a minimum max_output_tokens >= 16;
-    # smaller values (e.g. max_tokens=1 from probes) fail with 400 integer_below_min_value (#364, #252).
-    if "max_tokens" in body and str(model).lower().startswith("gpt-"):
-        try:
-            mt = int(body["max_tokens"])
-            if mt < 16:
-                log("clamping %s max_tokens from %d to 16 for upstream requirements" % (model, mt))
-                body["max_tokens"] = 16
-        except (TypeError, ValueError):
-            pass
-    normalize_tool_choice(body)
-    normalize_tools(body)
-    normalize_stop(body)
-    if "max_tokens" not in body:
-        default_max = model_default_max_output_tokens(model)
-        if default_max:
-            body["max_tokens"] = default_max
-    # Thinking injection for DeepSeek models.
-    #
-    # thinking.type=enabled on its own does not switch the reasoning trace on:
-    # the upstream still answers without one unless an effort level rides along.
-    # Measured against the live upstream on deepseek-v4.1-flash, same prompt:
-    #   enabled + no effort   -> reasoning_tokens 0,  reasoning_content len 0
-    #   reasoning_effort=high -> reasoning_tokens 37, reasoning_content len 117
-    # The client's own choice always wins; an effort level is only filled in
-    # when it left the field out, and never for a request that opted out.
-    if str(model).lower().startswith("deepseek"):
-        thinking = body.get("thinking")
-        opted_out = isinstance(thinking, dict) and \
-            str(thinking.get("type") or "").strip().lower() == "disabled"
-        effort = body.get("reasoning_effort") or body.get("reasoningEffort")
-        if not opted_out and str(effort or "").strip().lower() != "none":
-            if "thinking" not in body:
-                body["thinking"] = {"type": "enabled"}
-            if not effort:
-                body["reasoning_effort"] = model_default_effort(model) or "high"
-    body["stream"] = True
-    if "stream_options" not in body:
-        body["stream_options"] = {"include_usage": True}
-    return body
 
 
 def model_catalog_meta(model):
