@@ -9,7 +9,6 @@
 测试 patch `P.ACCOUNTS_DIR / P.log / P.USAGE_DIR / P.CURRENT_REALM` 以及
 15 个 `_bind_*` 包装的函数，行为与拆分前一致。
 """
-import base64
 import bisect
 import calendar
 import collections
@@ -17,12 +16,9 @@ from collections import deque
 import heapq
 import datetime
 import hashlib
-import io
 import json
-import math
 import os
 import re
-import secrets
 import threading
 import time
 import urllib.parse
@@ -189,7 +185,7 @@ USAGE_FIELDS = ("prompt_tokens", "completion_tokens", "reasoning_tokens",
 def _empty_stats():
     return {"requests": 0, "errors": 0, "prompt_tokens": 0, "completion_tokens": 0,
             "reasoning_tokens": 0, "cached_tokens": 0, "total_tokens": 0,
-            "credit": 0.0, "cost_cny": 0.0, "cost_missing": {},
+            "credit": 0.0,
             "started": time.time(), "by_model": {},
             # Same aggregation keyed by (model, realm), so the metrics table
             # can show one row per exit for a model that ran through both.
@@ -2047,21 +2043,6 @@ def usage_snapshot_etag(realm=None, range=None, since=None, until=None):
         return None
     return _cache_etag("usage", key, hit[0])
 
-def _fold_cost(bucket, cost, model):
-    """Fold one row's estimated cost into a stats bucket.
-
-    Unpriced models land in cost_missing (id -> count) instead of quietly
-    vanishing from the totals, so the panel can name what the price
-    snapshot does not cover yet. A row the master switch left unpriced is not
-    "missing a price" - the whole feature is off - so it is not listed there.
-    """
-    if cost["known"]:
-        bucket["cost_cny"] = (bucket.get("cost_cny") or 0.0) + cost["cny"]
-    elif not cost.get("disabled"):
-        missing = bucket.setdefault("cost_missing", {})
-        mid = model or "unknown"
-        missing[mid] = missing.get(mid, 0) + 1
-
 def _usage_log_key(path=None):
     """(size, device, inode) of the usage log, or a zero key when it is gone.
 
@@ -2530,7 +2511,6 @@ def _copy_usage_snapshot(snap):
     three per-model views nest; every other value is a scalar.
     """
     out = dict(snap)
-    out["cost_missing"] = dict(snap["cost_missing"])
     out["by_model"] = {m: _copy_usage_bucket(b) for m, b in snap["by_model"].items()}
     out["by_model_realm"] = {m: {rr: _copy_usage_bucket(b) for rr, b in realms.items()}
                              for m, realms in snap["by_model_realm"].items()}
@@ -2580,33 +2560,16 @@ def _row_memo_tz_changed():
     _row_day_memo.clear()
     return True
 
+#: 价格估算体系已下线（2026-10-22）：这个网关只按码道积分记账，不再折算
+#: OpenRouter / 美元等价花费。所有成本出口统一返回这一份零值。只剩
+#: _priced_note() 还在读它（disabled / source / known / cny / backfilled），
+#: 形状就收敛到这五个键。
 _ZERO_COST = {
     "cny": 0.0,
     "known": False,
     "disabled": True,
-    "policy": "",
     "source": "",
-    "source_at": 0,
     "backfilled": False,
-    "usd": 0.0,
-    "usd_cny": 0.0,
-    "input_price": 0.0,
-    "cache_price": 0.0,
-    "output_price": 0.0,
-    "matched_by": "",
-    "reason": "pricing removed",
-    # 「最近请求」行里那几个拆解字段（悬停卡片用）。价格体系下线后一律 None，
-    # 面板不该显示编出来的 0。
-    "band": None,
-    "rates": None,
-    "unit": None,
-    "currency": None,
-    "or_id": None,
-    "via": None,
-    "inherited_from": None,
-    "override_from": None,
-    "band_note": None,
-    "via_derived": False,
 }
 
 def _row_cost(row, pricing, pricing_on):
@@ -2627,15 +2590,14 @@ def _fold_usage_snapshot(row, snap, r, since, until, pricing_on=None, also=None,
     total below - requests, tokens, per-model and per-account breakdowns -
     describes the same slice of the log.
 
-    pricing_on 是本次扫描开头问过一次的总开关：聚合只读 known/cny（_fold_cost
-    再读 disabled），悬停明细构造出来就被丢掉，所以整扫不建明细、开关也不逐行
-    重问。代价是设置改动从下一次扫描起生效；逐行展示路径不受影响，仍然每行
-    查、改设置当场可见。
+    pricing_on 是本次扫描开头问过一次的总开关：聚合不再读任何价（价格估算
+    体系已下线），开关只进 _priced_note 的指纹链路，整扫不逐行重问。代价是
+    设置改动从下一次扫描起生效。
 
     `also` 是同一行还要折进的其余同形状快照（按日/按小时分桶的窗口半），
-    一个元组，空/None 表示没有。过滤、算价与字段提取只做一次，几份各自累加：
-    折叠本来就要求每份各记一笔，而 cost_for_row 与 realm 判定是每行最贵的
-    那部分，只该付一次。
+    一个元组，空/None 表示没有。过滤、取行级记忆与字段提取只做一次，几份
+    各自累加：折叠本来就要求每份各记一笔，而行级记忆与 realm 判定是每行
+    最贵的那部分，只该付一次。
 
     `pricing` 是本次扫描开头取到的 _pricing_inputs() 元组（调用方从同一个
     值里取指纹，两处看到的是同一份价表）；传给 _bind__row_cost 当记忆的代次，
@@ -2674,7 +2636,6 @@ def _fold_usage_snapshot(row, snap, r, since, until, pricing_on=None, also=None,
             # abort is skipped because its usage block is incomplete.
             if outcome != "client_aborted":
                 tgt["credit"] += (row.get("credit") or 0)
-                _fold_cost(tgt, cost, model)
         return
     # Read each tracked field once: the row lands in four buckets below and
     # every one of them walks the same fields.
@@ -2683,27 +2644,21 @@ def _fold_usage_snapshot(row, snap, r, since, until, pricing_on=None, also=None,
     rr = row_realm(row)
     acct_id = row.get("account")
     acct_key = acct_id or "(unattributed)"
-    known = cost["known"]
-    cny = cost["cny"] if known else 0.0
     for tgt in targets:
         tgt["requests"] += 1
         for k, value in present:
             tgt[k] += value
-        _fold_cost(tgt, cost, model)
-        per = tgt["by_model"].setdefault(m, {"requests": 0, "accounts": {}, "cost_cny": 0.0, **{k: 0 for k in USAGE_FIELDS}})
+        per = tgt["by_model"].setdefault(m, {"requests": 0, "accounts": {}, **{k: 0 for k in USAGE_FIELDS}})
         per_realm = tgt["by_model_realm"].setdefault(m, {}).setdefault(
-            rr, {"requests": 0, "accounts": {}, "cost_cny": 0.0, **{k: 0 for k in USAGE_FIELDS}})
+            rr, {"requests": 0, "accounts": {}, **{k: 0 for k in USAGE_FIELDS}})
         per_acct = (tgt["by_model_acct"].setdefault(m, {})
                     .setdefault(rr, {})
                     .setdefault(acct_key, {"requests": 0, "accounts": {},
-                                           "cost_cny": 0.0,
                                            **{k: 0 for k in USAGE_FIELDS}}))
         for bucket in (per, per_realm, per_acct):
             bucket["requests"] += 1
             for k, value in present:
                 bucket[k] += value
-            if known:
-                bucket["cost_cny"] += cny
             if acct_id:
                 accounts = bucket["accounts"]
                 accounts[acct_id] = accounts.get(acct_id, 0) + 1
@@ -3071,9 +3026,6 @@ def _usage_snapshot_uncached(realm=None, since=None, until=None):
     snap["since"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(snap.get("started", time.time())))
     snap["log_file"] = _usage_log_path()
     snap["realm"] = r or "all"
-    # Cost figures are CNY; the panel divides by this rate to show USD
-    # without a round trip.
-    snap["usd_cny"] = 0.0
     snap["accounts_map"] = {}
     snap["account"] = {
         "uid": "", "domain": "", "issuer": "", "credential_file": "",
@@ -4224,7 +4176,6 @@ def _new_analytics_stat():
             "prompt_tokens": 0, "completion_tokens": 0, "reasoning_tokens": 0,
             "cached_tokens": 0, "total_tokens": 0,
             "credit": 0.0,
-            "cost_cny": 0.0,
             "ttft_sum": 0.0, "ttft_n": 0,
             "speed_sum": 0.0, "speed_n": 0,
             "elapsed_sum": 0.0, "elapsed_n": 0,
@@ -4259,15 +4210,12 @@ def _analytics_row_values(row):
             row.get("tokens_per_sec"),
             row.get("elapsed_ms"))
 
-def _feed_analytics(stat_obj, vals, is_err, cost_cny):
+def _feed_analytics(stat_obj, vals, is_err):
     """Fold one row's numbers into one analytics stat object.
 
     Token totals follow actual consumption, so a request that failed after the
     upstream had already billed for tokens still shows them; only the
-    request/error counters depend on the outcome. An unpriced model passes
-    cost_cny = 0.0, which adds nothing: the accumulator starts as a float in
-    _new_analytics_stat(), so the sum is exactly what the guarded
-    `if cost["known"]` used to leave behind.
+    request/error counters depend on the outcome.
     """
     if is_err:
         stat_obj["errors"] += 1
@@ -4279,7 +4227,6 @@ def _feed_analytics(stat_obj, vals, is_err, cost_cny):
     stat_obj["cached_tokens"] += vals[3]
     stat_obj["total_tokens"] += vals[4]
     stat_obj["credit"] += vals[5]
-    stat_obj["cost_cny"] += cost_cny
     if vals[6]:
         stat_obj["ttft_sum"] += vals[6]
         stat_obj["ttft_n"] += 1
@@ -4290,7 +4237,7 @@ def _feed_analytics(stat_obj, vals, is_err, cost_cny):
         stat_obj["elapsed_sum"] += vals[8]
         stat_obj["elapsed_n"] += 1
 
-def _bump_analytics_models(tgt, m_id, vals, is_err, cost_cny):
+def _bump_analytics_models(tgt, m_id, vals, is_err):
     """Fold one row into one {model: {...}} bucket.
 
     Model distribution counts successful requests only: a failed call
@@ -4301,11 +4248,10 @@ def _bump_analytics_models(tgt, m_id, vals, is_err, cost_cny):
         return
     tm = tgt.get(m_id)
     if tm is None:
-        tm = tgt[m_id] = {"requests": 0, "tokens": 0, "reasoning": 0, "cost_cny": 0.0}
+        tm = tgt[m_id] = {"requests": 0, "tokens": 0, "reasoning": 0}
     tm["requests"] += 1
     tm["tokens"] += vals[4]
     tm["reasoning"] += vals[2]
-    tm["cost_cny"] += cost_cny
 
 def _fold_usage_analytics(row, realm, maps, half, pricing_on=None, also=None,
                           pricing=None, priced=None):
@@ -4344,7 +4290,6 @@ def _fold_usage_analytics(row, realm, maps, half, pricing_on=None, also=None,
     cost = _bind__row_cost(row, pricing, pricing_on)
     # 折进去的每一行都把「用到的价」记进状态指纹（中止行在上面整行跳过）。
     _priced_note(priced, row, cost, pricing)
-    cost_cny = cost["cny"] if cost["known"] else 0.0
     vals = _analytics_row_values(row)
     acct_uid = row.get("account") or "(unattributed)"
     m_id = row.get("model") or "(unknown)"
@@ -4361,7 +4306,7 @@ def _fold_usage_analytics(row, realm, maps, half, pricing_on=None, also=None,
     if also is not None:
         targets.extend(also)
     for tgt, (stat_key, models_key) in targets:
-        _feed_analytics(tgt["summary"], vals, is_err, cost_cny)
+        _feed_analytics(tgt["summary"], vals, is_err)
 
         entry = tgt["accts"].get(acct_uid)
         if entry is None:
@@ -4373,14 +4318,14 @@ def _fold_usage_analytics(row, realm, maps, half, pricing_on=None, also=None,
                 stat_key: _new_analytics_stat(),
                 models_key: {},
             }
-        _feed_analytics(entry[stat_key], vals, is_err, cost_cny)
-        _bump_analytics_models(entry[models_key], m_id, vals, is_err, cost_cny)
+        _feed_analytics(entry[stat_key], vals, is_err)
+        _bump_analytics_models(entry[models_key], m_id, vals, is_err)
 
         model = tgt["models"].get(m_id)
         if model is None:
             model = tgt["models"][m_id] = {"model": m_id,
                                            stat_key: _new_analytics_stat()}
-        _feed_analytics(model[stat_key], vals, is_err, cost_cny)
+        _feed_analytics(model[stat_key], vals, is_err)
 
         km = tgt["keys"].get(k_id)
         if km is None:
@@ -4398,8 +4343,8 @@ def _fold_usage_analytics(row, realm, maps, half, pricing_on=None, also=None,
         km["realms"][k_realm] = km["realms"].get(k_realm, 0) + 1
         if at and at > km["last_at"]:
             km["last_at"] = at
-        _feed_analytics(km[stat_key], vals, is_err, cost_cny)
-        _bump_analytics_models(km[models_key], m_id, vals, is_err, cost_cny)
+        _feed_analytics(km[stat_key], vals, is_err)
+        _bump_analytics_models(km[models_key], m_id, vals, is_err)
 
 _analytics_state = {}
 
@@ -4738,9 +4683,8 @@ def _copy_analytics_all_time(maps):
 
 def _add_analytics_stat(dst, src):
     """Field-wise sum of two _new_analytics_stat() dicts, in place."""
-    for field, value in src.items():
-        if isinstance(value, (int, float)):
-            dst[field] += value
+    for field in _USAGE_CACHE_ANALYTICS_NUMBERS:
+        dst[field] += src.get(field) or 0
 
 _USAGE_DAY_KEEP_DAYS = 32
 
@@ -5205,8 +5149,6 @@ def _add_usage_snapshot(dst, src):
     """
     for field in _USAGE_DAY_SNAPSHOT_FIELDS:
         dst[field] += src.get(field) or 0
-    for mid, count in src["cost_missing"].items():
-        dst["cost_missing"][mid] = dst["cost_missing"].get(mid, 0) + count
     for mid, bucket in src["by_model"].items():
         _add_usage_bucket(dst["by_model"], mid, bucket)
     for mid, realms in src["by_model_realm"].items():
@@ -5219,13 +5161,13 @@ def _add_usage_snapshot(dst, src):
                 _add_usage_bucket(tgt, acct, bucket)
 
 def _add_analytics_models(dst, src):
-    """把一份 {model: {requests, tokens, reasoning, cost_cny}} 并入另一份。"""
+    """把一份 {model: {requests, tokens, reasoning}} 并入另一份。"""
     for mid, stat in src.items():
         tgt = dst.get(mid)
         if tgt is None:
             dst[mid] = dict(stat)
             continue
-        for field in ("requests", "tokens", "reasoning", "cost_cny"):
+        for field in ("requests", "tokens", "reasoning"):
             tgt[field] += stat.get(field) or 0
 
 def _add_analytics_window_maps(dst, src):
@@ -6043,11 +5985,11 @@ _USAGE_CACHE_SNAPSHOT_NUMBERS = tuple(
     k for k, v in _empty_stats().items()
     if isinstance(v, (int, float)) and not isinstance(v, bool))
 
-_USAGE_CACHE_SNAPSHOT_MAPS = ("cost_missing", "by_model", "by_model_realm", "by_model_acct")
+_USAGE_CACHE_SNAPSHOT_MAPS = ("by_model", "by_model_realm", "by_model_acct")
 
 _USAGE_CACHE_ANALYTICS_NUMBERS = tuple(_new_analytics_stat().keys())
 
-_USAGE_CACHE_BUCKET_NUMBERS = ("requests", "cost_cny") + USAGE_FIELDS
+_USAGE_CACHE_BUCKET_NUMBERS = ("requests",) + USAGE_FIELDS
 
 _USAGE_CACHE_SERIES_NUMBERS = tuple(_new_series_bucket(0).keys())
 
@@ -6060,7 +6002,7 @@ def _usage_cache_int(value):
     return isinstance(value, int) and not isinstance(value, bool)
 
 def _usage_cache_counts_ok(counts):
-    """{str: 数字} 形状的计数表（cost_missing / models / realms）。"""
+    """{str: 数字} 形状的计数表（models / realms）。"""
     if not isinstance(counts, dict):
         return False
     for key, value in counts.items():
@@ -6091,8 +6033,6 @@ def _usage_cache_snapshot_bucket_ok(snap):
     for field in _USAGE_CACHE_SNAPSHOT_MAPS:
         if not isinstance(snap.get(field), dict):
             return False
-    if not _usage_cache_counts_ok(snap["cost_missing"]):
-        return False
     for _, bucket in snap["by_model"].items():
         if not _usage_cache_bucket_ok(bucket):
             return False
@@ -6149,13 +6089,13 @@ def _usage_cache_stat_ok(stat):
     return True
 
 def _usage_cache_models_ok(models):
-    """analytics 的 {model: {requests, tokens, reasoning, cost_cny}} 表。"""
+    """analytics 的 {model: {requests, tokens, reasoning}} 表。"""
     if not isinstance(models, dict):
         return False
     for mid, stat in models.items():
         if not isinstance(mid, str) or not isinstance(stat, dict):
             return False
-        for field in ("requests", "tokens", "reasoning", "cost_cny"):
+        for field in ("requests", "tokens", "reasoning"):
             if not _usage_cache_number(stat.get(field)):
                 return False
     return True

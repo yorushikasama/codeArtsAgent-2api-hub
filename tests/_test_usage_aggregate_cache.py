@@ -443,10 +443,10 @@ check("基线：无 checkpoint 时三份聚合都有内容",
       GOLDEN_OBJ["snap"]["requests"] > 0 and GOLDEN_OBJ["byacct"]
       and GOLDEN_OBJ["analytics"]["accounts"],
       (GOLDEN_OBJ["snap"]["requests"], len(GOLDEN_OBJ["byacct"])))
-check("基线：价格估算体系已移除，折叠不再产生任何成本",
-      GOLDEN_OBJ["snap"]["cost_cny"] == 0
-      and not GOLDEN_OBJ["snap"].get("cost_missing"),
-      (GOLDEN_OBJ["snap"].get("cost_missing"), GOLDEN_OBJ["snap"]["cost_cny"]))
+check("基线：价格估算体系已移除，折叠不再产生任何成本字段",
+      "cost_cny" not in GOLDEN_OBJ["snap"]
+      and "cost_missing" not in GOLDEN_OBJ["snap"],
+      sorted(k for k in GOLDEN_OBJ["snap"] if "cost" in k))
 # 单出口：两个区域名（一个是已删的 intl）过滤出来的都是同一批行，
 # 所以数字相同——这里钉住的是「两个视图都非空且互相一致」。
 check("基线：两个区域视图都非空且一致（单出口）",
@@ -714,8 +714,6 @@ mutate_cache(lambda d: _entry(d, "snapshot")["snap"].pop("by_model"),
              "snapshot 少了 by_model")
 mutate_cache(lambda d: _entry(d, "snapshot")["snap"].update({"by_model": []}),
              "snapshot 的 by_model 不是对象")
-mutate_cache(lambda d: _entry(d, "snapshot")["snap"].update({"cost_missing": 7}),
-             "cost_missing 不是对象")
 mutate_cache(lambda d: list(_entry(d, "snapshot")["snap"]["by_model"].values())[0]
              .update({"accounts": "x"}),
              "by_model 桶的 accounts 不是对象")

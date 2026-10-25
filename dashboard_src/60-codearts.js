@@ -481,16 +481,6 @@ function updateUI(){
   if(elGwKeyBadge) elGwKeyBadge.textContent = activeKeysTotal + ' 个 Key 生效';
 };
 
-// 切换视图的唯一入口：改完 VIEW_REALM 立刻重画「当前禁用账号与模型」。
-function setViewRealm(r){
-  window.VIEW_REALM = r;
-  renderDisabled();
-}
-
-;
-
-
-
 async function refreshModelCatalog(btn){
   // 手动刷新模型清单：强制重取一次码道目录（服务端执行，绕过 300s 缓存），
   // 完成后立即重载表格。
@@ -817,15 +807,13 @@ const pct = v => v == null ? '—' : v.toFixed(1) + '%';
 // SORT_STATE 里没有条目，各面板原本的默认顺序（多数是服务端顺序）原样保留。
 //
 // 手型、tooltip、箭头一律运行时挂到 DOM 上，源码标记一个字都不动——积分扣减历史表
-// 的表头必须保持裸 <th>，最近请求表 / 禁用表 / 按 Key 表 / 按账号表的行必须保持裸
+// 的表头必须保持裸 <th>，最近请求表 / 按 Key 表 / 按账号表的行必须保持裸
 // <tr>，这几条都有测试写死。
 
 /* 整表不参与排序。默认任何带 id 的表都可排——新加一张表不必改这里。登记进来的
-   三条，理由各是：
-     recent              最近请求严格按时间倒序，顺序本身就是要看的信息
-     desktopScanBody     桌面扫描结果按「有效 / 无效 / 需要 Key」分组，跨组排序会打散分组
-     creditsModalContent 套餐权益包明细，已经有 #cmPkgSort 下拉（含「最快到期优先」这类语义排序） */
-const SORT_DENY_TABLES = new Set(['recent', 'desktopScanBody', 'creditsModalContent']);
+   一条，理由是：
+     recent              最近请求严格按时间倒序，顺序本身就是要看的信息 */
+const SORT_DENY_TABLES = new Set(['recent']);
 
 /* 列类型的显式登记。默认按单元格内容推断（见 inferColKind），登记过的表按登记
    的来——「进度 4 / 10」「剩余 42 / 50 积分」「首字延迟 1.89 s (P50 1.90 s)」
@@ -835,18 +823,12 @@ const SORT_DENY_TABLES = new Set(['recent', 'desktopScanBody', 'creditsModalCont
    （下拉框、按钮、拼给人看的标签串）。 */
 const SORT_COL_KINDS = {
   modelsTable:      ['text', 'text', 'num', 'text', 'num', 'num', 'text', 'text'],
-  growthTable:      ['text', 'text', 'num', 'num', 'text'],
   // 时间列是 ISO 串，字典序就是时间序，不必另给排序值。
   creditHistoryTable: ['text', 'text', 'text', 'num', 'num'],
-  // 这张表的时间列显示的是 MM-DD HH:MM，跨年字典序就错了，排序值由 render
-  // 挂 data-sort 单独给（见 renderRemainingUsage）。
-  remainingUsageTable: ['text', 'text', 'text', 'text', 'num', 'num', 'num'],
   analyticsAccountTable: ['text', 'num', 'num', 'num', 'num', null],
   analyticsKeyTable: ['text', 'num', 'num', 'num', 'num', 'num', null],
   perfMatrix:       ['text', 'text', 'num', 'num', 'num', 'num', 'num',
                      'num', 'num', 'num', 'num', 'num'],
-  accounts:         ['text', 'text', 'text', null, 'num', 'num', 'num', 'num', null],
-  disabledList:     ['text', 'text', 'text', 'text', 'text', 'text'],
 };
 /* 表体开头有几行是汇总行、不是数据行：矩阵面板的「全部模型合计」钉在表体第一行，
    它跟着表头走，不参与排序。 */

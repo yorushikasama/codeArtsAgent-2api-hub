@@ -8,10 +8,9 @@
   * 切分：每行折进「它 at 所属那天、离本地午夜多少个 3600 秒」的那个小时
     桶（挂在日桶的 hours 子表里）；午夜整点的行落在第 0 个小时，迟写行落回
     它时间戳所属的那个小时；
-  * 等价：整点窗口由小时桶相加，与改动前的逐行口径逐字节一致（测试数据的价
-    刻意用二进制可精确求和的数，见 _test_usage_day_buckets.py 的说明）；跨
-    午夜、跨天、同一天内、空窗口、realm 过滤、成本字段（cost_cny /
-    cost_missing / by_model_acct）全部对齐；
+  * 等价：整点窗口由小时桶相加，与改动前的逐行口径逐字节一致；跨
+    午夜、跨天、同一天内、空窗口、realm 过滤、三层结构（by_model /
+    by_model_realm / by_model_acct）全部对齐；
   * 两条路径：小时层不可用时现折一份「按小时分组」的冷路径
     （_scan_usage_snapshot_window_hours），与存量桶给出的字节完全一致；
   * 封口：已经越过的小时不再重折（桶对象原样复用）；
@@ -472,10 +471,10 @@ check("同一个小时的多行折进同一个桶（今天第 5 个小时三行�
       (hours["5"]["requests"], hours["5"]["total_tokens"]))
 check("空小时不建桶（今天第 6 个小时不在表里）",
       "6" not in hours, sorted(hours, key=int))
-check("小时桶与日桶同源：成本与三层结构都在",
+check("小时桶与日桶同源：三层结构都在，成本字段已随价格体系移除",
       all(k in hours["5"] for k in
-          ("cost_cny", "cost_missing", "by_model", "by_model_realm",
-           "by_model_acct")),
+          ("by_model", "by_model_realm", "by_model_acct"))
+      and not any("cost" in k for k in hours["5"]),
       sorted(hours["5"].keys())[:8])
 check("昨天 23:59:59 的行落在昨天第 23 个小时（不跨天）",
       days[DAY1_KEY]["hours"]["23"]["requests"] == 1
@@ -547,7 +546,7 @@ for realm in (None, "intl", "cn"):
     got = canon(window_raw(since, None, realm))
     check("realm=%s：走层 == 逐行口径（整包逐字节）" % (realm or "all"),
           ref == got, first_diff(ref, got))
-# 成本字段必须跟着小时桶走（不是留空、也不是标注不可用）。
+# 成本字段不再跟着小时桶走（价格估算体系已移除）。
 cache_env_nowrite()
 restart()
 P._usage_snapshot_uncached()
@@ -556,9 +555,8 @@ snap = window_raw(WINDOWS[3][1])
 # 「未定价模型」清单；by_model_acct 这层按账号的 token 归集与计价无关，必须
 # 照旧跟着小时桶走。
 check("整点窗口不含成本字段（价格体系已移除）",
-      snap["cost_cny"] == 0 and not snap.get("cost_missing")
-      and snap["by_model_acct"],
-      (snap["cost_cny"], list(snap["by_model_acct"].keys())))
+      not any("cost" in k for k in snap) and snap["by_model_acct"],
+      sorted(k for k in snap if "cost" in k))
 # 午夜起点仍然走日桶（小时层不抢它的活），且结果与逐行一致。
 mid_since = TODAY0
 cache_env_nowrite()
@@ -984,7 +982,7 @@ check("非整点起点：两条路都不认（退回逐行）",
       (P._hour_window_key(TODAY0 + 61), P._window_day_key(TODAY0 + 61)))
 check("空窗口（起点在未来）走层且全零",
       GOLDEN_OBJ["win_future"]["requests"] == 0
-      and GOLDEN_OBJ["win_future"]["cost_cny"] == 0.0,
+      and not any("cost" in k for k in GOLDEN_OBJ["win_future"]),
       GOLDEN_OBJ["win_future"]["requests"])
 # 30 分钟偏移的时区语义（不是整点）：起点不是整点时一律逐行。
 check("起点不是整点时 _usage_snapshot_window 走逐行路径",

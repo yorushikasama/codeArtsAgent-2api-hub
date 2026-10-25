@@ -14,10 +14,8 @@ Launchers: start-codearts-hub.bat / start-codearts-hub-lan.bat on Windows,
 start-codearts-hub.command (or ./start-codearts-hub.sh) on macOS/Linux.
 """
 import argparse
-import bisect
 import concurrent.futures
 import hashlib
-import heapq
 import ipaddress
 from collections import deque
 import re
@@ -114,7 +112,6 @@ from ca_usage import (  # noqa: F401 —— re-export
     _RECENT_INDEX_SEGMENT,
     _REMAINING_KEEP_SECONDS,
     _REMAINING_MAX_EVENTS,
-    _ROW_MEMO_MAX,
     _SERIES_CREDITS_KEEP,
     _SERIES_MINUTE_FIELDS,
     _SERIES_MINUTE_RING_CAP,
@@ -135,7 +132,6 @@ from ca_usage import (  # noqa: F401 —— re-export
     _USAGE_DAY_SNAPSHOT_FIELDS,
     _USAGE_HOUR_KEEP_DAYS,
     _USAGE_HOUR_KEEP_HOURS,
-    _ZERO_COST,
     _account_realm_map,
     _add_analytics_models,
     _add_analytics_stat,
@@ -197,7 +193,6 @@ from ca_usage import (  # noqa: F401 —— re-export
     _extract_usage,
     _feed_analytics,
     _feed_series_bucket,
-    _fold_cost,
     _fold_remaining,
     _fold_usage_analytics,
     _fold_usage_by_account,
@@ -304,10 +299,6 @@ from ca_usage import (  # noqa: F401 —— re-export
     _remaining_state_lock,
     _row_cost,
     _row_day_memo,
-    _row_memo_at,
-    _row_memo_env_cap,
-    _row_memo_tz,
-    _row_memo_tz_changed,
     _scan_daily_usage,
     _scan_usage_analytics_window,
     _scan_usage_analytics_window_days,
@@ -989,9 +980,8 @@ def range_query(query):
         values = query.get(name) or [None]
         return values[0] if values else None
     return first("range"), first("since"), first("until")
-def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_ms=None, fp=None,
-                account=None, outcome="completed", key=None, effort=None,
-                requested_model=None):
+def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_ms=None,
+                account=None, outcome="completed", key=None, effort=None):
     """Record one finished request as exactly one JSONL row.
 
     A request without a usage block still gets a row (flagged usage_missing):
@@ -1038,13 +1028,9 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
         "ttft_ms": ttft_ms,
         "gen_ms": gen_ms,
     }
-    if requested_model and requested_model != model:
-        row["requested_model"] = requested_model
     if usage_missing:
         row["usage_missing"] = True
     row.update(fields)
-    if fp:
-        row.update(fp)
     if account:
         row["account"] = account
     # 账号池已移除：行上的 realm 一律是唯一那个出口。
@@ -1102,7 +1088,7 @@ def _persist_usage(row, fail_label):
         log("%s: %s" % (fail_label, exc))
 
 def record_error(model, status, message, elapsed_ms=None, account=None,
-                 usage=None, stream=None, ttft_ms=None, gen_ms=None, fp=None,
+                 usage=None, stream=None, ttft_ms=None, gen_ms=None,
                  outcome="failed", key=None):
     """Record one failed request as exactly one JSONL row.
 
@@ -1144,8 +1130,6 @@ def record_error(model, status, message, elapsed_ms=None, account=None,
     if gen_ms is not None:
         row["gen_ms"] = gen_ms
     row.update(fields)
-    if fp:
-        row.update(fp)
     if account:
         row["account"] = account
         row["realm"] = normalize_realm(CURRENT_REALM)
@@ -1641,12 +1625,11 @@ def remaining_usage_etag():
 # 判定侧 _pricing_used_unchanged() 从当前价表重算同一份记录并逐项比对，不等
 # 就判废重折；相等的部分保证「重折会给出同样的数」。
 #
-# 不动的东西：_row_cost / _row_cost_remember（行级记忆代次仍用整表判定）、
-# series（不算价）、任何聚合口径与窗口路径。
+# 不动的东西：_row_cost（行级取价的唯一出口）、series（不算价）、
+# 任何聚合口径与窗口路径。
 # ---------------------------------------------------------------------------
 
 # 记录里的固定字段（进程内构造与 checkpoint 采纳都按这一组校验）。
-
 
 # 时间线投影摘要的记忆：值是一个元组 (时间线对象, 参数键, 摘要)，一次 get 拿全
 # （与 _object_digest 的记忆同一个写法）——两个状态锁下的线程同时算也不会读到
@@ -1655,94 +1638,6 @@ def remaining_usage_etag():
 
 _realm_disk_cache = {"key": None, "map": None}
 _realm_disk_lock = threading.Lock()
-
-
-# ---------------------------------------------------------------------------
-# 行级结果记忆：把「同一行算出来的东西」跨视图复用
-#
-# 一次冷启动里同一份日志被三个视图各扫一遍（snapshot / analytics / series），
-# 每一行都要重新算一次本地日键（_local_day_key，strftime 真机 43.4µs/行），
-# snapshot 与 analytics 还要各算一次 cost_for_row（真机 72.4µs/行）。这两样都是
-# 行的纯函数——日键只看 at（进程内时区固定），定价只看行的定价字段加价表本身
-# ——所以第二个视图不必再算：记下结果，直接取。
-#
-# 记的是结果，不是状态：五个聚合仍各持各的折叠状态（D1/D2/D3 不受影响），这里
-# 没有任何一份聚合能被另一个视图借走，只有「这行折进哪天」和「这行值多少钱」
-# 两个标量。位置/指纹校验、realm 归属、日桶语义都照旧。
-#
-# 键不能是行对象 id()：三次扫描各自 json.loads 出各自的行对象，旧对象释放后 id
-# 会被复用，按 id 记忆会静默拿到别的行的值。日键按 at 记（纯函数，跨扫描安全）；
-# 定价按它真正读的那几个字段记（model / cost_policy / at / 三个 token 数），外加
-# 价表代次——代次就是扫描开头取到的那份 _pricing_inputs() 元组，价表换代时元组
-# 里的对象不再是同一个，旧条目自然不命中（判定与 _pricing_unchanged 同一条规则）。
-# 同一代次内的价表内容按定义不变，所以命中值必然等于现算值。
-#
-# 两张表都必须有界（路由器上不能拿内存换速度换到失控）：上限按条目数，满了以后
-# 只收「不比表里最旧那条更旧」的行。扫描总是从头往尾走，表里留住的因此是最近的
-# 一批行，第二个视图走到尾部照样命中，被拒的只是已经过去的头段。单条体积实测
-# 日键 60B、定价 402B（键里留着行的模型名/时间戳/三个 token 数），所以两张表的
-# 上限分开给，都可用环境变量调（WB_ROW_MEMO_MAX / WB_ROW_COST_MEMO_MAX，
-# 0 = 关掉这张表）。
-#
-# 不落盘：扫描期的临时记忆，重启后重算一遍即可（清单 §1.5）。
-# ---------------------------------------------------------------------------
-
-# 条目上限（条数，不是字节）。默认按「典型日志装得下大半、内存留在个位数 MB」
-# 给：日键表 6.4 万条（≤3.8MB）；定价表 16384 条（≤6.3MB）。日志更大、内存又
-# 宽裕的部署可以把 _ROW_COST_MEMO_MAX 调到行数以上，拿满跨视图复用（路由器上
-# 整份日志约 4 万行，满覆盖约 15MB）；内存紧的调到 0 就是关掉那张表。
-#
-# 两个值在导入时从环境变量读一次（WB_ROW_MEMO_MAX / WB_ROW_COST_MEMO_MAX，
-# 0 = 关掉那张表）：这是给部署定上限的开关，不是逐次可切的现场开关——而
-# os.environ.get 走「键不存在」那条路要 ~2µs，放在每行都走的插入路径上会把
-# 省下来的时间原样还回去。运行期要改直接改模块属性（测试就是这么做的）。
-_ROW_COST_MEMO_MAX = 16384
-
-
-_ROW_COST_MEMO_MAX = _row_memo_env_cap("WB_ROW_COST_MEMO_MAX", _ROW_COST_MEMO_MAX)
-
-_row_cost_memo = {}         # (model, cost_policy, at, pt, ct, comp) -> (价表代次, 定价结果)
-_row_cost_gen = None        # 定价表当前代次（_pricing_inputs() 的元组）
-
-
-def _cost_entry(pricing, cost):
-    """cost_for_row(details=False) 的返回值 -> 记忆条目（定长元组）。"""
-    return (pricing, cost["known"], cost["cny"], cost.get("band"),
-            cost.get("rates"), cost.get("source"), cost.get("source_at"),
-            cost.get("backfilled"), bool(cost.get("disabled")))
-
-
-#: 价格估算体系已下线（2026-10-22）：这个网关只按码道积分记账，不再折算
-#: OpenRouter / 美元等价花费。所有成本出口统一返回这一份零值。
-#:
-#: 形状必须与 `ca_pricing.cost_for_row(..., details=False)` 逐键一致，调用方
-#: （`_fold_cost`、`_feed_analytics`、面板接口）才不会 KeyError。
-#: `known=False` + `disabled=True` 是刻意的组合：`_fold_cost` 据此既不累加、
-#: 也不把模型记进 `cost_missing`（那会在面板上冒出「未定价模型」的假告警）。
-
-
-def _row_cost_remember(key, pricing, cost):
-    """把一行的定价结果记进有界表；价表换代时整表作废。
-
-    换代只可能来自价表文件被改写（策略表/时间线/价目表任一新对象），发生时
-    旧条目按定义全部失效，直接清掉，别让它们白占位置。判定用的是
-    _pricing_unchanged——与状态指纹同一条规则，两处不会漂移。
-    """
-    global _row_cost_gen
-    memo = _row_cost_memo
-    if _row_cost_gen is None or not _pricing_unchanged(_row_cost_gen, pricing):
-        memo.clear()
-        _row_cost_gen = pricing
-    cap = _ROW_COST_MEMO_MAX
-    if cap <= 0:
-        return
-    if len(memo) >= cap:
-        oldest = next(iter(memo))
-        if _row_memo_at(key[2]) < _row_memo_at(oldest[2]):
-            # 比表里最旧的还旧：记了也会立刻被顶掉，不如不记
-            return
-        memo.pop(oldest, None)
-    memo[key] = _cost_entry(pricing, cost)
 
 
 _count_cache = {}
@@ -1952,46 +1847,11 @@ def recent_usage(limit=100, realm=None, page=1):
         total_pages = max(1, (total + limit - 1) // limit) if total > 0 else 1
         page = min(page, total_pages)
         page_rows = _recent_backward_page(realm, page, limit)
-    # Equivalent-token cost per row at OpenRouter list prices, computed here
-    # so every consumer of /usage/recent gets the same number. Each row is
-    # priced against the version that was in force when it happened, and says
-    # where that price came from. cost_cny stays None for models the version
-    # cannot price; cost_band is the index of the conditional band the row
-    # landed in (None when the model has one flat price, or none matched).
-    # cost_rates / cost_unit / cost_currency / cost_usd_cny / cost_or_id /
-    # cost_via / cost_inherited_from / cost_override_from / cost_band_note /
-    # cost_via_derived are the same figure taken apart for the panel's hover
-    # card: which band's three unit prices, at which rate, matched how. They
-    # are all None when the row is unpriced - the panel must say so rather
-    # than show a made-up 0.
-    for r in page_rows:
-        cost = dict(_ZERO_COST)
-        r["cost_cny"] = round(cost["cny"], 6) if cost["known"] else None
-        r["cost_band"] = cost["band"] if cost["known"] else None
-        # cost_policy stays as the row recorded it; cost_source is what the
-        # lookup actually resolved to (the same id, or "builtin").
-        r["cost_source"] = cost["source"] if cost["known"] else None
-        r["cost_source_at"] = cost["source_at"] if cost["known"] else None
-        r["cost_backfilled"] = bool(cost["backfilled"]) if cost["known"] else False
-        r["cost_rates"] = cost["rates"] if cost["known"] else None
-        r["cost_unit"] = cost["unit"] if cost["known"] else None
-        r["cost_currency"] = cost["currency"] if cost["known"] else None
-        r["cost_usd_cny"] = cost["usd_cny"] if cost["known"] else None
-        r["cost_or_id"] = cost["or_id"] if cost["known"] else None
-        r["cost_via"] = cost["via"] if cost["known"] else None
-        r["cost_inherited_from"] = (cost["inherited_from"] if cost["known"]
-                                    else None)
-        r["cost_override_from"] = (cost["override_from"] if cost["known"]
-                                   else None)
-        r["cost_band_note"] = cost["band_note"] if cost["known"] else None
-        r["cost_via_derived"] = (bool(cost["via_derived"]) if cost["known"]
-                                 else None)
     return {
         "total": total,
         "page": page,
         "limit": limit,
         "total_pages": total_pages,
-        "usd_cny": 0.0,
         "rows": page_rows
     }
 PRICING = None
@@ -2208,7 +2068,7 @@ def _merge_analytics_halves(all_maps, win_maps):
 # 「analytics 的小时层」一节）：那不是日桶的一部分，日桶求和原样忽略它。
 #
 # 浮点求和的口径：窗口 = 日桶逐日相加，与旧实现「整段扫描逐行累加」的区别
-# 只是浮点的结合顺序（credit / cost_cny / speed_sum 可能差最后一两个 ulp，
+# 只是浮点的结合顺序（credit / speed_sum 可能差最后一两个 ulp，
 # 整数字段逐位相同）。逐行顺序无法从日聚合还原，这是日桶推导的固有代价；
 # 本文件里所有对齐窗口的路径统一用「按日分组」的口径（冷扫描、日桶、加载
 # checkpoint 三条路径给出的字节完全一致），把「像没有缓存一样正确」保成
@@ -2219,9 +2079,9 @@ def _merge_analytics_halves(all_maps, win_maps):
 # （range=custom）起点是任意时刻——最常见的形态就是整点（datetime-local
 # 输入框给的是分钟粒度，操作者选整点的概率远高于选 37 分）。于是每个日桶
 # 里再挂一张小时子表（_usage_hour_bucket），起点落在本地整点上的窗口由
-# 「整小时桶之和」回答：token/requests/credit 与成本字段（cost_cny /
-# cost_missing / by_model_acct）全部来自同一份桶，口径与整段扫描一致，不
-# 需要像「借时间序列的小时桶」那样丢掉成本列（series 不算价，D3）。
+# 「整小时桶之和」回答：token/requests/credit 与三层结构（by_model /
+# by_model_realm / by_model_acct）全部来自同一份桶，口径与整段扫描一致，
+# 不需要像「借时间序列的小时桶」那样换一套口径（series 不走这套折叠，D3）。
 # 小时层比日桶短命（_usage_hour_keep_days），覆盖不到就退回按小时分组的
 # 冷路径——两条路径的字节逐字节相同，语义与改动前一致（只是浮点结合顺序
 # 按小时而不是按行）。
@@ -2460,8 +2320,6 @@ def _compute_usage_analytics_uncached(realm=None, since=None, until=None):
         # what the panel hoped it sent.
         "window": {"since": since, "until": until},
         "realm": realm or "all",
-        # Cost figures are CNY; the panel divides by this rate to show USD.
-        "usd_cny": 0.0,
         "summary": {"window": window_summary, "all_time": all_summary},
         "accounts": accts_list,
         "models": models_list,
