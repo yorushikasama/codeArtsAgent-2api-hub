@@ -70,7 +70,11 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- **98 个套件：75 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- **99 个套件：76 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 面板页的源码按域拆在 `dashboard_src/`（11 个片段：样式 / i18n / 面板脚本
+  按域 4 段 / 数据看板页等），`dashboard.html` 由
+  `python scripts/build_dashboard.py` 纯拼接生成（无模板、无压缩、无依赖）；
+  `tests/_test_dashboard_build.py` 逐字节钉住两边不漂移 —— 改片段后必须重建。
 - 测试里替换网关全局状态一律走 `tests/_isolated_dirs.py` 的
   `patched_state(module, **kw)` 上下文管理器（退出自动还原），不再手写
   save/restore 成对赋值 —— 漏一半会把脏状态留给同进程后续用例。

@@ -1,0 +1,891 @@
+</head>
+<body>
+<header>
+  <div class="header-left" style="display:flex;align-items:center;gap:18px;flex-wrap:wrap">
+    <h1><span class="dot" id="statusDot"></span>CodeArts 网关</h1>
+    <nav class="main-nav">
+      <button class="main-nav-btn active" id="btnNavGateway" onclick="switchMainTab('gateway')">
+        <span id="navGatewayLabel">网关</span>
+      </button>
+      <button class="main-nav-btn" id="btnNavAccounts" onclick="switchMainTab('accounts')">
+        账号
+      </button>
+      <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
+        数据看板
+      </button>
+      <button class="main-nav-btn" id="btnNavSettings" onclick="switchMainTab('settings')">
+        设置
+      </button>
+      <button class="main-nav-btn" id="btnNavLogs" onclick="switchMainTab('logs')">
+        运行日志
+      </button>
+    </nav>
+    <a class="gh-link" href="https://github.com/yorushikasama/codeArtsAgent-2api-hub" target="_blank" rel="noopener noreferrer"
+       title="查看 GitHub 项目仓库" aria-label="GitHub 项目仓库">
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.012 8.012 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+      </svg>
+    </a>
+  </div>
+  <div class="header-right">
+    <button type="button" class="lang-btn" id="langToggleBtn" onclick="toggleLang(event)" data-no-i18n title="切换语言 (简体中文 / 正體中文 / English)" aria-label="切换语言">
+      <span id="langToggleLabel">EN</span>
+    </button>
+    <div class="meta" id="meta"></div>
+    <div class="theme-dropdown-wrap" id="themeDropdownWrap">
+      <button type="button" class="theme-btn" id="themeToggleBtn" onclick="toggleThemeMenu(event)" title="颜色主题" aria-label="切换颜色主题" aria-haspopup="true" aria-expanded="false">
+        <span id="themeToggleIcon" class="theme-btn-icon"></span>
+      </button>
+      <div class="theme-dropdown" id="themeDropdown" role="menu" aria-label="选择颜色主题">
+        <button type="button" class="theme-option" id="themeOptLight" onclick="selectTheme('light', event)" role="menuitem">
+          <svg class="theme-opt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="4"></circle>
+            <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"></path>
+          </svg>
+          <span class="theme-opt-text">浅色</span>
+          <svg class="theme-opt-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </button>
+        <button type="button" class="theme-option" id="themeOptDark" onclick="selectTheme('dark', event)" role="menuitem">
+          <svg class="theme-opt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"></path>
+          </svg>
+          <span class="theme-opt-text">深色</span>
+          <svg class="theme-opt-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </button>
+        <button type="button" class="theme-option" id="themeOptSystem" onclick="selectTheme('system', event)" role="menuitem">
+          <svg class="theme-opt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+          </svg>
+          <span class="theme-opt-text">跟随系统</span>
+          <svg class="theme-opt-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</header>
+<div id="panelGate" style="position:fixed;inset:0;z-index:600;display:none;
+     align-items:center;justify-content:center;padding:20px;background:var(--bg)">
+  <div style="width:min(380px,100%);background:var(--panel);border:1px solid var(--line);
+              border-radius:14px;padding:26px 24px;box-shadow:0 10px 30px rgba(45,36,22,.14)">
+    <div style="font-size:16px;font-weight:700;margin-bottom:6px">CodeArts 网关</div>
+    <div style="font-size:12px;color:var(--dim);margin-bottom:18px">请输入面板访问密码</div>
+    <input id="panelPwdInput" type="password" placeholder="面板密码" autocomplete="current-password"
+           onkeydown="if(event.key==='Enter') submitPanelLogin()"
+           style="width:100%;background:var(--panel2);border:1px solid var(--line);
+                  border-radius:8px;padding:9px 12px;color:var(--fg);font:inherit">
+    <div id="panelLoginMsg" style="font-size:12px;color:var(--bad);min-height:17px;margin:8px 0 12px"></div>
+    <button onclick="submitPanelLogin()" style="width:100%;padding:9px 12px;font-size:13px">进入面板</button>
+    <div id="panelDefaultHint" style="display:none;font-size:11px;color:var(--warn);margin-top:12px">
+      当前仍在使用默认密码 <b>admin</b>，登录后请在「设置」中修改。
+    </div>
+  </div>
+</div>
+<main>
+  <div id="pageGateway" class="main-page">
+  <!-- 页面头部：标题 + 一行说明，与其它页面的头部结构保持一致 -->
+  <div style="margin-bottom:16px">
+    <h2 id="gatewayPageTitle" style="margin:0;font-size:19px;color:var(--fg);font-family:var(--brush);font-weight:700;letter-spacing:.08em">网关与账号</h2>
+    <div id="gatewayPageDesc" style="font-size:12px;color:var(--dim);margin-top:4px">管理账号池与网关模型，查看当日调用量、积分消耗、成功率与最近请求。</div>
+  </div>
+  <!-- 出口：只有一个（华为云码道），没有可切换的对象。
+       原来这里是两张「版本中枢」卡片，点一下切出口/看默认出口 ——
+       单一出口下这既是无效操作，卡片上还写着旧上游的域名，会误导人。 -->
+  <div class="realm-card" style="cursor:default;margin-bottom:18px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+        <span class="realm-badge-cn">华为云码道 (CodeArts)</span>
+        <span class="badge ok mini" style="font-weight:600">唯一出口</span>
+      </div>
+    </div>
+    <div class="mono" style="font-size:11px;color:var(--dim)">snap-access.cn-north-4.myhuaweicloud.com</div>
+    <!-- 汇总行：可用 / 总积分 · 账号数。旧版网关卡片上就有这一行，删掉 WorkBuddy
+         那套之后跟着没了；积分接口找到后补回来（数字来自 /accounts/codearts）。 -->
+    <div id="caCardSummary" style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--fg)">
+      <span>可用 <b id="caCardRemain" class="mono">—</b> / <b id="caCardTotal" class="mono">—</b> 总积分</span>
+      <span style="color:var(--dim)">·</span>
+      <span><b id="caCardAccounts" class="mono">—</b> 个账号</span>
+      <span style="color:var(--dim)">·</span>
+      <span style="color:var(--dim)" id="caCardUsed">已用 —</span>
+    </div>
+  </div>
+
+  <!-- 顶部统计条：三张统计卡（JS 每轮重画 #cards 内部），合成一块面板
+       （分段的样式见 .gw-summary）。 -->
+  <div class="gw-summary">
+    <div class="cards" id="cards"></div>
+  </div>
+
+  <!-- 合并模式（设置里「账号独立成一个页签」关闭，默认）时，账号页的三个区块搬到
+       这里，位置与拆分前一致：控制栏之后、最近请求之前。拆分模式下这里是空的。 -->
+  <span id="accountsSectionsAnchor" hidden></span>
+
+  <!-- 融合后的：模型性能与用量矩阵 -->
+  
+
+  <section>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <h2 style="margin:0">最近请求<em id="recentRealmTag" style="color:var(--dim);font-weight:500"></em><em id="recentCount"></em></h2>
+      <div style="display:inline-flex;align-items:center;gap:8px">
+        <span style="font-size:12px;color:var(--dim)">显示条数:</span>
+        <div style="display:inline-flex;gap:3px;background:var(--panel2);padding:3px;border-radius:8px;border:1px solid var(--line)">
+          <button class="range-btn" id="btnRecentLimit10" onclick="setRecentLimit(10)">10</button>
+          <button class="range-btn" id="btnRecentLimit20" onclick="setRecentLimit(20)">20</button>
+          <button class="range-btn" id="btnRecentLimit50" onclick="setRecentLimit(50)">50</button>
+          <button class="range-btn" id="btnRecentLimit100" onclick="setRecentLimit(100)">100</button>
+        </div>
+      </div>
+    </div>
+    <div id="recent" class="table-wrap"></div>
+    <div id="recentPagination" style="display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:12px;color:var(--dim);flex-wrap:wrap;gap:8px">
+      <div id="recentPageInfo">第 1 / 1 页 · 共 0 条记录</div>
+      <div style="display:inline-flex;gap:5px;align-items:center">
+        <button class="sec mini" id="btnRecentPrev" onclick="changeRecentPage(-1)">上一页</button>
+        <div id="recentPageButtons" style="display:inline-flex;gap:3px;align-items:center"></div>
+        <button class="sec mini" id="btnRecentNext" onclick="changeRecentPage(1)">下一页</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- 版本模型库与能力清单 -->
+  <section>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+      <h2 style="margin:0">网关模型清单<em id="modelsRealmTag" style="color:var(--dim);font-weight:500"></em><em id="availModelCount"></em></h2>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div style="font-size:12px;color:var(--dim)">展示当前视图下官方对话大模型、上下文容量、推理/视觉能力、思考控制、默认采样参数及在售倍率</div>
+        <!-- 手动刷新：强制走一次上游 /v3/config（只在当前视图的版本上，用该
+             版本的账号），成功后本表立即重载。服务端同一版本 30s 冷却。 -->
+        <button class="sec mini" id="btnRefreshModels" onclick="refreshModelCatalog(this)"
+                title="立即从上游 API 重新拉取当前视图版本的模型清单（不走缓存；同一版本 30 秒内只能刷一次）">刷新模型清单</button>
+      </div>
+    </div>
+    <!-- 清单来源横幅：API 获取 → 绿色状态条（附刷新时间）；非 API（项目默认
+         信息/缓存文件）→ 黄色警示「模型、倍率数据可能不一致」。内容由
+         /v1/models 的 catalog 字段驱动，见 renderModelsSourceLine。 -->
+    <div id="modelsSourceLine" style="font-size:12px;color:var(--dim);margin:0 0 12px;min-height:16px"></div>
+    <div style="overflow-x:auto">
+      <table id="modelsTable" class="data-cards">
+        <thead>
+          <tr>
+            <th style="text-align:left;width:200px">模型 ID</th>
+            <th style="text-align:left;width:100px">名称</th>
+            <th style="text-align:center;width:150px">消费倍率 / 优惠</th>
+            <th style="text-align:center;width:170px">模型能力</th>
+            <th style="text-align:center;width:100px">上下文窗口</th>
+            <th style="text-align:center;width:100px">最大输出</th>
+            <th style="text-align:left;width:170px">思考档位</th>
+            <th style="text-align:left">默认采样参数</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  </div><!-- /pageGateway -->
+  
+  <div id="pageAccounts" class="main-page">
+  <!-- 账号页：只管理码道（华为云）账号。旧的账号池、出站身份、
+       内存扫描导入等已整体移除，不再出现在这个面板里。 -->
+  <section>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div>
+        <h2 style="margin:0">码道账号</h2>
+        <div style="font-size:12px;color:var(--dim);margin-top:4px">
+          华为云码道走 PKCE + DPoP 授权，会话存放在 <code>accounts/codearts/</code>；
+          每日额度领取与 STS 续期都在账号弹窗里。
+        </div>
+      </div>
+      <button onclick="openCodeartsLogin()">添加 / 管理码道账号</button>
+    </div>
+    <div id="codeartsPageList" data-codearts-list><p class="hint">正在读取…</p></div>
+    <p class="hint" style="margin:12px 0 0">
+      点上方按钮打开账号弹窗：可领当日额度、手动续期、重新授权或删除账号。
+    </p>
+  </section>
+  </div><!-- /pageAccounts -->
+  
+  
+  <!-- 账号页（issue #176）：账号多起来之后，网关页的卡片与最近请求被一长串账号
+       挤到下面，所以账号列表与「当前禁用总览」单独成一个菜单，签到/活跃记录也
+       放在这里——它回答的正是「这个账号昨天到底签成了没有」。 -->
+  <div id="pageAnalytics" class="main-page">
+    <div class="wrap">
+<!-- ====================== 页头 + 范围 ====================== -->
+  <div class="pagehead">
+    <h1 class="pagetitle">数据看板 <span class="pagesub" id="pageSub">—</span></h1>
+    <div class="seg" id="rangeSeg">
+      <button data-range="today" class="on">今日</button>
+      <button data-range="d3">近 3 日</button>
+      <button data-range="week">本周</button>
+      <button data-range="month">本月</button>
+      <button data-range="d30">近 30 天</button>
+      <button data-range="all">全部</button>
+    </div>
+  </div>
+
+  <!-- ====================== ① KPI（B 版：大卡 + 大面积 sparkline + 环形卡） ====================== -->
+  <div class="kpis" id="kpis">
+    <div class="kpi big"><div class="accentbar" style="background:var(--accent)"></div>
+      <div class="k"><span class="ic">◆</span>TOKEN 消耗 <span class="delta" id="deltaTokens"></span></div>
+      <div class="v" id="kTokens">—</div>
+      <div class="s" id="kTokensSub">—</div>
+      <div class="tokflow" id="kTokensFlow"></div>
+      <canvas class="spark" id="sparkTokens"></canvas>
+    </div>
+    <div class="kpi big">
+      <div class="k"><span class="ic">⇄</span>请求数 <span class="delta" id="deltaReqs"></span></div>
+      <div class="v" id="kReqs">—</div>
+      <div class="s" id="kReqsSub">—</div>
+      <canvas class="spark" id="sparkReqs"></canvas>
+    </div>
+    <div class="kpi big">
+      <div class="k"><span class="ic">⚡</span>生成速度</div>
+      <div class="v" id="kSpeed">—</div>
+      <div class="s" id="kSpeedSub">—</div>
+      <canvas class="spark" id="sparkSpeed"></canvas>
+    </div>
+    <div class="kpi big">
+      <div class="k"><span class="ic">♻</span>缓存命中率 <span class="delta" id="deltaCache"></span></div>
+      <div class="v" id="kCache">—</div>
+      <div class="s" id="kCacheSub">—</div>
+      <canvas class="spark" id="sparkCache"></canvas>
+    </div>
+    <div class="kpi ringcard">
+      <div class="k"><span class="ic">✓</span>请求成功率</div>
+      <div class="ringwrap">
+        <div class="ring" id="ringSuccess"><div class="hole"><b id="ringPct">—</b><span>成功</span></div></div>
+      </div>
+      <div class="s" id="kSuccessSub" style="text-align:center">—</div>
+    </div>
+  </div>
+
+  <!-- ====================== ② + ③ 主区两栏：时序 | 热力图 ====================== -->
+  <div class="maingrid">
+    <section class="panel">
+      <div class="phead">
+        <h2>Token 时序</h2>
+        <span class="hint" id="seriesHint">—</span>
+        <div class="spacer"></div>
+        <div class="chiprow" id="metricSeg">
+          <button data-metric="tokens" class="on">Token</button>
+          <button data-metric="requests">请求数</button>
+          <button data-metric="throughput">吞吐量</button>
+        </div>
+      </div>
+      <div class="pbody">
+        <div class="chartbox">
+          <canvas id="seriesCanvas" height="176"></canvas>
+          <div class="tooltip" id="seriesTip"></div>
+        </div>
+        <div class="legend" id="seriesLegend" style="margin-top:7px"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="phead">
+        <h2>最近请求</h2>
+        <span class="hint">实时活动流</span>
+        <div class="spacer"></div>
+        <span class="hm-meta" id="recentMeta">—</span>
+      </div>
+      <div class="pbody">
+        <div class="recent-list" id="recentList"><div class="empty">加载中…</div></div>
+      </div>
+    </section>
+  </div>
+
+  <!-- ====================== ③ 工作回溯（B 版：全宽 + 年度统计） ====================== -->
+  <section class="panel">
+    <div class="phead">
+      <h2>工作回溯</h2>
+        <span class="hint">近一年每日活动</span>
+      <div class="spacer"></div>
+      <div class="hm-meta" id="hmMeta">—</div>
+    </div>
+    <div class="pbody">
+      <div class="hm-row">
+        <div class="hm-scroll">
+          <div class="hm-wrap">
+            <div class="hm-days"><span>一</span><span></span><span>三</span><span></span><span>五</span><span></span><span></span></div>
+            <div class="hm-cols">
+              <div class="hm-months" id="hmMonths"></div>
+              <div class="hm-grid" id="hmGrid"></div>
+            </div>
+          </div>
+        </div>
+        <div class="hm-stats" id="hmStats"></div>
+      </div>
+      <div class="hm-foot">
+        <span id="hmSummary">—</span>
+        <span class="hm-legend">少 <span class="hm-cell l0"></span><span class="hm-cell l1"></span><span class="hm-cell l2"></span><span class="hm-cell l3"></span><span class="hm-cell l4"></span> 多</span>
+      </div>
+    </div>
+    <div class="tooltip" id="hmTip"></div>
+  </section>
+
+  <!-- ====================== ④ 用量明细 ====================== -->
+  <section class="panel">
+    <div class="phead">
+      <h2>用量明细</h2>
+      <div class="spacer"></div>
+      <div class="dimtabs" id="dimTabs">
+        <button data-dim="model" class="on">按模型 <span class="cnt" id="cntModel">0</span></button>
+        <button data-dim="account">按账号 <span class="cnt" id="cntAccount">0</span></button>
+        <button data-dim="key">按 API Key <span class="cnt" id="cntKey">0</span></button>
+      </div>
+    </div>
+    <div class="pbody" style="overflow-x:auto">
+      <table class="dim" id="dimTable">
+        <thead id="dimHead"></thead>
+        <tbody id="dimBody"><tr><td class="skel">加载中…</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ====================== ⑤ 折叠区 ====================== -->
+  <div class="folds">
+    <details class="fold" id="foldRemainBox">
+      <summary><h2>剩余用量估算</h2><span class="chev">▶</span></summary>
+      <div class="fbody">
+      <!-- 原版「剩余用量估算」区块（issue #263/#264 的守卫套件按这里的 id 找它）：
+           内部 id 与结构保持与旧版一致，renderRemainingUsage() 直接复用。
+           说明文字沿用原版（词典按原文整句命中）。 -->
+      <div id="remainingUsageSection">
+        <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+          <div style="font-size:12px;color:var(--dim);max-width:1080px">
+            <div>上游按 24 小时窗口给每个账号、每个模型配额；预算 = 撞线账号在窗口内用量的平均值（上游不给这个数字，只能撞线时反推），已用从各账号自己的重置时刻起算。没有撞线记录（或记录已过期）的组合按最近 24 小时保守估计（标「按 24h 估算」）。</div>
+            <div style="margin-top:4px">撞线后窗口记账在撞线时刻截断，恢复时刻起的新窗口重新记账（旧窗口用量不计入本窗口的已用；两段相加的总量看「各账号用量透视与模型消耗分布」）。按模型的总剩余 = 可用组的剩余之和，冷却/用完的组记 0、不拉低别的组。昨天或今天没消耗过的模型不参与统计（预算样本仍保留并标「未参与」）。</div>
+            <div style="margin-top:4px"><em id="remainingUsageWindow" style="font-style:normal"></em></div>
+          </div>
+          <div style="font-size:12px;color:var(--dim)" id="remainingUsageSummary">-</div>
+        </div>
+        <div>
+          <div style="display:flex;align-items:baseline;gap:8px;margin-bottom:8px">
+            <b>国内版</b>
+            <span style="font-size:12px;color:var(--dim)" id="remainingSummaryCn">-</span>
+          </div>
+          <div id="remainingBudgetsCn" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px"></div>
+          <div style="overflow-x:auto;max-height:340px">
+            <table class="data-cards" id="remainingUsageTableCn">
+              <thead><tr>
+                <th style="text-align:left">账号</th>
+                <th style="text-align:left">模型</th>
+                <th style="text-align:center">窗口起点</th>
+                <th style="text-align:right">窗口内已用</th>
+                <th style="text-align:right">估算剩余</th>
+                <th style="min-width:150px">用量占比</th>
+              </tr></thead>
+              <tbody id="remainingTbodyCn"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      </div>
+    </details>
+    <details class="fold" id="foldCreditsBox">
+      <summary><h2>积分扣减历史</h2><span class="chev">▶</span></summary>
+      <div class="fbody">
+      <!-- 原版「积分扣减历史」区块：5 列表头与 id 与旧版逐字一致（credit history
+           套件按这些字符串找它；表头 sticky 由 #creditHistoryTable thead th 规则管）。 -->
+      <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px">
+          <div style="font-size:12px;color:var(--dim)">当前范围内最近消耗积分（credit &gt; 0）的请求。</div>
+          <button class="sec mini" onclick="loadCreditHistory(this)">刷新</button>
+        </div>
+        <div style="overflow-x:auto;max-height:260px">
+          <table class="data-cards" id="creditHistoryTable">
+            <thead><tr><th>时间</th><th>模型</th><th>账号</th><th>积分</th><th>Token</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+      </div>
+    </details>
+    <details class="fold">
+      <summary><h2>模型性能分位</h2><span class="fbadge" id="foldPerfBadge">—</span><span class="chev">▶</span></summary>
+      <div class="fbody" id="foldPerf"><div class="empty">加载中…</div></div>
+    </details>
+  </div>
+    </div>
+  </div>
+
+
+
+  <div id="pageSettings" class="main-page">
+    <div style="margin-bottom:16px">
+      <h2 style="margin:0;font-size:19px;color:var(--fg);font-family:var(--brush);font-weight:700;letter-spacing:.08em">网关设置</h2>
+      <div style="font-size:12px;color:var(--dim);margin-top:4px">面板密码与界面语言、页签布局、API Key、Anthropic Messages、上游超时、用量与日志、更新。</div>
+    </div>
+
+    <!-- 左侧导航由 initPageNav() 扫描本页的 section 自动生成，
+         增删区块无需同步改动这里。 -->
+    <section>
+      <h2>面板访问密码 <em id="setPwdState"></em></h2>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">用于打开本看板。默认密码为 <b>admin</b>，建议立即修改。</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:1;min-width:180px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">当前密码</div>
+          <!-- autocomplete 分开标注：否则密码管理器会把同一个旧密码同时填进
+               两栏，提交时「当前密码」对不上。data-* 是几家密码管理器的忽略
+               标记；真正的保险是输入框里的睁眼/闭眼和表单内错误提示。 -->
+          <div style="position:relative">
+            <input id="setPwdCurrent" type="password" placeholder="当前密码"
+                   name="panel-current-password" autocomplete="current-password"
+                   data-lpignore="true" data-1p-ignore="true" data-bwignore="true"
+                   style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 38px 8px 12px;color:var(--fg);font:inherit">
+            <button type="button" onclick="togglePwdVisibility(this,'setPwdCurrent')"
+                    title="显示密码" aria-label="显示密码" aria-pressed="false"
+                    style="position:absolute;right:4px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0;background:transparent;border:0;border-radius:6px;color:var(--dim);cursor:pointer">
+              <svg class="pwd-eye-open" style="display:none" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="pwd-eye-off" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.8 21.8 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 7 11 7a21.8 21.8 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+            </button>
+          </div>
+        </div>
+        <div style="flex:1;min-width:180px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">新密码</div>
+          <div style="position:relative">
+            <input id="setPwdNew" type="password" placeholder="至少 4 位"
+                   name="panel-new-password" autocomplete="new-password"
+                   data-lpignore="true" data-1p-ignore="true" data-bwignore="true"
+                   style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 38px 8px 12px;color:var(--fg);font:inherit">
+            <button type="button" onclick="togglePwdVisibility(this,'setPwdNew')"
+                    title="显示密码" aria-label="显示密码" aria-pressed="false"
+                    style="position:absolute;right:4px;top:50%;transform:translateY(-50%);display:flex;align-items:center;justify-content:center;width:30px;height:30px;padding:0;background:transparent;border:0;border-radius:6px;color:var(--dim);cursor:pointer">
+              <svg class="pwd-eye-open" style="display:none" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
+              <svg class="pwd-eye-off" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a21.8 21.8 0 0 1 5.06-5.94M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 7 11 7a21.8 21.8 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+            </button>
+          </div>
+        </div>
+        <button onclick="savePanelPassword(this)">修改密码</button>
+      </div>
+      <div id="setPwdMsg" style="font-size:12px;color:var(--dim);min-height:16px;margin-top:8px"></div>
+    </section>
+
+    <section>
+      <h2>界面语言 <em id="setUiLanguageState"></em></h2>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
+        这里设置的是这台网关的实例默认语言；右上角语言按钮只覆盖当前浏览器，换端口、主机名或清掉站点数据后会回退到这个默认值。
+      </div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:1;min-width:220px">
+          <div style="font-size:12px;color:var(--dim);margin-bottom:4px">实例默认语言</div>
+          <select id="setUiLanguage" style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+            <option value="zh">简体中文</option>
+            <option value="zh-Hant">正體中文（台灣）</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+        <button onclick="saveUiLanguage(this)">保存默认语言</button>
+        <button class="sec" onclick="clearUiLanguageOverride(this)">清除本浏览器的语言覆盖</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>顶部页签显示 <em id="setPagesState"></em></h2>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
+        取消勾选就把该页签从顶部收起来，勾回来即恢复；清单按顶部现有的页签现场生成，上游增删页面这里自动跟上；偏好存在本网关，换浏览器、重启服务都记得。「设置」是这一页自己的入口，固定保留。
+      </div>
+      <div id="setPagesList" style="display:flex;flex-wrap:wrap;gap:8px 20px"></div>
+    </section>
+
+    <section>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div>
+          <h2 style="margin:0">账号独立成一个页签 <em id="setAccountsSeparateState"></em></h2>
+          <div style="font-size:12px;color:var(--dim);margin-top:4px">
+            关闭（默认）时，账号列表、「当前禁用」与「签到与活跃记录」留在「网关与账号」页，位置与拆分前一致；开启后它们搬到独立的「账号」页，顶部页签变成 网关 → 账号 → 数据看板 → 设置 → 运行日志，网关页只剩网关自己的东西——账号多起来之后翻起来更短。两侧的区块与行为完全一样，只是分在哪一页；关闭后 ?tab=accounts 的书签会退回「网关与账号」页。
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+          <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+            <input id="setAccountsSeparate" type="checkbox" style="width:16px;height:16px">
+            账号单独一页
+          </label>
+          <button onclick="saveAccountsSeparateTab(this)">保存</button>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>面板窗口限高 <em id="setWinMaxHeightState"></em></h2>
+      <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
+        每个窗口（区块）超过这个高度时在窗口内部滚动，不再把整页拉长；滚动时标题行固定在窗口顶部。单位像素；填 0 表示不限。
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:12px;color:var(--dim)">窗口最高高度（像素，0 = 不限）</span>
+        <input id="setWinMaxHeight" type="number" min="0" max="4000" step="20" value="640"
+               style="width:110px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:6px 10px;color:var(--fg);font:inherit">
+        <button class="sec" onclick="saveWinMaxHeight(this)">保存</button>
+      </div>
+    </section>
+
+    <section>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+        <div>
+          <h2 style="margin:0">API Key <em id="setKeyState"></em></h2>
+          <div style="font-size:12px;color:var(--dim);margin-top:4px">
+            客户端用这里的 Key 调用网关，用量按 Key 分别统计。
+          </div>
+        </div>
+        <button onclick="addApiKeyRow()">+ 添加 API Key</button>
+      </div>
+      <div id="keyList"></div>
+      <!-- 已删除的 Key 只留名字和日期：密钥已抹掉，所以这里没有「复制」。
+           历史用量按 id 记账，删掉这一行会让那些请求变成「未知 key」。 -->
+      <div id="deletedKeySection"></div>
+    </section>
+
+    
+
+
+
+      <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">启用 Anthropic Messages 接口 (Claude) <em id="setAnthropicMessagesState"></em></h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              允许 Claude Code / Anthropic SDK 访问网关 /v1/messages。网关对内将其转换为 OpenAI Chat Completions 协议转发。
+            </div>
+            <div style="font-size:12px;color:var(--warn);margin-top:4px">
+              注意：转换层目前未保留 cache_control 语义，在长会话中可能因缓存命中率降低而导致积分消耗偏高。请知晓风险后再开启。默认关闭。
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              <input id="setAnthropicMessages" type="checkbox" style="width:16px;height:16px">
+              启用 Messages 接口
+            </label>
+            <button onclick="saveAnthropicMessages(this)">保存</button>
+          </div>
+        </div>
+      </section>
+
+
+      <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">出口级瞬时失败退避 <em id="setEgressBackoffState"></em></h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              传输类失败与 502/503/504 改记在「出口」而不是账号上：同一个出口的账号共用一个计数器，退避是秒级（1 秒起、翻倍、封顶 15 秒、带抖动），任一次成功即清零；账号级熔断（30 分钟起、翻倍到 6 小时）不再被一次链路抖动触发。500 与 401/403/429 仍走原路径。默认关闭。
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              <input id="setEgressBackoff" type="checkbox" style="width:16px;height:16px">
+              启用出口级退避
+            </label>
+            <button onclick="saveEgressBackoff(this)">保存</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">用量聚合保留窗口 <em id="setUsageKeepState"></em></h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              用量看板把请求日志按「日桶 + 日桶里的小时子表」预先聚合、落盘成 checkpoint，重启后只读新增的字节。
+              保留窗口决定这些预聚合能覆盖多久：窗口内的自定义区间直接从桶求和（毫秒级），超出的部分退回整段扫日志（结果一样，只是慢）。
+            </div>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              这是「空间换时间」：调大 = checkpoint 变大、写盘更频繁（路由器上 flash 写入慢且费寿命），换更宽的区间走快路径。默认小时层 48 小时、日桶 32 天。
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              小时层
+              <input id="setUsageHourKeep" type="number" min="1" step="1" style="width:90px">
+              小时
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              日桶
+              <input id="setUsageDayKeep" type="number" min="1" step="1" style="width:90px">
+              天
+            </label>
+            <button onclick="saveUsageKeep(this)">保存</button>
+          </div>
+        </div>
+      </section>
+      <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">上游响应头超时 <em id="setHeaderTimeoutState"></em></h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              单次尝试等上游返回响应头的上限（秒）。拿到响应头之前网关不会向客户端发出任何字节，所以这个值就是客户端要空等的时长：设得比客户端的首字节预算还大时，客户端会先断开（表现为 499 / 首字节迟迟不返回），而网关仍会按这个上限继续换账号重试。默认 120。
+            </div>
+            <div style="font-size:12px;color:var(--warn);margin-top:4px">
+              调小的代价：上游偶尔确实算得慢的正常请求会被提前判失败、换账号重试，多消耗一次额度。建议不高于客户端的首字节预算。
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              <input id="setHeaderTimeout" type="number" min="1" step="1" style="width:90px">
+              秒
+            </label>
+            <button onclick="saveHeaderTimeout(this)">保存</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">码道并发与冷却</h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              每账号并发（上游给 3 个会话名额，默认 2 留余量）、流式期间的会话续期间隔、以及两种失败后的冷却时长。冷却只是「换个号试试」的偏好，不会拒绝请求。
+            </div>
+            <div style="font-size:12px;color:var(--warn);margin-top:4px">
+              四项都是保存后下一个请求即生效，不用重启；并发调小时已经在跑的请求不会被中断。
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              并发 <input id="setCodeartsConcurrency" type="number" min="1" max="3" step="1" style="width:70px">
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              续期 <input id="setCodeartsPing" type="number" min="5" max="600" step="1" style="width:70px"> 秒
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              并发满冷却 <input id="setCodeartsBusy" type="number" min="1" max="300" step="1" style="width:70px"> 秒
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              TPM 冷却 <input id="setCodeartsTpm" type="number" min="5" max="3600" step="1" style="width:70px"> 秒
+            </label>
+            <button onclick="saveCodeartsTuning(this)">保存</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">每日限额</h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              当日累计撞线后的护栏：token / 积分限额到了就把该账号晾到本地 0 点（积分限额只拦付费模型，免费模型照常）；
+              模型维度限额只停那个模型。0 = 不限（默认）。多账号时每号各算各的。
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              日 token <input id="setLimitTokens" type="number" min="0" step="1000" style="width:110px">
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              日积分 <input id="setLimitCredits" type="number" min="0" step="100" style="width:90px">
+            </label>
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              单模型日 token <input id="setLimitModelTokens" type="number" min="0" step="1000" style="width:110px">
+            </label>
+            <button onclick="saveLimits(this)">保存</button>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">模型降级链 <em id="setFallbackState"></em></h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              请求的模型连败进熔断（连败 3 次且 60 秒内）时，按下面这条链换第一个健康的模型继续服务；
+              链耗尽或未启用时照发原模型，绝不硬拒。模型健康度见「模型」页的 health 列。
+            </div>
+          </div>
+          <button onclick="saveModelFallback(this)">保存</button>
+        </div>
+        <div class="card" style="padding:14px 16px">
+          <label style="display:flex;align-items:center;gap:8px;font-size:13px">
+            <input id="setFallbackEnabled" type="checkbox" style="width:16px;height:16px">
+            启用降级链（关掉只保留健康度展示，不换模型）
+          </label>
+          <div style="margin-top:10px;font-size:13px">
+            链与顺序（逗号分隔，从左到右依次尝试）：
+            <input id="setFallbackChain" type="text" spellcheck="false"
+                   placeholder="glm-5.3,openpangu-2.0-flash,deepseek-v4.1-flash"
+                   style="width:100%;margin-top:6px">
+          </div>
+          <div style="margin-top:8px;font-size:12px;color:var(--dim)">
+            可用模型（点击追加到链尾）：<span id="setFallbackChips"></span>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">日志落库 <em id="setLogDbState"></em></h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              默认关闭：日志只留在内存（最新 2000 条，重启即失），与上游一致。开启后每条日志追加写入
+              <span class="mono">usage/logs.sqlite3</span>，重启、崩溃后仍能回看，方便事后 debug。
+              三条保留上限各自独立，留空表示该维度不限制；天数默认 7 天。
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
+              <input id="setLogDbEnabled" type="checkbox" style="width:16px;height:16px">
+              启用日志落库
+            </label>
+            <button onclick="saveLogDb(this)">保存</button>
+          </div>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+          <div style="flex:1;min-width:150px">
+            <div style="font-size:12px;color:var(--dim);margin-bottom:4px">最多保留条数（留空 = 不限）</div>
+            <input id="setLogDbMaxRows" type="number" min="1" placeholder="不限"
+                   style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+          </div>
+          <div style="flex:1;min-width:150px">
+            <div style="font-size:12px;color:var(--dim);margin-bottom:4px">最多保留天数（留空 = 不限）</div>
+            <input id="setLogDbMaxDays" type="number" min="1" placeholder="7"
+                   style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+          </div>
+          <div style="flex:1;min-width:150px">
+            <div style="font-size:12px;color:var(--dim);margin-bottom:4px">日志库大小上限 MB（留空 = 不限）</div>
+            <input id="setLogDbMaxMB" type="number" min="1" placeholder="不限"
+                   style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;color:var(--fg);font:inherit">
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+          <div>
+            <h2 style="margin:0">更新 <em id="setUpdateState"></em></h2>
+            <div style="font-size:12px;color:var(--dim);margin-top:4px">
+              网关匿名查询 GitHub 的公开 Release 列表，与当前运行的版本比较。本版只检查：不下载、不安装、不重启，账号与用量数据不会被碰。
+            </div>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+            <button id="setUpdateCheckBtn" onclick="checkUpdateNow(this)">立即检查更新</button>
+            <button id="setUpdateInstallBtn" class="sec" disabled>安装更新</button>
+          </div>
+        </div>
+        <table>
+          <tbody>
+            <tr><td>当前版本</td><td class="mono" id="setUpdateCurrent">-</td></tr>
+            <tr><td>最新版本</td><td class="mono" id="setUpdateLatest">-</td></tr>
+            <tr><td>上次检查</td><td class="mono" id="setUpdateLastCheck">-</td></tr>
+          </tbody>
+        </table>
+        <div id="setUpdateError" style="font-size:12px;color:var(--warn);margin-top:8px"></div>
+        <label style="display:flex;align-items:center;gap:6px;font-size:13px;margin-top:14px">
+          <input id="setUpdateCheckEnabled" type="checkbox" style="width:16px;height:16px">
+          每天自动检查更新
+        </label>
+        <div style="font-size:12px;color:var(--dim);margin-top:4px">
+          默认关闭。开启后最多每 24 小时检查一次，只检查、不安装。
+        </div>
+        <div style="margin-top:10px">
+          <button onclick="saveUpdateCheckEnabled(this)">保存</button>
+        </div>
+      </section>
+
+      <section>
+        <h2>运行信息</h2>
+      <table>
+        <tbody>
+          <tr><td>当前版本</td><td class="mono" id="setVersion">-</td></tr>
+          <tr><td>账号存储目录</td><td class="mono" id="setAccountsDir">-</td></tr>
+          <tr><td>用量日志目录</td><td class="mono" id="setUsageDir">-</td></tr>
+          <tr><td>设置文件</td><td class="mono" id="setFile">-</td></tr>
+        </tbody>
+      </table>
+      <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="sec" onclick="loadSettings(true)">刷新</button>
+        <button class="sec" onclick="panelLogout()">退出面板登录</button>
+      </div>
+    </section>
+
+  </div>
+
+  <div id="pageLogs" class="main-page">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
+      <div>
+        <h2 style="margin:0;font-size:19px;color:var(--fg);font-family:var(--brush);font-weight:700;letter-spacing:.08em">网关运行日志</h2>
+        <div id="logPageHint" style="font-size:12px;color:var(--dim);margin-top:4px">实时捕获反向代理请求、流式转发、调度巡检、任务打卡与异常告警 (内存保留最新 2000 条)</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <span id="logStatsBadge" style="font-size:12px;color:var(--dim);margin-right:6px">加载中...</span>
+        <button class="sec mini" onclick="fetchNewLogs(true)" title="立即拉取最新日志">刷新</button>
+        <button class="sec mini" id="btnToggleLogAuto" onclick="toggleLogAuto()" style="color:var(--accent2);font-weight:600">实时监听中</button>
+        <button class="sec mini" id="btnToggleLogScroll" onclick="toggleLogScroll()">自动滚屏: 开</button>
+        <button class="sec mini" onclick="copyFilteredLogs()" title="复制当前视图显示的日志">复制</button>
+        <button class="sec mini" onclick="exportLogsFile()" title="下载为 .log 文件">导出</button>
+        <button class="danger mini" onclick="clearServerLogs()" title="清空所有日志">清空</button>
+      </div>
+    </div>
+
+    <!-- 筛选控制工具栏 -->
+    <div style="background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:10px 14px;margin-bottom:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;box-shadow:var(--shadow)">
+      <div style="display:inline-flex;gap:3px;background:var(--panel2);padding:3px;border-radius:8px;border:1px solid var(--line)">
+        <button class="range-btn active" id="btnLogLvlAll" onclick="setLogFilterLevel('')">全部级别</button>
+        <button class="range-btn" id="btnLogLvlInfo" onclick="setLogFilterLevel('INFO')">INFO</button>
+        <button class="range-btn" id="btnLogLvlWarn" onclick="setLogFilterLevel('WARN')">WARN</button>
+        <button class="range-btn" id="btnLogLvlError" onclick="setLogFilterLevel('ERROR')">ERROR</button>
+      </div>
+
+      <!-- 模块筛选按钮由 renderLogTagFilters() 按当前日志里真正出现过的 tag
+           动态生成：后端细分出新的 tag 时这里自动多一个按钮，不必同步改。 -->
+      <div id="logTagBar" style="display:inline-flex;gap:3px;background:var(--panel2);padding:3px;border-radius:8px;border:1px solid var(--line);flex-wrap:wrap">
+        <button class="range-btn active" data-tag="" onclick="setLogFilterTag('')">全部模块</button>
+      </div>
+
+      <div style="flex:1;min-width:180px;position:relative">
+        <input id="logSearchInput" type="text" placeholder="过滤关键字 (如 deepseek, 11128, 401, error)..."
+               oninput="onLogSearchInput()"
+               style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:7px;padding:5px 10px;font-size:12px;color:var(--fg);outline:none">
+      </div>
+    </div>
+
+    <!-- 终端视窗 -->
+    <div style="background:#14120e;border:1px solid #2a2721;border-radius:12px;overflow:hidden;box-shadow:0 4px 14px rgba(0,0,0,.15)">
+      <div style="background:#191712;border-bottom:1px solid #2a2721;padding:8px 14px;display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:7px">
+          <span style="width:10px;height:10px;border-radius:50%;background:#c05a48;display:inline-block"></span>
+          <span style="width:10px;height:10px;border-radius:50%;background:#d3aa61;display:inline-block"></span>
+          <span style="width:10px;height:10px;border-radius:50%;background:#7fa98a;display:inline-block"></span>
+          <span style="font-size:11px;color:#a49e90;font-family:monospace;margin-left:8px">codearts-hub-console.log</span>
+        </div>
+        <div id="logTerminalStatus" style="font-size:11px;color:#8a8375;font-family:monospace">就绪</div>
+      </div>
+      <div id="logTerminalBody" style="height:620px;overflow-y:auto;padding:10px 12px;background:#14120e;color:#ded8c9" onscroll="handleLogTerminalScroll()">
+        <div class="log-empty">正在拉取网关日志...</div>
+      </div>
+    </div>
+  </div>
+
+  <footer>每 5 秒自动刷新 · 数据来自本机反代 <span class="mono" id="logfile"></span></footer>
+</main>
+
+<div class="modal-mask" id="codeartsLoginModal">
+  <div class="modal" role="dialog" aria-modal="true" style="width:min(720px,100%)">
+    <div class="modal-hd">
+      <h2>码道 CodeArts 账号（华为云）</h2>
+      <button class="modal-x" onclick="closeCodeartsLogin()" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-bd">
+      <p class="hint" style="margin-top:0">
+        走华为云 PKCE + DPoP 授权。拿到的是 <b>STS 临时 AK/SK</b>（有效期数小时）
+        加一张 <b>30 天可续期</b>的 refresh_token；续期要用登录时那把 DPoP 私钥，
+        所以私钥会随会话一起存在网关里。会话落在 <code>accounts/codearts/</code>，
+        与其它账号体系互不相干，也不参与请求调度。
+      </p>
+      <h3 style="font-size:13px;margin:18px 0 6px">已连接的码道账号</h3>
+      <div id="codeartsList" data-codearts-list><p class="hint">正在读取…</p></div>
+      <h3 style="font-size:13px;margin:18px 0 6px">添加账号</h3>
+      <div class="step" id="caStep1"><div class="n">1</div><div class="t" id="caStep1Text">正在生成授权链接…</div></div>
+      <div class="step" id="caStep2"><div class="n">2</div><div class="t">在浏览器里打开下方链接，完成华为云登录</div></div>
+      <div id="codeartsLinkBox"></div>
+      <div class="step" id="caStep3"><div class="n">3</div><div class="t">等待回调（浏览器直接跳回本机网关，无需手动复制）</div></div>
+      <p class="hint" id="codeartsStatus" style="font-weight:500"></p>
+    </div>
+    <div class="modal-ft">
+      <button class="sec" id="caClaimAllBtn" onclick="claimCodeartsWelfareAll(this)">一键签到全部账号</button>
+      <button class="sec" onclick="loadCodeartsAccounts()">刷新列表</button>
+      <button class="sec" onclick="closeCodeartsLogin()">关闭</button>
+      <button onclick="restartCodeartsLogin()">重新生成链接</button>
+    </div>
+  </div>
+</div>
+
+
