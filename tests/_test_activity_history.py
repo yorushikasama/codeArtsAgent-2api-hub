@@ -504,8 +504,9 @@ class RouteTests(IsolatedCase):
         self.assertEqual(code, 401)
 
     def test_route_is_registered_and_panel_gated(self):
-        self.assertIn('"/activity/history"',
-                      inspect.getsource(ca_proxy.Handler.do_GET))
+        # 路由注册在 GET_ROUTES 表里（2026-10-24 起 do_GET 查表分发）；
+        # 面板门槛仍由 _is_panel_route 的前缀判定施加。
+        self.assertIn("/activity/history", ca_proxy.GET_ROUTES)
         self.assertTrue(ca_proxy.Handler._is_panel_route("/activity/history"))
         self.assertFalse(ca_proxy.Handler._is_panel_route("/v1/chat/completions"))
 

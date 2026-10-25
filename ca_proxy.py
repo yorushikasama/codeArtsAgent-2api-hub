@@ -7085,6 +7085,57 @@ def _apply_settings_patch(handler, plan):
     return handler._json(200, reply)
 
 
+# ---- 路由表：路径 → (处理方法, 是否吃 query) ----
+# do_GET 只剩「回调直通 → 面板鉴权 → 查表」三步，每条路由存在与否、吃不吃
+# query 一眼从表里看全。鉴权不进表：GET 侧只有面板一种门槛（_is_panel_route
+# 的前缀判定，仍在查表前执行，保持「面板前缀 401 先于 404」的现状）；
+# /v1/models 的 API key 校验留在处理器里（401 文案要说清 key 该怎么带）。
+GET_ROUTES = {
+    "/": ("_get_dashboard", False),
+    "/dashboard": ("_get_dashboard", False),
+    "/ui": ("_get_dashboard", False),
+    "/panel/status": ("_get_panel_status", False),
+    "/health": ("_get_health", False),
+    "/v1/models": ("_get_v1_models", False),
+    "/models": ("_get_v1_models", False),
+    "/usage": ("_get_v1_usage", True),
+    "/v1/usage": ("_get_v1_usage", True),
+    "/usage/recent": ("_get_usage_recent", True),
+    "/usage/analytics": ("_get_usage_analytics", True),
+    "/usage/by-account": ("_get_usage_by_account", False),
+    "/usage/remaining": ("_get_usage_remaining", False),
+    "/usage/perf": ("_get_usage_perf", True),
+    "/usage/timeseries": ("_get_usage_timeseries", True),
+    "/activity/history": ("_get_activity_history", True),
+    "/pricing": ("_get_pricing", False),
+    "/settings": ("_get_settings", False),
+    "/settings/reveal": ("_get_settings_reveal", True),
+    "/updates": ("_get_updates", False),
+    "/logs": ("_get_logs", True),
+    "/logs/export": ("_get_logs_export", False),
+    "/accounts/codearts": ("_get_codearts_accounts", False),
+    "/accounts/codearts/login/poll": ("_get_codearts_login_poll", True),
+}
+
+# POST 侧的面板管理写路由：路径 → (处理方法, 调用模式)。
+# 调用模式三态："none" 不读 body（动作没有参数，按钮空 POST 不该被回
+# 「invalid JSON body」）；"payload" 由分发器 _payload_or_error() 解析后传入；
+# "raw" 处理器自己读 body（/settings/save 的校验/落盘两段式从 body 起步）。
+# 面板鉴权由 do_POST 统一施加 —— 以前每条分支手写一遍
+# ``if not self._panel_ok()``，五处复制，漏一处就是事故（/catalog/refresh
+# 的路由曾指向已被删除的方法且没人拦，点刷新直接 AttributeError，面板看到
+# 「网络错误」，2026-10-23；POST /pricing/refresh 更早曾整个不在分发器里，
+# 面板「立即取价」静默失败）。注意 /catalog 前缀不在 _is_panel_route 的
+# 面板前缀表里，这条路由必须显式登记在表里，不能指望兜底守卫。
+POST_PANEL_ROUTES = {
+    "/settings/save": ("_handle_settings_save", "raw"),
+    "/updates/check": ("_route_update_check", "none"),
+    "/pricing/refresh": ("_route_pricing_refresh", "payload"),
+    "/pricing/mapping": ("_route_pricing_mapping", "payload"),
+    "/catalog/refresh": ("_route_codearts_refresh_catalog", "payload"),
+}
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     #: 慢连接（发了 SYN、甚至发了半行请求）最多能占住一个线程多久。
@@ -7747,47 +7798,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._get_codearts_callback(query)
         if self._is_panel_route(path) and not self._panel_ok():
             return self._error(401, "panel password required", "invalid_request_error")
-        if path in ("/", "/dashboard", "/ui"):
-            return self._get_dashboard()
-        if path == "/panel/status":
-            return self._get_panel_status()
-        if path == "/health":
-            return self._get_health()
-        if path in ("/v1/models", "/models"):
-            return self._get_v1_models()
-        if path in ("/usage", "/v1/usage"):
-            return self._get_v1_usage(query)
-        if path == "/usage/recent":
-            return self._get_usage_recent(query)
-        if path == "/accounts/codearts":
-            return self._get_codearts_accounts()
-        if path == "/accounts/codearts/login/poll":
-            return self._get_codearts_login_poll(query)
-        if path == "/usage/analytics":
-            return self._get_usage_analytics(query)
-        if path == "/usage/by-account":
-            return self._get_usage_by_account()
-        if path == "/usage/remaining":
-            return self._get_usage_remaining()
-        if path == "/usage/perf":
-            return self._get_usage_perf(query)
-        if path == "/usage/timeseries":
-            return self._get_usage_timeseries(query)
-        if path == "/activity/history":
-            return self._get_activity_history(query)
-        if path == "/pricing":
-            return self._get_pricing()
-        if path == "/settings":
-            return self._get_settings()
-        if path == "/updates":
-            return self._get_updates()
-        if path == "/logs":
-            return self._get_logs(query)
-        if path == "/logs/export":
-            return self._get_logs_export()
-        if path == "/settings/reveal":
-            return self._get_settings_reveal(query)
-        return self._error(404, "not found", "invalid_request_error")
+        entry = GET_ROUTES.get(path)
+        if entry is None:
+            return self._error(404, "not found", "invalid_request_error")
+        name, wants_query = entry
+        handler = getattr(self, name)
+        return handler(query) if wants_query else handler()
     def _get_dashboard(self):
         return self._dashboard()
 
@@ -8889,46 +8905,22 @@ class Handler(BaseHTTPRequestHandler):
         # 双 /v1 前缀兼容（OpenAI SDK 的 base_url 含 /v1、Anthropic SDK 不含，
         # 用户贴同一个地址必有一个多写一层）。见 collapse_duplicate_v1。
         path = collapse_duplicate_v1(self.path.split("?")[0])
-        if path == "/settings/save":
-            if not self._panel_ok():
-                return self._error(401, "panel password required", "invalid_request_error")
-            return self._handle_settings_save()
-        if path == "/updates/check":
-            # Panel-only management write, like the pricing ones. No body to
-            # read: the action takes no parameters, so a button that posts
-            # nothing must not be answered with "invalid JSON body".
-            if not self._panel_ok():
-                return self._error(401, "panel password required", "invalid_request_error")
-            return self._route_update_check()
-        if path in ("/pricing/refresh", "/pricing/mapping"):
-            # Panel-only management writes (the pricing table is the panel's
-            # own view of the estimate). Registered here because the generic
-            # dispatcher below only routes chat and account paths - POST
-            # /pricing/refresh used to 404, which made the panel's "立即取价"
-            # button fail silently behind its toast.
-            if not self._panel_ok():
-                return self._error(401, "panel password required", "invalid_request_error")
-            payload = self._payload_or_error()
-            if payload is None:
-                return
-            if path == "/pricing/mapping":
-                return self._route_pricing_mapping(payload)
-            return self._route_pricing_refresh(payload)
-        if path == "/catalog/refresh":
-            # 旧面板的刷新按钮打的是这条（新面板已改打
-            # /accounts/codearts/refresh-catalog）。以前这里调
-            # ``self._route_catalog_refresh`` —— 那个方法**根本不存在**
-            # （WorkBuddy 目录接口下线时被删了，路由却留着），于是点刷新
-            # 直接 AttributeError，连接被掐断，面板看到的是「网络错误」
-            # （2026-10-23）。转发到码道目录刷新，旧缓存页面也不会再撞墙。
-            if not self._panel_ok():
-                return self._error(401, "panel password required", "invalid_request_error")
-            payload = self._payload_or_error()
-            if payload is None:
-                return
-            return self._route_codearts_refresh_catalog(payload)
         if path in ("/panel/login", "/panel/logout", "/panel/password"):
             return self._handle_panel(path)
+        entry = POST_PANEL_ROUTES.get(path)
+        if entry is not None:
+            # 面板管理写路由：鉴权一处管够（背景见 POST_PANEL_ROUTES 注释）。
+            if not self._panel_ok():
+                return self._error(401, "panel password required", "invalid_request_error")
+            name, mode = entry
+            if mode == "none":
+                return getattr(self, name)()
+            if mode == "payload":
+                payload = self._payload_or_error()
+                if payload is None:
+                    return
+                return getattr(self, name)(payload)
+            return getattr(self, name)()
         if self._is_panel_route(path) and not self._panel_ok():
             return self._error(401, "panel password required", "invalid_request_error")
         is_messages_route = path in (

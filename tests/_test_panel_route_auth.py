@@ -279,5 +279,39 @@ class ApiKeySurfaceTests(BoundaryCase):
         self.assertEqual(status, 200)
 
 
+class RouteTablesResolve(unittest.TestCase):
+    """The route tables name methods that actually exist.
+
+    The dispatcher once held a route pointing at a method that no longer
+    existed: POST /catalog/refresh called `_route_catalog_refresh` after the
+    WorkBuddy catalog retired it, and the panel saw "network error". A rename
+    must break this suite, not the panel.
+    """
+
+    def test_every_table_entry_is_a_real_handler_method(self):
+        methods = {name for name in vars(proxy.Handler)
+                   if not name.startswith("__")}
+        for path, (handler, mode) in sorted(proxy.GET_ROUTES.items()):
+            self.assertIn(handler, methods, "%s -> %s" % (path, handler))
+            self.assertIn(mode, (True, False), path)
+        for path, (handler, mode) in sorted(proxy.POST_PANEL_ROUTES.items()):
+            self.assertIn(handler, methods, "%s -> %s" % (path, handler))
+            self.assertIn(mode, ("none", "payload", "raw"), path)
+
+    def test_panel_get_surface_matches_the_panel_prefixes(self):
+        # A GET route that _is_panel_route does not claim would be served with
+        # no panel check; one it claims but the table lacks is a management
+        # surface silently missing. The seven exceptions are the deliberate
+        # unauthenticated GETs (the dashboard shell, the pre-login status
+        # probe, the health check, and the model listing that self-checks the
+        # API key); the OAuth callback is outside the table entirely because
+        # it must answer before the panel guard.
+        unauthed = {"/", "/dashboard", "/ui", "/panel/status", "/health",
+                    "/v1/models", "/models"}
+        for path, (_handler, _flag) in proxy.GET_ROUTES.items():
+            self.assertEqual(proxy.Handler._is_panel_route(path),
+                             path not in unauthed, path)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
