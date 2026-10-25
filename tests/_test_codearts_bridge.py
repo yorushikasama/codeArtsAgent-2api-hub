@@ -702,7 +702,11 @@ _CREDIT_PAYLOAD = {
     "start_date": "2026-10-15", "end_date": "2026-11-16",
 }
 
+# 三段用同一个 AK、各挂不同的 _http 桩：credit_package 现在自带按 AK 缓存
+# （与面板轮询共用），每段前先清缓存，让桩真的被走到（与下面 welfare 套路
+# 的 C._welfare_cache.clear() 同一理由）。
 _saved_http = C._http
+C._credit_cache.clear()
 C._http = lambda *a, **k: dict(_CREDIT_PAYLOAD)
 try:
     cp = C.credit_package("AK", "SK", "TOK")
@@ -719,6 +723,7 @@ check("基础包分项", cp["basic"]["total"] == 500.0, cp["basic"])
 check("赠送包分项", cp["bonus"]["used"] == 4817.0, cp["bonus"])
 
 # 没有 usageTotalPackageCredit 时返回 None（不是造一堆 0 出来）
+C._credit_cache.clear()
 C._http = lambda *a, **k: {"metrics": [], "package": {}}
 try:
     none_cp = C.credit_package("AK", "SK", "TOK")
@@ -727,6 +732,7 @@ finally:
 check("没有总量指标时返回 None", none_cp is None, none_cp)
 
 # remain 缺失时用 total - used 兜底
+C._credit_cache.clear()
 C._http = lambda *a, **k: {
     "metrics": [{"name": "usageTotalPackageCredit",
                  "package_credit_amount": 100.0, "package_credit_used": 30.0}],

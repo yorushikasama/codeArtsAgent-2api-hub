@@ -171,8 +171,9 @@ async function pollCodeartsLogin(){
 /* 网关卡片上的汇总行：可用 / 总积分 · 账号数。
    多个账号时把各自的积分加起来 —— 每个账号是独立套餐，汇总只作总览。
    顺手把「账号累计已用积分」记到全局：顶部那张「积分消耗」卡改用它，
-   因为网关自己的用量记账里没有积分口径（credit 恒为 0），而账号的已用积分
-   是上游给的实数（和客户端显示的一致）。 */
+   因为账号的已用积分是上游 snap-manager 给的**累计实数**（和客户端显示的
+   一致）；最近请求表里的 credit 是网关按计费档逐条估算的，拿它累加当总数
+   会漏掉接入网关之前的消耗，也攒不下估算误差。 */
 let caAccountCredit = null;
 
 function caUpdateCardSummary(list){
@@ -255,12 +256,31 @@ async function loadCodeartsAccounts(){
         if(a.sts_remaining_seconds < 1800) badge = '<span class="ca-badge warn">即将过期</span>';
       }
       const renew = a.renewable ? "可续期" : "不可续期（需重新登录）";
+      // refresh_token 的有效期：summarize 每轮都算好（refresh_expires_at，
+      // JWT 的 exp），以前算了没人显示。STS 只有几小时、会自动续，真正会
+      // 「静默死掉」的是这张 30 天的 refresh_token —— 到期前不吭声，用户只会在
+      // 某天看到账号集体过期。剩不到 7 天时把话说重一点。
+      let refreshText = "";
+      if(a.refresh_expires_at != null){
+        const exp = Number(a.refresh_expires_at) || 0;
+        if(exp > 0){
+          const days = (exp - Date.now() / 1000) / 86400;
+          refreshText = " · refresh " + caStamp(exp) + " 到期";
+          if(days < 7) refreshText += "（剩 " + Math.max(0, Math.ceil(days)) + " 天，到期需重新登录）";
+        }
+      }
       // 运行期：在跑几条 / 容量几格 + 账号级冷却。容量取自信号量的实时值
-      // （面板改并发后下一个请求就变），不是启动时的配置快照。
+      // （面板改并发后下一个请求就变），不是启动时的配置快照。注意两个数
+      // 不是一回事：「并发 n/m」是**网关**每号信号量（m = 面板/环境配置，
+      // 上限 3）；「上游名额」是华为云给的会话数，是网关并发的天花板。
+      // 2026-10-24 的疑问「截图怎么是 0/3」——那不是错填了上游槽位，
+      // 是那台部署的面板并发真的配了 3；把两者分开写出来，省得再猜一遍。
       const rt = a.runtime || {};
       const cap = Number(rt.capacity || (r && r.concurrency_per_account) || 0);
       const flight = Number(rt.in_flight || 0);
-      const runtimeText = " · 并发 " + flight + (cap ? "/" + cap : "")
+      const slots = Number(r && r.upstream_slots) || 0;
+      const runtimeText = " · 网关并发 " + flight + (cap ? "/" + cap : "")
+        + (slots ? "（上游名额 " + slots + "）" : "")
         + (rt.cooling_s > 0 ? " · 冷却 " + Math.ceil(rt.cooling_s) + "s" : "");
       const id = esc(a.account_id || "");
       // 积分（snap-manager 统计插件）是客户端里真正在扣的额度。token 额度
@@ -272,7 +292,7 @@ async function loadCodeartsAccounts(){
       const canSign = !!daily && (daily.claimable || !wStatus || wStatus === "ELIGIBLE");
       return '<div class="ca-row"><div class="ca-main">'
         + '<span class="ca-name">' + esc(a.account || "(未命名)") + badge + '</span>'
-        + '<span class="ca-sub">' + esc(when) + " · " + esc(renew)
+        + '<span class="ca-sub">' + esc(when) + " · " + esc(renew) + esc(refreshText)
         + (a.domain_id ? " · 账号域 " + esc(String(a.domain_id).slice(0, 8)) + "…" : "")
         + esc(runtimeText)
         + '</span>'
@@ -314,7 +334,8 @@ function caWelfareErrText(err){
 }
 
 /* 体验版积分：客户端「总已用积分 4,817 / 11,500 · 6,683 剩余」那一栏，
-   来自 snap-access 的 snap-manager 统计插件。它和下面的 token 额度是两套，
+   来自 snap-access 的 snap-manager 统计插件。它和已下线的 token 额度是两套
+   体系（token 那套走 opengw benefit，2026-10 随福利渠道一起停了），
    积分才是客户端里真正在扣的那个数。 */
 function caCreditHtml(c){
   if(!c) return '';

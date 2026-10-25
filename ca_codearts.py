@@ -954,13 +954,67 @@ def builtin_models(access_key, secret_key, security_token, timeout=DEFAULT_TIMEO
     return payload.get("builtinModels") or []
 
 
-def credit_package(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT):
+#: 积分余额与活动清单一样变化不快：面板每 5 秒轮询一次账号列表，每个账号都要
+#: 打一次 snap-manager（实测 1-2s）。按 AK 缓存一分钟、失败缓存更短（30 秒），
+#: 与 _welfare_cache 同款（含失败短缓存）；缓存读写都在锁内 —— 账号列表现在
+#: 用线程池并行取各账号的积分/签到，没有锁的 dict 缓存在并发下是赌博。
+CREDIT_CACHE_TTL = 60.0
+CREDIT_ERROR_TTL = 30.0
+
+_credit_cache = {}
+_credit_cache_lock = threading.Lock()
+
+
+def credit_package_clear_cache(access_key=None):
+    """清积分缓存：不传 key 清全部，传了只清那个账号。
+
+    welfare_claim 在领取成功后清活动缓存让面板立刻看到新状态；积分余额没有
+    对应的「马上会变」入口（签到加的是积分，余额要等上游统计刷新），暂时只有
+    测试与排障用。
+    """
+    with _credit_cache_lock:
+        if access_key is None:
+            _credit_cache.clear()
+        else:
+            _credit_cache.pop(access_key or "", None)
+
+
+def credit_package(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT,
+                   use_cache=True):
     """体验版积分配额：已用 / 总量 / 剩余 / 各分项。
 
     就是客户端「总已用积分 x / y」那一栏的同一个接口（见 CREDIT_PACKAGE_PATH）。
     服务端返回 ``metrics`` 列表，其中 ``usageTotalPackageCredit`` 是总量那一条，
     另外还有 basic（基础包）/ bonus（赠送包）/ on-demand 三个分项。
+
+    结果按 AK 缓存 CREDIT_CACHE_TTL 秒（use_cache=False 跳过读、照写缓存）；
+    失败缓存 CREDIT_ERROR_TTL 秒，命中失败缓存时原样再抛。注意 None 是**成功
+    值**（账号没有体验版套餐），所以失败标记放在 error 串上，与 _welfare_cache
+    用「result is None」判失败不同。
     """
+    key = access_key or ""
+    now = time.time()
+    if use_cache:
+        with _credit_cache_lock:
+            hit = _credit_cache.get(key)
+        if hit and hit[0] > now:
+            if hit[2]:
+                raise CodeArtsError(hit[2])
+            return hit[1]
+    try:
+        result = _credit_package_fetch(access_key, secret_key, security_token,
+                                       timeout=timeout)
+    except Exception as exc:
+        with _credit_cache_lock:
+            _credit_cache[key] = (time.time() + CREDIT_ERROR_TTL, None, str(exc))
+        raise
+    with _credit_cache_lock:
+        _credit_cache[key] = (time.time() + CREDIT_CACHE_TTL, result, "")
+    return result
+
+
+def _credit_package_fetch(access_key, secret_key, security_token,
+                          timeout=DEFAULT_TIMEOUT):
     url = SNAP_HOST + CREDIT_PACKAGE_PATH
     headers = {
         "Accept": "application/json",
@@ -2758,6 +2812,9 @@ WELFARE_ERROR_TTL = 30.0
 WELFARE_PERMANENT_TTL = 6 * 3600.0
 
 _welfare_cache = {}
+#: 缓存的读写锁。以前只有一个串行调用方（账号列表逐个取），裸 dict 不会出事；
+#: 账号列表并行化之后多个线程同时 get/pop 同一个 key，读写必须都在锁内。
+_welfare_cache_lock = threading.Lock()
 
 
 def welfare_permanent_failure(exc):
@@ -2843,7 +2900,8 @@ def welfare_activities(access_key, secret_key, security_token,
     key = access_key or ""
     now = time.time()
     if use_cache:
-        hit = _welfare_cache.get(key)
+        with _welfare_cache_lock:
+            hit = _welfare_cache.get(key)
         if hit and hit[0] > now:
             if hit[1] is None:
                 raise CodeArtsError(hit[2])
@@ -2856,7 +2914,8 @@ def welfare_activities(access_key, secret_key, security_token,
     except Exception as exc:
         ttl = (WELFARE_PERMANENT_TTL if welfare_permanent_failure(exc)
                else WELFARE_ERROR_TTL)
-        _welfare_cache[key] = (now + ttl, None, str(exc))
+        with _welfare_cache_lock:
+            _welfare_cache[key] = (now + ttl, None, str(exc))
         raise
     items = [_welfare_item(raw) for raw in (data.get("items") or [])
              if isinstance(raw, dict)]
@@ -2905,7 +2964,8 @@ def welfare_claim(access_key, secret_key, security_token, campaign_id,
         if confirmed_status in ("CLAIMED", "CONFIRMED", "CONSUMED"):
             data = confirmed
             status = confirmed_status
-    _welfare_cache.pop(access_key or "", None)
+    with _welfare_cache_lock:
+        _welfare_cache.pop(access_key or "", None)
     if status not in ("CLAIMED", "CONFIRMED", "CONSUMED"):
         raise CodeArtsError("领取未生效（状态 %s）" % (status or "空"))
     return {

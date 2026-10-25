@@ -3176,7 +3176,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   <!-- 页面头部：标题 + 一行说明，与其它页面的头部结构保持一致 -->
   <div style="margin-bottom:16px">
     <h2 id="gatewayPageTitle" style="margin:0;font-size:19px;color:var(--fg);font-family:var(--brush);font-weight:700;letter-spacing:.08em">网关与账号</h2>
-    <div id="gatewayPageDesc" style="font-size:12px;color:var(--dim);margin-top:4px">管理账号池与网关模型，查看当日调用量、积分消耗、成功率与最近请求。</div>
+    <div id="gatewayPageDesc" style="font-size:12px;color:var(--dim);margin-top:4px">管理码道账号与网关模型，查看当日调用量、积分消耗、成功率与最近请求。</div>
   </div>
   <!-- 出口：只有一个（华为云码道），没有可切换的对象。
        原来这里是两张「版本中枢」卡片，点一下切出口/看默认出口 ——
@@ -3283,14 +3283,14 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
         <h2 style="margin:0">码道账号</h2>
         <div style="font-size:12px;color:var(--dim);margin-top:4px">
           华为云码道走 PKCE + DPoP 授权，会话存放在 <code>accounts/codearts/</code>；
-          每日额度领取与 STS 续期都在账号弹窗里。
+          积分签到与 STS 续期都在账号弹窗里。
         </div>
       </div>
       <button onclick="openCodeartsLogin()">添加 / 管理码道账号</button>
     </div>
     <div id="codeartsPageList" data-codearts-list><p class="hint">正在读取…</p></div>
     <p class="hint" style="margin:12px 0 0">
-      点上方按钮打开账号弹窗：可领当日额度、手动续期、重新授权或删除账号。
+      点上方按钮打开账号弹窗：可积分签到、手动续期、重新授权或删除账号。
     </p>
   </section>
   </div><!-- /pageAccounts -->
@@ -3956,8 +3956,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <p class="hint" style="margin-top:0">
         走华为云 PKCE + DPoP 授权。拿到的是 <b>STS 临时 AK/SK</b>（有效期数小时）
         加一张 <b>30 天可续期</b>的 refresh_token；续期要用登录时那把 DPoP 私钥，
-        所以私钥会随会话一起存在网关里。会话落在 <code>accounts/codearts/</code>，
-        与其它账号体系互不相干，也不参与请求调度。
+        所以私钥会随会话一起存在网关里。会话落在 <code>accounts/codearts/</code> ——
+        网关就是按这些会话做并发调度与积分签到的（删一条 = 下线一个账号）；
+        DPoP 私钥与 refresh_token 都绑在这套凭据上，务必保管好该目录。
       </p>
       <h3 style="font-size:13px;margin:18px 0 6px">已连接的码道账号</h3>
       <div id="codeartsList" data-codearts-list><p class="hint">正在读取…</p></div>
@@ -3965,7 +3966,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <div class="step" id="caStep1"><div class="n">1</div><div class="t" id="caStep1Text">正在生成授权链接…</div></div>
       <div class="step" id="caStep2"><div class="n">2</div><div class="t">在浏览器里打开下方链接，完成华为云登录</div></div>
       <div id="codeartsLinkBox"></div>
-      <div class="step" id="caStep3"><div class="n">3</div><div class="t">等待回调（浏览器直接跳回本机网关，无需手动复制）</div></div>
+      <div class="step" id="caStep3"><div class="n">3</div><div class="t">等待回调（本机打开面板时浏览器直接跳回；远程打开时用上面的手动提交框粘贴）</div></div>
       <p class="hint" id="codeartsStatus" style="font-weight:500"></p>
     </div>
     <div class="modal-ft">
@@ -4151,8 +4152,9 @@ async function pollCodeartsLogin(){
 /* 网关卡片上的汇总行：可用 / 总积分 · 账号数。
    多个账号时把各自的积分加起来 —— 每个账号是独立套餐，汇总只作总览。
    顺手把「账号累计已用积分」记到全局：顶部那张「积分消耗」卡改用它，
-   因为网关自己的用量记账里没有积分口径（credit 恒为 0），而账号的已用积分
-   是上游给的实数（和客户端显示的一致）。 */
+   因为账号的已用积分是上游 snap-manager 给的**累计实数**（和客户端显示的
+   一致）；最近请求表里的 credit 是网关按计费档逐条估算的，拿它累加当总数
+   会漏掉接入网关之前的消耗，也攒不下估算误差。 */
 let caAccountCredit = null;
 
 function caUpdateCardSummary(list){
@@ -4235,12 +4237,31 @@ async function loadCodeartsAccounts(){
         if(a.sts_remaining_seconds < 1800) badge = '<span class="ca-badge warn">即将过期</span>';
       }
       const renew = a.renewable ? "可续期" : "不可续期（需重新登录）";
+      // refresh_token 的有效期：summarize 每轮都算好（refresh_expires_at，
+      // JWT 的 exp），以前算了没人显示。STS 只有几小时、会自动续，真正会
+      // 「静默死掉」的是这张 30 天的 refresh_token —— 到期前不吭声，用户只会在
+      // 某天看到账号集体过期。剩不到 7 天时把话说重一点。
+      let refreshText = "";
+      if(a.refresh_expires_at != null){
+        const exp = Number(a.refresh_expires_at) || 0;
+        if(exp > 0){
+          const days = (exp - Date.now() / 1000) / 86400;
+          refreshText = " · refresh " + caStamp(exp) + " 到期";
+          if(days < 7) refreshText += "（剩 " + Math.max(0, Math.ceil(days)) + " 天，到期需重新登录）";
+        }
+      }
       // 运行期：在跑几条 / 容量几格 + 账号级冷却。容量取自信号量的实时值
-      // （面板改并发后下一个请求就变），不是启动时的配置快照。
+      // （面板改并发后下一个请求就变），不是启动时的配置快照。注意两个数
+      // 不是一回事：「并发 n/m」是**网关**每号信号量（m = 面板/环境配置，
+      // 上限 3）；「上游名额」是华为云给的会话数，是网关并发的天花板。
+      // 2026-10-24 的疑问「截图怎么是 0/3」——那不是错填了上游槽位，
+      // 是那台部署的面板并发真的配了 3；把两者分开写出来，省得再猜一遍。
       const rt = a.runtime || {};
       const cap = Number(rt.capacity || (r && r.concurrency_per_account) || 0);
       const flight = Number(rt.in_flight || 0);
-      const runtimeText = " · 并发 " + flight + (cap ? "/" + cap : "")
+      const slots = Number(r && r.upstream_slots) || 0;
+      const runtimeText = " · 网关并发 " + flight + (cap ? "/" + cap : "")
+        + (slots ? "（上游名额 " + slots + "）" : "")
         + (rt.cooling_s > 0 ? " · 冷却 " + Math.ceil(rt.cooling_s) + "s" : "");
       const id = esc(a.account_id || "");
       // 积分（snap-manager 统计插件）是客户端里真正在扣的额度。token 额度
@@ -4252,7 +4273,7 @@ async function loadCodeartsAccounts(){
       const canSign = !!daily && (daily.claimable || !wStatus || wStatus === "ELIGIBLE");
       return '<div class="ca-row"><div class="ca-main">'
         + '<span class="ca-name">' + esc(a.account || "(未命名)") + badge + '</span>'
-        + '<span class="ca-sub">' + esc(when) + " · " + esc(renew)
+        + '<span class="ca-sub">' + esc(when) + " · " + esc(renew) + esc(refreshText)
         + (a.domain_id ? " · 账号域 " + esc(String(a.domain_id).slice(0, 8)) + "…" : "")
         + esc(runtimeText)
         + '</span>'
@@ -4294,7 +4315,8 @@ function caWelfareErrText(err){
 }
 
 /* 体验版积分：客户端「总已用积分 4,817 / 11,500 · 6,683 剩余」那一栏，
-   来自 snap-access 的 snap-manager 统计插件。它和下面的 token 额度是两套，
+   来自 snap-access 的 snap-manager 统计插件。它和已下线的 token 额度是两套
+   体系（token 那套走 opengw benefit，2026-10 随福利渠道一起停了），
    积分才是客户端里真正在扣的那个数。 */
 function caCreditHtml(c){
   if(!c) return '';
@@ -5290,9 +5312,9 @@ function todayStamp(){
 
 // 一个账号今天的活动状态。
 // 国际版每日活跃已随该区域移除，这里只剩国内版一项：成长计划连登打卡
-//（lastActivityReport）。旧的每日签到（lastCheckin）也已移除，签到改由码道
-// 账号区的「领取每日 Token」承担 —— 那边读的是服务端余额而不是这里的历史流水，
-// 所以两者不共用状态字段。
+//（lastActivityReport）。旧的每日签到（lastCheckin）也已移除；现在的签到是
+// 码道账号的积分签到（/accounts/codearts/welfare/claim），活动历史里记的
+// checkin 事件就是它 —— 状态看服务端流水，不与本地账号对象共用字段。
 function activityStatusOf(a){
   const uid = String((a && a.uid) || '');
 
@@ -6074,9 +6096,10 @@ async function refreshInner(gen){
   // 「（国内版）」后缀，但这个部署只剩码道一个出口，加后缀反而让人以为还有
   // 另一个区域没看到，所以留空。
   const realmTag = '';
-  // 「积分消耗」优先用**账号的已用积分**（上游 snap-manager 给的实数，和客户端
-  // 显示一致）。网关自己的用量记账里没有积分口径（credit 恒为 0），照它显示
-  // 永远是 0.00，看着像坏了。
+  // 「积分消耗」优先用**账号的已用积分**（上游 snap-manager 给的累计实数，
+  // 和客户端显示一致）。/usage 的 credit 总数是网关按计费档逐条估算的 --
+  // 接入网关之前的消耗它攒不到，误差也会滚进总数，所以只作账号读取失败时
+  // 的兜底，不当主数展示。
   const creditUsed = (caAccountCredit != null) ? caAccountCredit : t.credit;
   const creditSub = caAccountCredit != null ? '账号累计已用' : '';
   document.getElementById('cards').innerHTML =
@@ -6117,7 +6140,11 @@ async function refreshInner(gen){
     if(o === 'completed') return '<span class="badge ok">完成</span>';
     if(o === 'client_aborted') return '<span class="badge off">客户端取消</span>';
     if(o === 'upstream_aborted') return '<span class="badge warn">上游中断</span>';
-    return '<span class="badge bad">失败</span>';
+    // 失败行带着 status/message 落账（record_error 写的），以前只躺在网关日志里 ——
+    // 悬浮看一眼失败原因，不用跑去翻日志。
+    const tip = (r.status ? 'HTTP ' + r.status : '')
+      + (r.message ? ((r.status ? ' · ' : '') + r.message) : '');
+    return '<span class="badge bad"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>失败</span>';
   };
   const countEl = document.getElementById('recentCount');
   if(countEl) countEl.textContent = '(第 ' + RECENT_PAGE + ' 页 / 共 ' + fmt(total) + ' 条)';
@@ -6160,7 +6187,11 @@ async function refreshInner(gen){
         + '<td data-label="输出">' + fmt(r.completion_tokens) + '</td>'
         + '<td style="color:var(--think)" data-label="思考">' + fmt(r.reasoning_tokens) + '</td>'
         + '<td data-label="缓存">' + (r.cache_hit_pct!=null ? r.cache_hit_pct+'%' : '—') + '</td>'
-        + '<td data-label="总 token"><b>' + fmt(r.total_tokens) + '</b></td>'
+        // usage_missing：上游没回 usage 块时行也照落（请求计数/时延不丢），
+        // 但 token 四列全是 0 —— 不标注的话看起来就像「这条请求 0 token」。
+        + '<td data-label="总 token">'
+        + '<b' + (r.usage_missing ? ' title="上游没回 usage，token 数缺失" style="cursor:help"' : '') + '>'
+        + fmt(r.total_tokens) + '</b>' + (r.usage_missing ? ' <span class="badge warn" style="font-size:10px">无用量</span>' : '') + '</td>'
         // 积分：按码道自己的计费档逐条算（compute in ca_codearts.credit_for_usage），
         // 与账号级的「总已用积分」同一口径。估算价格那一列已移除 —— 两套价格
         // 并排显示只会让人不知道该信哪个。
@@ -7005,7 +7036,7 @@ function applyAccountsTabLayout(separate){
   if(pageDesc){
     pageDesc.textContent = _accountsSeparateTab
       ? '管理网关模型，查看当日调用量、积分消耗、成功率与最近请求。'
-      : '管理账号池与网关模型，查看当日调用量、积分消耗、成功率、最近请求与模型清单。';
+      : '管理码道账号与网关模型，查看当日调用量、积分消耗、成功率、最近请求与模型清单。';
   }
   return _accountsSeparateTab;
 }

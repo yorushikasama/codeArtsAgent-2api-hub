@@ -56,6 +56,12 @@ def isolated_data_dirs(prefix):
     usage = os.path.join(tmp.name, "usage")
     os.makedirs(accounts, exist_ok=True)
     os.makedirs(usage, exist_ok=True)
+    # ca_proxy 读的是 ``WB_PROXY_ACCOUNTS_DIR``（ACCOUNTS_DIR 是它自己的模块
+    # 常量名）。以前这里只设了 ACCOUNTS_DIR —— 经 run_all.py 跑（它自己设
+    # WB_PROXY_ACCOUNTS_DIR）时看不出来，**单独跑套件时 ca_proxy 就落回真实
+    # 的仓库 accounts/**：2026-10-24 实测写进了假会话、还顺手删了同目录里的
+    # 文件。两个名字都设：老套件里有自己读 ACCOUNTS_DIR 的，保持原样。
     os.environ["ACCOUNTS_DIR"] = accounts
+    os.environ["WB_PROXY_ACCOUNTS_DIR"] = accounts
     os.environ["WB_PROXY_USAGE_DIR"] = usage
     return tmp

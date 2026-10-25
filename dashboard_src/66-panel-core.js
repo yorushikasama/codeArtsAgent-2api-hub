@@ -463,9 +463,10 @@ async function refreshInner(gen){
   // 「（国内版）」后缀，但这个部署只剩码道一个出口，加后缀反而让人以为还有
   // 另一个区域没看到，所以留空。
   const realmTag = '';
-  // 「积分消耗」优先用**账号的已用积分**（上游 snap-manager 给的实数，和客户端
-  // 显示一致）。网关自己的用量记账里没有积分口径（credit 恒为 0），照它显示
-  // 永远是 0.00，看着像坏了。
+  // 「积分消耗」优先用**账号的已用积分**（上游 snap-manager 给的累计实数，
+  // 和客户端显示一致）。/usage 的 credit 总数是网关按计费档逐条估算的 --
+  // 接入网关之前的消耗它攒不到，误差也会滚进总数，所以只作账号读取失败时
+  // 的兜底，不当主数展示。
   const creditUsed = (caAccountCredit != null) ? caAccountCredit : t.credit;
   const creditSub = caAccountCredit != null ? '账号累计已用' : '';
   document.getElementById('cards').innerHTML =
@@ -506,7 +507,11 @@ async function refreshInner(gen){
     if(o === 'completed') return '<span class="badge ok">完成</span>';
     if(o === 'client_aborted') return '<span class="badge off">客户端取消</span>';
     if(o === 'upstream_aborted') return '<span class="badge warn">上游中断</span>';
-    return '<span class="badge bad">失败</span>';
+    // 失败行带着 status/message 落账（record_error 写的），以前只躺在网关日志里 ——
+    // 悬浮看一眼失败原因，不用跑去翻日志。
+    const tip = (r.status ? 'HTTP ' + r.status : '')
+      + (r.message ? ((r.status ? ' · ' : '') + r.message) : '');
+    return '<span class="badge bad"' + (tip ? ' title="' + esc(tip) + '"' : '') + '>失败</span>';
   };
   const countEl = document.getElementById('recentCount');
   if(countEl) countEl.textContent = '(第 ' + RECENT_PAGE + ' 页 / 共 ' + fmt(total) + ' 条)';
@@ -549,7 +554,11 @@ async function refreshInner(gen){
         + '<td data-label="输出">' + fmt(r.completion_tokens) + '</td>'
         + '<td style="color:var(--think)" data-label="思考">' + fmt(r.reasoning_tokens) + '</td>'
         + '<td data-label="缓存">' + (r.cache_hit_pct!=null ? r.cache_hit_pct+'%' : '—') + '</td>'
-        + '<td data-label="总 token"><b>' + fmt(r.total_tokens) + '</b></td>'
+        // usage_missing：上游没回 usage 块时行也照落（请求计数/时延不丢），
+        // 但 token 四列全是 0 —— 不标注的话看起来就像「这条请求 0 token」。
+        + '<td data-label="总 token">'
+        + '<b' + (r.usage_missing ? ' title="上游没回 usage，token 数缺失" style="cursor:help"' : '') + '>'
+        + fmt(r.total_tokens) + '</b>' + (r.usage_missing ? ' <span class="badge warn" style="font-size:10px">无用量</span>' : '') + '</td>'
         // 积分：按码道自己的计费档逐条算（compute in ca_codearts.credit_for_usage），
         // 与账号级的「总已用积分」同一口径。估算价格那一列已移除 —— 两套价格
         // 并排显示只会让人不知道该信哪个。
@@ -1394,7 +1403,7 @@ function applyAccountsTabLayout(separate){
   if(pageDesc){
     pageDesc.textContent = _accountsSeparateTab
       ? '管理网关模型，查看当日调用量、积分消耗、成功率与最近请求。'
-      : '管理账号池与网关模型，查看当日调用量、积分消耗、成功率、最近请求与模型清单。';
+      : '管理码道账号与网关模型，查看当日调用量、积分消耗、成功率、最近请求与模型清单。';
   }
   return _accountsSeparateTab;
 }

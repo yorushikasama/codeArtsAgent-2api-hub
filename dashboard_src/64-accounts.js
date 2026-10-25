@@ -72,9 +72,9 @@ function todayStamp(){
 
 // 一个账号今天的活动状态。
 // 国际版每日活跃已随该区域移除，这里只剩国内版一项：成长计划连登打卡
-//（lastActivityReport）。旧的每日签到（lastCheckin）也已移除，签到改由码道
-// 账号区的「领取每日 Token」承担 —— 那边读的是服务端余额而不是这里的历史流水，
-// 所以两者不共用状态字段。
+//（lastActivityReport）。旧的每日签到（lastCheckin）也已移除；现在的签到是
+// 码道账号的积分签到（/accounts/codearts/welfare/claim），活动历史里记的
+// checkin 事件就是它 —— 状态看服务端流水，不与本地账号对象共用字段。
 function activityStatusOf(a){
   const uid = String((a && a.uid) || '');
 

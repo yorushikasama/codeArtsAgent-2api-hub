@@ -15,6 +15,7 @@ start-codearts-hub.command (or ./start-codearts-hub.sh) on macOS/Linux.
 """
 import argparse
 import bisect
+import concurrent.futures
 import hashlib
 import heapq
 import ipaddress
@@ -1074,8 +1075,11 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
         dur = f" {elapsed_ms:.0f}ms" if elapsed_ms is not None else ""
         acc_tag = f" acct={account[:8]}" if account else ""
         speed_tag = f" {row.get('tokens_per_sec', 0)}t/s" if row.get("tokens_per_sec") else ""
+        # 推理档位随行落账了（reasoning_effort），日志行也带上一份：排障时
+        # 「这条到底跑在哪个档」不用再回头翻 usage.jsonl（2026-10-25 审计）。
+        effort_tag = f" effort={row['reasoning_effort']}" if row.get("reasoning_effort") else ""
         miss_tag = " usage=missing" if usage_missing else ""
-        log(f"chat done: model={model}{acc_tag}{dur} tokens={t_tokens} (in={fields.get('prompt_tokens',0)} out={fields.get('completion_tokens',0)}){speed_tag}{miss_tag}", tag="chat")
+        log(f"chat done: model={model}{acc_tag}{dur} tokens={t_tokens} (in={fields.get('prompt_tokens',0)} out={fields.get('completion_tokens',0)}){speed_tag}{effort_tag}{miss_tag}", tag="chat")
     except Exception:
         pass
     return row
@@ -8091,38 +8095,60 @@ class Handler(BaseHTTPRequestHandler):
     def _get_codearts_accounts(self):
         if not self._authorized():
             return
-        items = []
         # 运行期状态（在跑几条 / 还剩几秒冷却）：多账号时面板要能看出「谁在
         # 干活、谁被晾着」，否则「为什么这个号不接活」只能靠猜日志。
         runtime = _CODEARTS_POOL.snapshot()
         # 还没取过号的账号不会出现在 snapshot 里，但面板照样要显示它的容量。
         capacity_now = codearts_concurrency()
-        for session in ca_codearts.load_sessions(ACCOUNTS_DIR):
+        sessions = ca_codearts.load_sessions(ACCOUNTS_DIR)
+
+        # 每账号的两路上游查询（体验版积分 + 每日签到）。以前串行：每次弹窗
+        # 打开 / 每 5 秒轮询都要为 N 个账号付 2N 次 1-2s 的上游 HTTP，用户感知
+        # 「每次进去都加载很久」。两路都是独立 HTTP + 各自带锁的按 AK 缓存
+        # （_credit_cache / _welfare_cache），天然可并行 —— 线程池 fan-out 后
+        # 总耗时从「全部加和」压到「最慢的那一路」。
+        def _fetch_upstream(session):
+            out = {}
+            # 体验版积分（客户端「总已用积分 x / y」那一条）。token 额度那一栏
+            # 已随福利渠道一起下线（opengw 不再提供服务），面板只显示积分。
+            try:
+                out["credit"] = ca_codearts.credit_package(
+                    session.get("accessKey"), session.get("secretKey"),
+                    session.get("securitytoken"))
+            except Exception as exc:  # noqa: BLE001
+                out["credit"] = None
+                out["creditError"] = str(exc)
+            # 每日签到（活动页「每日签到领 1000 积分」）。第三个体系：积分总量
+            # 走 snap-manager，签到走 snap-access /v1/ops。清单按 AK 缓存一分钟，
+            # 轮询不会每次都打上游。
+            try:
+                out["welfare"] = ca_codearts.welfare_daily(
+                    session.get("accessKey"), session.get("secretKey"),
+                    session.get("securitytoken"))
+            except Exception as exc:  # noqa: BLE001
+                out["welfare"] = None
+                out["welfareError"] = str(exc)
+            return out
+
+        # 每账号 2 路并发，总池子按账号数翻倍、封顶 8：账号就几个，开大了只会
+        # 让上游以为被压测。空列表给 1（ThreadPoolExecutor 不收 0）。
+        workers = min(8, max(1, len(sessions) * 2))
+        try:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                fetched = list(pool.map(_fetch_upstream, sessions))
+        except Exception:  # noqa: BLE001  线程池本身起不来：退回串行，别让面板空转
+            fetched = [_fetch_upstream(session) for session in sessions]
+
+        items = []
+        for session, extra in zip(sessions, fetched):
             info = ca_codearts.summarize(session)
             info["file"] = os.path.basename(
                 ca_codearts.session_path(ACCOUNTS_DIR, info.get("account_id") or ""))
             # 链被外部客户端轮换死（1806 已确认）：面板直接说清「为什么这个号
-            # 不续期也不接新活」，而不是让人从一堆 429/过期里猜。
+            # 不续期也不接新活」，而不是让人从一堆 429/过期里猜。会写
+            # _STS_DEAD_EXTERNALLY（自愈时 del），留在串行侧，不进线程池。
             info["sts_dead_external"] = _sts_dead_by_external(session)
-            # 体验版积分（客户端「总已用积分 x / y」那一条）。token 额度那一栏
-            # 已随福利渠道一起下线（opengw 不再提供服务），面板只显示积分。
-            try:
-                info["credit"] = ca_codearts.credit_package(
-                    session.get("accessKey"), session.get("secretKey"),
-                    session.get("securitytoken"))
-            except Exception as exc:
-                info["credit"] = None
-                info["creditError"] = str(exc)
-            # 每日签到（活动页「每日签到领 1000 积分」）。第三个体系：token 额度
-            # 走 opengw benefit，积分总量走 snap-manager，签到走 snap-access
-            # /v1/ops。清单按 AK 缓存一分钟，轮询不会每次都打上游。
-            try:
-                info["welfare"] = ca_codearts.welfare_daily(
-                    session.get("accessKey"), session.get("secretKey"),
-                    session.get("securitytoken"))
-            except Exception as exc:
-                info["welfare"] = None
-                info["welfareError"] = str(exc)
+            info.update(extra)
             info["runtime"] = runtime.get(
                 str(info.get("account_id") or ""),
                 {"in_flight": 0, "capacity": capacity_now, "cooling_s": 0.0})
@@ -8136,6 +8162,10 @@ class Handler(BaseHTTPRequestHandler):
             "count": len(items),
             # 每号并发容量（上游账号级上限 3，网关默认用 2，留 1 个给 IDE）
             "concurrency_per_account": codearts_concurrency(),
+            # 上游每号会话名额：并发容量的天花板（codearts_concurrency 的上限），
+            # 面板把它和网关并发分开说 —— 「并发 0/2」是网关的信号量，
+            # 「上游名额 3」是华为云给的会话数，两回事。
+            "upstream_slots": CODEARTS_UPSTREAM_SLOTS,
             "pool": runtime,
             "port": port,
             "callbackPath": ca_codearts.AUTH_REDIRECT_PATH,

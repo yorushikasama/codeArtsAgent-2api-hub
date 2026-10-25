@@ -888,7 +888,10 @@ check("429-rejected：不排队，原样交回", _st == 429 and "rejected" in _t
 
 
 # credit_package 的 token_usage（usageTokenChatMessages）
+# 两段用同一个 AK 挂不同桩：credit_package 现在自带按 AK 缓存（与面板轮询
+# 共用），每段前先清缓存，第二段的新桩才会真的被走到。
 _prev_http = C._http
+C._credit_cache.clear()
 try:
     C._http = lambda *a, **k: {
         "metrics": [
@@ -904,6 +907,7 @@ try:
     check("token_usage 解析",
           _pkg["token_usage"] == {"used": 136734219, "amount": 1, "show": True},
           _pkg.get("token_usage"))
+    C._credit_cache.clear()
     C._http = lambda *a, **k: {
         "metrics": [
             {"name": "usageTotalPackageCredit",

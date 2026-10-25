@@ -87,7 +87,7 @@
   <!-- 页面头部：标题 + 一行说明，与其它页面的头部结构保持一致 -->
   <div style="margin-bottom:16px">
     <h2 id="gatewayPageTitle" style="margin:0;font-size:19px;color:var(--fg);font-family:var(--brush);font-weight:700;letter-spacing:.08em">网关与账号</h2>
-    <div id="gatewayPageDesc" style="font-size:12px;color:var(--dim);margin-top:4px">管理账号池与网关模型，查看当日调用量、积分消耗、成功率与最近请求。</div>
+    <div id="gatewayPageDesc" style="font-size:12px;color:var(--dim);margin-top:4px">管理码道账号与网关模型，查看当日调用量、积分消耗、成功率与最近请求。</div>
   </div>
   <!-- 出口：只有一个（华为云码道），没有可切换的对象。
        原来这里是两张「版本中枢」卡片，点一下切出口/看默认出口 ——
@@ -194,14 +194,14 @@
         <h2 style="margin:0">码道账号</h2>
         <div style="font-size:12px;color:var(--dim);margin-top:4px">
           华为云码道走 PKCE + DPoP 授权，会话存放在 <code>accounts/codearts/</code>；
-          每日额度领取与 STS 续期都在账号弹窗里。
+          积分签到与 STS 续期都在账号弹窗里。
         </div>
       </div>
       <button onclick="openCodeartsLogin()">添加 / 管理码道账号</button>
     </div>
     <div id="codeartsPageList" data-codearts-list><p class="hint">正在读取…</p></div>
     <p class="hint" style="margin:12px 0 0">
-      点上方按钮打开账号弹窗：可领当日额度、手动续期、重新授权或删除账号。
+      点上方按钮打开账号弹窗：可积分签到、手动续期、重新授权或删除账号。
     </p>
   </section>
   </div><!-- /pageAccounts -->
@@ -867,8 +867,9 @@
       <p class="hint" style="margin-top:0">
         走华为云 PKCE + DPoP 授权。拿到的是 <b>STS 临时 AK/SK</b>（有效期数小时）
         加一张 <b>30 天可续期</b>的 refresh_token；续期要用登录时那把 DPoP 私钥，
-        所以私钥会随会话一起存在网关里。会话落在 <code>accounts/codearts/</code>，
-        与其它账号体系互不相干，也不参与请求调度。
+        所以私钥会随会话一起存在网关里。会话落在 <code>accounts/codearts/</code> ——
+        网关就是按这些会话做并发调度与积分签到的（删一条 = 下线一个账号）；
+        DPoP 私钥与 refresh_token 都绑在这套凭据上，务必保管好该目录。
       </p>
       <h3 style="font-size:13px;margin:18px 0 6px">已连接的码道账号</h3>
       <div id="codeartsList" data-codearts-list><p class="hint">正在读取…</p></div>
@@ -876,7 +877,7 @@
       <div class="step" id="caStep1"><div class="n">1</div><div class="t" id="caStep1Text">正在生成授权链接…</div></div>
       <div class="step" id="caStep2"><div class="n">2</div><div class="t">在浏览器里打开下方链接，完成华为云登录</div></div>
       <div id="codeartsLinkBox"></div>
-      <div class="step" id="caStep3"><div class="n">3</div><div class="t">等待回调（浏览器直接跳回本机网关，无需手动复制）</div></div>
+      <div class="step" id="caStep3"><div class="n">3</div><div class="t">等待回调（本机打开面板时浏览器直接跳回；远程打开时用上面的手动提交框粘贴）</div></div>
       <p class="hint" id="codeartsStatus" style="font-weight:500"></p>
     </div>
     <div class="modal-ft">
