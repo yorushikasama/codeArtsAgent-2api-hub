@@ -39,6 +39,18 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+# 直接运行也要隔离数据目录（2026-10-25）：本套件会触发真实的 record_usage /
+# record_error。经 run_all 跑时有沙箱；单独 `python tests/_test_xxx.py` 调试
+# 时没有，stub 行就漏进真实 usage.jsonl（本地实测漏过 13 行）。这里在
+# import ca_proxy 之前把目录指到本进程专属临时目录，两种跑法都安全。
+import atexit as _atexit
+import os as _os
+import shutil as _shutil
+import tempfile as _tf
+_iso_dir = _tf.mkdtemp(prefix="wb-iso-%s-" % _os.path.basename(__file__)[:-3])
+_os.environ["WB_PROXY_USAGE_DIR"] = _iso_dir
+_atexit.register(lambda: _shutil.rmtree(_iso_dir, ignore_errors=True))
+
 import ca_proxy as P           # noqa: E402
 import ca_stream as S          # noqa: E402
 
