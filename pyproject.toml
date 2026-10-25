@@ -1,0 +1,27 @@
+# 项目唯一的版本与工具声明。运行零第三方依赖（纯标准库），这里只声明
+# Python 下限与 lint 配置，不引入打包/发布。
+#
+# requires-python 与 README 的「需要 3.9+」一致：代码用到的最新语法是
+# 3.9 的 dict | 合并与 PEP 585 泛型别名；更早的解释器（服务器旧 Ubuntu）
+# 由部署脚本的全量克隆 + 测试闸门兜底发现。
+[project]
+name = "codearts-hub"
+requires-python = ">=3.9"
+description = "华为云码道（CodeArts）推理的 OpenAI/Anthropic 兼容网关"
+
+[tool.ruff]
+# 只做「正确性」层：语法错误、未定义名、重定义、f-string 占位错。
+# 风格类（行长、引号、import 排序）有意不开 —— 现有代码风格已由
+# 测试与评审惯例固定，批量改风格只会污染 git blame。
+line-length = 100
+exclude = ["dashboard_src", "tests/golden", "tests/fixtures", "_archive"]
+
+[tool.ruff.lint]
+select = ["E9", "F63", "F7", "F82", "B011", "B023"]
+# F401/F841（未用 import / 未用局部变量）测试文件里大量有意为之
+# （桩、导入即副作用），全开只会得到一份要被忽略的报告。
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+# 套件顶部的 pathlib/桩导入即使未直接使用也有副作用意义
+"tests/*" = ["F401"]

@@ -50,6 +50,19 @@ if [ -d "$DIR" ]; then
   fi
 fi
 
+# 部署前测试闸门：新克隆先在服务器上跑完全部套件，绿了才碰在跑的服务。
+# 挂了就删掉新目录退出 —— 旧目录与在跑的网关毫发无损；这套 103 个套件
+# 全程离线（~40s），应急可用 WB_DEPLOY_SKIP_TESTS=1 旁路（写明原因再绕）。
+if [ "${WB_DEPLOY_SKIP_TESTS:-0}" != "1" ]; then
+  echo "deploy-full: test gate — running the suite in the fresh clone..."
+  if ! (cd "$NEW" && python3 tests/run_all.py); then
+    echo "deploy-full: TEST GATE FAILED in $NEW — nothing was touched," >&2
+    echo "  the running service keeps the old revision. Fix, push, redeploy." >&2
+    rm -rf "$NEW"
+    exit 1
+  fi
+fi
+
 sudo systemctl stop codearts-hub || true
 [ -d "$DIR" ] && mv "$DIR" "$OLD"
 mv "$NEW" "$DIR"
