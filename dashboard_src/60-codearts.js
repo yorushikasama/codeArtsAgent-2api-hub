@@ -47,13 +47,16 @@ function openCodeartsLogin(){
   const m = document.getElementById("codeartsLoginModal");
   if(m) m.classList.add("show");
   // 授权完成后的回跳地址固定是 http://127.0.0.1:{网关端口}/oauth/callback ——
-  // 也就是说浏览器的 127.0.0.1 必须能连到网关。从公网域名打开面板时，那个
-  // 回调会打到你自己的电脑，登录永远完不成。这里提前说清楚，别让人白折腾。
+  // 也就是说浏览器的 127.0.0.1 必须能连到网关。远程打开面板是常态：回跳会
+  // 落到用户自己电脑上然后失败，这时走手动粘贴通道即可。要提前说清的是
+  // 「该复制哪条 URL」和「只认本次发起的授权」——旧的回调链接会被拒。
   const host = location.hostname;
   const local = host === "127.0.0.1" || host === "localhost" || host === "[::1]";
   if(!local){
-    toast("登录回调固定指向 127.0.0.1:端口，当前是从 " + host
-      + " 打开的，授权跳不回来。请在服务器本机操作，或先做 ssh -L 端口转发。", "warn");
+    toast("远程打开面板，浏览器回跳不到网关是正常的：完成授权后，把地址栏里 "
+      + "http://127.0.0.1:端口/oauth/callback?code=… 那条完整 URL 复制到下方「提交回调」"
+      + "（端口以下方授权链接里为准）。注意只认本次弹窗发出的授权链接——"
+      + "旧标签页里的回调会被拒绝。", "warn");
   }
   loadCodeartsAccounts();
   startCodeartsLogin();
