@@ -565,16 +565,22 @@ check("后端超时在 Anthropic 侧是 overloaded_error",
       _spec(502, "APIG.0203", "Backend timeout", anthropic=True)[1]
       == "overloaded_error", None)
 
-# 记账必须和回给客户端的状态码同源。_codearts_open_lease 里曾经写死
+# 记账必须和回给客户端的状态码同源。建连路径曾经写死
 # record_error(model, 502, ...)，而对外走 _codearts_fail 把 0203 映射成
-# 504 —— 日志与用量记 502、客户端收 504。用静态检查钉住这一处。
+# 504 —— 日志与用量记 502、客户端收 504。这段逻辑 2026-10-24 起拆在
+# _codearts_lease_failure_exit（纯移动），静态检查跟着指向新家；
+# 同时钉住「出口真的被建连循环调用」，防止拆出去没接上。
 _src = io.open(P.__file__, encoding="utf-8").read()
-_open_seg = _src[_src.index("def _codearts_open_lease"):]
-_open_seg = _open_seg[:_open_seg.index("\n    def ", 10)]
+_exit_seg = _src[_src.index("def _codearts_lease_failure_exit"):]
+_exit_seg = _exit_seg[:_exit_seg.index("\n    def ", 10)]
 check("建连失败记账与响应同源（映射失败用 st，网络异常仍 502）",
-      "record_error(model, st," in _open_seg
-      and "ca_stream.fail_spec(status, code, detail, anthropic)" in _open_seg
-      and "record_error(model, 502, str(last_exc)" in _open_seg, None)
+      "record_error(model, st," in _exit_seg
+      and "ca_stream.fail_spec(status, code, detail, anthropic)" in _exit_seg
+      and "record_error(model, 502, str(last_exc)" in _exit_seg, None)
+_open_seg = _src[_src.index("def _codearts_open_lease"):]
+_open_seg = _open_seg[:_open_seg.index("def _codearts_lease_failure_exit")]
+check("失败出口真的被建连循环调用（拆出去必须接上）",
+      "_codearts_lease_failure_exit(" in _open_seg, None)
 check("状态码映射只有一张表（ca_proxy 里不许再抄一份）",
       "def _codearts_fail_spec" not in _src
       and "def _codearts_frame_status" not in _src, None)

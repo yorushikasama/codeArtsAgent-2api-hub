@@ -4709,6 +4709,48 @@ def _chat_finish_reason(upstream, has_tool_calls=False):
     return "stop"
 
 
+def codearts_prepare_request(payload, source):
+    """两条码道推理路径共用的请求前处理，返回 (model, messages, max_tokens)。
+
+    顺序固定：模型名归一 → 角色归一 + 消息修复 → max_tokens 口径 → 投影式
+    soft 裁剪。以前这段在 ``_codearts_chat_result`` 与
+    ``_handle_codearts_chat_stream`` 里各抄一遍，修复/裁剪改动要同步两处。
+
+      · 模型名归一（2026-10-25）：客户端大小写混写（GLM-5.3 / glm / glm-5.3）
+        曾把统计、限额、降级链分裂成多个桶；统一解析成上游真名，认不出的
+        原样放行（resolve_model 的既有契约）。
+      · 角色归一（OpenAI 的 "developer" → system 等）+ 消息修复：孤立的
+        tool_call/tool_result、被拆开的并行批次、deepseek 思考模式缺
+        reasoning_content 都会原样送给上游，整条 400（2026-10-23）。
+        正文一律不动 —— 多模态模型靠 content 里的图片分片表达。
+      · max_tokens 走统一口径（缺省 = 模型的目录值，负数/坏值按缺省）。
+        以前聚合路径自己再算一遍、写死 4096，比流式少一大截额度。
+      · source 传给裁剪（"chat-agg" / "chat"），只影响日志归属，不改行为。
+    """
+    model = ca_codearts.resolve_model(str(payload.get("model") or ""))
+    messages = repair_messages_for_upstream(
+        ca_protocol.normalize_roles(payload.get("messages") or []), model)
+    max_tokens = _codearts_max_tokens(payload)
+    messages = prune_history_for_upstream(messages, model, max_tokens,
+                                          source=source)
+    return model, messages, max_tokens
+
+
+def _codearts_error_detail_with_quota(text):
+    """上游错误文本 → (code, detail)，detail 附上 flow-control 的配额文案。
+
+    429 限流时把官方配额说明（一字不差抄 kernel 的 UK map）拼在错误码后面：
+    客户端看到「今天额度用完了」比看到一串 error_code 有用得多。
+    """
+    code, detail = ca_stream.error_detail(text)
+    _fc = ca_stream.flow_control_from(text)
+    if _fc is not None:
+        _fc_msg = ca_stream.flow_control_message(_fc)
+        if _fc_msg:
+            detail = ("%s | %s" % (detail, _fc_msg))[:200]
+    return code, detail
+
+
 def _codearts_request_shape(payload, messages, max_tokens):
     """把请求形状压成一行，供失败时打日志。
 
@@ -9133,32 +9175,10 @@ class Handler(BaseHTTPRequestHandler):
         错误体。
         """
         fail = error_factory or self._error
-        model = str(payload.get("model") or "")
-        # 模型名归一（2026-10-25）：客户端大小写混写（GLM-5.3 / glm / glm-5.3）
-        # 曾把统计、限额、降级链分裂成多个桶。这里统一解析成上游真名；
-        # 认不出的原样放行（resolve_model 的既有契约）。
-        model = ca_codearts.resolve_model(model)
-        # 角色名归一：OpenAI 的 chat 入口会带 "developer" 角色（Codex CLI 的
-        # 系统提示就是这么发的），上游只认 system / user / assistant。
-        # WorkBuddy 那条路走 build_upstream_body 时已经归一过一次，码道这条
-        # 路是直通的，漏掉就会整条 400。正文一律不动 —— 多模态模型靠
-        # content 里的图片分片表达。
-        # 角色归一 + 消息修复。修复这一环以前只在 build_upstream_body
-        # 里，而码道路径没有调用点 —— 孤立的 tool_call/tool_result、
-        # 被拆开的并行批次、deepseek 思考模式缺 reasoning_content 都
-        # 会原样送给上游（2026-10-23）。
-        messages = repair_messages_for_upstream(
-            ca_protocol.normalize_roles(payload.get("messages") or []),
-            model)
+        model, messages, max_tokens = codearts_prepare_request(payload,
+                                                               "chat-agg")
         if want_stream is None:
             want_stream = bool(payload.get("stream"))
-        # 输出上限走同一个口径（缺省 = 模型的目录值，负数/坏值按缺省）。
-        # 以前这里自己再算一遍、写死 4096，于是 Chat 入口比 Messages /
-        # Responses 少一大截额度。
-        max_tokens = _codearts_max_tokens(payload)
-        # 投影式 soft 裁剪（与流式路径同一套）。
-        messages = prune_history_for_upstream(messages, model, max_tokens,
-                                              source="chat-agg")
 
         t_start = time.time()
         status, text, last_exc = None, "", None
@@ -9327,14 +9347,7 @@ class Handler(BaseHTTPRequestHandler):
                         "upstream_error"), None
 
         if status not in (200, 201):
-            code, detail = ca_stream.error_detail(text)
-            # flow-control 429 附官方配额文案（一字不差抄 kernel 的 UK map）：
-            # 客户端看到「今天额度用完了」比看到一串 error_code 有用得多。
-            _fc = ca_stream.flow_control_from(text)
-            if _fc is not None:
-                _fc_msg = ca_stream.flow_control_message(_fc)
-                if _fc_msg:
-                    detail = ("%s | %s" % (detail, _fc_msg))[:200]
+            code, detail = _codearts_error_detail_with_quota(text)
             st, _et = ca_stream.fail_spec(status, code, detail, anthropic)
             # 参数错（001001005）不说清是哪个参数，把形状留在日志里，
             # 下次才能区分「上下文太长 / max_tokens 越界 / 图片给了非多模态」。
@@ -9589,22 +9602,28 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(next_sleep)
             attempt += 1
 
+        return self._codearts_lease_failure_exit(
+            payload, model, messages, max_tokens, t_start, status, text,
+            last_exc, account_label, _reply, defer_errors, anthropic)
+
+    def _codearts_lease_failure_exit(self, payload, model, messages,
+                                     max_tokens, t_start, status, text,
+                                     last_exc, account_label, reply,
+                                     defer_errors, anthropic):
+        """建连重试穷尽后的失败出口（自 _codearts_open_lease 拆出，纯移动）。
+
+        reply 是调用方的失败出口（写响应，或 defer_errors 时抛
+        _DeferredHTTPError）；last_exc 分支与上游错误分支的记账口径见内注释。
+        """
         elapsed_ms = int((time.time() - t_start) * 1000)
         if last_exc is not None:
             record_error(model, 502, str(last_exc)[:200],
                          elapsed_ms=elapsed_ms, account=account_label,
                          key=self._key_id())
-            return _reply(502, "codearts unreachable: %s" % last_exc,
-                          "upstream_error"), None
+            return reply(502, "codearts unreachable: %s" % last_exc,
+                         "upstream_error"), None
 
-        code, detail = ca_stream.error_detail(text)
-        # flow-control 429 附官方配额文案（一字不差抄 kernel 的 UK map）：
-        # 客户端看到「今天额度用完了」比看到一串 error_code 有用得多。
-        _fc = ca_stream.flow_control_from(text)
-        if _fc is not None:
-            _fc_msg = ca_stream.flow_control_message(_fc)
-            if _fc_msg:
-                detail = ("%s | %s" % (detail, _fc_msg))[:200]
+        code, detail = _codearts_error_detail_with_quota(text)
         log("codearts request shape on failure: model=%s %s"
             % (model, _codearts_request_shape(payload, messages, max_tokens)))
         # 记账必须和回给客户端的状态码同源：以前这里写死 502，而
@@ -9629,6 +9648,22 @@ class Handler(BaseHTTPRequestHandler):
         return self._codearts_fail(status, code, detail, account_label,
                                    anthropic), None
 
+    def _sse_error_and_done(self, emit, message, err_type, code=502):
+        """发一条 SSE error 帧再 [DONE]，客户端已断连时安静收尾。
+
+        流式响应的头一旦发出去，失败就只能走帧内事件。这一段在
+        _handle_codearts_chat_stream 里出现四处（建连放弃 ×2、错误帧、断流），
+        语义相同、只差文案。
+        """
+        try:
+            emit({"error": {"message": message,
+                            "type": err_type, "code": code}})
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError,
+                ConnectionAbortedError):
+            pass
+
     def _handle_codearts_chat_stream(self, payload):
         """把码道的 SSE **边收边转**给客户端。
 
@@ -9649,23 +9684,8 @@ class Handler(BaseHTTPRequestHandler):
         chunked 流掐断（``UpstreamBroken``），绝不能让异常冒到 socketserver ——
         那就是「半截回答 + 连接凭空消失」。
         """
-        model = str(payload.get("model") or "")
-        # 模型名归一（2026-10-25）：客户端大小写混写（GLM-5.3 / glm / glm-5.3）
-        # 曾把统计、限额、降级链分裂成多个桶。这里统一解析成上游真名；
-        # 认不出的原样放行（resolve_model 的既有契约）。
-        model = ca_codearts.resolve_model(model)
-        # 角色归一 + 消息修复。修复这一环以前只在 build_upstream_body
-        # 里，而码道路径没有调用点 —— 孤立的 tool_call/tool_result、
-        # 被拆开的并行批次、deepseek 思考模式缺 reasoning_content 都
-        # 会原样送给上游（2026-10-23）。
-        messages = repair_messages_for_upstream(
-            ca_protocol.normalize_roles(payload.get("messages") or []),
-            model)
-        max_tokens = _codearts_max_tokens(payload)
-        # 投影式 soft 裁剪：压力大时保护窗之外的大工具结果换成占位符（只影响
-        # 本次发上游的消息，入参列表不动）。
-        messages = prune_history_for_upstream(messages, model, max_tokens,
-                                              source="chat")
+        model, messages, max_tokens = codearts_prepare_request(payload,
+                                                               "chat")
         created = int(time.time())
         cid = "chatcmpl-codearts-%s" % uuid.uuid4().hex[:24]
         t_start = time.time()
@@ -9715,28 +9735,15 @@ class Handler(BaseHTTPRequestHandler):
                     return self._reply_deferred(exc)
                 log("codearts stream gave up after restart: model=%s %s"
                     % (model, exc.message))
-                try:
-                    emit({"error": {"message": exc.message,
-                                    "type": "upstream_error", "code": 502}})
-                    self.wfile.write(b"data: [DONE]\n\n")
-                    self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError,
-                        ConnectionAbortedError):
-                    pass
+                self._sse_error_and_done(emit, exc.message, "upstream_error")
                 return None
             if error is not None:
                 if not headers_sent:
                     return error
                 # 只可能发生在「断流后重开」这一轮：头早就 200 了，回不了 JSON。
                 log("codearts stream gave up after restart: model=%s" % model)
-                try:
-                    emit({"error": {"message": "codearts upstream unavailable",
-                                    "type": "upstream_error", "code": 502}})
-                    self.wfile.write(b"data: [DONE]\n\n")
-                    self.wfile.flush()
-                except (BrokenPipeError, ConnectionResetError,
-                        ConnectionAbortedError):
-                    pass
+                self._sse_error_and_done(emit, "codearts upstream unavailable",
+                                         "upstream_error")
                 return None
             if lease is None:
                 return None      # 客户端已经走了
@@ -9937,16 +9944,10 @@ class Handler(BaseHTTPRequestHandler):
             record_error(model, code, frame_err[:200], elapsed_ms=elapsed_ms,
                          account=account_label, usage=usage, stream=True,
                          outcome="upstream_aborted", key=self._key_id())
-            try:
-                emit({"error": {
-                    "message": ("codearts error after partial output: %s"
-                                if partial else "codearts error: %s") % frame_err,
-                    "type": err_type, "code": code}})
-                self.wfile.write(b"data: [DONE]\n\n")
-                self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError,
-                    ConnectionAbortedError):
-                pass
+            self._sse_error_and_done(
+                emit, ("codearts error after partial output: %s"
+                       if partial else "codearts error: %s") % frame_err,
+                err_type, code)
             return None
 
         if truncated:
@@ -9963,17 +9964,10 @@ class Handler(BaseHTTPRequestHandler):
             record_error(model, 502, truncated[:200], elapsed_ms=elapsed_ms,
                          account=account_label, usage=usage, stream=True,
                          outcome="upstream_aborted", key=self._key_id())
-            try:
-                emit({"error": {
-                    "message": "codearts upstream closed the stream: %s%s"
-                               % (truncated,
-                                  ca_stream.break_hint(stream_stats)),
-                    "type": "upstream_error", "code": 502}})
-                self.wfile.write(b"data: [DONE]\n\n")
-                self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError,
-                    ConnectionAbortedError):
-                pass
+            self._sse_error_and_done(
+                emit, "codearts upstream closed the stream: %s%s"
+                      % (truncated, ca_stream.break_hint(stream_stats)),
+                "upstream_error")
             return None
 
         try:

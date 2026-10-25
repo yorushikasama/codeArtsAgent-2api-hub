@@ -644,7 +644,12 @@ check("拿到 _DeferredHTTPError 后按 headers_sent 二选一",
       "_DeferredHTTPError" in _stream_body
       and "return self._reply_deferred(exc)" in _stream_body, None)
 check("发过头时写的是本协议的 error 帧 + [DONE]",
-      'emit({"error": {"message": exc.message,' in _stream_body, None)
+      # 2026-10-24 起 emit-error+[DONE] 收敛进 _sse_error_and_done（纯移动）：
+      # 断言调用点仍在重开失败分支，且辅助方法体真的写 error 帧 + [DONE]。
+      "self._sse_error_and_done(emit, exc.message, \"upstream_error\")"
+      in _stream_body
+      and "data: [DONE]" in _src.split("def _sse_error_and_done", 1)[1]
+      .split("\n    def ", 1)[0], None)
 check("_DeferredHTTPError 只是载体（不自己写响应）",
       "class _DeferredHTTPError" in _src
       and "self.status = int(status)" in _src, None)
