@@ -644,10 +644,16 @@ try:
     _LM2 = C.LoginManager(_root3, log=lambda *a, **k: None)
     _LM2.start(9000)
     _r2 = _LM2.accept_callback(code="c1", state="wrong-state-xyz")
-    check("state 不匹配直接拒绝，不消耗当前 pending",
-          _r2[0] == "error" and "state 不匹配" in _r2[1], _r2)
-    _r3 = _LM2.accept_callback(code="c3")
-    check("state 为空（老链路）跳过比对",
+    # 2026-10-25 修正：华为回调的 state 是它自己生成的，不是我们的 ticket，
+    # 硬校验会把真回调全拒掉（线上 got 24306954… / waiting b0e47ce8…）。
+    # 现在不匹配只落日志，照常走换 token（粘错旧回调由 PKCE 交换失败兜住）。
+    check("state 不匹配不再拒绝（华为的 state 非本网关票据）",
+          _r2[0] == "ok", _r2)
+    # 新语义下 wrong-state 回调会消耗 pending（照常换 token），空 state 用例自立门户
+    _LM3 = C.LoginManager(_root3, log=lambda *a, **k: None)
+    _LM3.start(9000)
+    _r3 = _LM3.accept_callback(code="c3")
+    check("state 为空（老链路）照常成功",
           _r3[0] == "ok", _r3)
 finally:
     SEEN["fail"] = None

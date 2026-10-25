@@ -3209,22 +3209,25 @@ class LoginManager:
 
         kind: 'redirect' 需要把浏览器继续 307 送走；'ok' / 'error' 直接渲染页面。
 
-        ``state``（2026-10-25）：回调 URL 里带着授权时发的 ticket，比对一下。
-        以前只按「唯一 pending」定位，一个陈旧标签页里复制来的旧回调会把
-        当前登录的 PKCE 对顶掉，换 token 阶段才炸出一个费解的错——比对后
-        直接给「这条回调属于另一次登录」。空值（老链路没带）跳过比对。
+        ``state``：**不做硬校验**（2026-10-25 修正）。曾按「回调 state == 我们的
+        ticket」拒绝不匹配的回调，但授权 URL 里根本没有标准 OAuth `state` 参数
+        （只有华为自家的 ticket_id），华为回调带回的 state 是它自己生成的值 ——
+        硬校验只会把每次带 state 的真回调全拒掉（线上实测：got 24306954…,
+        waiting for b0e47ce8…）。粘错旧回调的防护交给换 token 本身：旧 code 对
+        不上当前 PKCE verifier，上游直接报错，信息同样明确。state 现在只落日志
+        做关联。空值（老链路没带）照常跳过。
         """
         record = self._current()
         if record is None:
             self.log("codearts login callback rejected: no pending login "
-                     "(expired or stale link), state=%s" % ((state or "")[:8] or "-"))
+                     "(expired or stale link), state=%s"
+                     % ((state or "")[:8] or "-"))
             return ("error", "没有正在等待的登录请求（可能已超时，或链接是旧的）")
         if state and state != record["state"]:
-            self.log("codearts login callback rejected: state mismatch "
-                     "(got %s…, waiting for %s…)"
+            # 只记日志不拒绝：见 docstring —— 华为的 state 不是我们的 ticket
+            self.log("codearts login callback state note: got %s…, "
+                     "waiting for %s…（华为侧 state，非本网关票据，仅关联记录）"
                      % (state[:8], record["state"][:8]))
-            return ("error", "state 不匹配：这条回调属于另一次登录（当前等待的是 %s…）"
-                    % record["state"][:8])
         if secret and not code:
             # old_login 的第一步：先记下 secret，把浏览器放行去继续走流程
             with self._lock:
