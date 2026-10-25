@@ -8173,13 +8173,18 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(503, "登录管理器尚未初始化")
         raw = str((payload or {}).get("url") or "").strip()
         if not raw:
+            log("codearts login callback rejected: empty url")
             return self._error(400, "url required：粘贴浏览器地址栏里的完整回调链接")
         if len(raw) > 4096:
+            log("codearts login callback rejected: url too long (%d chars)"
+                % len(raw))
             return self._error(400, "url too long")
         if "://" in raw:
             try:
                 qs = urllib.parse.urlsplit(raw).query
             except ValueError:
+                log("codearts login callback rejected: unparsable url "
+                    "(%d chars)" % len(raw))
                 return self._error(400, "无法解析回调链接")
         else:
             qs = raw.lstrip("?")
@@ -8188,12 +8193,19 @@ class Handler(BaseHTTPRequestHandler):
         secret = (params.get("secret") or [""])[0].strip()
         state = (params.get("state") or [""])[0].strip()
         if not code and not secret:
+            # 只记形状不记值：code/secret 是凭据，state 是票据 id 可以留前缀
+            log("codearts login callback rejected: no code/secret in url "
+                "(%d chars, state=%s, host=%s)"
+                % (len(raw), state[:8] or "-",
+                   urllib.parse.urlsplit(raw).hostname or "-"))
             return self._error(400, "回调链接里没有 code / secret 参数")
         kind, detail = CODEARTS_LOGIN.accept_callback(code=code, secret=secret,
                                                       state=state)
         if kind == "redirect":
             redirect_to = (params.get("redirect") or [""])[0]
             if not self._codearts_redirect_ok(redirect_to):
+                log("codearts login callback rejected: untrusted redirect %r"
+                    % (redirect_to or ""))
                 return self._error(400, "回调地址不被信任：%s" % (redirect_to or "空地址"))
             return self._json(200, {"ok": False, "status": "redirect",
                                     "url": redirect_to,

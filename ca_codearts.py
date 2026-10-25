@@ -3216,8 +3216,13 @@ class LoginManager:
         """
         record = self._current()
         if record is None:
+            self.log("codearts login callback rejected: no pending login "
+                     "(expired or stale link), state=%s" % ((state or "")[:8] or "-"))
             return ("error", "没有正在等待的登录请求（可能已超时，或链接是旧的）")
         if state and state != record["state"]:
+            self.log("codearts login callback rejected: state mismatch "
+                     "(got %s…, waiting for %s…)"
+                     % (state[:8], record["state"][:8]))
             return ("error", "state 不匹配：这条回调属于另一次登录（当前等待的是 %s…）"
                     % record["state"][:8])
         if secret and not code:
@@ -3226,6 +3231,8 @@ class LoginManager:
                 record["secret"] = secret
             return ("redirect", secret)
         if not code:
+            self.log("codearts login callback rejected: neither code nor secret "
+                     "in the pasted url (state=%s)" % (state[:8] or "-"))
             return ("error", "回调里既没有 code 也没有 secret")
 
         try:
