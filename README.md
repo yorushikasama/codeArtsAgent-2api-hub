@@ -186,6 +186,10 @@ export ANTHROPIC_AUTH_TOKEN="你在看板设置中添加的 API Key"
 
 ## 六、运营要点
 
+**环境变量**：全部运行参数（默认值 / 约束 / 哪些面板可覆盖）的权威清单见
+**[docs/ENV.md](docs/ENV.md)**，由 `scripts/gen_env_doc.py` 从源码提取生成——
+改默认值后重跑该脚本同步文档。
+
 **部署同步一律全量**：本地改动推送后用 `scripts/deploy-full.sh` 部署——服务器端 git
 全新克隆 + 运行时数据白名单搬运（accounts/usage/logs/catalog 等）+ 原子换目录 + 自动
 留 3 份回滚。**不要增量 scp 单个文件**：2026-10-25 实测旧测试 + 新代码的漂移跑出过
