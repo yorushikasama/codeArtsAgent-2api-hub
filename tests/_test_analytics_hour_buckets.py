@@ -274,7 +274,6 @@ def restart():
     P._usage_cache_progress.clear()
     P._usage_cache_checkpointed.clear()
     P._usage_cache_last_attempt = time.time()
-    P._usage_cache_digest_memo.clear()
 
 
 def win(lo, hi=None, realm=None, ttl=0):
@@ -412,25 +411,22 @@ def newest_hour(data, realm=None):
 # 计数桩：证明「走层」时窗口回答不再付计价/扫描
 # --------------------------------------------------------------------------
 COST_CALLS = {"n": 0}
-# 计数桩挂在 ca_proxy._row_cost 上，而不是 ca_pricing.cost_for_row：
-# 价格估算体系已于 2026-10-22 移除，_row_cost 恒返回零值、不再转发给
-# ca_pricing，挂在那里数到的永远是 0。这里要证明的是「走层时窗口回答不再
-# 逐行付计价」，_row_cost 正是那个每行必经的出口，语义不变。
-_REAL_COST_FOR_ROW = P._row_cost
+# 计数桩挂在 ca_proxy._fold_usage_analytics 上：行处理已无计价出口
+# （_row_cost 随价格估算体系于 2026-10-22 整族退役），折叠本身就是那道
+# 每行必经的出口，数到的是「这一遍真的折了多少行」。
+_REAL_FOLD = P._fold_usage_analytics
 
 
-def counting_cost_for_row(*args, **kwargs):
+def counting_fold(*args, **kwargs):
     COST_CALLS["n"] += 1
-    return _REAL_COST_FOR_ROW(*args, **kwargs)
+    return _REAL_FOLD(*args, **kwargs)
 
 
-P._row_cost = counting_cost_for_row
+P._fold_usage_analytics = counting_fold
 
 
 def cost_calls(fn):
-    """计价计数：先清行级记忆（日键表），否则同一批行重复折会被记忆挡住、
-    数不到「这一遍真的付了多少计价」。"""
-    P._row_day_memo.clear()
+    """折叠行数计数（_row_cost 时代的计价计数同一语义）。"""
     COST_CALLS["n"] = 0
     out = fn()
     return out, COST_CALLS["n"]
@@ -580,26 +576,26 @@ print()
 print("[3] 逐字节：同一窗口「走层」vs「强制整段扫（现折小时桶）」+ 计数桩")
 cache_env_nowrite()
 restart()
-pricing_on = False  # 价格体系已移除
 # 先折一次（走层），再从状态里现折一份小时桶，两份必须逐字节一致。
 _, calls_cold = cost_calls(lambda: win(NOON1, None))
-layer = P._analytics_window_from_hours(None, NOON1, None, pricing_on)
+layer = P._analytics_window_from_hours(None, NOON1, None)
 cold = P._scan_usage_analytics_window_hours(None, NOON1, None)
 check("走层 vs 现折小时桶：窗口半 maps 逐字节一致",
       canon(layer) == canon(cold), first_diff(canon(layer), canon(cold)))
-check("冷折确实付了计价（计数桩自检）", calls_cold > 0, calls_cold)
+check("冷折确实逐行折了（计数桩自检）", calls_cold > 0, calls_cold)
 # 层已经热了：再来一次窗口回答，一行都不该重折（计数桩归零）。
 _, calls_warm = cost_calls(lambda: win(NOON1, None))
-check("走层：窗口回答不再付计价（计数桩 == 0）", calls_warm == 0, calls_warm)
-# 强制整段扫（逐行口径）确实付了计价——省下的工作真实存在。
+check("走层：窗口回答不再逐行折（计数桩 == 0）", calls_warm == 0, calls_warm)
+# 强制整段扫（逐行口径）确实逐行折了——省下的工作真实存在。
 _, calls_scan = cost_calls(lambda: P._scan_usage_analytics_window(None, NOON1, None))
-check("逐行口径的整段扫确实付了计价（计数桩 > 0）", calls_scan > 0, calls_scan)
-# 窗口内 9 行里有 1 行是客户端中止（折叠在算价之前就丢掉它），其余 8 行各付一次。
-check("逐行口径的计价次数 == 窗口内非中止行数（8）", calls_scan == 8, calls_scan)
+check("逐行口径的整段扫确实逐行折了（计数桩 > 0）", calls_scan > 0, calls_scan)
+# 窗口内 9 行每行都进一次折叠；其中 1 行是客户端中止，折叠在入口整行跳过
+# （计数的是折叠被调用的次数，不是折进去的行数）。
+check("逐行口径的折叠次数 == 窗口内行数（9）", calls_scan == 9, calls_scan)
 # 午夜窗口：小时层与日桶层给出同一份窗口半（两条对齐路径互相印证）。
 restart()
-by_hours = P._analytics_window_from_hours(None, TODAY0, None, pricing_on)
-by_days = P._analytics_window_from_days(None, TODAY_KEY, None, pricing_on)
+by_hours = P._analytics_window_from_hours(None, TODAY0, None)
+by_days = P._analytics_window_from_days(None, TODAY_KEY, None)
 check("午夜窗口：小时层与日桶层一致（逐字节）",
       canon(by_hours) == canon(by_days), first_diff(canon(by_days), canon(by_hours)))
 
@@ -821,8 +817,7 @@ write_pricing({**PRICING, "models": {
 cache_env_nowrite()
 restart()
 got = win(NOON1, None)
-layer = P._analytics_window_from_hours(None, NOON1, None,
-                                       False)
+layer = P._analytics_window_from_hours(None, NOON1, None)
 cold = P._scan_usage_analytics_window_hours(None, NOON1, None)
 check("层与现折小时桶逐字节一致（非精确价）",
       canon(layer) == canon(cold), first_diff(canon(cold), canon(layer)))
@@ -865,24 +860,23 @@ clean_checkpoint()
 cache_env_nowrite()
 restart()
 live()
-pricing_on = False  # 价格体系已移除
 state = P._analytics_state[None]
 check("对齐窗口本来就走小时层（不是退回）",
-      P._analytics_window_from_hours(None, NOON1, None, pricing_on) is not None)
+      P._analytics_window_from_hours(None, NOON1, None) is not None)
 day_at = state["days"][TODAY_KEY]["at"]
 state["days"][TODAY_KEY]["at"] = day_at + 3600   # 假装这一天少了/多了 3600 秒
 check("日桶 at 被挪动（小时桶与日桶对不上）：小时层放弃、退回扫描",
-      P._analytics_window_from_hours(None, NOON1, None, pricing_on) is None)
+      P._analytics_window_from_hours(None, NOON1, None) is None)
 state["days"][TODAY_KEY]["at"] = day_at
 hours = state["days"][DAY1_KEY]["hours"]
 h_key = sorted(hours, key=int)[0]
 h_at = hours[h_key]["at"]
 hours[h_key]["at"] = h_at + 60
 check("小时桶 at 偏离格点：小时层放弃、退回扫描",
-      P._analytics_window_from_hours(None, NOON1, None, pricing_on) is None)
+      P._analytics_window_from_hours(None, NOON1, None) is None)
 hours[h_key]["at"] = h_at
 check("恢复后小时层又能用",
-      P._analytics_window_from_hours(None, NOON1, None, pricing_on) is not None)
+      P._analytics_window_from_hours(None, NOON1, None) is not None)
 # 格点被挪动时窗口结果仍然正确（退回扫描兜住）。
 cache_env_off()
 restart()
@@ -937,8 +931,7 @@ if hasattr(time, "tzset"):
             cache_env_nowrite()
             restart()
             P._compute_usage_analytics_uncached(since=lo, until=None)
-            pricing_on = False  # 价格体系已移除
-            layer = P._analytics_window_from_hours(None, lo, None, pricing_on)
+            layer = P._analytics_window_from_hours(None, lo, None)
             cold = P._scan_usage_analytics_window_hours(None, lo, None)
             check("夏令时时区：层确实接住了这个窗口（没有退回扫描）",
                   layer is not None)
@@ -949,8 +942,8 @@ if hasattr(time, "tzset"):
             # 开放）照常可用，与小时层给出同一份窗口半。
             lo2 = time.mktime((2026, 10, 25, 0, 0, 0, 0, 0, -1))
             key2 = time.strftime("%Y-%m-%d", time.localtime(lo2))
-            by_hours = P._analytics_window_from_hours(None, lo2, None, pricing_on)
-            by_days = P._analytics_window_from_days(None, key2, None, pricing_on)
+            by_hours = P._analytics_window_from_hours(None, lo2, None)
+            by_days = P._analytics_window_from_days(None, key2, None)
             check("夏令时切换日：小时层与日桶层一致（逐字节）",
                   by_hours is not None and by_days is not None
                   and canon(by_hours) == canon(by_days),

@@ -250,7 +250,6 @@ def restart():
     P._usage_cache_progress.clear()
     P._usage_cache_checkpointed.clear()
     P._usage_cache_last_attempt = time.time()
-    P._usage_cache_digest_memo.clear()
     P._realm_disk_cache.update({"key": None, "map": None})
 
 

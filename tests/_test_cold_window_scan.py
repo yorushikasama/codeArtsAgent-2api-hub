@@ -175,7 +175,6 @@ def restart():
     P._usage_cache_progress.clear()
     P._usage_cache_checkpointed.clear()
     P._usage_cache_last_attempt = time.time()
-    P._usage_cache_digest_memo.clear()
 
 
 def snap_cold():
@@ -353,9 +352,8 @@ print()
 print("[4] analytics：窗口半先扫描，all-time 半照折（它本来就是载荷的一半）")
 cache_env(enabled=0, min_bytes=0, min_seconds=0)
 restart()
-pricing_on = False   # 价格估算体系已移除，折叠恒在「不计价」档
 with FoldCounter("_fold_usage_analytics") as c:
-    an_cold = P._analytics_window(None, TODAY0, None, None, pricing_on)
+    an_cold = P._analytics_window(None, TODAY0, None, None)
 check("冷态 analytics 窗口半：折的行数 == 窗口内的行数",
       c.calls == TODAY_ROWS and c.calls < TOTAL_ROWS,
       (c.calls, TODAY_ROWS, TOTAL_ROWS))
@@ -372,7 +370,7 @@ check("analytics 端点：整包与逐行口径逐字节一致",
       first_diff(REF_AN_TODAY, canon(an_payload)))
 with FoldCounter("_fold_usage_analytics") as c:
     an_hot = P._analytics_window(None, TODAY0, None,
-                                 P._analytics_state[None]["offset"], pricing_on)
+                                 P._analytics_state[None]["offset"])
 check("热态 analytics 窗口半：一行都不折", c.calls == 0, c.calls)
 check("analytics 窗口半：冷态扫描 == 热态桶求和（逐字节）",
       canon(an_hot) == canon(an_cold),
@@ -401,11 +399,10 @@ check("闭窗口：冷态扫描 == 热态（T12 走桶 / 本树走扫）逐字�
       first_diff(canon(closed_cold), canon(closed_hot)))
 cache_env(enabled=0, min_bytes=0, min_seconds=0)
 restart()
-an_closed_cold = P._analytics_window(None, HOUR4, HOUR6, None, pricing_on)
+an_closed_cold = P._analytics_window(None, HOUR4, HOUR6, None)
 P._compute_usage_analytics_uncached()
 an_closed_hot = P._analytics_window(None, HOUR4, HOUR6,
-                                    P._analytics_state[None]["offset"],
-                                    pricing_on)
+                                    P._analytics_state[None]["offset"])
 check("analytics 闭窗口：冷态扫描 == 热态（T12 走桶 / 本树走扫）逐字节一致",
       canon(an_closed_cold) == canon(an_closed_hot),
       first_diff(canon(an_closed_cold), canon(an_closed_hot)))

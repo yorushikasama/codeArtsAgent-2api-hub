@@ -820,10 +820,9 @@ def limit_value(accounts_dir, key, realm=None):
 def limit_values_many(accounts_dir, keys):
     """Several guards resolved once, off one settings read.
 
-    limit_values() per key re-reads the file (cached by mtime/size, so a stat)
-    and re-normalizes the whole grouped map every call; the daily guards all
-    want the same map on the request path, so they share one read here. One
-    implementation only: limit_values() is this with a single key.
+    Per-key helpers re-read the file (cached by mtime/size, so a stat) and
+    re-normalize the whole grouped map every call; the daily guards all want
+    the same map on the request path, so they share one read here.
     """
     grouped = limits_data(accounts_dir)
     out = {}
@@ -831,11 +830,6 @@ def limit_values_many(accounts_dir, keys):
         entry = grouped.get(key) or _empty_limit_entry()
         out[key] = {"global": entry.get("global") or 0}
     return out
-
-
-def limit_values(accounts_dir, key):
-    """One guard resolved to {"global": g}. Kept for the pool's per-key view."""
-    return limit_values_many(accounts_dir, (key,))[key]
 
 
 def daily_token_limit(accounts_dir, realm=None):

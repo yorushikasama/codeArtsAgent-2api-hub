@@ -54,9 +54,6 @@ def _bind__line_outside_window(*a, **k):
 def _bind__line_outside_window_bytes(*a, **k):
     return _BINDINGS['_line_outside_window_bytes'](*a, **k)
 
-def _bind__row_cost(*a, **k):
-    return _BINDINGS['_row_cost'](*a, **k)
-
 def _bind__scan_usage_snapshot_window(*a, **k):
     return _BINDINGS['_scan_usage_snapshot_window'](*a, **k)
 
@@ -2106,260 +2103,6 @@ def _log_resume_ok(state, log_key, path=None):
         return False
     return _log_tail_signature(state["offset"], path) == state["tail"]
 
-def _pricing_inputs(pricing_on=None):
-    """Everything cost_for_row() reads besides the row itself.
-
-    Identity, not equality: ca_pricing caches each of these behind its own
-    file key, so an edited file hands back a different object, and comparing
-    identities keeps the check off the refresh path - walking the whole price
-    table to notice a change would cost more than the change does. Holding the
-    objects here is also what makes the test sound: a live object cannot have
-    its id handed to a replacement.
-
-    With the master switch off cost_for_row() never opens a table at all, so
-    the flag is the whole input. It is read through the same no-argument
-    call cost_for_row() makes - passing a directory here would answer from
-    a different settings file whenever the two disagree, and the fingerprint
-    would then watch an input the fold never read.
-    """
-    # 价格估算体系已下线（2026-10-22）：不再读价表，「关闭」是唯一状态。
-    # 保留函数签名是因为快照 / 指纹 / 缓存三条链路都靠它开短路。
-    return (False, None, None, None)
-
-def _pricing_unchanged(previous, current):
-    """True when two _pricing_inputs() tuples describe the same prices.
-
-    只留给行级结果记忆（_row_cost_remember）：那里按「价表代次」整表判定，
-    保守但正确。状态指纹走 _pricing_used_unchanged()（T15 的收窄判定）。
-    """
-    if previous is None or current is None:
-        return False
-    return (previous[0] == current[0] and previous[1] is current[1]
-            and previous[2] is current[2] and previous[3] is current[3])
-
-_PRICED_FIELDS = ("refs", "timeline", "timeline_at", "timeline_models",
-                  "unresolved", "backfilled", "builtin")
-
-def _pricing_record_new():
-    """一份空的状态指纹记录（见上面一节；字段固定、可 JSON 往返）。"""
-    return {"refs": {}, "timeline": None, "timeline_at": None,
-            "timeline_models": [], "unresolved": [], "backfilled": False,
-            "builtin": None}
-
-def _pricing_record_ok(record):
-    """状态指纹记录的形状；不合格的记录按「价表变了」处理（判废重折）。"""
-    if not isinstance(record, dict):
-        return False
-    for field in _PRICED_FIELDS:
-        if field not in record:
-            return False
-    refs = record["refs"]
-    if not isinstance(refs, dict):
-        return False
-    for pid, digest in refs.items():
-        if not isinstance(pid, str) or not (digest is None
-                                            or isinstance(digest, str)):
-            return False
-    for field in ("timeline", "builtin"):
-        value = record[field]
-        if not (value is None or isinstance(value, str)):
-            return False
-    at = record["timeline_at"]
-    if not (at is None or _usage_cache_number(at)):
-        return False
-    for field in ("timeline_models", "unresolved"):
-        value = record[field]
-        if not isinstance(value, list) or not all(isinstance(v, str)
-                                                  for v in value):
-            return False
-    return isinstance(record["backfilled"], bool)
-
-def _copy_pricing_record(record):
-    """记录的深拷贝：落盘在状态锁外序列化，记录必须和活状态脱钩。"""
-    if record is None:
-        return None
-    copy = dict(record)
-    copy["refs"] = dict(record.get("refs") or {})
-    copy["timeline_models"] = list(record.get("timeline_models") or ())
-    copy["unresolved"] = list(record.get("unresolved") or ())
-    return copy
-
-def _timeline_at_value(value):
-    """一个 at 值按数字比（坏值按 0，与折叠里的 `at or 0` 同口径）。"""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
-
-def _timeline_row_at(row):
-    """时间线一行的 at。"""
-    return _timeline_at_value(row.get("at"))
-
-_pricing_timeline_memo = {}
-
-def _pricing_timeline_digest(timeline, record):
-    """记录里时间线依赖的投影摘要（折叠侧收尾与判定侧共用一份定义）。
-
-    投影 = [[行 at, 该行里 timeline_models 的 {model: pid} 子字典], ...]，
-    摘要 = 排序 JSON + sha1：
-
-      * backfilled 为真（有行靠回填解析）：整条时间线——那批行的解析扫过全部
-        行，任何追加都可能改变结果（保守）；
-      * 否则：at <= timeline_at 的行，外加最早那一行（二分夹逼 index=0 时会读
-        它）；每行只取 timeline_models 里的子字典，无关模型的价变动不进依赖
-        ——这正是 T15 要收掉的重折。行本身（连 at）都要进投影：at 的增减会
-        挪动二分的结果；
-      * unresolved（整条时间线都没提到过的模型）：整条时间线里「提到它的行」
-        ——那批行的解析扫过全部行，之后任何时刻补一行都会改变结果。
-
-    timeline_models 为空（没有无引用非零成本的行）时没有依赖，返回 None。
-    按（时间线对象, 记录参数）记忆：一次刷新里 5 条状态共用同一份时间线，
-    记录没变时只算一次。
-    """
-    models = record.get("timeline_models") or ()
-    if not models:
-        return None
-    key = (record.get("timeline_at"), tuple(models),
-           tuple(record.get("unresolved") or ()),
-           bool(record.get("backfilled")))
-    hit = _pricing_timeline_memo.get(id(timeline))
-    if hit is not None and hit[0] is timeline and hit[1] == key:
-        return hit[2]
-    wanted = set(models)
-    rows = list(timeline or ())
-    parts = []
-    if key[3]:
-        scope = rows
-    else:
-        bound = _timeline_at_value(record.get("timeline_at"))
-        scope = [row for row in rows if _timeline_row_at(row) <= bound]
-        if rows and not scope:
-            scope = rows[:1]
-    parts.append([[_timeline_row_at(row),
-                   {m: pid for m, pid in (row.get("policies") or {}).items()
-                    if m in wanted}]
-                  for row in scope])
-    for model in sorted(record.get("unresolved") or ()):
-        parts.append([[_timeline_row_at(row), (row.get("policies") or {})[model]]
-                      for row in rows
-                      if model in (row.get("policies") or {})])
-    try:
-        payload = json.dumps(parts, sort_keys=True, ensure_ascii=False,
-                             separators=(",", ":")).encode("utf-8")
-    except Exception:
-        return None
-    digest = hashlib.sha1(payload).hexdigest()
-    if len(_pricing_timeline_memo) > 8:
-        # 正常进程里时间线只在价格变化时换代；这里只是给长期运行兜底
-        # （与 _object_digest 的记忆同一条规则）。
-        _pricing_timeline_memo.clear()
-    _pricing_timeline_memo[id(timeline)] = (timeline, key, digest)
-    return digest
-
-def _priced_note(priced, row, cost, pricing):
-    """把一行「用到的价」记进状态指纹记录（折叠侧；见上面一节）。
-
-    refs 收下解析出来的 pid 的内容摘要（显式引用 + 时间线解析）；无显式引用
-    且成本非零的行另记时间线依赖。总开关关掉（cost 带 disabled）或价表读不
-    出来（pricing 为 None）时不记——前者折叠没读任何价、后者记不完整，两种
-    都由判定侧按「记录对不上」兜底作废。
-
-    热路径开销：每行几次 dict 查找 + 按对象身份记忆的摘要（第一次之后 O(1)），
-    只有无引用非零成本的行（旧前缀，一次性折过）才会碰列表；那批行里落到
-    内置快照的（模型从未进过时间线）再问一次 policy_ref_at 把依赖记准。
-    """
-    if priced is None or pricing is None or not cost:
-        return
-    if cost.get("disabled"):
-        return
-    source = cost.get("source")
-    if source and source != "builtin":
-        if source not in priced["refs"]:
-            # 一次扫描里价表不变，同一个 pid 的摘要只算一次：命中记忆之后
-            # 这一步就只剩一次成员检查（真机 4.7 万行里只有几个不同 pid）。
-            policy = (pricing[1] or {}).get(source)
-            priced["refs"][source] = (_object_digest(policy)
-                                      if policy is not None else None)
-    else:
-        # 内置快照：文档摘要一变，这些行的价就变（同一份文档只算一次摘要）。
-        doc = pricing[3]
-        if doc is not None and priced["builtin"] is None:
-            priced["builtin"] = _object_digest(doc)
-    pid = row.get("cost_policy")
-    if pid:
-        # 显式引用：价由 refs 看住，与时间线无关；引用的策略当前查不到时
-        # 按「不存在」记，它一旦出现（内容当然也就变了）必须作废重折。
-        if pid not in priced["refs"]:
-            priced["refs"][pid] = None
-        return
-    if not cost.get("known") or not cost.get("cny"):
-        return                       # 零成本：数值上不依赖价表（refs 已记）
-    at = row.get("at") or 0
-    bound = priced["timeline_at"]
-    if bound is None or at > bound:
-        priced["timeline_at"] = at
-    model = row.get("model")
-    if model is not None and model not in priced["timeline_models"]:
-        priced["timeline_models"].append(model)
-        priced["timeline_models"].sort()
-    backfilled = bool(cost.get("backfilled"))
-    if source == "builtin":
-        # 解析结果没进 cost（pid 为空、或它的策略查不到，两条都落到内置快照）：
-        # 再问一次时间线，把「解析出没出 pid / 是不是回填」记准。
-        resolved, scan_backfilled = None, False
-        if resolved is None:
-            # 整条时间线都没提到这个模型：解析扫过全部行，之后任何时刻补一
-            # 行都会改变结果，所以它按「整条时间线里提到它的行」记账。
-            if model is not None and model not in priced["unresolved"]:
-                priced["unresolved"].append(model)
-                priced["unresolved"].sort()
-        else:
-            backfilled = backfilled or bool(scan_backfilled)
-            if resolved not in priced["refs"]:
-                priced["refs"][resolved] = None
-    if backfilled:
-        priced["backfilled"] = True
-
-def _pricing_record_close(priced, pricing):
-    """一次成功的折叠收尾：把时间线投影摘要刷成当前参数下的值。
-
-    记录在折叠过程中增量更新（新行进来只加不改），摘要必须跟着参数走——
-    下一次判定拿它跟「当前时间线按同一组参数算出来的投影」比。按时间线对象
-    与参数记忆，参数没动时这里只是一次查表。
-    """
-    if priced is None or pricing is None:
-        return
-    priced["timeline"] = _pricing_timeline_digest(pricing[2], priced)
-
-def _pricing_used_unchanged(record, pricing):
-    """折叠行真正用到的价，与当前价表一致？（T15 的状态判废判定）
-
-    只读记录与当前价表、不碰日志：refs 逐个 pid 比对内容摘要（查不到 = 变化；
-    折叠时查不到的 pid 出现也是变化），时间线依赖重算同一份投影摘要，builtin
-    比对文档摘要。任何一项对不上就返回 False（状态作废、重折）。
-
-    pricing 为 None（价表读不出来）时不能确认，一律 False；总开关关着时折叠
-    没读任何价，只有「折叠时也没用价」（record 为 None）才算一致。
-    """
-    if pricing is None:
-        return False
-    if not pricing[0]:
-        return record is None
-    if not _pricing_record_ok(record):
-        return False
-    policies = pricing[1]
-    for pid, digest in record["refs"].items():
-        policy = policies.get(pid) if policies else None
-        current = _object_digest(policy) if policy is not None else None
-        if current != digest:
-            return False
-    if record["timeline"] != _pricing_timeline_digest(pricing[2], record):
-        return False
-    if record["builtin"] is not None:
-        if _object_digest(pricing[3]) != record["builtin"]:
-            return False
-    return True
-
 def _realm_inputs():
     """What row_realm() consults for a row that carries no realm field.
 
@@ -2560,28 +2303,7 @@ def _row_memo_tz_changed():
     _row_day_memo.clear()
     return True
 
-#: 价格估算体系已下线（2026-10-22）：这个网关只按码道积分记账，不再折算
-#: OpenRouter / 美元等价花费。所有成本出口统一返回这一份零值。只剩
-#: _priced_note() 还在读它（disabled / source / known / cny / backfilled），
-#: 形状就收敛到这五个键。
-_ZERO_COST = {
-    "cny": 0.0,
-    "known": False,
-    "disabled": True,
-    "source": "",
-    "backfilled": False,
-}
-
-def _row_cost(row, pricing, pricing_on):
-    """一行的估算成本。
-
-    价格体系已移除，恒返回零值 —— 保留函数与签名是因为聚合、增量快照、
-    analytics 三处都从这里取价，改签名会波及二十多个核心函数。
-    """
-    return dict(_ZERO_COST)
-
-def _fold_usage_snapshot(row, snap, r, since, until, pricing_on=None, also=None,
-                         pricing=None, priced=None):
+def _fold_usage_snapshot(row, snap, r, since, until, also=None):
     """Fold one parsed row into a usage snapshot.
 
     One definition for both callers: the all-time fold (fed only the rows past
@@ -2590,21 +2312,8 @@ def _fold_usage_snapshot(row, snap, r, since, until, pricing_on=None, also=None,
     total below - requests, tokens, per-model and per-account breakdowns -
     describes the same slice of the log.
 
-    pricing_on 是本次扫描开头问过一次的总开关：聚合不再读任何价（价格估算
-    体系已下线），开关只进 _priced_note 的指纹链路，整扫不逐行重问。代价是
-    设置改动从下一次扫描起生效。
-
     `also` 是同一行还要折进的其余同形状快照（按日/按小时分桶的窗口半），
-    一个元组，空/None 表示没有。过滤、取行级记忆与字段提取只做一次，几份
-    各自累加：折叠本来就要求每份各记一笔，而行级记忆与 realm 判定是每行
-    最贵的那部分，只该付一次。
-
-    `pricing` 是本次扫描开头取到的 _pricing_inputs() 元组（调用方从同一个
-    值里取指纹，两处看到的是同一份价表）；传给 _bind__row_cost 当记忆的代次，
-    None 表示价表读不出来、不进表。
-
-    `priced` 是本次扫描要填的「用到的价」记录（见「用到的价」状态指纹一节），
-    只有推进状态的那条折叠传它；窗口半/冷扫描传 None，一行都不记。
+    一个元组，空/None 表示没有。过滤与字段提取只做一次，几份各自累加。
     """
     if r and not row_matches_realm(row, r):
         return
@@ -2614,16 +2323,6 @@ def _fold_usage_snapshot(row, snap, r, since, until, pricing_on=None, also=None,
     if until and at > until:
         return
     outcome = row_outcome(row)
-    # Each row is priced against the version that was in force when it
-    # happened, so a later price change cannot rewrite yesterday's totals.
-    # _bind__row_cost 按行记忆（见「行级结果记忆」）：同一个视图里这一行只算一次，
-    # 第二个视图直接取上次的结果；pricing 是本次扫描的价表代次。
-    cost = _bind__row_cost(row, pricing, pricing_on)
-    if outcome != "client_aborted":
-        # 折进去的每一行都把「用到的价」记进状态指纹（中止行只记 errors，
-        # 不碰价，所以不记）。记的是这次折叠真正读到的价，价表无关的变动
-        # 因此不再判废这条状态（见「用到的价」状态指纹一节）。
-        _priced_note(priced, row, cost, pricing)
     model = row.get("model")
     targets = (snap,) if not also else (snap,) + tuple(also)
     if outcome != "completed":
@@ -2667,21 +2366,14 @@ _usage_snap_state = {}
 
 _usage_snap_state_lock = threading.Lock()
 
-def _usage_snap_state_advance(r, pricing_on):
-    """（不折叠）取/建状态、采纳 checkpoint、判废归零、记身份指纹。
+def _usage_snap_state_advance(r):
+    """（不折叠）取/建状态、采纳 checkpoint、判废归零。
 
-    调用方必须已持有 _usage_snap_state_lock。返回本次扫描取到的价表代次
-    （_pricing_inputs 的元组）：调用方把它传给折叠当行级记忆的代次，与记进
-    状态指纹的是同一份，两处不会看到两份价表。
-
-    状态指纹是「折叠行真正用到的价」记录（T15，见「用到的价」状态指纹一节）：
-    折叠时逐行更新（state["pricing"]），扫描成功后把时间线投影摘要刷成当前
-    参数下的值（_pricing_record_close）——下一次判废拿它跟「当前价表按同一组
-    参数算出来的投影」比（_pricing_used_unchanged）。
+    调用方必须已持有 _usage_snap_state_lock。
 
     状态是否「冷」（这次要付一次全量重折）看折过的位置：state["offset"] > 0
-    表示有可续折的数据；0 表示折叠要从文件头开始——状态刚建、刚被价表 /
-    realm / 日志判废、或 checkpoint 采纳失败。判定只看已折位置与三份指纹，
+    表示有可续折的数据；0 表示折叠要从文件头开始——状态刚建、刚被 realm /
+    日志判废、或 checkpoint 采纳失败。判定只看已折位置与 realm 指纹，
     一行都不折，所以窗口路径拿它分流是纯加速：重折之后两边给出的字节完全
     一致（见 _usage_snap_state_cold）。
 
@@ -2691,33 +2383,26 @@ def _usage_snap_state_advance(r, pricing_on):
     state = _usage_snap_state.get(r)
     if state is None:
         state = _usage_snap_state[r] = {"snap": None, "offset": 0, "key": None,
-                                        "pricing": None, "realm": None,
+                                        "realm": None,
                                         "tail": b"", "days": {}, "days_floor": None,
                                         "hours_floor_at": None,
                                         "hits": [], "hits_overflow": False}
-    pricing = _pricing_inputs(pricing_on)
     realm = _realm_inputs()
     log_key = _usage_log_key()
-    # 重折时状态指纹从这份空记录重新长起；总开关关着 / 价表读不出来时
-    # 记 None（折叠没读任何价，判定侧只认「记录也是 None」这一种一致）。
-    fresh = _pricing_record_new() if (pricing is not None
-                                      and pricing[0]) else None
     if state["snap"] is None:
         # 全新状态（进程刚起来）：先问 checkpoint，问不到才从零折起。
-        if not _usage_cache_adopt_snapshot(r, state, log_key, pricing, realm):
+        if not _usage_cache_adopt_snapshot(r, state, log_key, realm):
             state.update({"snap": _empty_stats(), "offset": 0, "tail": b"",
                           "days": {}, "days_floor": None, "hours_floor_at": None,
-                          "hits": [], "hits_overflow": False, "pricing": fresh})
-    elif (not _pricing_used_unchanged(state["pricing"], pricing)
-            or state["realm"] != realm
+                          "hits": [], "hits_overflow": False})
+    elif (state["realm"] != realm
             or not _log_resume_ok(state, log_key)):
         state.update({"snap": _empty_stats(), "offset": 0, "tail": b"",
                       "days": {}, "days_floor": None, "hours_floor_at": None,
-                      "hits": [], "hits_overflow": False, "pricing": fresh})
+                      "hits": [], "hits_overflow": False})
     state.update({"realm": realm, "key": log_key})
-    return pricing
 
-def _usage_snap_state_cold(r, pricing_on):
+def _usage_snap_state_cold(r):
     """窗口请求现在会不会付一次全量重折？True = 会（窗口改走冷扫描）。
 
     调用方必须已持有 _usage_snap_state_lock。判定就是 all-time 折叠的前半段
@@ -2730,10 +2415,10 @@ def _usage_snap_state_cold(r, pricing_on):
     冷态。重折发生之后，走不走这条路给出的字节完全相同（冷扫描与日桶/小时
     桶之和本就是同一批行、同一个求和口径，见两个冷路径函数的 docstring）。
     """
-    _usage_snap_state_advance(r, pricing_on)
+    _usage_snap_state_advance(r)
     return _usage_snap_state[r]["offset"] <= 0
 
-def _usage_snap_state_ready(r, pricing_on):
+def _usage_snap_state_ready(r):
     """把 `r` 的 all-time 折叠推进到文件尾；返回 (state, offset, error)。
 
     调用方必须已持有 _usage_snap_state_lock。日桶与 all-time 折叠共用这一次
@@ -2743,27 +2428,25 @@ def _usage_snap_state_ready(r, pricing_on):
     采纳 checkpoint 与判废归零在 _usage_snap_state_advance 里（窗口路径的
     冷热判定也用那一段，见 _usage_snap_state_cold），这里只管折到文件尾。
     """
-    pricing = _usage_snap_state_advance(r, pricing_on)
+    _usage_snap_state_advance(r)
     state = _usage_snap_state[r]
-    priced = state["pricing"]
 
     def fold(row):
         # 一行折三处：all-time 半 + 它所属那天的窗口半 + 那个小时的小时桶。
-        # 过滤与算价在 _fold_usage_snapshot 里只做一次。
+        # 过滤与字段提取在 _fold_usage_snapshot 里只做一次。
         day = _usage_day_bucket(state, row, r, _day_snapshot_bucket)
         hour = None if day is None else _usage_hour_bucket(state, row, day)
         extras = () if day is None else ((day,) if hour is None else (day, hour))
-        _bind__fold_usage_snapshot(row, state["snap"], r, None, None, pricing_on,
-                             also=extras, pricing=pricing, priced=priced)
+        _bind__fold_usage_snapshot(row, state["snap"], r, None, None,
+                             also=extras)
 
     offset, error = _scan_usage_from(state["offset"], fold)
     if error is None:
         state["offset"] = offset
         state["tail"] = _log_tail_signature(offset)
-        _pricing_record_close(priced, pricing)
     return state, offset, error
 
-def _usage_alltime_snapshot(r, pricing_on=None):
+def _usage_alltime_snapshot(r):
     """A private copy of the cached all-time fold for realm filter `r`
     (None = every realm).
 
@@ -2774,7 +2457,7 @@ def _usage_alltime_snapshot(r, pricing_on=None):
     them.
     """
     with _usage_snap_state_lock:
-        state, offset, error = _usage_snap_state_ready(r, pricing_on)
+        state, offset, error = _usage_snap_state_ready(r)
         if error is None:
             # Copied while the lock is held: the caller decorates what it
             # gets, and a concurrent refresh must never be seen half-applied.
@@ -2797,7 +2480,7 @@ def _usage_alltime_snapshot(r, pricing_on=None):
         _usage_cache_maybe_save("snapshot", offset)
     return snap
 
-def _scan_usage_snapshot_window(r, since, until, pricing_on=None):
+def _scan_usage_snapshot_window(r, since, until):
     """One pass over the log, keeping only the rows inside the window.
 
     Nothing is carried over here - a window moves with the clock - but the
@@ -2810,16 +2493,11 @@ def _scan_usage_snapshot_window(r, since, until, pricing_on=None):
     is a bound the fold ignores, and the pre-filter must not read it as
     "keep nothing after the epoch" and drop rows the fold would have
     counted.
-
-    价表在这里取一次（与 all-time 折叠同一条口径：一次扫描一份价表快照），
-    传给折叠当行级记忆的代次；这次扫描里的行因此可以和别的视图共享定价结果。
     """
-    pricing = _pricing_inputs(pricing_on)
     snap = _empty_stats()
     _, error = _scan_usage_from(
         0,
-        lambda row: _bind__fold_usage_snapshot(row, snap, r, since, until, pricing_on,
-                                         pricing=pricing),
+        lambda row: _bind__fold_usage_snapshot(row, snap, r, since, until),
         skip=lambda line: _bind__line_outside_window(line, since or None,
                                                  until or None),
         skip_raw=lambda raw: _bind__line_outside_window_bytes(raw, since or None,
@@ -2828,7 +2506,7 @@ def _scan_usage_snapshot_window(r, since, until, pricing_on=None):
         _log(f"usage snapshot read failed: {error}")
     return snap
 
-def _usage_snapshot_window_from_days(r, since, until, pricing_on):
+def _usage_snapshot_window_from_days(r, since, until):
     """窗口半快照 = 窗口内的日桶之和；日桶不可用时返回 None。
 
     先把 all-time 折叠推进到文件尾：日桶与它同一次扫描推进，窗口半与
@@ -2841,15 +2519,15 @@ def _usage_snapshot_window_from_days(r, since, until, pricing_on):
     那一刻有整秒行时整条路退回 None（见 _closed_window_edge_ok），调用方
     接着整段扫描，结果不变。
 
-    状态冷（从没折过/刚被价表、realm、日志判废/采纳失败）时直接返回 None：
+    状态冷（从没折过/刚被 realm、日志判废/采纳失败）时直接返回 None：
     那条路要先付一次全量重折，窗口请求不背它——调用方退回按日分组的冷扫描
     （同一批行、同一个求和口径，逐字节相同），重折留给 all-time 视图与
     预热器（见 _usage_snap_state_cold）。
     """
     with _usage_snap_state_lock:
-        if _usage_snap_state_cold(r, pricing_on):
+        if _usage_snap_state_cold(r):
             return None
-        state, offset, error = _usage_snap_state_ready(r, pricing_on)
+        state, offset, error = _usage_snap_state_ready(r)
         if error is not None:
             # 折叠失败时状态已经归零，日桶跟着清空：这一次退回整段扫描，
             # 与「没有缓存」时的行为一致。
@@ -2877,7 +2555,7 @@ def _usage_snapshot_window_from_days(r, since, until, pricing_on):
     _usage_cache_maybe_save("snapshot", offset)
     return snap
 
-def _usage_snapshot_window_from_hours(r, since, until, pricing_on):
+def _usage_snapshot_window_from_hours(r, since, until):
     """窗口半快照 = 整点窗口内的小时桶之和；小时层不可用时返回 None。
 
     与日桶版同一条规矩：先把 all-time 折叠推进到文件尾（小时桶与它同一次
@@ -2898,7 +2576,7 @@ def _usage_snapshot_window_from_hours(r, since, until, pricing_on):
 
         情形——与 _series_slice 的格点校验同源。
 
-    状态冷（从没折过/刚被价表、realm、日志判废/采纳失败）时直接返回 None：
+    状态冷（从没折过/刚被 realm、日志判废/采纳失败）时直接返回 None：
     那条路要先付一次全量重折，窗口请求不背它——调用方退回按小时分组的冷
     扫描（同一批行、同一个求和口径，逐字节相同），重折留给 all-time 视图
     与预热器（见 _usage_snap_state_cold）。
@@ -2913,9 +2591,9 @@ def _usage_snapshot_window_from_hours(r, since, until, pricing_on):
         if until_key is None:
             return None
     with _usage_snap_state_lock:
-        if _usage_snap_state_cold(r, pricing_on):
+        if _usage_snap_state_cold(r):
             return None
-        state, offset, error = _usage_snap_state_ready(r, pricing_on)
+        state, offset, error = _usage_snap_state_ready(r)
         if error is not None:
             _log(f"usage snapshot read failed: {error}")
             state.update({"snap": None, "offset": 0, "tail": b"",
@@ -2960,7 +2638,7 @@ def _usage_snapshot_window_from_hours(r, since, until, pricing_on):
     _usage_cache_maybe_save("snapshot", offset)
     return snap
 
-def _usage_snapshot_window(r, since, until, pricing_on=None):
+def _usage_snapshot_window(r, since, until):
     """窗口半快照：对齐窗口由日桶/小时桶相加，其余保持整段扫描。
 
     只有「两端都落在同一套格点上」的窗口拆得成存量桶的并集：起点是本地
@@ -2974,35 +2652,35 @@ def _usage_snapshot_window(r, since, until, pricing_on=None):
     if until is None:
         day_key = _window_day_key_safe(since)
         if day_key is not None and _usage_day_buckets_enabled():
-            snap = _usage_snapshot_window_from_days(r, since, None, pricing_on)
+            snap = _usage_snapshot_window_from_days(r, since, None)
             if snap is not None:
                 return snap
             # 日桶没盖住窗口起点（还没折过/被剪枝/折叠出错）：冷路径现折一份
             # 按日分组的窗口半，口径与日桶状态一致，两条路径的字节因此相同。
-            return _bind__scan_usage_snapshot_window_days(r, since, None, pricing_on)
+            return _bind__scan_usage_snapshot_window_days(r, since, None)
         if _usage_day_buckets_enabled() and _window_hour_key_safe(since) is not None:
-            snap = _usage_snapshot_window_from_hours(r, since, None, pricing_on)
+            snap = _usage_snapshot_window_from_hours(r, since, None)
             if snap is not None:
                 return snap
             # 小时层没盖住窗口起点（还没折过/被剪枝/那天的小时格点不成立）：
             # 冷路径现折一份按小时分组的窗口半，口径与小时桶状态一致。
-            return _bind__scan_usage_snapshot_window_hours(r, since, None, pricing_on)
-        return _bind__scan_usage_snapshot_window(r, since, until, pricing_on)
+            return _bind__scan_usage_snapshot_window_hours(r, since, None)
+        return _bind__scan_usage_snapshot_window(r, since, until)
     # 闭窗口：两端都落在格点上才有桶可借（与上面同一套格点校验）。
     if _usage_day_buckets_enabled():
         if (_window_day_key_safe(since) is not None
                 and _window_day_key_safe(until) is not None):
-            snap = _usage_snapshot_window_from_days(r, since, until, pricing_on)
+            snap = _usage_snapshot_window_from_days(r, since, until)
             if snap is not None:
                 return snap
-            return _bind__scan_usage_snapshot_window_days(r, since, until, pricing_on)
+            return _bind__scan_usage_snapshot_window_days(r, since, until)
         if (_window_hour_key_safe(since) is not None
                 and _window_hour_key_safe(until) is not None):
-            snap = _usage_snapshot_window_from_hours(r, since, until, pricing_on)
+            snap = _usage_snapshot_window_from_hours(r, since, until)
             if snap is not None:
                 return snap
-            return _bind__scan_usage_snapshot_window_hours(r, since, until, pricing_on)
-    return _bind__scan_usage_snapshot_window(r, since, until, pricing_on)
+            return _bind__scan_usage_snapshot_window_hours(r, since, until)
+    return _bind__scan_usage_snapshot_window(r, since, until)
 
 def _usage_snapshot_uncached(realm=None, since=None, until=None):
     # None means every realm; usage_snapshot() has already mapped "all"
@@ -3011,17 +2689,13 @@ def _usage_snapshot_uncached(realm=None, since=None, until=None):
     # WorkBuddy 池已移除：这里不再有「代表账号」。字段保留（面板按它们渲染），
     # 值恒为空 —— 删字段会让前端读到 undefined。
     rep = None
-    # 总开关整扫只问一次，值一路传进折叠与价格指纹：每行重问一次就是每行一次
-    # os.stat，2.7 万行上很可观（见 tests/_test_usage_aggregate_fold.py）。
-    # 价格估算体系已下线：折叠永远在「不计价」档跑。
-    pricing_on = False
     if since is None and until is None:
         # An open window covers every row, and the rows only ever arrive at
         # the end of the log, so the all-time totals are carried over from the
         # last fold and only the rows appended since then are read.
-        snap = _usage_alltime_snapshot(r, pricing_on)
+        snap = _usage_alltime_snapshot(r)
     else:
-        snap = _usage_snapshot_window(r, since, until, pricing_on)
+        snap = _usage_snapshot_window(r, since, until)
     snap["started"] = _usage.get("started", time.time())
     snap["since"] = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(snap.get("started", time.time())))
     snap["log_file"] = _usage_log_path()
@@ -4253,8 +3927,7 @@ def _bump_analytics_models(tgt, m_id, vals, is_err):
     tm["tokens"] += vals[4]
     tm["reasoning"] += vals[2]
 
-def _fold_usage_analytics(row, realm, maps, half, pricing_on=None, also=None,
-                          pricing=None, priced=None):
+def _fold_usage_analytics(row, realm, maps, half, also=None):
     """Fold one parsed row into one half of the analytics payload.
 
     `maps` holds the four maps that half folds into and `half` names the stat
@@ -4267,15 +3940,8 @@ def _fold_usage_analytics(row, realm, maps, half, pricing_on=None, also=None,
     the two tables are views of the same spend, not a decomposition of it.
 
     `also` 是同一行还要折进的那几份 (maps, half) 的序列（按日分桶与按小时
-    分桶的窗口半）。过滤、算价与字段提取只做一次，各份各自累加：折叠本来
-    就要求每侧各记一笔，而 cost_for_row 与 realm 判定是每行最贵的那部分，
-    只该付一次。
-
-    `pricing` 是本次扫描开头取到的 _pricing_inputs() 元组（见
-    _fold_usage_snapshot 的同名参数）。
-
-    `priced` 是本次扫描要填的「用到的价」记录（见「用到的价」状态指纹一节），
-    只有推进状态的那条折叠传它；窗口半/冷扫描传 None。
+    分桶的窗口半）。过滤与字段提取只做一次，各份各自累加：折叠本来就要求
+    每侧各记一笔，而 realm 判定是每行最贵的那部分，只该付一次。
     """
     if realm and not row_matches_realm(row, realm):
         return
@@ -4287,9 +3953,6 @@ def _fold_usage_analytics(row, realm, maps, half, pricing_on=None, also=None,
     if outcome == "client_aborted":
         return
     is_err = outcome != "completed"
-    cost = _bind__row_cost(row, pricing, pricing_on)
-    # 折进去的每一行都把「用到的价」记进状态指纹（中止行在上面整行跳过）。
-    _priced_note(priced, row, cost, pricing)
     vals = _analytics_row_values(row)
     acct_uid = row.get("account") or "(unattributed)"
     m_id = row.get("model") or "(unknown)"
@@ -4350,7 +4013,7 @@ _analytics_state = {}
 
 _analytics_state_lock = threading.Lock()
 
-def _analytics_all_time(realm, pricing_on=None):
+def _analytics_all_time(realm):
     """The cached all-time fold for one realm filter; returns (maps, offset).
 
     One state per realm: the filter decides which rows the fold ever sees, so
@@ -4360,7 +4023,7 @@ def _analytics_all_time(realm, pricing_on=None):
     stopped.
     """
     with _analytics_state_lock:
-        state, offset, error = _analytics_state_ready(realm, pricing_on)
+        state, offset, error = _analytics_state_ready(realm)
         if error is None:
             # Copied under the lock, same rule as the snapshot state: what
             # the caller decorates must not be the live fold.
@@ -4380,13 +4043,12 @@ def _analytics_all_time(realm, pricing_on=None):
         _usage_cache_maybe_save("analytics", offset)
     return maps, offset
 
-def _analytics_state_advance(realm, pricing_on=None):
-    """（不折叠）取/建状态、采纳 checkpoint、判废归零、记指纹。
+def _analytics_state_advance(realm):
+    """（不折叠）取/建状态、采纳 checkpoint、判废归零。
 
-    调用方必须已持有 _analytics_state_lock。返回本次扫描取到的价表代次
-    （与记进状态指纹的是同一份）。状态是否「冷」（这次要付一次全量重折）看
-    state["offset"]：> 0 表示有可续折的数据，0 表示折叠要从文件头开始——
-    状态刚建、刚被价表 / realm / 日志判废、或 checkpoint 采纳失败。与
+    调用方必须已持有 _analytics_state_lock。状态是否「冷」（这次要付一次全量
+    重折）看 state["offset"]：> 0 表示有可续折的数据，0 表示折叠要从文件头
+    开始——状态刚建、刚被 realm / 日志判废、或 checkpoint 采纳失败。与
     snapshot 侧同一套分工：采纳/判废只有这一段定义，_analytics_state_ready
     与窗口路径的冷热判定（_analytics_state_cold）共用它，两边不会漂移。
     """
@@ -4394,42 +4056,37 @@ def _analytics_state_advance(realm, pricing_on=None):
     if state is None:
         state = _analytics_state[realm] = {"maps": _new_analytics_maps(),
                                            "offset": 0, "key": None,
-                                           "pricing": None, "realm": None,
+                                           "realm": None,
                                            "tail": b"", "days": {},
                                            "days_floor": None, "max_at": 0,
                                            "hours_keep": True,
                                            "hits": [], "hits_overflow": False}
-    pricing = _pricing_inputs(pricing_on)
     realm_inputs = _realm_inputs()
     log_key = _usage_log_key()
-    fresh = _pricing_record_new() if (pricing is not None
-                                      and pricing[0]) else None
     if state["key"] is None:
         # 全新状态（进程刚起来）：先问 checkpoint，问不到才从零折起。
-        if not _usage_cache_adopt_analytics(realm, state, log_key, pricing, realm_inputs):
+        if not _usage_cache_adopt_analytics(realm, state, log_key, realm_inputs):
             state.update({"maps": _new_analytics_maps(), "offset": 0, "tail": b"",
                           "days": {}, "days_floor": None, "max_at": 0,
-                          "hits": [], "hits_overflow": False, "pricing": fresh})
-    elif (not _pricing_used_unchanged(state["pricing"], pricing)
-            or state["realm"] != realm_inputs
+                          "hits": [], "hits_overflow": False})
+    elif (state["realm"] != realm_inputs
             or not _log_resume_ok(state, log_key)):
         state.update({"maps": _new_analytics_maps(), "offset": 0, "tail": b"",
                       "days": {}, "days_floor": None, "max_at": 0,
-                      "hits": [], "hits_overflow": False, "pricing": fresh})
+                      "hits": [], "hits_overflow": False})
     state.update({"realm": realm_inputs, "key": log_key})
-    return pricing
 
-def _analytics_state_cold(realm, pricing_on=None):
+def _analytics_state_cold(realm):
     """窗口请求现在会不会付一次全量重折？True = 会（窗口改走冷扫描）。
 
     调用方必须已持有 _analytics_state_lock。语义与 _usage_snap_state_cold
     逐条相同：判定不折叠、不写结果，窗口请求不会把状态冻在冷态（offset 仍是
     0，下一个 all-time 半的请求照样从零折到文件尾），重折之后两边字节一致。
     """
-    _analytics_state_advance(realm, pricing_on)
+    _analytics_state_advance(realm)
     return _analytics_state[realm]["offset"] <= 0
 
-def _analytics_state_ready(realm, pricing_on=None):
+def _analytics_state_ready(realm):
     """把 `realm` 的 all-time 折叠推进到文件尾；返回 (state, offset, error)。
 
     调用方必须已持有 _analytics_state_lock。日桶、小时子表与 all-time 折叠
@@ -4440,20 +4097,15 @@ def _analytics_state_ready(realm, pricing_on=None):
     _prune_day_buckets）；`max_at` 是折过的最大 at（含 realm 不匹配的行），
     小时窗口靠它判断窗口上界有没有切掉桶里的行。
 
-    状态指纹是「折叠行真正用到的价」记录（T15，见「用到的价」状态指纹一节）：
-    折叠时逐行更新（state["pricing"]），扫描成功后刷时间线投影摘要
-    （_pricing_record_close），判废走 _pricing_used_unchanged。
-
     采纳 checkpoint 与判废归零在 _analytics_state_advance 里（窗口路径的
     冷热判定也用那一段），这里只管折到文件尾。
     """
-    pricing = _analytics_state_advance(realm, pricing_on)
+    _analytics_state_advance(realm)
     state = _analytics_state[realm]
-    priced = state["pricing"]
 
     def fold(row):
         # 一行折三处：all-time 半 + 它所属那天的窗口半 + 那天里它所属那小时
-        # 的窗口半（过滤与算价只做一次）。
+        # 的窗口半（过滤与字段提取只做一次）。
         at = row.get("at") or 0
         if at > state["max_at"]:
             state["max_at"] = at
@@ -4466,17 +4118,15 @@ def _analytics_state_ready(realm, pricing_on=None):
         else:
             also = ((day, _ANALYTICS_WINDOW), (hour, _ANALYTICS_WINDOW))
         _bind__fold_usage_analytics(
-            row, realm, state["maps"], _ANALYTICS_ALL, pricing_on, also=also,
-            pricing=pricing, priced=priced)
+            row, realm, state["maps"], _ANALYTICS_ALL, also=also)
 
     offset, error = _scan_usage_from(state["offset"], fold)
     if error is None:
         state["offset"] = offset
         state["tail"] = _log_tail_signature(offset)
-        _pricing_record_close(priced, pricing)
     return state, offset, error
 
-def _analytics_window_from_days(realm, day_key, until, pricing_on):
+def _analytics_window_from_days(realm, day_key, until):
     """窗口半 maps = 窗口内的日桶之和；日桶不可用时返回 None。
 
     先确保 all-time 折叠推进到文件尾：日桶与它同一次扫描推进，窗口半与
@@ -4488,15 +4138,15 @@ def _analytics_window_from_days(realm, day_key, until, pricing_on):
     那一刻的行，所以那一刻有整秒行时整条路退回 None（见
     _closed_window_edge_ok），调用方接着整段扫描，结果不变。
 
-    状态冷（从没折过/刚被价表、realm、日志判废/采纳失败）时直接返回 None：
+    状态冷（从没折过/刚被 realm、日志判废/采纳失败）时直接返回 None：
     那条路要先付一次全量重折，窗口请求不背它——调用方退回按日分组的冷扫描
     （同一批行、同一个求和口径，逐字节相同），重折留给 all-time 半与预热器
     （见 _analytics_state_cold）。
     """
     with _analytics_state_lock:
-        if _analytics_state_cold(realm, pricing_on):
+        if _analytics_state_cold(realm):
             return None
-        state, offset, error = _analytics_state_ready(realm, pricing_on)
+        state, offset, error = _analytics_state_ready(realm)
         if error is not None:
             _log("compute_usage_analytics failed: %s" % error)
             state.update({"maps": _new_analytics_maps(), "offset": 0, "tail": b"",
@@ -4521,7 +4171,7 @@ def _analytics_window_from_days(realm, day_key, until, pricing_on):
     _usage_cache_maybe_save("analytics", offset)
     return maps
 
-def _analytics_window_from_hours(realm, since, until, pricing_on):
+def _analytics_window_from_hours(realm, since, until):
     """窗口半 maps = 窗口内的小时桶之和；小时层不可用时返回 None。
 
     成立条件（缺一不可，任何一条不成立就退回扫描——正确性优先）：
@@ -4534,15 +4184,15 @@ def _analytics_window_from_hours(realm, since, until, pricing_on):
       * 窗口起点所在的天及其后每一天都有 hours 子表（被剪枝线剪掉、或本地
         午夜落在不存在的小时里而摘掉的那天，都会让窗口整体退回扫描）。
 
-    状态冷（从没折过/刚被价表、realm、日志判废/采纳失败）时直接返回 None：
+    状态冷（从没折过/刚被 realm、日志判废/采纳失败）时直接返回 None：
     那条路要先付一次全量重折，窗口请求不背它——调用方退回按小时分组的冷
     扫描（同一批行、同一个求和口径，逐字节相同），重折留给 all-time 半与
     预热器（见 _analytics_state_cold）。
     """
     with _analytics_state_lock:
-        if _analytics_state_cold(realm, pricing_on):
+        if _analytics_state_cold(realm):
             return None
-        state, offset, error = _analytics_state_ready(realm, pricing_on)
+        state, offset, error = _analytics_state_ready(realm)
         if error is not None:
             _log("compute_usage_analytics failed: %s" % error)
             state.update({"maps": _new_analytics_maps(), "offset": 0, "tail": b"",
@@ -4593,7 +4243,7 @@ def _analytics_window_from_hours(realm, since, until, pricing_on):
     _usage_cache_maybe_save("analytics", offset)
     return maps
 
-def _analytics_window(realm, since, until, stop_at, pricing_on):
+def _analytics_window(realm, since, until, stop_at):
     """窗口半 analytics：对齐窗口由日桶/小时桶相加，其余保持整段扫描。
 
     与 _usage_snapshot_window 同一条规矩，外加一层小时桶：起点是本地午夜、
@@ -4606,33 +4256,26 @@ def _analytics_window(realm, since, until, stop_at, pricing_on):
     until_day = None if until is None else _window_day_key_safe(until)
     if (day_key is not None and _usage_day_buckets_enabled()
             and (until is None or until_day is not None)):
-        maps = _analytics_window_from_days(realm, day_key, until, pricing_on)
+        maps = _analytics_window_from_days(realm, day_key, until)
         if maps is not None:
             return maps
         # 日桶没盖住窗口起点：冷路径现折一份按日分组的窗口半，口径一致。
-        return _bind__scan_usage_analytics_window_days(realm, since, until, stop_at,
-                                                 pricing_on)
+        return _bind__scan_usage_analytics_window_days(realm, since, until, stop_at)
     if _window_hour_aligned(since) and _usage_day_buckets_enabled():
-        maps = _analytics_window_from_hours(realm, since, until, pricing_on)
+        maps = _analytics_window_from_hours(realm, since, until)
         if maps is not None:
             return maps
         # 小时层没盖住：冷路径现折一份按小时分组的窗口半，口径与小时层一致。
-        return _bind__scan_usage_analytics_window_hours(realm, since, until, stop_at,
-                                                  pricing_on)
-    return _bind__scan_usage_analytics_window(realm, since, until, stop_at=stop_at,
-                                        pricing_on=pricing_on)
+        return _bind__scan_usage_analytics_window_hours(realm, since, until, stop_at)
+    return _bind__scan_usage_analytics_window(realm, since, until, stop_at=stop_at)
 
-def _scan_usage_analytics_window(realm, since, until, stop_at=None, pricing_on=None):
+def _scan_usage_analytics_window(realm, since, until, stop_at=None):
     """One pass over the log, folding only the rows inside the window.
 
     The all-time half is not rebuilt here - it comes from the incremental fold
     - and the read stops where that fold stopped, so both halves of the
     payload describe the same bytes even when a row lands mid-rebuild.
-
-    价表在这里取一次（与 all-time 折叠同一条口径），传给折叠当行级记忆的
-    代次：这次窗口扫描里的行可以和 all-time 半共享定价结果。
     """
-    pricing = _pricing_inputs(pricing_on)
     maps = _new_analytics_maps()
 
     def fold(row):
@@ -4643,8 +4286,7 @@ def _scan_usage_analytics_window(realm, since, until, stop_at=None, pricing_on=N
             return
         if until is not None and at > until:
             return
-        _bind__fold_usage_analytics(row, realm, maps, _ANALYTICS_WINDOW, pricing_on,
-                              pricing=pricing)
+        _bind__fold_usage_analytics(row, realm, maps, _ANALYTICS_WINDOW)
 
     _, error = _scan_usage_from(
         0, fold, stop_at=stop_at,
@@ -5235,7 +4877,7 @@ def _copy_analytics_window_maps(maps):
                         for h, sub in hours.items()}
     return out
 
-def _scan_usage_snapshot_window_days(r, since, until, pricing_on=None):
+def _scan_usage_snapshot_window_days(r, since, until):
     """窗口半的冷路径：整段扫一遍，先按日分桶再相加。
 
     日桶状态不可用（还没折过、被剪枝、折叠出错）时走这里。结果必须与日桶
@@ -5246,10 +4888,9 @@ def _scan_usage_snapshot_window_days(r, since, until, pricing_on=None):
     状态冷时它是窗口请求的直接答案（不折状态，重折留给 all-time 视图与
     预热器，见 _usage_snap_state_cold）；其余情形它紧跟一次 all-time 折叠
     （_usage_snapshot_window_from_days 先折到文件尾才发现日桶不够用），
-    行级记忆几乎全中：同一批行刚在 all-time 半算过价与日键。窗口外的行由
-    skip 挡在解析之前，这条路只付窗口内那批行。价表照样在本函数开头取一次。
+    行级记忆几乎全中：同一批行刚在 all-time 半折过。窗口外的行由
+    skip 挡在解析之前，这条路只付窗口内那批行。
     """
-    pricing = _pricing_inputs(pricing_on)
     days = {}
 
     def fold(row):
@@ -5262,8 +4903,7 @@ def _scan_usage_snapshot_window_days(r, since, until, pricing_on=None):
         bucket = days.get(key)
         if bucket is None:
             bucket = days[key] = _empty_stats()
-        _bind__fold_usage_snapshot(row, bucket, r, None, None, pricing_on,
-                             pricing=pricing)
+        _bind__fold_usage_snapshot(row, bucket, r, None, None)
 
     _, error = _scan_usage_from(
         0, fold,
@@ -5278,7 +4918,7 @@ def _scan_usage_snapshot_window_days(r, since, until, pricing_on=None):
         _add_usage_snapshot(snap, days[key])
     return snap
 
-def _scan_usage_snapshot_window_hours(r, since, until, pricing_on=None):
+def _scan_usage_snapshot_window_hours(r, since, until):
     """窗口半的冷路径：整段扫一遍，先按小时分桶再相加。
 
     小时层状态不可用（还没折过、被剪枝、折叠出错、那天的格点不成立）时走
@@ -5291,10 +4931,8 @@ def _scan_usage_snapshot_window_hours(r, since, until, pricing_on=None):
     把整张小时表摘掉、窗口退回这条路径，所以这条路径必须把它们算进去。
     排序按 (日键, 序号) 数值序，与状态侧的遍历顺序一致。
 
-    价表在本函数开头取一次，行级记忆（见「行级结果记忆」）跟着这一批扫描
-    走：同一批行通常刚在 all-time 半算过价与日键，这里几乎全中。
+    同一批行通常刚在 all-time 半折过，日键表几乎全中。
     """
-    pricing = _pricing_inputs(pricing_on)
     hours = {}
     day_ats = {}
 
@@ -5312,8 +4950,7 @@ def _scan_usage_snapshot_window_hours(r, since, until, pricing_on=None):
         bucket = hours.get((key, hour))
         if bucket is None:
             bucket = hours[(key, hour)] = _empty_stats()
-        _bind__fold_usage_snapshot(row, bucket, r, None, None, pricing_on,
-                             pricing=pricing)
+        _bind__fold_usage_snapshot(row, bucket, r, None, None)
 
     _, error = _scan_usage_from(
         0, fold,
@@ -5328,10 +4965,8 @@ def _scan_usage_snapshot_window_hours(r, since, until, pricing_on=None):
         _add_usage_snapshot(snap, hours[key])
     return snap
 
-def _scan_usage_analytics_window_days(realm, since, until, stop_at=None,
-                                      pricing_on=None):
+def _scan_usage_analytics_window_days(realm, since, until, stop_at=None):
     """窗口半 analytics 的冷路径：按日分桶再相加（见 snapshot 版）。"""
-    pricing = _pricing_inputs(pricing_on)
     days = {}
 
     def fold(row):
@@ -5344,8 +4979,7 @@ def _scan_usage_analytics_window_days(realm, since, until, stop_at=None,
         maps = days.get(key)
         if maps is None:
             maps = days[key] = _new_analytics_maps()
-        _bind__fold_usage_analytics(row, realm, maps, _ANALYTICS_WINDOW, pricing_on,
-                              pricing=pricing)
+        _bind__fold_usage_analytics(row, realm, maps, _ANALYTICS_WINDOW)
 
     _, error = _scan_usage_from(
         0, fold, stop_at=stop_at,
@@ -5358,8 +4992,7 @@ def _scan_usage_analytics_window_days(realm, since, until, stop_at=None,
         _add_analytics_window_maps(out, days[key])
     return out
 
-def _scan_usage_analytics_window_hours(realm, since, until, stop_at=None,
-                                       pricing_on=None):
+def _scan_usage_analytics_window_hours(realm, since, until, stop_at=None):
     """窗口半 analytics 的冷路径（起点整小时）：按小时分桶再相加。
 
     小时层不可用（还没折过、被剪枝、折叠出错、until 切在桶中间）时走这里。
@@ -5370,9 +5003,7 @@ def _scan_usage_analytics_window_hours(realm, since, until, stop_at=None,
     的小时里时这一天的小时键会变成负数，求和照样把它算进去（分组只是浮点
     结合顺序的载体），所以这条冷路径不依赖格点是否成立。
 
-    价表在本函数开头取一次，行级记忆（见「行级结果记忆」）跟着这一批扫描走。
     """
-    pricing = _pricing_inputs(pricing_on)
     days = {}
 
     def fold(row):
@@ -5390,8 +5021,7 @@ def _scan_usage_analytics_window_hours(realm, since, until, stop_at=None,
         maps = hours.get(hour)
         if maps is None:
             maps = hours[hour] = _new_analytics_maps()
-        _bind__fold_usage_analytics(row, realm, maps, _ANALYTICS_WINDOW, pricing_on,
-                              pricing=pricing)
+        _bind__fold_usage_analytics(row, realm, maps, _ANALYTICS_WINDOW)
 
     _, error = _scan_usage_from(
         0, fold, stop_at=stop_at,
@@ -5952,28 +5582,6 @@ def _usage_cache_read_legacy_file():
         return None
     return data
 
-_usage_cache_digest_memo = {}
-
-def _object_digest(obj):
-    """一段 JSON 内容摘要，按对象身份记忆；算不出来返回 None。
-
-    记忆表的值强引用对象本身，所以 id() 不会被回收复用；超过几条就整体清空
-    ——正常进程里价表对象只在价格变化时换代，这里只是给长期运行兜底。
-    """
-    hit = _usage_cache_digest_memo.get(id(obj))
-    if hit is not None and hit[0] is obj:
-        return hit[1]
-    try:
-        payload = json.dumps(obj, sort_keys=True, ensure_ascii=False,
-                             separators=(",", ":")).encode("utf-8")
-        digest = hashlib.sha1(payload).hexdigest()
-    except Exception:
-        return None
-    if len(_usage_cache_digest_memo) > 8:
-        _usage_cache_digest_memo.clear()
-    _usage_cache_digest_memo[id(obj)] = (obj, digest)
-    return digest
-
 def _realm_inputs_key(inputs):
     """realm 指纹本来就是值比较（不是身份），JSON 化后原样可比。"""
     if inputs is None:
@@ -6503,18 +6111,6 @@ def _usage_cache_position_ok(entry, log_key):
         return None
     return offset, tail
 
-def _usage_cache_fingerprints_ok(entry, pricing_used_ok, realm_key):
-    """「用到的价」与 realm 指纹必须和当前进程读到的一致。
-
-    价格一侧由调用方用 _pricing_used_unchanged(entry["pricing"], pricing)
-    判好（记录形状不符、价表读不出来、总开关翻转都在那里返回 False），这里
-    只把它和 realm 一侧一起收口。任一侧取不到（None）都算不一致：取不到就
-    意味着「折叠当时读了什么」已经无法确认，缓存不能当有效用。
-    """
-    if not pricing_used_ok or realm_key is None:
-        return False
-    return entry.get("realm_inputs") == realm_key
-
 def _usage_cache_note_adopted(kind, offset):
     """采用成功后的节流初始化：刚加载的 offset 不算「有新字节要写」。
 
@@ -6528,7 +6124,7 @@ def _usage_cache_note_adopted(kind, offset):
             _usage_cache_checkpointed[kind] = offset
         _set_usage_cache_last_attempt(time.time())
 
-def _usage_cache_adopt_snapshot(r, state, log_key, pricing, realm):
+def _usage_cache_adopt_snapshot(r, state, log_key, realm):
     """把 checkpoint 里对应 realm 的 snapshot 折叠装进 state；成功返回 True。
 
     调用方持有 _usage_snap_state_lock，并且只在 state 全新时调用：采用只把
@@ -6537,6 +6133,10 @@ def _usage_cache_adopt_snapshot(r, state, log_key, pricing, realm):
     闭窗口的边沿账（hits/hits_overflow）是这一份的必填项：旧版 checkpoint
     没有这两个键，会被拒 → 升级后第一次刷新重折一次（一次性代价，与
     v3→v4 缺小时表时的处置一致）。
+
+    「用到的价」指纹机制已随价格估算体系退役（2026-10-22）：定价时代写出的
+    条目带着非 None 的 pricing 记录，这里按旧格式整条拒掉——与位置/形状
+    校验失败同一条路，当作无索引重建。
     """
     entry = _usage_cache_take("snapshot", r)
     if entry is None:
@@ -6544,9 +6144,8 @@ def _usage_cache_adopt_snapshot(r, state, log_key, pricing, realm):
     position = _usage_cache_position_ok(entry, log_key)
     if position is None:
         return False
-    if not _usage_cache_fingerprints_ok(
-            entry, _pricing_used_unchanged(entry.get("pricing"), pricing),
-            _realm_inputs_key(realm)):
+    realm_key = _realm_inputs_key(realm)
+    if entry.get("pricing") is not None or realm_key is None             or entry.get("realm_inputs") != realm_key:
         return False
     snap = entry.get("snap")
     if not _usage_cache_snapshot_ok(snap):
@@ -6566,10 +6165,7 @@ def _usage_cache_adopt_snapshot(r, state, log_key, pricing, realm):
     state.update({"snap": snap, "offset": offset, "tail": tail,
                   "days": days, "days_floor": floor,
                   "hours_floor_at": _hours_floor_on_adopt(days, hours_floor),
-                  "hits": list(hits), "hits_overflow": overflow,
-                  # 「用到的价」记录跟着状态一起装进来：后续增量折叠继续往
-                  # 这份记录里加，下一次判废拿它比对当前价表。
-                  "pricing": _copy_pricing_record(entry.get("pricing"))})
+                  "hits": list(hits), "hits_overflow": overflow})
     _usage_cache_note_adopted("snapshot", offset)
     return True
 
@@ -6631,17 +6227,20 @@ def _usage_cache_adopt_remaining(state, log_key):
     _usage_cache_note_adopted("remaining", offset)
     return True
 
-def _usage_cache_adopt_analytics(realm, state, log_key, pricing, realm_inputs):
-    """analytics all-time 折叠的采用；闭窗口的边沿账是必填项（见 snapshot 版）。"""
+def _usage_cache_adopt_analytics(realm, state, log_key, realm_inputs):
+    """analytics all-time 折叠的采用；闭窗口的边沿账是必填项（见 snapshot 版）。
+
+    定价时代的旧格式条目（pricing 记录非 None）在这里按无索引拒掉，
+    与 snapshot 版同一处置。
+    """
     entry = _usage_cache_take("analytics", realm)
     if entry is None:
         return False
     position = _usage_cache_position_ok(entry, log_key)
     if position is None:
         return False
-    if not _usage_cache_fingerprints_ok(
-            entry, _pricing_used_unchanged(entry.get("pricing"), pricing),
-            _realm_inputs_key(realm_inputs)):
+    realm_key = _realm_inputs_key(realm_inputs)
+    if entry.get("pricing") is not None or realm_key is None             or entry.get("realm_inputs") != realm_key:
         return False
     maps = entry.get("maps")
     if not _usage_cache_analytics_ok(maps):
@@ -6660,8 +6259,7 @@ def _usage_cache_adopt_analytics(realm, state, log_key, pricing, realm_inputs):
     offset, tail = position
     state.update({"maps": maps, "offset": offset, "tail": tail,
                   "days": days, "days_floor": floor, "max_at": max_at,
-                  "hits": list(hits), "hits_overflow": overflow,
-                  "pricing": _copy_pricing_record(entry.get("pricing"))})
+                  "hits": list(hits), "hits_overflow": overflow})
     _usage_cache_note_adopted("analytics", offset)
     return True
 
@@ -6767,13 +6365,6 @@ def _usage_cache_snapshot_entry(realm, state):
     tail = state.get("tail")
     if offset <= 0 or not isinstance(tail, bytes) or state.get("snap") is None:
         return None
-    # 「用到的价」记录（T15；见「用到的价」状态指纹一节）：形状不合格就不写。
-    # 价格估算体系移除后折叠不再读任何价，record 恒为 None —— 这种状态**仍然
-    # 值得落盘**（缓存的价值在跳过 2.7 万行重扫，与计价无关），校验交给
-    # offset / tail / 日志指纹。只有「有记录但形状坏了」才跳过。
-    record = state.get("pricing")
-    if record is not None and not _pricing_record_ok(record):
-        return None
     realm_inputs = state.get("realm")
     realm_key = _realm_inputs_key(realm_inputs)
     if realm_key is None:
@@ -6784,8 +6375,7 @@ def _usage_cache_snapshot_entry(realm, state):
         return None
     return {"realm": realm, "offset": offset,
             "key": list(state["key"] or (0, 0, 0)), "tail": tail.hex(),
-            # 记录的深拷贝在锁内做，序列化在锁外做（同下面几份深拷贝）。
-            "pricing": _copy_pricing_record(record), "realm_inputs": realm_key,
+            "realm_inputs": realm_key,
             # 深拷贝在锁内做，序列化在锁外做（见 _usage_cache_collect）。
             "snap": _copy_usage_snapshot(state["snap"]),
             # 按日分桶的窗口半：与 all-time 半同一次扫描折出来的，位置也
@@ -6858,9 +6448,6 @@ def _usage_cache_analytics_entry(realm, state):
     tail = state.get("tail")
     if offset <= 0 or not isinstance(tail, bytes):
         return None
-    record = state.get("pricing")
-    if record is not None and not _pricing_record_ok(record):
-        return None          # 同 snapshot：记录存在但形状坏了才不写
     realm_inputs = state.get("realm")
     realm_key = _realm_inputs_key(realm_inputs)
     if realm_key is None:
@@ -6869,7 +6456,7 @@ def _usage_cache_analytics_entry(realm, state):
         return None          # 同 snapshot：这次折叠的归属冷进程复现不了
     return {"realm": realm, "offset": offset,
             "key": list(state["key"] or (0, 0, 0)), "tail": tail.hex(),
-            "pricing": _copy_pricing_record(record), "realm_inputs": realm_key,
+            "realm_inputs": realm_key,
             "maps": _copy_analytics_all_time(state["maps"]),
             "days": _usage_cache_days_copy(state.get("days"),
                                            _copy_analytics_window_maps),
@@ -6974,8 +6561,7 @@ def _usage_cache_write_kind(kind, entries):
 
     不排序键：checkpoint 里 dict 的键顺序就是折叠时的插入顺序（先出现的先
     排），加载回来必须与冷启动逐字节一致——响应的 JSON 字节里键序是可见的，
-    而冷启动折叠出的顺序正是这份插入顺序。排序只留给 _object_digest() 那种
-    「只要内容一样就算一样」的指纹。
+    而冷启动折叠出的顺序正是这份插入顺序。
 
     盘上「本进程还没碰过」的 realm 条目原样保留：一类里按 realm 分条目，
     写盘只重写活跃 realm 的那些；不保留的话，重启后先折的 realm 触发一次写盘
@@ -7140,8 +6726,6 @@ _BINDINGS['_line_outside_window_bytes'] = _line_outside_window_bytes
 _BINDINGS['_recent_backward_page'] = _recent_backward_page
 # 默认绑定指向真身；ca_proxy bind() 后改走宿主全局（测试可 patch）。
 _BINDINGS['_recent_index_page'] = _recent_index_page
-# 默认绑定指向真身；ca_proxy bind() 后改走宿主全局（测试可 patch）。
-_BINDINGS['_row_cost'] = _row_cost
 # 默认绑定指向真身；ca_proxy bind() 后改走宿主全局（测试可 patch）。
 _BINDINGS['_scan_usage_snapshot_window_hours'] = _scan_usage_snapshot_window_hours
 _BINDINGS['_scan_usage_snapshot_window_days'] = _scan_usage_snapshot_window_days

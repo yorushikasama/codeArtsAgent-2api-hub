@@ -118,11 +118,6 @@ input[type="checkbox"],input[type="radio"]{accent-color:var(--accent)}
 #cards .card+.card{border-left:1px solid var(--line)}
 #cards .card .k{font-size:12px;color:var(--dim);margin-bottom:8px;font-weight:600;letter-spacing:.2px}
 #cards .card .v{font-family:var(--serif);font-size:22px;font-weight:700;letter-spacing:0;color:var(--fg);display:flex;align-items:baseline}
-#cards .card .v-split{display:flex;flex-direction:column;gap:5px;width:100%}
-#cards .card .v-row{display:flex;align-items:baseline;justify-content:space-between;font-size:13px;line-height:1.2}
-#cards .card .v-label{font-size:11px;font-weight:600;color:var(--dim);text-transform:uppercase;letter-spacing:.4px}
-#cards .card .v-num{font-size:16px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--fg)}
-#cards .card .v-unit{font-size:11px;font-weight:400;color:var(--dim);margin-left:3px}
 section{background:var(--panel);border:1px solid var(--line);border-radius:14px;
   background-image:linear-gradient(180deg,color-mix(in srgb,var(--accent) 5%,transparent),transparent 110px);
   padding:18px 20px;margin-bottom:20px;box-shadow:var(--shadow),inset 0 1px 0 rgba(255,255,255,.4);
@@ -237,25 +232,9 @@ th.sortable:focus-visible .sort-arrow.idle{opacity:1}
   #cards .card{padding:10px 14px}
   #cards .card+.card{border-left:none;border-top:1px solid var(--line)}
   #cards .card .v{font-size:18px}
-  .toolbar{gap:6px}
-  .toolbar button{padding:5px 10px;font-size:11px}
 }
-/* 账号区折叠。chevron 的指向跟着 aria-expanded 走，正文用
-   grid-template-rows 收放：0fr 本身就是收起，所以没有动画也正确，也不必给
-   列表猜一个 max-height（账号一多就会被截断）。hoverTip 是挂在 body 上的
-   全局单例，不受这里的 overflow 影响。 */
-.disclosure{display:inline-flex;align-items:center;gap:7px;background:transparent;
-  border:none;padding:3px 7px;margin:-3px -7px;font:inherit;color:inherit;cursor:pointer;border-radius:8px}
 /* 焦点态给一个柔和的胶囊高亮（淡蓝底 + 细描边），而不是贴着字画一圈硬描边。
    padding 与 margin 成对出现，聚焦时标题文字的位置不会动。 */
-.disclosure:focus-visible{outline:none;background:var(--accent-soft);box-shadow:0 0 0 1.5px var(--accent)}
-.disclosure-chevron{width:0;height:0;border-left:5px solid currentColor;
-  border-top:4px solid transparent;border-bottom:4px solid transparent;
-  transition:transform .18s ease;transform:rotate(90deg)}
-.disclosure[aria-expanded="false"] .disclosure-chevron{transform:rotate(0deg)}
-.collapse{display:grid;grid-template-rows:1fr;transition:grid-template-rows .18s ease}
-.collapse.collapsed{grid-template-rows:0fr}
-.collapse>.collapse-inner{min-height:0;overflow:hidden}
 .badge{display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;
   background:var(--panel2);border:1px solid var(--line);color:var(--dim);white-space:nowrap;font-weight:600}
 .badge.ok{color:#2f5d62;background:rgba(47,93,98,.13);border-color:rgba(47,93,98,.34)}
@@ -268,28 +247,8 @@ th.sortable:focus-visible .sort-arrow.idle{opacity:1}
 .cool-pill{display:inline-block;padding:1px 7px;border-radius:3px;font-size:10px;font-weight:600;
   color:#8a5f0a;background:rgba(179,135,47,.15);border:1px solid rgba(179,135,47,.4);white-space:nowrap}
 .empty{color:var(--dim);text-align:center;padding:28px 0;font-size:13px}
-/* 胶囊式开关：原生 checkbox 管状态与键盘可达性，视觉交给 .switch-track。
-   点一下即切换并立即保存，所以不再另配「保存」按钮。 */
-.switch{position:relative;display:inline-flex;align-items:center;gap:8px;font-size:13px;
-  min-height:40px;cursor:pointer;user-select:none}
-.switch input{position:absolute;width:1px;height:1px;opacity:0;margin:0}
-.switch-track{position:relative;flex:0 0 auto;width:38px;height:20px;border-radius:999px;
-  background:var(--panel2);border:1px solid var(--line);
-  transition:background .18s ease,border-color .18s ease}
-.switch-track::after{content:'';position:absolute;top:2px;left:2px;width:14px;height:14px;
-  border-radius:50%;background:var(--dim);transition:transform .18s ease,background .18s ease}
-.switch input:checked+.switch-track{background:var(--accent2);border-color:var(--accent2)}
-.switch input:checked+.switch-track::after{transform:translateX(18px);background:#fff}
-.switch input:focus-visible+.switch-track{outline:2px solid var(--accent2);outline-offset:2px}
 .legend{display:flex;gap:16px;color:var(--dim);font-size:11px;margin-top:12px;flex-wrap:wrap}
 .legend i{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:5px;vertical-align:middle}
-.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-/* 工具栏按用途分组：浅底胶囊容器把同组按钮抱成一团，组与组之间的间隔由外层
-   toolbar 的 gap 负责，不必再插竖线。 */
-.tb-group{display:inline-flex;align-items:center;gap:4px;padding:3px;background:var(--panel2);
-  border:1px solid var(--line);border-radius:10px}
-.tb-group button.sec{box-shadow:none}
-.tb-group button.sec:hover{background:var(--panel3);border-color:var(--line-hover)}
 button{cursor:pointer;font:inherit;font-size:12px;font-weight:500;padding:6px 14px;border-radius:7px;
   border:1px solid var(--accent);background:var(--accent);color:#fdf7ea;letter-spacing:.02em;
   box-shadow:inset 0 1px 0 rgba(255,255,255,.14),var(--shadow-sm);transition:all .15s ease}
@@ -302,17 +261,6 @@ button.danger:hover{background:var(--bad);color:#fdf7ea;border-color:var(--bad)}
 button.mini{padding:3px 9px;font-size:11px}
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible{
   outline:2px solid var(--accent);outline-offset:2px}
-.id-btn-group{display:inline-flex;gap:2px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:1px}
-.id-btn{background:transparent;border:none;color:var(--dim);padding:2px 6px;border-radius:4px;font-size:11px;font-weight:500;cursor:pointer;transition:all .15s}
-.id-btn:hover{color:var(--fg)}
-.id-btn-label{color:var(--dim);font-size:11px;white-space:nowrap}
-.id-btn.active{background:var(--accent);color:#fdf7ea;font-weight:600;box-shadow:var(--shadow-sm)}
-/* 表格行内的小号选择器（账号权重）：原生 select 的直角白框在暖色表里显得
-   突兀，这里补齐主题样式。 */
-.mini-select{background:var(--panel2);border:1px solid var(--line);border-radius:7px;
-  padding:3px 6px;color:var(--fg);font:inherit;font-size:11px;font-variant-numeric:tabular-nums}
-.acct-actions-col{display:flex;flex-direction:column;gap:5px;align-items:center;justify-content:center}
-.acct-actions-row{display:flex;gap:4px;justify-content:center}
 .modal-mask{display:none;position:fixed;inset:0;background:rgba(30,25,18,.48);
   backdrop-filter:blur(4px);align-items:center;justify-content:center;padding:20px;z-index:100}
 .modal-mask.show{display:flex}
@@ -365,10 +313,6 @@ footer::after{content:"道";display:flex;align-items:center;justify-content:cent
   transform:rotate(-3deg);opacity:.55}
 a{color:var(--accent);text-decoration:none}
 a:hover{text-decoration:underline}
-.realm-switch-group{display:inline-flex;background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:3px;gap:3px}
-.realm-pill{background:transparent;border:none;color:var(--dim);font-size:12px;padding:6px 16px;border-radius:8px;cursor:pointer;transition:all .15s}
-.realm-pill:hover{color:var(--fg)}
-.realm-pill.active{background:var(--accent);color:#fdf7ea;font-weight:600;box-shadow:inset 0 1px 0 rgba(255,255,255,.14),var(--shadow-sm)}
 .key-card{
   background:var(--panel);border:1px solid var(--line);border-radius:12px;
   padding:16px 20px;margin-bottom:12px;box-shadow:var(--shadow);
@@ -393,16 +337,6 @@ a:hover{text-decoration:underline}
 }
 .realm-badge-cn{color:#96251a;background:rgba(176,48,36,.1);border:1px solid rgba(176,48,36,.32);padding:2px 9px;border-radius:3px;font-size:11px;font-weight:600}
 .badge-effort{display:inline-block;padding:2px 8px;border-radius:3px;font-size:11px;line-height:1.4;white-space:nowrap;margin:1px 2px;background:var(--think-soft);color:var(--think);border:1px solid color-mix(in srgb,var(--think) 30%,transparent);font-weight:600}
-.realm-filter{display:inline-flex;gap:6px;margin-left:8px}
-.realm-filter button{background:var(--panel2);border:1px solid var(--line);color:var(--dim);padding:3px 9px;font-size:11px}
-.realm-filter button.active{border-color:var(--accent);color:var(--accent);background:var(--panel)}
-/* 账号页页头的版本视图切换：与顶部主菜单同一套胶囊外观，只是按版本着色——
-   国内版走红色，与网关页那张卡片一眼能对上。 */
-.realm-switch{display:inline-flex;gap:4px;background:var(--panel2);padding:4px;border-radius:10px;border:1px solid var(--line);flex:0 0 auto}
-.realm-switch button{background:transparent;border:1px solid transparent;color:var(--dim);padding:5px 13px;border-radius:7px;font-size:12px;font-weight:500;cursor:pointer;transition:all .15s ease}
-.realm-switch button:hover{color:var(--fg);background:var(--panel)}
-.realm-switch button.active{background:var(--panel);color:var(--accent);border-color:var(--accent);box-shadow:var(--shadow-sm);font-weight:600}
-.realm-switch button.active#accountsRealmCn{color:var(--bad);border-color:var(--bad)}
 
 .realm-card{
   background:var(--panel);border:1px solid var(--line);border-radius:12px;
@@ -417,17 +351,6 @@ a:hover{text-decoration:underline}
 .realm-card.active#tabCn{
   border-color:var(--bad);box-shadow:0 0 0 1px var(--bad), var(--shadow-md);
 }
-.realm-card.gateway-ctrl{
-  background:var(--panel2);cursor:default;border-color:var(--line);
-}
-.realm-card.gateway-ctrl:hover{transform:none;border-color:var(--line);box-shadow:var(--shadow)}
-.toggle-realm-btn{
-  background:var(--panel);border:1px solid var(--accent);color:var(--accent);
-  padding:8px 18px;font-size:13px;font-weight:600;border-radius:8px;box-shadow:var(--shadow-sm);cursor:pointer;
-  transition:all .15s ease;
-}
-.toggle-realm-btn:hover{background:var(--panel2);box-shadow:var(--shadow-md)}
-.realm-endpoint-info{font-size:12px;color:var(--dim)}
 
 .main-nav{display:inline-flex;gap:2px;background:transparent;padding:0 0 0 16px;border-radius:0;
   border:none;border-left:1px solid color-mix(in srgb,var(--gold) 32%,transparent)}
@@ -504,7 +427,6 @@ a:hover{text-decoration:underline}
 [data-theme="dark"] .badge.bad{color:#ef9c88;background:rgba(217,84,61,.2);border-color:rgba(217,84,61,.42)}
 [data-theme="dark"] .cool-pill{color:#e2c078;background:rgba(210,176,95,.18);border-color:rgba(210,176,95,.42)}
 [data-theme="dark"] .realm-badge-cn{color:#f0a48f;background:rgba(217,84,61,.22);border-color:rgba(217,84,61,.46)}
-[data-theme="dark"] .realm-switch button.active#accountsRealmCn{color:var(--bad);border-color:var(--bad)}
 [data-theme="dark"] .modal-mask{background:rgba(0,0,0,.65)}
 /* The page sections are toggled by a class so the inline head script can
    choose one before the body is parsed, avoiding a flash of the wrong
@@ -588,9 +510,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #analyticsKpiCards .card .k{font-size:11px;white-space:nowrap;margin-bottom:3px;font-weight:600;color:var(--dim)}
 #analyticsKpiCards .card .s{font-size:10px;white-space:normal;line-height:1.35;margin-top:2px;color:var(--dim)}
 .model-pill{display:inline-flex;align-items:center;gap:4px;background:var(--panel2);border:1px solid var(--line);border-radius:6px;padding:2px 8px;font-size:11px;margin:2px 4px 2px 0;white-space:nowrap}
-/* 归属表表头里的行开关，直接复用设置页的 .switch 胶囊样式，只是表头比
-   设置页紧凑，把 40px 的最小高度收掉。 */
-.key-row-switch{min-height:0}
 .log-line{display:flex;align-items:flex-start;gap:8px;padding:3px 6px;border-radius:4px;font-family:Consolas,Monaco,'Courier New',monospace;font-size:12px;line-height:1.55;transition:background .1s}
 .log-line:hover{background:rgba(255,255,255,.05)}
 /* 日志终端固定为墨色底，配色取石青、赭石、朱砂、青瓷等传统色 */
@@ -635,7 +554,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     -webkit-overflow-scrolling:touch;scrollbar-width:thin;border-left:none}
   .main-nav-btn{flex:1;justify-content:center;padding:8px 2px;font-size:12px;min-height:36px;white-space:nowrap}
   .meta{width:100%;text-align:left;font-size:11px;line-height:1.5;order:4}
-  .meta .meta-secondary{display:none}
   /* Table → card */
   .table-wrap{overflow:visible}
   table.data-cards{min-width:0!important;display:block}
@@ -650,34 +568,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   table.data-cards td::before{content:attr(data-label);color:var(--dim);font-size:11px;
     font-weight:600;flex-shrink:0}
   table.data-cards td:not([data-label])::before{content:none}
-  /* 限额表：护栏名与说明占整块，限值另起一行 */
-  table.limits-cards td.limit-name{display:block;padding-bottom:6px}
   table.data-cards td[colspan]{grid-column:span 6;justify-content:center;text-align:center!important}
   table.data-cards td[colspan]::before{content:none}
-  /* Account card: grouped layout */
-  table.account-cards td:nth-child(1){order:1;grid-column:span 3;justify-content:flex-start}
-  table.account-cards td:nth-child(1)::before,
-  table.account-cards td:nth-child(2)::before,
-  table.account-cards td:nth-child(3)::before{content:none}
-  table.account-cards td:nth-child(2){order:3;grid-column:span 6;flex-direction:column;align-items:flex-start;gap:2px}
-  table.account-cards td:nth-child(3){order:2;grid-column:span 3;justify-content:flex-end}
-  table.account-cards td:nth-child(4){order:4;grid-column:span 6;flex-direction:column;align-items:stretch;gap:4px}
-  table.account-cards td:nth-child(4)::before{font-size:10px}
-  table.account-cards td:nth-child(5){order:5;grid-column:span 6}
-  table.account-cards td:nth-child(6),
-  table.account-cards td:nth-child(7),
-  table.account-cards td:nth-child(8){order:6;grid-column:span 2;flex-direction:column-reverse;
-    align-items:center;justify-content:center;gap:0;padding:4px 0;
-    background:var(--panel2);border-radius:8px}
-  table.account-cards td:nth-child(6)::before,
-  table.account-cards td:nth-child(7)::before,
-  table.account-cards td:nth-child(8)::before{font-size:10px}
-  table.account-cards td.acct-actions{order:7;grid-column:span 6;justify-content:flex-start}
-  table.account-cards td.acct-actions::before{content:none}
-  table.account-cards .acct-actions-col{flex-direction:row;flex-wrap:wrap;align-items:flex-start;
-    justify-content:flex-start;gap:6px}
-  table.account-cards .acct-actions-row{flex-wrap:wrap;gap:6px}
-  table.account-cards .acct-actions button.mini{min-height:32px;padding:6px 12px}
   /* Forms stack */
   #pageSettings section > div[style*="display:flex"]{flex-wrap:wrap}
   #pageSettings input:not([type=checkbox]), #pageSettings select{min-height:40px;font-size:13px}
@@ -685,8 +577,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   table.data-cards td[data-label="启用"] input[type=checkbox]{width:20px;height:20px}
   /* Logs */
   #logTerminalBody{height:60vh!important}
-  #pageLogs .toolbar{display:grid;grid-template-columns:1fr 1fr;gap:6px}
-  #pageLogs .toolbar button{width:100%;min-height:34px}
   #pageLogs > div > div[style*="display:flex"]{flex-wrap:wrap}
   .log-line{flex-wrap:wrap;gap:4px}
   .log-msg{min-width:0;flex-basis:100%}
@@ -722,7 +612,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
    数据看板页重设计（B 版）——作用域全部限定在 #pageAnalytics 内，
    不影响面板其余部分。由 .integ/build.js 从 proto/variant-b.html 转译生成。
    ================================================================== */
-
 
 #pageAnalytics{
   /* 与主面板同一套传统设色：宣纸、墨、朱砂、石青、藤黄 */
@@ -761,31 +650,12 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   font-size:13.5px; line-height:1.55; -webkit-font-smoothing:antialiased;
 }
 #pageAnalytics ::selection{background:var(--accent-soft)}
-
-
-#pageAnalytics .topbar{
-  position:sticky; top:0; z-index:50;
-  display:flex; align-items:center; gap:14px;
-  padding:10px 26px; background:color-mix(in srgb, var(--bg) 86%, transparent);
-  backdrop-filter:blur(14px); -webkit-backdrop-filter:blur(14px);
-  border-bottom:1px solid var(--line);
-}
-#pageAnalytics .brand{display:flex;align-items:center;gap:9px;font-weight:650;font-size:14.5px;letter-spacing:.01em;white-space:nowrap}
-#pageAnalytics .brand .dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 3px var(--green-soft)}
 #pageAnalytics .nav{display:flex;gap:2px;margin-left:10px}
 #pageAnalytics .nav span{
   padding:5px 11px;border-radius:8px;color:var(--dim);font-size:12.5px;cursor:default;
 }
 #pageAnalytics .nav span.on{background:var(--panel);color:var(--fg);font-weight:600;box-shadow:var(--shadow);border:1px solid var(--line)}
 #pageAnalytics .spacer{flex:1}
-#pageAnalytics .iconbtn{
-  display:inline-flex;align-items:center;justify-content:center;gap:6px;
-  width:32px;height:32px;border-radius:9px;border:1px solid var(--line);
-  background:var(--panel);color:var(--fg2);cursor:pointer;font-size:14px;
-  transition:all .15s ease;
-}
-#pageAnalytics .iconbtn:hover{border-color:var(--line2);box-shadow:var(--shadow)}
-
 
 #pageAnalytics .wrap{max-width:1320px;margin:0 auto;padding:14px 20px 40px}
 #pageAnalytics .pagehead{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:12px}
@@ -794,7 +664,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   display:flex;align-items:baseline;gap:10px;flex:0 0 auto;white-space:nowrap;
 }
 #pageAnalytics .pagesub{color:var(--dim);font-size:11.5px;margin-top:0;font-family:var(--serif);letter-spacing:.02em}
-
 
 #pageAnalytics .seg{
   display:inline-flex;background:var(--panel2);border:1px solid var(--line);
@@ -807,7 +676,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 }
 #pageAnalytics .seg button:hover{color:var(--fg)}
 #pageAnalytics .seg button.on{background:var(--panel);color:var(--fg);font-weight:600;box-shadow:var(--shadow);border:1px solid var(--line)}
-
 
 #pageAnalytics .kpis{display:grid;grid-template-columns:repeat(6, 1fr);gap:8px;margin-bottom:10px}
 @media (max-width:1100px){#pageAnalytics .kpis{grid-template-columns:repeat(3,1fr)}}
@@ -830,7 +698,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .tokflow{display:flex;height:3px;border-radius:3px;overflow:hidden;margin-top:5px;gap:2px}
 #pageAnalytics .tokflow i{display:block;height:100%;border-radius:2px}
 
-
 #pageAnalytics .kpi.big .spark{display:block;width:100%;height:44px;margin-top:8px}
 #pageAnalytics .kpi .k .delta{
   margin-left:auto;font-size:9.5px;font-weight:650;color:var(--dim);
@@ -852,7 +719,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .ring .hole b{font-size:15.5px;font-weight:650;letter-spacing:-.02em}
 #pageAnalytics .ring .hole span{font-size:9px;color:var(--dim)}
 
-
 #pageAnalytics .recent-list{display:flex;flex-direction:column;max-height:236px;overflow-y:auto}
 #pageAnalytics .recent-item{
   display:grid;grid-template-columns:54px minmax(0,1fr) auto;gap:10px;align-items:baseline;
@@ -866,13 +732,11 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .recent-item .r b{color:var(--fg2);font-weight:600}
 #pageAnalytics .recent-item .err{color:var(--red)}
 
-
 #pageAnalytics .hm-row{display:flex;gap:30px;align-items:flex-start;flex-wrap:wrap}
 #pageAnalytics .hm-stats{display:grid;grid-template-columns:repeat(2,minmax(110px,1fr));gap:9px 26px;flex:1;min-width:240px;padding-top:14px}
 #pageAnalytics .hm-stat b{display:block;font-size:16px;font-weight:650;letter-spacing:-.01em;font-variant-numeric:tabular-nums}
 #pageAnalytics .hm-stat span{font-size:10.5px;color:var(--dim)}
 #pageAnalytics .ratio-ok{color:var(--green)} #pageAnalytics .ratio-bad{color:var(--red)} #pageAnalytics .ratio-gold{color:var(--gold)}
-
 
 #pageAnalytics .panel{
   background:var(--panel);border:1px solid var(--line);border-radius:12px;
@@ -892,11 +756,9 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .phead .spacer{flex:1}
 #pageAnalytics .pbody{padding:0 14px 11px}
 
-
 #pageAnalytics .maingrid{display:grid;grid-template-columns:minmax(0,7fr) minmax(0,6fr);gap:10px;margin-bottom:10px}
 #pageAnalytics .maingrid .panel{margin-bottom:0}
 @media (max-width:1150px){#pageAnalytics .maingrid{grid-template-columns:1fr}}
-
 
 #pageAnalytics .chiprow{display:inline-flex;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:2px;gap:2px}
 #pageAnalytics .chiprow button{
@@ -909,7 +771,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .legend{display:flex;gap:11px;align-items:center;font-size:10.5px;color:var(--dim)}
 #pageAnalytics .legend i{display:inline-block;width:8px;height:8px;border-radius:2.5px;margin-right:4px;vertical-align:-1px}
 
-
 #pageAnalytics .chartbox{position:relative}
 #pageAnalytics canvas.series{width:100%;display:block}
 #pageAnalytics .tooltip{
@@ -920,7 +781,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .tooltip .tt-t{font-weight:650;margin-bottom:5px;font-size:12px}
 #pageAnalytics .tooltip .tt-r{display:flex;justify-content:space-between;gap:16px;color:var(--dim);line-height:1.7}
 #pageAnalytics .tooltip .tt-r b{color:var(--fg);font-weight:600;font-variant-numeric:tabular-nums}
-
 
 #pageAnalytics .hm-meta{font-size:10.5px;color:var(--dim)}
 #pageAnalytics .hm-scroll{overflow-x:auto;padding-bottom:2px}
@@ -941,7 +801,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .hm-foot{display:flex;justify-content:space-between;align-items:center;margin-top:7px;font-size:10.5px;color:var(--dim)}
 #pageAnalytics .hm-legend{display:inline-flex;align-items:center;gap:3px}
 #pageAnalytics .hm-legend .hm-cell{width:9px;height:9px}
-
 
 #pageAnalytics .dimtabs{display:inline-flex;background:var(--panel2);border:1px solid var(--line);border-radius:9px;padding:2px;gap:2px}
 #pageAnalytics .dimtabs button{
@@ -969,9 +828,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .who{display:flex;flex-direction:column;gap:0;min-width:150px}
 #pageAnalytics .who b{font-weight:600;font-size:12px;display:flex;align-items:center;gap:5px}
 #pageAnalytics .who span{font-size:10.5px;color:var(--dim2)}
-#pageAnalytics .realm-tag{font-size:10px;font-weight:650;border-radius:3px;padding:1px 6px;line-height:15px;letter-spacing:.02em}
-#pageAnalytics .realm-cn{color:#96251a;background:#f0dac9;border:1px solid #dcb69b}
-[data-theme="dark"] #pageAnalytics .realm-cn{color:#f0a48f;background:rgba(217,84,61,.22);border-color:rgba(217,84,61,.46)}
 #pageAnalytics .minibar{position:relative;height:6px;border-radius:3px;background:var(--panel2);overflow:hidden;min-width:70px}
 #pageAnalytics .minibar i{position:absolute;left:0;top:0;bottom:0;border-radius:3px;background:var(--bar-color,var(--accent));opacity:.75}
 #pageAnalytics .tokcell{display:flex;flex-direction:column;gap:3px;min-width:100px}
@@ -982,10 +838,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .badge.o{color:var(--gold);background:rgba(179,135,47,.11)}
 #pageAnalytics .badge.r{color:var(--red);background:rgba(176,48,36,.10)}
 
-
 #pageAnalytics [data-tip]{cursor:default}
 #pageAnalytics [data-tip]:hover{text-decoration:underline dotted var(--dim2);text-underline-offset:2px}
-
 
 #pageAnalytics tr.dim-row{cursor:pointer}
 #pageAnalytics tr.dim-row:hover{background:var(--panel2)}
@@ -1014,7 +868,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .exp-title{font-size:10.5px;color:var(--dim2);letter-spacing:.04em;font-weight:600;margin-bottom:4px}
 #pageAnalytics .exp-none{color:var(--dim2);font-size:11.5px;padding:8px 0}
 
-
 #pageAnalytics .folds{display:grid;gap:8px;margin-bottom:10px}
 #pageAnalytics .fold{
   background:var(--panel);border:1px solid var(--line);border-radius:11px;
@@ -1033,8 +886,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 #pageAnalytics .fold .fbody{padding:2px 14px 12px;border-top:1px solid var(--line)}
 #pageAnalytics .fbody .empty{color:var(--dim2);font-size:11.5px;padding:10px 0}
 
-
 #pageAnalytics .skel{color:var(--dim2);font-size:12px;padding:22px 0;text-align:center}
-#pageAnalytics .foot-note{color:var(--dim2);font-size:11px;text-align:center;margin-top:20px}
 
 </style>

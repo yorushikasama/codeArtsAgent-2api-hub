@@ -103,7 +103,6 @@ from ca_usage import (  # noqa: F401 —— re-export
     _ESTIMATE_WEIGHTS,
     _PERF_REC_LEN,
     _PERF_STATE_MAX,
-    _PRICED_FIELDS,
     _REALM_KEY,
     _REALM_KEY_LEN,
     _RECENT_INDEX_REALM_CAP,
@@ -167,7 +166,6 @@ from ca_usage import (  # noqa: F401 —— re-export
     _copy_analytics_all_time,
     _copy_analytics_models,
     _copy_analytics_window_maps,
-    _copy_pricing_record,
     _copy_series_day,
     _copy_snapshot_day,
     _copy_usage_bucket,
@@ -217,7 +215,6 @@ from ca_usage import (  # noqa: F401 —— re-export
     _new_analytics_stat,
     _new_series_bucket,
     _new_window_snapshot_bucket,
-    _object_digest,
     _pair_append,
     _pair_buffer,
     _pair_repair,
@@ -242,15 +239,6 @@ from ca_usage import (  # noqa: F401 —— re-export
     _perf_stats_scope,
     _perf_stats_uncached,
     _perf_trim_states,
-    _priced_note,
-    _pricing_inputs,
-    _pricing_record_close,
-    _pricing_record_new,
-    _pricing_record_ok,
-    _pricing_timeline_digest,
-    _pricing_timeline_memo,
-    _pricing_unchanged,
-    _pricing_used_unchanged,
     _prune_day_buckets,
     _prune_hour_buckets,
     _prune_series_minutes,
@@ -297,7 +285,6 @@ from ca_usage import (  # noqa: F401 —— re-export
     _remaining_refresh,
     _remaining_state,
     _remaining_state_lock,
-    _row_cost,
     _row_day_memo,
     _scan_daily_usage,
     _scan_usage_analytics_window,
@@ -324,8 +311,6 @@ from ca_usage import (  # noqa: F401 —— re-export
     _snap_cache,
     _snap_lock,
     _tail_lines,
-    _timeline_at_value,
-    _timeline_row_at,
     _usage,
     _usage_alltime_snapshot,
     _usage_by_account_buckets,
@@ -350,9 +335,7 @@ from ca_usage import (  # noqa: F401 —— re-export
     _usage_cache_day_key_ok,
     _usage_cache_days_copy,
     _usage_cache_days_ok,
-    _usage_cache_digest_memo,
     _usage_cache_enabled,
-    _usage_cache_fingerprints_ok,
     _usage_cache_forget,
     _usage_cache_hits_ok,
     _usage_cache_int,
@@ -444,7 +427,6 @@ ca_usage.bind(
     _line_outside_window_bytes=lambda *a, **k: _line_outside_window_bytes(*a, **k),
     _recent_backward_page=lambda *a, **k: _recent_backward_page(*a, **k),
     _recent_index_page=lambda *a, **k: _recent_index_page(*a, **k),
-    _row_cost=lambda *a, **k: _row_cost(*a, **k),
     _scan_usage_snapshot_window=lambda *a, **k: _scan_usage_snapshot_window(*a, **k),
     _scan_usage_snapshot_window_days=lambda *a, **k: _scan_usage_snapshot_window_days(*a, **k),
     _scan_usage_snapshot_window_hours=lambda *a, **k: _scan_usage_snapshot_window_hours(*a, **k),
@@ -1584,11 +1566,12 @@ def remaining_usage_etag():
 # keeps.
 #
 # A carried-over total is only valid while everything the fold read is
-# unchanged, so a state also carries a fingerprint of its other inputs: the
-# price tables (a new policy can re-price a row that has no reference of its
-# own) and the realm a row without a realm field is attributed to. When one of
-# those moves, the fold starts over - an offset alone would happily keep
-# yesterday's prices forever.
+# unchanged, so a state also carries a fingerprint of the realm a row without
+# a realm field is attributed to. When that moves, the fold starts over - an
+# offset alone would happily keep yesterday's attribution forever. (The price
+# side of this fingerprint died with the pricing system on 2026-10-22;
+# pricing-era checkpoints carry a non-None "pricing" record and are rejected
+# as old format - treated as no index, rebuilt.)
 #
 # One state per realm and per aggregate: each holds a few models and a few
 # accounts, so keeping one around costs nothing next to the scan it replaces.
@@ -1599,41 +1582,6 @@ def remaining_usage_etag():
 # refresh to prove that prefix still holds the same bytes. Long enough
 # that a rewrite cannot match it by accident, short enough to cost
 # nothing on the poll path.
-
-
-# ---------------------------------------------------------------------------
-# 「用到的价」状态指纹（T15）：状态指纹收窄成折叠行真正用到的价
-#
-# 价表内容一变（哪怕只是新增一个无关模型的价格），带价格指纹的 5 条状态
-# （snapshot×3 + analytics×2）此前全部判废、各重折 12-15s；但已折行的成本
-# 在设计上就是历史价——带 cost_policy 的行按不可变策略计价，无引用老行由
-# 时间线解析（见 _fold_usage_snapshot 的注释："a later price change cannot
-# rewrite yesterday's totals"）——所以绝大多数重折是白付。
-#
-# 这里把状态指纹从「(policies, timeline, pricing_doc) 三张表的对象身份」收窄
-# 成一份记录（state["pricing"]，checkpoint 的 "pricing" 字段，schema 5）：
-#   * refs           折叠解析出来的每个 pid 的策略内容摘要（_object_digest 按
-#                    对象身份记忆，热路径 O(1)）；pid 当时查不到记 None（=该
-#                    pid 必须继续缺席，出现即作废）。
-#   * timeline       时间线依赖的投影摘要（没有依赖时 None）。
-#   * timeline_at    无引用且成本非零的行的 at 上界。
-#   * timeline_models 上述行的模型集合。
-#   * unresolved     上述行里整条时间线都没提到的模型（解析扫过全部行）。
-#   * backfilled     上述行里出现过回填解析（解析扫过全部行）。
-#   * builtin        用到内置快照时，内置价目表文档的内容摘要。
-#
-# 判定侧 _pricing_used_unchanged() 从当前价表重算同一份记录并逐项比对，不等
-# 就判废重折；相等的部分保证「重折会给出同样的数」。
-#
-# 不动的东西：_row_cost（行级取价的唯一出口）、series（不算价）、
-# 任何聚合口径与窗口路径。
-# ---------------------------------------------------------------------------
-
-# 记录里的固定字段（进程内构造与 checkpoint 采纳都按这一组校验）。
-
-# 时间线投影摘要的记忆：值是一个元组 (时间线对象, 参数键, 摘要)，一次 get 拿全
-# （与 _object_digest 的记忆同一个写法）——两个状态锁下的线程同时算也不会读到
-# 拼起来的值；元组里握着时间线对象，身份不会被回收复用。
 
 
 _realm_disk_cache = {"key": None, "map": None}
@@ -2283,9 +2231,7 @@ def _finalize_analytics_stat(stat_obj):
 
 def _compute_usage_analytics_uncached(realm=None, since=None, until=None):
     """Detailed analytics for Token, Cache, and Reasoning metrics page."""
-    # 与 /usage 快照同一条规矩：一次扫描里总开关只问一次，值传进折叠与指纹。
-    pricing_on = False
-    all_maps, offset = _analytics_all_time(realm, pricing_on)
+    all_maps, offset = _analytics_all_time(realm)
     if since is None and until is None:
         # An open window covers every row, so the windowed half is the
         # all-time fold over again; the merge copies the two apart.
@@ -2295,7 +2241,7 @@ def _compute_usage_analytics_uncached(realm=None, since=None, until=None):
         # the day buckets that fold advanced (or, failing that, from a pass
         # that stops where that fold stopped), so one page never mixes two
         # reads.
-        win_maps = _analytics_window(realm, since, until, offset, pricing_on)
+        win_maps = _analytics_window(realm, since, until, offset)
     parts = _merge_analytics_halves(all_maps, win_maps)
     acct_map = parts["accts"]
     model_map = parts["models"]

@@ -255,7 +255,6 @@ def restart():
     P._usage_cache_progress.clear()
     P._usage_cache_checkpointed.clear()
     P._usage_cache_last_attempt = time.time()
-    P._usage_cache_digest_memo.clear()
 
 
 # --------------------------------------------------------------------------
@@ -421,13 +420,12 @@ def direct_adopt_snapshot():
     的记忆，adopt 才会重新从盘上取条目。
     """
     restart()
-    state = {"snap": None, "offset": 0, "key": None, "pricing": None,
+    state = {"snap": None, "offset": 0, "key": None,
              "realm": None, "tail": b"", "days": {}, "days_floor": None,
              "hours_floor_at": None, "hits": [], "hits_overflow": False}
     with P._usage_snap_state_lock:
         ok = P._usage_cache_adopt_snapshot(
-            None, state, P._usage_log_key(),
-            P._pricing_inputs(False), P._realm_inputs())
+            None, state, P._usage_log_key(), P._realm_inputs())
     return ok, state
 
 
@@ -930,14 +928,14 @@ P._usage_alltime_snapshot(None)
 window_raw(HOUR_LO, HOUR_HI)
 snap_state = P._usage_snap_state[None]
 check("对齐的小时闭窗口本来就走层",
-      P._usage_snapshot_window_from_hours(None, HOUR_LO, HOUR_HI, None)
+      P._usage_snapshot_window_from_hours(None, HOUR_LO, HOUR_HI)
       is not None)
 snap_state["days"][TODAY_KEY]["at"] += 1800
 check("小时桶 at 与日桶对不上时小时层拒绝（退回冷路径）",
-      P._usage_snapshot_window_from_hours(None, HOUR_LO, HOUR_HI, None) is None)
+      P._usage_snapshot_window_from_hours(None, HOUR_LO, HOUR_HI) is None)
 snap_state["days"][TODAY_KEY]["at"] -= 1800
 check("恢复后小时层又能用",
-      P._usage_snapshot_window_from_hours(None, HOUR_LO, HOUR_HI, None)
+      P._usage_snapshot_window_from_hours(None, HOUR_LO, HOUR_HI)
       is not None)
 
 if hasattr(time, "tzset"):

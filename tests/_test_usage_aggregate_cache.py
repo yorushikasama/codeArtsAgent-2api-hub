@@ -303,7 +303,6 @@ def restart():
     P._usage_cache_progress.clear()
     P._usage_cache_checkpointed.clear()
     P._usage_cache_last_attempt = time.time()
-    P._usage_cache_digest_memo.clear()
     P._realm_disk_cache.update({"key": None, "map": None})
 
 
@@ -807,19 +806,17 @@ clear_cache_files()
 make_checkpoint()
 
 # 4.7 指纹
+# 「用到的价」指纹机制已随价格估算体系整族退役（2026-10-22）。带非 None
+# pricing 记录的条目 = 定价时代的旧格式 checkpoint：采用端按无索引拒掉、
+# 触发一次重建（改键与改 realm 指纹走同一条 mutate/拒收通道）。
 mutate_cache(lambda d: _entry(d, "snapshot").update({"pricing": ["on", "x", "y", "z"]}),
-             "价格指纹被改（旧形状的列表）")
-# 「pricing 为 null」这条不再作为判废条件：价格估算体系已移除（2026-10-22），
-# 折叠不再读任何价，record 恒为 None 是**合法**状态，缓存仍靠 offset / tail /
-# 日志指纹校验。改成 null 时拒绝会让正常运行永远无法复用缓存 —— 同理，
-# builtin / timeline_models 这两条「用到的价」子指纹也没有对象可改了。
-# 现存的出口只有一个，"cn" 就是当下的指纹，改它才叫「被改」。
+             "旧格式的 pricing 记录（定价时代的 checkpoint）")
+# pricing 为 null（新格式默认）是合法状态，缓存仍靠 offset / tail /
+# realm 指纹校验。
 mutate_cache(lambda d: _entry(d, "snapshot").update({"realm_inputs": ["other", []]}),
              "realm 指纹被改")
 mutate_cache(lambda d: _entry(d, "analytics").update({"pricing": ["off"]}),
-             "analytics 的价格指纹被改", kind="analytics")
-# 「多出一个查不到的 pid」这条也随价格体系一起移除：analytics 的 pricing
-# 记录同样恒为 None，没有 refs 可以改。
+             "analytics 带旧格式 pricing 记录", kind="analytics")
 mutate_cache(lambda d: _entry(d, "analytics").update({"realm_inputs": ["other", []]}),
              "analytics 的 realm 指纹被改", kind="analytics")
 

@@ -246,7 +246,6 @@ def restart():
     P._usage_cache_progress.clear()
     P._usage_cache_checkpointed.clear()
     P._usage_cache_last_attempt = time.time()
-    P._usage_cache_digest_memo.clear()
 
 
 def window(since, until=None, bucket=None, realm="all", ttl=0):
