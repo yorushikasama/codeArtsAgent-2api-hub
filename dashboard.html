@@ -4226,6 +4226,10 @@ async function loadCodeartsAccounts(){
       let when = a.expires_at ? ("STS 到期 " + caStamp(Date.parse(a.expires_at) / 1000)) : "STS 到期时间未知";
       if(a.sts_expired){
         badge = '<span class="ca-badge bad">STS 已过期</span>';
+        if(a.sts_dead_external){
+          badge = '<span class="ca-badge bad">被外部客户端占用</span>';
+          when = "token 链被官方客户端等同账号端轮换，重新登录后恢复";
+        }
       }else if(a.sts_remaining_seconds != null){
         when = "STS 剩 " + caLeft(a.sts_remaining_seconds);
         if(a.sts_remaining_seconds < 1800) badge = '<span class="ca-badge warn">即将过期</span>';

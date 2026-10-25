@@ -1442,6 +1442,14 @@ def _checkin_once():
                 continue
             _CHECKIN_STATE[uid] = today          # 先占位，避免并发重复打
         label = acct.get("label") or uid
+        if _sts_dead_by_external(session):
+            # 链已被外部客户端轮换死（1806 确认过）：续期必败，别替死账号
+            # 每 30 分钟打一次上游。当天记一条说明，占住当日槽位不再重试。
+            ca_activity.record(uid, label, "cn", ca_activity.TASK_CHECKIN,
+                               "scheduler", False,
+                               "STS 链被外部客户端占用（1806），跳过签到；重新登录后自动恢复",
+                               usage_dir=USAGE_DIR)
+            continue
         try:
             session = ca_codearts.ensure_fresh_session(
                 ACCOUNTS_DIR, session, CODEARTS_REFRESH_MARGIN)
@@ -5022,19 +5030,53 @@ def _codearts_left(sess):
             bool(su.get("renewable")))
 
 
+#: STS5.1806 专项：refresh_token 链被外部客户端推进（官方 IDE 同账号续期）
+#: 后，网关手里的 token 永久作废 —— 唯一恢复途径是重新登录。记录结构：
+#: account_id -> 死掉那张 token 的前缀（重新登录会换新 token，前缀变了即自愈）。
+_STS_DEAD_EXTERNALLY = {}
+
+
+def _sts_dead_by_external(sess):
+    """这个账号的 token 链是否已被外部轮换死掉（1806 已确认）。"""
+    aid = (sess.get("account") or {}).get("id") or ""
+    dead_prefix = _STS_DEAD_EXTERNALLY.get(aid)
+    if not dead_prefix:
+        return False
+    current = str(sess.get("refresh_token") or "")[:24]
+    if current and current != dead_prefix:
+        # token 变了 = 用户重新登录过了：自动解除，恢复正常续期
+        del _STS_DEAD_EXTERNALLY[aid]
+        return False
+    return True
+
+
 def _ensure_fresh(sess):
     """STS 快到期（或已过期）就先续一次，别等请求打到上游才 503。
 
     串行化与「锁内重读」都在 ca_codearts.refresh_session 里完成，这里只管
     打日志和兜底：续期失败时把旧会话原样交回，让调用方拿到上游的真实错误。
+
+    1806 是唯一不可自愈的失败（链已断，重试永远失败）。确认后进入
+    「外部占用」状态：不再每 30 秒打一次注定失败的续期（实测一天能刷
+    2800+ 条 WARN 和同样数量的上游请求），直到重新登录换出新 token。
     """
+    if _sts_dead_by_external(sess):
+        return sess           # 静默跳过：状态在标记那一刻已经打过一次日志
     left = _codearts_left(sess)[0]
     try:
         renewed = ca_codearts.ensure_fresh_session(
             ACCOUNTS_DIR, sess, CODEARTS_REFRESH_MARGIN)
     except Exception as exc:      # noqa: BLE001
-        log("codearts: STS renew failed for %s: %s"
-            % ((sess.get("account") or {}).get("label"), exc), level="WARN")
+        label = (sess.get("account") or {}).get("label")
+        aid = (sess.get("account") or {}).get("id") or ""
+        if "1806" in str(exc):
+            _STS_DEAD_EXTERNALLY[aid] = str(sess.get("refresh_token") or "")[:24]
+            log("codearts: STS 链被外部客户端轮换（1806）：%s —— 停止自动续期，"
+                "重新登录后自动恢复（官方 IDE 等同账号客户端会推进同一条链）"
+                % label, level="WARN")
+        else:
+            log("codearts: STS renew failed for %s: %s" % (label, exc),
+                level="WARN")
         return sess
     if renewed is not sess:
         log("codearts: renewed STS for %s (was %ss left)"
@@ -8039,6 +8081,9 @@ class Handler(BaseHTTPRequestHandler):
             info = ca_codearts.summarize(session)
             info["file"] = os.path.basename(
                 ca_codearts.session_path(ACCOUNTS_DIR, info.get("account_id") or ""))
+            # 链被外部客户端轮换死（1806 已确认）：面板直接说清「为什么这个号
+            # 不续期也不接新活」，而不是让人从一堆 429/过期里猜。
+            info["sts_dead_external"] = _sts_dead_by_external(session)
             # 体验版积分（客户端「总已用积分 x / y」那一条）。token 额度那一栏
             # 已随福利渠道一起下线（opengw 不再提供服务），面板只显示积分。
             try:
