@@ -151,5 +151,25 @@ class PanelPasswordChangeTests(unittest.TestCase):
         self.assertIn("at least 4", payload["error"]["message"])
 
 
+class PanelSessionSweepTests(unittest.TestCase):
+    """create() 顺手清过期墓碑，会话字典才有界。
+
+    过期条目原本只在本 token 再被验证时清除；浏览器再也不回来的 token 会
+    在字典里躺满整个 TTL。登录是唯一新增源，所以清扫挂在 create() 上。
+    """
+
+    def test_expired_tokens_are_swept_on_the_next_login(self):
+        sessions = ca_settings.PanelSessions(ttl=10 ** 9)
+        stale = sessions.create()
+        fresh = sessions.create()
+        # 把第一个 token 的有效期拨到过去（绕过真实等待）
+        sessions._tokens[stale] = 0.0
+        sessions.create()
+        self.assertNotIn(stale, sessions._tokens)
+        self.assertIn(fresh, sessions._tokens)
+        self.assertTrue(sessions.valid(fresh))
+        self.assertFalse(sessions.valid(stale))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

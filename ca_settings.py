@@ -1636,8 +1636,15 @@ class PanelSessions(object):
 
     def create(self):
         token = secrets.token_urlsafe(24)
+        now = time.time()
         with self._lock:
-            self._tokens[token] = time.time() + self.ttl
+            # 过期条目只在本 token 再被验证时清除；没人再来的 token（浏览器
+            # 关掉、换机器）就永远躺在字典里 —— 登录是唯一新增源，新增时
+            # 顺手把墓碑扫掉，这个字典才有界。表在登录限流之后本就很小，
+            # O(n) 扫一遍不构成负担。
+            for dead in [t for t, exp in self._tokens.items() if exp < now]:
+                del self._tokens[dead]
+            self._tokens[token] = now + self.ttl
         return token
 
     def valid(self, token):
