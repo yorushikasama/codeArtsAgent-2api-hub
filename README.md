@@ -70,7 +70,10 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- **97 个套件：74 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- **98 个套件：75 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- 测试里替换网关全局状态一律走 `tests/_isolated_dirs.py` 的
+  `patched_state(module, **kw)` 上下文管理器（退出自动还原），不再手写
+  save/restore 成对赋值 —— 漏一半会把脏状态留给同进程后续用例。
 - `tests/_test_protocol_pure.py` 只 import `ca_protocol`，钉住「协议层不依赖 ca_proxy、不碰 I/O」；
   `tests/_test_protocol_golden.py` 对拍两种流式协议的**逐字节帧序列**（`tests/golden/*.json`）。
 - 仓库不含 CI：测试在本地 / 服务器手工跑（`--jobs 4` 可并行）。
