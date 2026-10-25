@@ -1,19 +1,16 @@
 """热路径每请求固定开销的削减：等价性对拍与缓存失效回归。
 
-这个套件钉住四项热路径改动（PR: 代理请求热路径削开销）的正确性：
+这个套件钉住三项热路径改动（PR: 代理请求热路径削开销）的正确性：
 
-  1. has_fingerprint 的字面量快路径与原来的两个 (?i) 正则逐字等价 —— 含 re.I 的
-     Unicode 特例（'ſ' 能替 s、'İ'/'ı' 能替 i）、大小写混排、内嵌长文本；
-  2. estimate_tokens 的单遍实现与原来的逐字符循环逐值相等（含 CJK 边界、代理对、
+  1. estimate_tokens 的单遍实现与原来的逐字符循环逐值相等（含 CJK 边界、代理对、
      非字符串输入）；
-  4. ca_settings.load 的 (path, mtime, size) 缓存：外部改写后失效、save() 写后
+  2. ca_settings.load 的 (path, mtime, size) 缓存：外部改写后失效、save() 写后
      立即可见（含 limits_data 首读迁移的写）、返回的是顶层拷贝；
-  5. 模块级 _usage 只剩进程启动时刻：record_usage/record_error 不再累加没人读的
+  3. 模块级 _usage 只剩进程启动时刻：record_usage/record_error 不再累加没人读的
      requests/ttft/gen/wall/by_model，快照的 started/since 仍从它取。
 """
 import json
 import os
-import random
 import shutil
 import sys
 import tempfile
@@ -29,24 +26,6 @@ import ca_proxy as P
 import ca_protocol as Q  # noqa: E402
 import ca_settings  # noqa: E402
 
-# 指纹基串从模块常量派生，而不是手抄一份字面量：手抄两份必然漂移，
-# 派生值才是唯一可信来源。
-FP = P.SANITIZE_OMO_JUNIOR_RE.pattern
-HDR = P.SANITIZE_BARE_HDR_LOWER
-# re.I 能匹配 i/s 而 str.lower() 不能的三个 Unicode 字符：İ / ı / ſ。
-SPECIALS = ("\u0130", "\u0131", "\u017f")
-
-
-def old_has_fingerprint(text):
-    """改动前的实现（等价性基准）：两个 (?i) 正则做字面量匹配。"""
-    if not isinstance(text, str) or not text:
-        return False
-    for f in P.SANITIZE_FEATURES:
-        if f in text:
-            return True
-    return bool(P.SANITIZE_BARE_HDR_RE.search(text)
-                or P.SANITIZE_OMO_JUNIOR_RE.search(text))
-
 
 def old_estimate_tokens(text):
     """改动前的实现（等价性基准）：逐字符 Python 循环。"""
@@ -59,116 +38,6 @@ def old_estimate_tokens(text):
     other = len(text) - cjk
     return cjk + max(1, int(other / 3.6)) if text else 0
 
-
-def fingerprint_cases():
-    """定向用例：每个位置换成特例字符、大小写混排、内嵌长文本、随机串。"""
-    cases = [
-        FP, FP.lower(), FP.upper(), FP.swapcase(),
-        HDR, HDR.upper(), HDR.title(),
-        "", "plain text with no fingerprint",
-        "Sisyphus-Junior alone", "from OhMyOpenCode alone",
-    ]
-    cases += list(P.SANITIZE_FEATURES)
-    for special in SPECIALS:
-        for pos in range(len(FP)):
-            t = FP[:pos] + special + FP[pos + 1:]
-            cases += [t, t.upper(), t.swapcase(), t.lower()]
-        for pos in range(len(HDR)):
-            cases.append(HDR[:pos] + special + HDR[pos + 1:])
-        cases += [special, special * 3, "abc" + special + "def",
-                  "Sisyphus" + special + "-Junior - Focused executor"]
-    # 内嵌长文本：指纹在 4KB/64KB 正文的中间与结尾
-    filler = "lorem ipsum dolor sit amet " * 200
-    for text in (FP, FP.lower(), FP.upper()):
-        cases += [filler + text + filler, filler * 16 + text, text + filler * 16]
-    # 随机串：字母表里塞进全部特例字符，覆盖面比定向用例更宽
-    rng = random.Random(20261009)
-    alphabet = list("Sisyphus-Junior x-anthropic-billing-hdr") + list(SPECIALS) \
-        + ["S", "s", "I", "i", "K", "\u212a", "\u00df", "\u1e9e", "-", " "]
-    for _ in range(30000):
-        n = rng.randint(0, 40)
-        cases.append("".join(rng.choice(alphabet) for _ in range(n)))
-    return cases
-
-
-class FingerprintFastPathTests(unittest.TestCase):
-    def test_has_fingerprint_matches_the_regex_implementation(self):
-        mismatches = [t for t in fingerprint_cases()
-                      if P.has_fingerprint(t) != old_has_fingerprint(t)]
-        self.assertEqual(
-            mismatches[:5], [],
-            "快路径与 (?i) 正则判定不一致（%d 例）" % len(mismatches))
-
-    def test_sanitize_text_matches_the_regex_implementation(self):
-        # 判定一致还不够：判 False 时不得发生改写，判 True 时两个实现要给出
-        # 同样的 sanitize 结果。
-        # OMO 替换串（把整条指纹规范化成不带框架归因的短形式）从模块行为派生：
-        # 对整条指纹跑一次 sanitize_text 拿到的就是那个字面量，手抄第二份不可靠。
-        replacement = P.sanitize_text(FP)
-        self.assertNotEqual(replacement, FP, "指纹应当被改写")
-
-        def old_sanitize(text):
-            if not isinstance(text, str) or not text:
-                return text
-            if not old_has_fingerprint(text):
-                return text
-            text = P.SANITIZE_OMO_JUNIOR_RE.sub(replacement, text)
-            for old, new in P.SANITIZE_REWRITES:
-                text = text.replace(old, new)
-            text = P.SANITIZE_HDR_RE.sub("", text)
-            if "cc_" in text:
-                prev = ""
-                while prev != text:
-                    prev = text
-                    text = P.SANITIZE_KV_RE.sub("", text)
-            text = P.SANITIZE_BARE_HDR_RE.sub("x-anthropic-billing-hdr", text)
-            return text.strip()
-
-        for t in fingerprint_cases():
-            self.assertEqual(P.sanitize_text(t), old_sanitize(t), repr(t[:80]))
-
-    def test_lowercase_constants_stay_in_sync_with_the_regexes(self):
-        # 快路径的两个小写字面量必须与正则同源，改一处忘另一处会被这里拦下。
-        self.assertEqual(P.SANITIZE_OMO_JUNIOR_RE.pattern.lower(),
-                         P.SANITIZE_OMO_JUNIOR_LOWER)
-        self.assertEqual(P.SANITIZE_BARE_HDR_RE.pattern,
-                         "(?i)" + P.SANITIZE_BARE_HDR_LOWER)
-
-    def test_unicode_case_specials_follow_re_ignorecase(self):
-        # 'ſ' 替 s、'İ'/'ı' 替 i：这三个字符是 re.I 与 lower() 的全部差异点，
-        # 快路径必须和正则一样认出它们。
-        self.assertTrue(P.has_fingerprint(FP.replace("s", "\u017f", 1)))
-        self.assertTrue(P.has_fingerprint(FP.replace("i", "\u0130", 1)))
-        self.assertTrue(P.has_fingerprint(FP.replace("i", "\u0131", 1)))
-        self.assertTrue(old_has_fingerprint(FP.replace("s", "\u017f", 1)))
-        # 单独出现不是指纹（与改动前一致）
-        self.assertFalse(P.has_fingerprint("plain \u017f \u0130 \u0131 text"))
-        self.assertEqual(P.has_fingerprint("plain \u017f \u0130 \u0131 text"),
-                         old_has_fingerprint("plain \u017f \u0130 \u0131 text"))
-
-
-class BuildUpstreamBodyReuseTests(unittest.TestCase):
-    PAYLOADS = [
-        {"model": "deepseek-v4.1-flash",
-         "messages": [{"role": "user", "content": "hi"}]},
-        {"model": "deepseek-v4.1-flash",
-         "messages": [{"role": "user", "content": "hi"}],
-         "max_completion_tokens": 8192},
-        {"model": "gpt-6-astra", "stream": True,
-         "messages": [{"role": "developer", "content": "sys"},
-                      {"role": "user", "content": "hi"}]},
-        {"model": "deepseek-v4.1-flash",
-         "messages": [
-             {"role": "assistant", "tool_calls": [
-                 {"id": "c1", "type": "function",
-                  "function": {"name": "f", "arguments": "{}"}}]},
-             {"role": "tool", "tool_call_id": "c1", "content": "ok"}],
-         "tools": [{"name": "f", "description": "d", "parameters": {}}],
-         "tool_choice": {"type": "function", "function": {"name": "f"}}},
-        {"model": "deepseek-v4.1-flash",
-         "messages": [{"role": "user", "content": FP}],
-         "_internal_marker": True, "reasoning_effort": "high"},
-    ]
 
 class EstimateTokensTests(unittest.TestCase):
     def test_matches_the_character_loop(self):

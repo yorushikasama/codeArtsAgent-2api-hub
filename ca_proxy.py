@@ -5278,94 +5278,6 @@ def model_entry(mid, meta):
         item["tags"] = tags
     return item
 # ---------------------------------------------------------------------------
-# Fingerprint Sanitization (immunizes against Codex / Claude Code WAF patterns)
-# ---------------------------------------------------------------------------
-SANITIZE_FEATURES = (
-    "x-anthropic-billing-header",
-    "cc_entrypoint=",
-    "You are Claude Code",
-    "Main branch (",
-    "You are a coding agent running in the Codex CLI",
-    "github.com/anthropics/",
-    "11128",
-)
-SANITIZE_REWRITES = (
-    ("You are Claude Code, Anthropic's official CLI for Claude",
-     "You are Claude Code, Anthropic's official CLI tool for Claude"),
-    ("Main branch (you will usually use this for PRs)",
-     "Default branch (you will usually use this for PRs)"),
-    ("You are a coding agent running in the Codex CLI, a terminal-based coding assistant.",
-     "You are a coding agent running in the Codex CLI tool, a terminal-based coding assistant."),
-    ("To give feedback, users should report the issue at https://github.com/anthropics/claude-code/issues",
-     "To provide feedback, users should report the issue at https://github.com/anthropics/claude-code/issues"),
-    ("11128", "11-128"),
-)
-SANITIZE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header:[^;\r\n]*;?\s*")
-SANITIZE_BARE_HDR_RE = re.compile(r"(?i)x-anthropic-billing-header")
-SANITIZE_KV_RE = re.compile(r"(?i)\bcc_[a-z0-9_]+=[^;\r\n]*;?\s*")
-# WorkBuddy upstream returns 11128 ("Illegal API invocation from an unapproved
-# channel") when this exact OmO identity fingerprint appears as a contiguous
-# substring in a system message. A/B tests show the match is case-insensitive,
-# survives surrounding prefix/suffix text, and stops matching when the phrase
-# structure is changed. Rewrite only this confirmed fingerprint, leaving the
-# agent identity and behaviour intact while dropping the framework attribution.
-SANITIZE_OMO_JUNIOR_RE = re.compile(
-    r"Sisyphus-Junior - Focused executor from OhMyOpenCode", re.IGNORECASE
-)
-# 指纹判定的字面量快路径（见 has_fingerprint）：原先对每段文本跑两个 (?i) 正则，
-# 4KB 输入实测 319µs，其中正则 137+188µs、几个 `in` 只占 9µs；64KB 文本要
-# 6.2ms，而 sanitize_messages 会给每个文本段都过一遍——build_upstream_body
-# (168KB) 的耗时约 95% 都耗在这里（13.60ms -> 2.14ms）。
-# 两个模式都是纯字面量，换成小写副本上的 `in` 之后是纯 C 速度的单遍扫描。
-#
-# 等价性：re.IGNORECASE 的 Unicode 语义与 str.lower() 只有三处差异（CPython
-# 3.13 全码点实测，其余所有带大小写的码点两法完全一致）：
-#   'İ'(U+0130) 与 'ı'(U+0131) 能匹配字面量 i，'ſ'(U+017F) 能匹配 s，
-# 而这三个字符的 lower() 并不落到 i/s。所以先把它们按 SANITIZE_REI_FOLD
-# 归一化成基字母、再小写，副本上的 `in` 与 (?i) search 完全等价（多字符模式
-# 同样成立；全码点替换 + 定向用例 + 随机串对拍零差异，见 tests/_test_hotpath_savings.py）。
-SANITIZE_REI_FOLD = str.maketrans({0x130: "i", 0x131: "i", 0x17F: "s"})
-# 两个小写字面量直接从正则派生，保证与正则永远同源：手抄第二份迟早漂移，
-# 派生出来的值不存在这个问题。pattern 里的 (?i) 是内联旗标，剥掉后就是
-# 字面量本体。
-SANITIZE_BARE_HDR_LOWER = SANITIZE_BARE_HDR_RE.pattern
-if SANITIZE_BARE_HDR_LOWER.startswith("(?i)"):
-    SANITIZE_BARE_HDR_LOWER = SANITIZE_BARE_HDR_LOWER[4:]
-SANITIZE_OMO_JUNIOR_LOWER = SANITIZE_OMO_JUNIOR_RE.pattern.lower()
-def has_fingerprint(text):
-    if not isinstance(text, str) or not text:
-        return False
-    for f in SANITIZE_FEATURES:
-        if f in text:
-            return True
-    # 三个特例字符几乎从不出现：先做三次 C 速度探测，命中才走归一化副本，
-    # 常规文本只付一次 lower()。
-    if "\u0130" in text or "\u0131" in text or "\u017f" in text:
-        low = text.translate(SANITIZE_REI_FOLD).lower()
-    else:
-        low = text.lower()
-    return SANITIZE_BARE_HDR_LOWER in low or SANITIZE_OMO_JUNIOR_LOWER in low
-def sanitize_text(text):
-    if not isinstance(text, str) or not text:
-        return text
-    if not has_fingerprint(text):
-        return text
-    # Keep the rewrite deliberately narrow: do not globally remove
-    # "OhMyOpenCode" or "Sisyphus-Junior", because either token alone is
-    # accepted by the upstream. Only the confirmed contiguous fingerprint is
-    # neutralized.
-    text = SANITIZE_OMO_JUNIOR_RE.sub("Sisyphus-Junior - Focused executor", text)
-    for old, new in SANITIZE_REWRITES:
-        text = text.replace(old, new)
-    text = SANITIZE_HDR_RE.sub("", text)
-    if "cc_" in text:
-        prev = ""
-        while prev != text:
-            prev = text
-            text = SANITIZE_KV_RE.sub("", text)
-    text = SANITIZE_BARE_HDR_RE.sub("x-anthropic-billing-hdr", text)
-    return text.strip()
-# ---------------------------------------------------------------------------
 # Tool-call pairing repair
 # ---------------------------------------------------------------------------
 def _empty_content(value):
@@ -5910,9 +5822,6 @@ def model_catalog_meta(model):
     return {}
 
 
-def model_reasoning_meta(model):
-    """The catalog's reasoning block for a model, or {}."""
-    return model_catalog_meta(model).get("reasoning") or {}
 
 
 def model_default_max_output_tokens(model):
