@@ -55,12 +55,16 @@ fi
 # 全程离线（~40s），应急可用 WB_DEPLOY_SKIP_TESTS=1 旁路（写明原因再绕）。
 if [ "${WB_DEPLOY_SKIP_TESTS:-0}" != "1" ]; then
   echo "deploy-full: test gate — running the suite in the fresh clone..."
-  if ! (cd "$NEW" && python3 tests/run_all.py); then
+  GATE_LOG="$NEW/deploy-gate.log"
+  if ! (cd "$NEW" && python3 tests/run_all.py 2>&1 | tee "$GATE_LOG"); then
     echo "deploy-full: TEST GATE FAILED in $NEW — nothing was touched," >&2
     echo "  the running service keeps the old revision. Fix, push, redeploy." >&2
+    echo "  failing suites:" >&2
+    grep "^  failed:" "$GATE_LOG" >&2 || tail -40 "$GATE_LOG" >&2
     rm -rf "$NEW"
     exit 1
   fi
+  rm -f "$GATE_LOG"
 fi
 
 sudo systemctl stop codearts-hub || true
