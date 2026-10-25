@@ -1,5 +1,30 @@
 ## Unreleased
 
+**STS 时间驱动续期、官方形状完整镜像、WorkBuddy 死路径退役与运营闭环（2026-10-25）**
+
+**可用性：从 28.5% 失败率到 2.2%**
+
+- **STS 后台主动续期线程（`start_sts_refresher`，tick `CODEARTS_STS_TICK` 默认 30s）**：此前续期只挂在请求路径（`_admit` / 目录刷新）与每日签到处——流量驱动的，没人发请求就没人续，账号过期后能一直躺到下一波流量（生产日志实证迟到 41/76 分钟，期间所有请求 502；当日 ready=0 躺了 44 分钟）。修复后夜间无流量也准点按 300s margin 续（`was 299s/285s left`），强制大 margin 实证剩余 7071s 即续。
+- **systemd 守护 + 全量同步部署（`scripts/deploy-full.sh`）**：进程裸奔（parent=1 无重启）改为 unit 守护（Restart=always、SIGTERM 优雅排空、`--panel-password` 从命令行消失——`apply_launcher_password` 本就忽略它，纯泄漏）；部署从「增量 scp 挑文件」改为**每次 git 全新克隆 + 运行时数据白名单搬运（accounts/usage/logs/catalog/_archive*/服务器自有脚本）+ 原子换目录 + 保留 3 份回滚**——增量同步曾让服务器漂移出「旧测试 + 新代码」的 9 个假失败。
+- **官方请求形状完整镜像（本机 kernel 日志 27 条请求体实证）**：`max_tokens` **双向**钳到官方值（glm-5.3 / openpangu-2.0-pro 恒 32000，连起标题小任务也不例外——只向下钳不够：思考模型的推理与正文共用额度，小值请求会 200 OK + 0 正文还照扣思考积分）；`tool_choice` 缺省补 `"auto"`（显式 none/required 尊重）；顶层带 `user_prompt`（最近一条用户正文，tool_result 回合跳过，2000 字符封顶）。三条协议入口全覆盖。
+- **登录手动回调逃生通道（`POST /accounts/codearts/login/callback`）**：回跳地址被华为 portal 钉死在 `127.0.0.1:<port>`（RFC 8252 环回，授权链接里只有 port 可控），网关跑在远程机器时浏览器打不开它——授权成功却落不了地。现在把地址栏完整 URL 粘贴进弹窗即可，与 `/oauth/callback` 同一条 `accept_callback`；`state` 比对（陈旧标签页的旧回调不再顶掉当前登录的 PKCE 对）、old_login 中间跳转经域名白名单校验后还给面板（服务器不代访外部地址）。
+- **新账号当天补签（`_codearts_welcome_claim`）**：签到调度器每日一跑，之后新加的账号要等次日——登录成功两条路径异步补签一次，失败不碍事。另有弹窗「一键签到全部账号」（后端本就支持空 accountId 批量）。
+- **每日限额面板入口**：限额执行端一直在跑，写入端只有零引用的旧 setter（值只能手改 settings.json）——现在 `validate_limits_patch` / `apply_limits_patch` + 设置页「每日限额」三项（0=不限）闭环，读写回环实测。
+
+**死代码两轮约 420 行 + 两处活路径缺口修复**
+
+- 引用追踪到 **`build_upstream_body` 生产零调用**（所有"引用"都在注释里），连带退役 apply_prompt_mode / sanitize_messages / normalize_tool_choice / normalize_stop / translate_max_completion_tokens / ca_proxy.normalize_tools / PROMPT_DEGRADE / **ca_prompt.py 整模块** + 连锁孤儿（约 278 行）；早前一轮删掉限额写入链、WorkBuddy 虚拟别名、旧 UI 排序表等约 140 行。backfill / merge / repack / cleanup 四件被 `repair_messages_for_upstream`（活）共用，保留。
+- **删除中救回两处会丢的保护并移植到活入口**：GPT 系 `max_tokens≥16` 钳制（#364/#252）→ `_codearts_max_tokens`；`tool_choice` 对象形式降级（OpenAI 官方拼写 `{type:none}` 上游 11101；2026-10-23「none 删 tools 致模型死循环刷到 297k token」事故）→ `ca_codearts.normalize_tool_choice_value`。
+- 十个测试文件改接活入口（repairs/backfill 集成段走 repair_messages_for_upstream、stop 归一化走 sampling_extra_from、tool_choice 走 chat_body 等）。`scripts/dead_code_sweep.py`（AST 引用计数）留作维护工具；保留项：ca_probes 的 probe_model/save_probe（scripts/probe_max_tokens.py 运营工具在用——首轮扫描漏了 scripts/ 差点误删）。
+
+**测试与数据卫生**
+
+- **run_all 沙箱**：套件曾把 stub 假用量写进真实 usage.jsonl（服务器 8 行、本地累计 93 行，均已清理留 .bak）。现在 run_all 把 `WB_PROXY_ACCOUNTS_DIR` / `WB_PROXY_USAGE_DIR` 指到按次临时目录（`WB_TEST_NO_SANDBOX=1` 可关），本地与服务器全量后零新增；三个会触发真实记账的套件再加「import 前自隔离」，单独直跑调试也安全。
+- **池断言钉容量**：并发容量来自面板值（服务器是 3、默认 2），测试假设默认值在面板改过的机器上必挂——钉死再断言；`_descendants` 同级按 pid 排序修平台漂移（/proc readdir 顺序）；服务器装 node 后 97 套全部可跑（不再跳过 JS）。
+- **模型名归一**：客户端大小写混写曾把按模型统计、日限额、降级链打散成多个桶。四个入口（Chat 聚合/流式、Responses 非流式/流式）读到 model 即 `resolve_model`（未知名原样放行）；`scripts/normalize_usage_models.py` 一次迁移历史行（先备份、幂等），看板历史一个模型一个桶。
+- **看板「模型消耗分布」新增思考占比列**（reasoning/completion，过半标红，中英繁 i18n）——思考型模型长任务 71-77% 输出花在思考上，直接决定延迟与积分。
+- README 补「尽量用流式」（思考模型单次生成数分钟，非流式 5 分钟内超时基本必挂）；真实场景脚本收编为 `tests/_realtest_live.py`（命名避开自动发现）；服务器 gw.log 装 logrotate（weekly/16M/copytruncate，配置入库 `scripts/logrotate-codearts-hub.conf`）。
+
 **官方协议对齐、韧性栈与大文件拆分（2026-10-24）**
 
 - **逆向官方 CodeArts Agent 客户端并对齐出站形状**：chat_headers 头族（`x-session-affinity` / `user-msg-id` / `plugin-name=codemate_vscode` / `ide-name=VSCode` 等）、思考档位白名单（glm-5.3 的 strengths 为空 → 不再发送 `reasoning_effort`）、逐模型 `max_tokens` 上限（glm-5.3 = 32000）、带工具的请求自动携带 `tool_stream: true`。此前缺失这套形状正是线上 APIG.0203 / 反复断流的根因；对齐后同一条 9 万 token 会话稳定通过。
