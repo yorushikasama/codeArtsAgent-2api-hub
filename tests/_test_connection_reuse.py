@@ -139,7 +139,6 @@ def read_response(sock, deadline=RESPONSE_DEADLINE):
     return head + b"\r\n\r\n" + body
 
 
-port = life.free_port()
 work = tempfile.mkdtemp(prefix="connreuse_")
 store = os.path.join(work, "accounts")
 os.makedirs(store)
@@ -149,29 +148,14 @@ with open(os.path.join(store, "settings.json"), "w", encoding="utf-8") as fh:
 
 # Managed spawn: its own group/session, so the stop_managed() in the finally
 # below takes the whole tree - a gateway that leaves a helper behind also leaves
-# its port held.
-proc = life.spawn_managed(
-    [PY, os.path.join(ROOT, "ca_proxy.py"), "--port", str(port), "--host", "127.0.0.1",
-     "--accounts-dir", store],
+# its port held. spawn_server draws the port itself and retries when another
+# suite steals the draw before the gateway binds (the --jobs flake); readiness
+# polling lives in the helper now.
+proc, port = life.spawn_server(
+    lambda p: [PY, os.path.join(ROOT, "ca_proxy.py"), "--port", str(p),
+               "--host", "127.0.0.1", "--accounts-dir", store],
     cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
     env=dict(os.environ, WB_PROXY_USAGE_DIR=os.path.join(work, "usage")))
-
-
-def wait_ready():
-    """Wait for /health to answer; a gateway that could not bind exits instead."""
-    for _ in range(40):
-        time.sleep(0.5)
-        try:
-            c = socket.create_connection(("127.0.0.1", port), timeout=2)
-            c.sendall(b"GET /health HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n")
-            data = c.recv(200)
-            c.close()
-            if b"200" in data:
-                return True
-        except Exception:
-            if proc.poll() is not None:
-                return False
-    return False
 
 
 def send_pair(bad_body, label):
@@ -205,10 +189,6 @@ def send_pair(bad_body, label):
 
 
 try:
-    if not wait_ready():
-        print("  [FAIL] server did not start")
-        sys.exit(1)
-
     print("[1] large body rejected with 401, then a good request")
     big = json.dumps({"model": "x",
                       "messages": [{"role": "user", "content": "A" * 70000}]}).encode()

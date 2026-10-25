@@ -1,17 +1,19 @@
 """Shared lifecycle for the suites that start a process: a port, and a managed pair.
 
-Only what more than one suite needs lives here. Gateway readiness and every HTTP
-detail stay in _test_connection_reuse.py.
+Only what more than one suite needs lives here: the free-port draw with its
+retry-on-theft (spawn_server), the process-group spawn and its tree stop.
 
 spawn_managed() and stop_managed() are one pair: the spawn always puts the child
 in its own group/session, and the stop only takes a process started that way.
 That is what makes the tree cleanup unambiguous - there is no ownership flag to
 get wrong, and signalling the group can never reach the caller's own group.
 """
+import http.client
 import os
 import signal
 import socket
 import subprocess
+import time
 
 STOP_TIMEOUT = 10.0
 
@@ -24,6 +26,48 @@ def free_port():
         return sock.getsockname()[1]
     finally:
         sock.close()
+
+
+def spawn_server(build_cmd, tries=4, timeout=25.0, **spawn_kwargs):
+    """Spawn the gateway on a port that is free at bind time; retry on theft.
+
+    ``free_port()`` releases its probe socket before the child can claim the
+    number, so under ``--jobs N`` two suites can draw the same value and the
+    loser's gateway exits with EADDRINUSE within a second - the intermittent
+    suite failure this helper exists for. Each attempt draws a fresh port,
+    spawns, and polls ``/health`` itself; a child that dies early (stolen
+    port, bad config) or never answers in ``timeout`` is torn down and the
+    next draw happens.
+
+    Returns ``(proc, port)``. The caller owns ``stop_managed(proc)``.
+    """
+    last = None
+    for _ in range(tries):
+        port = free_port()
+        last = port
+        proc = spawn_managed(build_cmd(port), **spawn_kwargs)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            time.sleep(0.5)
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                try:
+                    conn.request("GET", "/health")
+                    resp = conn.getresponse()
+                    resp.read()
+                    healthy = resp.status == 200
+                finally:
+                    conn.close()
+                if healthy:
+                    return proc, port
+            except Exception:
+                if proc.poll() is not None:
+                    break       # gateway died: the port draw was lost or the
+                                # config is bad - either way, draw again
+        stop_managed(proc)
+    raise RuntimeError(
+        "gateway never became healthy on %d drawn ports (last %d); a stolen "
+        "port retries above, a broken config does not" % (tries, last))
 
 
 def spawn_managed(*args, **kwargs):

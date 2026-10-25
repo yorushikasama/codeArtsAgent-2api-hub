@@ -60,7 +60,6 @@ def rendered(disk_bytes, language):
                               ('data-ui-language="%s"' % language).encode("utf-8"))
 
 
-port = life.free_port()
 work = tempfile.mkdtemp(prefix="dashcache_")
 tree = os.path.join(work, "gateway")
 # 整棵源码树复制到临时目录（跳过测试和缓存）：网关从 __file__ 旁边读
@@ -88,10 +87,11 @@ def set_language(value):
 
 # Managed spawn: its own group/session, so the stop_managed() in the finally
 # below takes the whole tree - a gateway that leaves a helper behind also leaves
-# its port held.
-proc = life.spawn_managed(
-    [PY, os.path.join(tree, "ca_proxy.py"), "--port", str(port), "--host", "127.0.0.1",
-     "--accounts-dir", store],
+# its port held. spawn_server 抽端口并在被抢时重试（--jobs 偶发的根源），
+# 就绪轮询也在辅助函数里。
+proc, port = life.spawn_server(
+    lambda p: [PY, os.path.join(tree, "ca_proxy.py"), "--port", str(p),
+               "--host", "127.0.0.1", "--accounts-dir", store],
     cwd=tree, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
     env=dict(os.environ, WB_PROXY_USAGE_DIR=os.path.join(work, "usage")))
 
@@ -107,25 +107,7 @@ def get(path="/", headers=None):
         conn.close()
 
 
-def wait_ready():
-    """等 /health 作答；起不来的网关会自行退出。"""
-    for _ in range(40):
-        time.sleep(0.5)
-        try:
-            status, _, _ = get("/health")
-            if status == 200:
-                return True
-        except Exception:
-            if proc.poll() is not None:
-                return False
-    return False
-
-
 try:
-    if not wait_ready():
-        print("  [FAIL] server did not start")
-        sys.exit(1)
-
     dash_path = os.path.join(tree, "dashboard.html")
     with open(dash_path, "rb") as fh:
         disk = fh.read()

@@ -66,7 +66,6 @@ def check(label, ok, detail=""):
         print("  [FAIL] %s %s" % (label, detail))
 
 
-port = life.free_port()
 work = tempfile.mkdtemp(prefix="usageetag_")
 usage_dir = os.path.join(work, "usage")
 os.makedirs(usage_dir)
@@ -99,9 +98,9 @@ now = time.time()
 write_rows([row(now - 600 - 30 * i, total_tokens=100 + i, account="a%d" % (i % 2 + 1))
             for i in range(12)])
 
-proc = life.spawn_managed(
-    [PY, os.path.join(ROOT, "ca_proxy.py"), "--port", str(port), "--host", "127.0.0.1",
-     "--accounts-dir", store],
+proc, port = life.spawn_server(
+    lambda p: [PY, os.path.join(ROOT, "ca_proxy.py"), "--port", str(p),
+               "--host", "127.0.0.1", "--accounts-dir", store],
     cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT,
     env=dict(os.environ, WB_PROXY_USAGE_DIR=usage_dir, WB_STATS_TTL=str(TTL)))
 
@@ -132,19 +131,6 @@ def panel_headers(extra=None):
 def poll(path, extra=None, conn=None):
     """一次面板会话下的 GET。"""
     return get(path, panel_headers(extra), conn=conn)
-
-
-def wait_ready():
-    for _ in range(40):
-        time.sleep(0.5)
-        try:
-            status, _, _ = get("/health")
-            if status == 200:
-                return True
-        except Exception:
-            if proc.poll() is not None:
-                return False
-    return False
 
 
 def login():
@@ -194,9 +180,6 @@ def synced_tag(path, extra=None):
 
 
 try:
-    if not wait_ready():
-        print("  [FAIL] server did not start")
-        sys.exit(1)
     TOKEN = login()
     if not TOKEN:
         print("  [FAIL] panel login failed")
