@@ -4051,13 +4051,17 @@ class _CodeartsLease:
 
     def __init__(self, resp, account_label, started_at, account_key,
                  session_id=None, session_cred=None, max_idle=None,
-                 idle_timeout=None):
+                 idle_timeout=None, extra=None):
         self.resp = resp
         self.account_label = account_label
         self.started_at = started_at
         self.account_key = account_key
         self.session_id = session_id
         self._session_cred = session_cred
+        #: 建连成功那一轮实际发给上游的 extra（_codearts_extra 的产物）。
+        #: 落账时从中取真正生效的推理档位（见 _sent_reasoning_effort）——
+        #: 建连会换号重试，只有成功那轮的 extra 才是这条请求真跑的形状。
+        self.extra = extra
         #: 流式读的心跳间隔（秒）。None 用模块默认。**面板设的就是这个**：
         #: 以前这里写死读 ca_codearts.STREAM_IDLE_TIMEOUT，面板改了不生效。
         self.idle_timeout = idle_timeout
@@ -4537,6 +4541,22 @@ def _codearts_extra(payload, cred=None):
         log("stop_sequences capped: kept first 4, dropped %d (upstream accepts "
             "4 at most)" % dropped, level="INFO")
     return merged or None
+
+
+def _sent_reasoning_effort(extra):
+    """这条请求**真正发给上游**的推理档位（record_usage 的 effort 参数）。
+
+    档位的解析只有一个源头：``_codearts_extra``（→
+    ``ca_codearts.thinking_extra_from``）。它产物里带 ``reasoning_effort``
+    就说明客户端要的档位过了模型白名单、真的发出去了；没有（客户端没给 /
+    被白名单丢掉 / effort=none / thinking 关）说明上游跑的是默认档 —— 返回
+    None，行上不写。以前这个值算完就扔，usage 行永远没有 reasoning_effort，
+    面板「推理强度」一列只能是「—」。
+    """
+    if not isinstance(extra, dict):
+        return None
+    effort = extra.get("reasoning_effort")
+    return str(effort) if effort else None
 
 
 def _codearts_response_format_error(payload):
@@ -9149,6 +9169,8 @@ class Handler(BaseHTTPRequestHandler):
         t_start = time.time()
         status, text, last_exc = None, "", None
         account_label = None
+        # 成功那一轮实际发给上游的 extra（落账时取真正生效的推理档位）。
+        sent_extra = None
         # 与流式路径同一个粘性口径（见 codearts_session_key）。
         sticky_key = codearts_session_key(getattr(self, "headers", None), payload)
         # 面板的超时与出口退避都是每请求读一次，不能落在重试环里。
@@ -9198,11 +9220,12 @@ class Handler(BaseHTTPRequestHandler):
                 # 没给就沿用上游默认（保持旧行为不变）。
                 # tools / tool_choice 必须一起送（上游原生支持 function
                 # calling）；不送模型就看不到工具，只能编 <tool_call> 文本。
+                sent_extra = _codearts_extra(payload, cred)
                 status, text = ca_codearts.chat_for_model(
                     cred[0], cred[1], cred[2], model, messages,
                     max_tokens=max_tokens, stream=True,
                     timeout=header_timeout, idle_timeout=idle_timeout,
-                    extra=_codearts_extra(payload, cred),
+                    extra=sent_extra,
                     tools=payload.get("tools"),
                     tool_choice=payload.get("tool_choice"),
                     abort_check=self._client_disconnected,
@@ -9349,8 +9372,11 @@ class Handler(BaseHTTPRequestHandler):
 
         elapsed_ms = int((time.time() - t_start) * 1000)
         try:
+            # 聚合路径没有「首帧」概念（整条上游流读完才聚合），ttft/gen 留空
+            # 是诚实的；推理档位取成功那一轮真正发出去的。
             record_usage(model, usage, stream=want_stream,
                          elapsed_ms=elapsed_ms, account=account_label,
+                         effort=_sent_reasoning_effort(sent_extra),
                          key=self._key_id(), outcome="completed")
         except Exception:
             pass
@@ -9412,6 +9438,8 @@ class Handler(BaseHTTPRequestHandler):
         t_start = time.time()
         status, text, last_exc = None, "", None
         account_label = None
+        # 成功那一轮实际发出的 extra（含真正生效的 reasoning_effort）。
+        extra = None
 
         def _reply(code, message, err_type, retry_after=None):
             """失败出口：要么写响应（旧行为），要么把决定抛给调用方。"""
@@ -9464,11 +9492,13 @@ class Handler(BaseHTTPRequestHandler):
                 # 名额时 open_chat 会回 1041，走下面的重试 / 换号。
                 log("codearts session busy failed: %s" % hb_detail)
             try:
+                # extra 先算出来再发：产物要跟着 lease 回去落账（推理强度列）。
+                extra = _codearts_extra(payload, cred)
                 status, resp, text = ca_codearts.open_chat(
                     cred[0], cred[1], cred[2], model, messages,
                     max_tokens=max_tokens, stream=True,
                     timeout=header_timeout, idle_timeout=idle_timeout,
-                    extra=_codearts_extra(payload, cred),
+                    extra=extra,
                     tools=payload.get("tools"),
                     tool_choice=payload.get("tool_choice"),
                     session_id=session_id, session_retry=attempt)
@@ -9486,7 +9516,8 @@ class Handler(BaseHTTPRequestHandler):
                                             session_id=session_id,
                                             session_cred=cred,
                                             idle_timeout=_codearts_stream_idle(),
-                                            max_idle=_codearts_stream_max_idle())
+                                            max_idle=_codearts_stream_max_idle(),
+                                            extra=extra)
             # 没拿到句柄：刚 busy 的那个 id 要立刻注销（哪怕 busy 本身没成）。
             # 不注销，上游可能已经记成半开会话，白占一个名额。
             codearts_session_idle(cred, session_id)
@@ -9661,6 +9692,8 @@ class Handler(BaseHTTPRequestHandler):
         account_label = None
         account_key = None
         headers_sent = False
+        # 首帧下发时刻（headers_sent 置位处捕获）——「首字」列与 gen_ms 的锚点。
+        t_first = None
         restarts = 0
 
         def emit(obj):
@@ -9773,6 +9806,10 @@ class Handler(BaseHTTPRequestHandler):
                             try:
                                 send_headers()
                                 headers_sent = True
+                                # 这一刻（t_start 之后）就是客户端看到首字的
+                                # 时刻，ttft 从这里算 —— 以前没人记它，面板
+                                # 「首字」「速度」两列永远是「—」。
+                                t_first = time.time()
                                 emit(frame({"role": "assistant", "content": ""}))
                             except (BrokenPipeError, ConnectionResetError,
                                     ConnectionAbortedError):
@@ -9879,6 +9916,12 @@ class Handler(BaseHTTPRequestHandler):
             break
 
         elapsed_ms = int((time.time() - t_start) * 1000)
+        # ttft 只在真的给客户端发过首帧时成立；gen = 末帧 − 首帧，用
+        # elapsed − ttft 近似（末帧之后只剩 finish 帧 + [DONE] 的写盘）。
+        # record_usage 用 gen_ms 派生 tokens_per_sec —— 这两个不落行，
+        # 面板「首字」「速度」两列就永远是「—」。
+        ttft_ms = int((t_first - t_start) * 1000) if t_first is not None else None
+        gen_ms = (elapsed_ms - ttft_ms) if ttft_ms is not None else None
         if not headers_sent:
             # 一帧有效数据都没接到（上游连上就断、或上来就是一个错误帧）：
             # 头还没发出去，能回干净的错误码让客户端按正常失败重试 ——
@@ -9951,6 +9994,9 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
+                         ttft_ms=ttft_ms, gen_ms=gen_ms,
+                         effort=_sent_reasoning_effort(
+                             getattr(lease, "extra", None)),
                          account=account_label, key=self._key_id(),
                          outcome="completed")
         except Exception:
@@ -10168,6 +10214,8 @@ class Handler(BaseHTTPRequestHandler):
         # 于是「静默 60 秒被切」在它们的错误里看不出是同一件事。
         _break_stats = {}
         headers_sent = False
+        # 首帧下发时刻（与 chat 入口同一口径，ttft/gen 落账用）。
+        t_first = None
 
         def send_headers():
             self.send_response(200)
@@ -10193,6 +10241,8 @@ class Handler(BaseHTTPRequestHandler):
                         # 收场，既不能重试也不能换号。
                         send_headers()
                         headers_sent = True
+                        # 首帧下发时刻：ttft 从这里算（见 chat 入口）。
+                        t_first = time.time()
                     self.wfile.write(ca_protocol.clean_responses_frame(frame))
                     self.wfile.flush()
             except ca_stream.UpstreamErrorFrame as exc:
@@ -10258,8 +10308,15 @@ class Handler(BaseHTTPRequestHandler):
                              usage=usage, stream=True,
                              outcome="upstream_aborted", key=self._key_id())
                 return None
+            # 首帧时刻在翻译循环里捕获（口径与 chat 入口一致）；gen = elapsed − ttft。
+            ttft_ms = (int((t_first - lease.started_at) * 1000)
+                       if t_first is not None else None)
+            gen_ms = (elapsed_ms - ttft_ms) if ttft_ms is not None else None
             try:
                 record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
+                             ttft_ms=ttft_ms, gen_ms=gen_ms,
+                             effort=_sent_reasoning_effort(
+                                 getattr(lease, "extra", None)),
                              account=lease.account_label, key=self._key_id(),
                              outcome="completed")
             except Exception:
@@ -10284,6 +10341,9 @@ class Handler(BaseHTTPRequestHandler):
                          or (holder or {}).get("usage") or {},
                          stream=True,
                          elapsed_ms=int((time.time() - lease.started_at) * 1000),
+                         # 客户端取消前请求确实跑在某个档位上，顺手落上。
+                         effort=_sent_reasoning_effort(
+                             getattr(lease, "extra", None)),
                          account=lease.account_label, key=key,
                          outcome="client_aborted")
         except Exception:
@@ -10438,6 +10498,8 @@ class Handler(BaseHTTPRequestHandler):
         tap = {"usage": None, "error": ""}
         _break_stats = {}
         headers_sent = False
+        # 首帧下发时刻（与 chat / Responses 入口同一口径，ttft/gen 落账用）。
+        t_first = None
 
         def send_headers():
             self.send_response(200)
@@ -10461,6 +10523,8 @@ class Handler(BaseHTTPRequestHandler):
                         # 和 chat / Responses 同一口径：第一帧到了才提交 200。
                         send_headers()
                         headers_sent = True
+                        # 首帧下发时刻：ttft 从这里算（见 chat 入口）。
+                        t_first = time.time()
                     self.wfile.write(frame)
                     self.wfile.flush()
             except ca_stream.UpstreamErrorFrame as exc:
@@ -10561,8 +10625,15 @@ class Handler(BaseHTTPRequestHandler):
                              usage=usage, stream=True,
                              outcome="upstream_aborted", key=self._key_id())
                 return None
+            # 首帧时刻在翻译循环里捕获（口径与 chat 入口一致）；gen = elapsed − ttft。
+            ttft_ms = (int((t_first - lease.started_at) * 1000)
+                       if t_first is not None else None)
+            gen_ms = (elapsed_ms - ttft_ms) if ttft_ms is not None else None
             try:
                 record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
+                             ttft_ms=ttft_ms, gen_ms=gen_ms,
+                             effort=_sent_reasoning_effort(
+                                 getattr(lease, "extra", None)),
                              account=lease.account_label, key=self._key_id(),
                              outcome="completed")
             except Exception:

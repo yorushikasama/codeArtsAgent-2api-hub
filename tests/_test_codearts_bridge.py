@@ -457,7 +457,12 @@ def _run_with(payload):
         "account": {"id": "a", "label": "a"},
         "expires_at": "2099-01-01T00:00:00.000Z"})
     C.chat_for_model = _fake_chat
-    P.record_usage = lambda *a, **k: None
+
+    def _rec_spy(*_a, **_kw):
+        # 落账参数也钉住：面板「推理强度」列的数据源就在这里面。
+        _seen["usage_kwargs"] = _kw
+
+    P.record_usage = _rec_spy
     try:
         body = {"model": "glm-5.3",
                 "messages": [{"role": "user", "content": "hi"}]}
@@ -493,6 +498,35 @@ check("关思考的请求不再发给上游（避免 81001）",
 check("没要求时 extra 只剩官方镜像的 user_prompt（2026-10-24 起）",
       _run_with({}) == {"user_prompt": "hi"},
       "默认请求不该带 thinking")
+
+# 档位落账（2026-10-26）：record_usage 的 effort 参数取自成功那一轮实际发出
+# 的 extra —— 面板「推理强度」列的数据源。以前这个值算完就扔，三列里的
+# 「推理强度」永远是「—」。
+# 白名单必须先钉住：离线（测试环境）refresh_thinking_strengths 拿不到官方
+# 档位表，回落结果按模型而异，不钉的话用例是否放行全看网络。glm-5.2 的
+# 官方白名单就是 (high, max)，直接按这个 prime 缓存（refresh 的键是
+# resolve_model 归一后的大写名）。
+_saved_strengths = dict(C._THINKING_STRENGTHS)
+C._THINKING_STRENGTHS["GLM-5.2"] = (time.time() + 3600.0, ("high", "max"))
+try:
+    _run_with({"model": "glm-5.2", "reasoning_effort": "high"})
+    _rec = _seen.get("usage_kwargs") or {}
+    check("聚合完成行带真正发出的档位（glm-5.2 白名单含 high）",
+          _rec.get("effort") == "high", _rec)
+    check("聚合完成行的 outcome / 耗时口径不变",
+          _rec.get("outcome") == "completed"
+          and _rec.get("elapsed_ms") is not None, _rec)
+    _run_with({"model": "glm-5.2", "reasoning_effort": "low"})
+    check("白名单外的档位不落账（low 不在 (high, max) 里）",
+          (_seen.get("usage_kwargs") or {}).get("effort") is None,
+          _seen.get("usage_kwargs"))
+finally:
+    C._THINKING_STRENGTHS.clear()
+    C._THINKING_STRENGTHS.update(_saved_strengths)
+_run_with({"thinking": {"type": "disabled"}})
+check("没发档位的聚合行不带 effort（disabled → 上游默认档，不谎报）",
+      (_seen.get("usage_kwargs") or {}).get("effort") is None,
+      _seen.get("usage_kwargs"))
 
 
 # ---------------------------------------------------------------------------
