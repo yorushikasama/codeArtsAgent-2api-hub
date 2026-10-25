@@ -70,7 +70,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- **99 个套件：76 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- **103 个套件：80 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - 面板页的源码按域拆在 `dashboard_src/`（11 个片段：样式 / i18n / 面板脚本
   按域 4 段 / 数据看板页等），`dashboard.html` 由
   `python scripts/build_dashboard.py` 纯拼接生成（无模板、无压缩、无依赖）；
