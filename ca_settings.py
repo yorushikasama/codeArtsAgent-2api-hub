@@ -977,18 +977,18 @@ CODEARTS_DEFAULTS = {
     # 0 表示「关掉看门狗」，但 ca_codearts.IDLE_HARD_CEILING 仍有一道物理上限。
     "stream_idle": 15,
     "stream_max_idle": 40,
-    # 模型健康降级链（学习官方 smart-router + flagship/fallback 标签制）：
-    # 请求的模型连败进熔断时，按这条链换成第一个健康的模型。空串 = 关掉换模，
-    # 只保留健康度展示。链里的段用逗号分隔，模型 id 必须能过 _FALLBACK_NAME_RE。
-    "model_fallbacks": "glm-5.3,openpangu-2.0-flash,deepseek-v4.1-flash",
-    "model_fallback_enabled": True,
+    # 模型健康降级链已移除（2026-10-24 晚）：它把「请求内容不对」（例如把
+    # 图片发给纯文本模型得到的 400 not multimodal）误判成「模型坏了」，一条
+    # 带图请求就能把整条链上的模型全打成 down，之后正常请求也被改道。
+    # 老 settings.json 里的 model_fallbacks / model_fallback_enabled 不读不写，
+    # 保存时原样保留，回滚旧版本仍能读到。
 }
 
 #: 非数值型的 codearts 键：bool 与字符串各一张表，validate/config 分支用。
-CODEARTS_BOOL_KEYS = {"model_fallback_enabled"}
-CODEARTS_STR_KEYS = {"model_fallbacks"}
-import re as _re
-_FALLBACK_NAME_RE = _re.compile(r"^[A-Za-z0-9._-]+$")
+#: 降级链移除后两张表都是空的；留着这两个名字是因为 validate/config 的分支
+#: 仍按它们分派（以后新增非数值键时只需往表里加，不用改代码）。
+CODEARTS_BOOL_KEYS = set()
+CODEARTS_STR_KEYS = set()
 
 #: 每个键对应的环境变量。**面板没设过这个键时**才用它。
 #:
@@ -1083,19 +1083,6 @@ def validate_codearts_patch(raw):
             if not isinstance(value, bool):
                 raise ValueError("%s must be a boolean" % key)
             out[key] = value
-            continue
-        if key in CODEARTS_STR_KEYS:
-            text = str(value or "").strip()
-            segs = []
-            for seg in text.split(","):
-                seg = seg.strip()
-                if not seg:
-                    continue
-                if not _FALLBACK_NAME_RE.match(seg):
-                    raise ValueError(
-                        "%s contains an invalid model id %r" % (key, seg))
-                segs.append(seg)
-            out[key] = ",".join(segs)   # 规范化：去空白、去空段
             continue
         if isinstance(value, bool) or not isinstance(value, int):
             raise ValueError("%s must be a whole number" % key)

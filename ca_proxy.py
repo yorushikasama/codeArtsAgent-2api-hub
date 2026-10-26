@@ -985,10 +985,6 @@ def record_usage(model, usage, stream=None, elapsed_ms=None, ttft_ms=None, gen_m
     without reasoning controls has nothing to report, and rows written before
     this field existed cannot be told apart from it anyway.
     """
-    # 模型健康熔断的成败记账（官方 smart-router 的对应物）：完整跑完一轮
-    # 就是这个模型的成功信号，连败计数清零。
-    if outcome == "completed":
-        note_model_result(model, True)
     fields = _extract_usage(usage) or {}
     usage_missing = not fields
     # 积分：上游不按请求返回扣了多少，用码道自己的计费档按公式算
@@ -1091,9 +1087,6 @@ def record_error(model, status, message, elapsed_ms=None, account=None,
     key's model whitelist still land on the right row instead of vanishing
     into the unattributed bucket.
     """
-    # 健康熔断：只有 5xx / 上游中断 / 0203 算模型失败；限流与参数错不算。
-    if _health_counts_failure(status, message, outcome):
-        note_model_result(model, False)
     fields = _extract_usage(usage) or {}
     row = {
         "at": time.time(),
@@ -2815,113 +2808,29 @@ CODEARTS_UPSTREAM_SLOTS = ca_env.number("CODEARTS_UPSTREAM_SLOTS", 3,
                                         minimum=1, integer=True)
 
 # ---------------------------------------------------------------------------
-# 模型级健康熔断 + 降级链（学习官方 smart-router / model-selector）。
-#
-# 官方两件套：①每次推理完成按 (provider, model) 记成败进断路器，连败即
-# 翻转、冷却后半开放行；②选模按 agent 配置的 flagship/fallback 标签。
-# 网关的对应物：record_usage/record_error 落账时顺手记成败；连败 ≥ 阈值且
-# 在冷却窗内 → 该模型「熔断」，此时按面板的降级链换成第一个健康的模型。
-# **链耗尽或未启用时照发原模型** —— 绝不硬拒（2026-10-24 的教训：把上游
-# 抖动变成用户可见的错误是反官方哲学的）。
 # ---------------------------------------------------------------------------
-CODEARTS_MODEL_BREAKER_THRESHOLD = ca_env.number(
-    "CODEARTS_MODEL_BREAKER_THRESHOLD", 3, minimum=1, integer=True)
-CODEARTS_MODEL_BREAKER_COOLDOWN = ca_env.number(
-    "CODEARTS_MODEL_BREAKER_COOLDOWN", 60.0, minimum=1.0)
-
-_MODEL_HEALTH = {}          # resolved model -> {"fails": n, "last_fail": ts}
-_MODEL_HEALTH_LOCK = threading.Lock()
-
-
-def note_model_result(model, ok):
-    """记一次模型成败（挂在 record_usage / record_error 上，全链路只有这两处）。"""
-    key = ca_codearts.resolve_model(str(model or ""))
-    if not key:
-        return
-    with _MODEL_HEALTH_LOCK:
-        st = _MODEL_HEALTH.setdefault(key, {"fails": 0, "last_fail": 0.0})
-        if ok:
-            st["fails"] = 0
-        else:
-            st["fails"] += 1
-            st["last_fail"] = time.time()
-
-
-def _model_blocked(model):
-    """该模型是否处于熔断窗内（连败到阈值且最后一次失败还在冷却期内）。
-
-    冷却期一过自然放行（半开）：下一个请求照发，成败由 note_model_result
-    决定是复位还是再记一笔 —— 不需要显式的状态迁移。
-    """
-    with _MODEL_HEALTH_LOCK:
-        st = _MODEL_HEALTH.get(model)
-    if not st:
-        return False
-    return (st["fails"] >= CODEARTS_MODEL_BREAKER_THRESHOLD
-            and time.time() - st["last_fail"] < CODEARTS_MODEL_BREAKER_COOLDOWN)
-
-
-def model_health(model):
-    """健康度标签：ok / degraded（有败绩但未到阈值）/ down（熔断中）。"""
-    key = ca_codearts.resolve_model(str(model or ""))
-    with _MODEL_HEALTH_LOCK:
-        st = _MODEL_HEALTH.get(key)
-    if not st or st["fails"] <= 0:
-        return "ok"
-    if _model_blocked(key):
-        return "down"
-    return "degraded"
-
-
-def _health_counts_failure(status, message, outcome):
-    """这次失败算不算模型的健康失败。
-
-    限流（429/TPM）、参数错、凭据错都与模型好坏无关 —— 记进去只会把
-    「配额被打满」误报成「模型坏了」。只有 5xx / 上游中断 / 0203 算。
-    """
-    if outcome == "upstream_aborted":
-        return True
-    if isinstance(status, int) and status >= 500:
-        return True
-    text = str(message or "")
-    return "APIG.0203" in text or "IncompleteRead" in text
-
-
-def _apply_model_fallback(payload):
-    """入口处按健康度换模型（就地改 payload["model"]，返回换后的模型名）。
-
-    链来自面板设置 ``codearts.model_fallbacks``（默认 glm-5.3 →
-    openpangu-2.0-flash → deepseek-v4.1-flash）；``model_fallback_enabled``
-    关掉或链里没有健康候选时**照发原模型**。
-    """
-    requested = str((payload or {}).get("model") or "")
-    resolved = ca_codearts.resolve_model(requested)
-    if not resolved or not _model_blocked(resolved):
-        return resolved
-    try:
-        tuning = codearts_tuning()
-    except Exception:
-        tuning = {}
-    if not tuning.get("model_fallback_enabled", True):
-        return resolved
-    chain_raw = str(tuning.get("model_fallbacks") or "")
-    for cand in chain_raw.split(","):
-        cand = cand.strip()
-        if not cand:
-            continue
-        cand_resolved = ca_codearts.resolve_model(cand)
-        if not cand_resolved or cand_resolved == resolved:
-            continue
-        if not _model_blocked(cand_resolved):
-            log("model fallback: %s is down (%d consecutive failures within "
-                "%.0fs) -> serving with %s"
-                % (resolved, CODEARTS_MODEL_BREAKER_THRESHOLD,
-                   CODEARTS_MODEL_BREAKER_COOLDOWN, cand_resolved))
-            payload["model"] = cand_resolved
-            return cand_resolved
-    log("model fallback: %s is down but no healthy candidate in the chain; "
-        "serving with it anyway" % resolved)
-    return resolved
+# 模型健康熔断与降级链已移除（2026-10-24 晚）。
+#
+# 曾经的实现：record_usage/record_error 顺手按 (model) 记成败，连败 3 次且
+# 在 60 秒内就把该模型判「熔断」，入口处按面板配的链换成第一个「健康」的
+# 模型继续服务。
+#
+# 删掉的原因是一次真实误判，代价比收益大得多：客户端往 `/v1/messages` 发了
+# 一条带图片的请求，模型（deepseek-v4.1-flash，纯文本）如实回
+# `InferHub.001001020.406 not multimodal` —— 这是**请求内容**的问题，换任何
+# 纯文本模型都一样。但这条 400 走了「上游流内错误帧」路径，outcome 记作
+# upstream_aborted，而 `_health_counts_failure` 把 upstream_aborted 一律算作
+# 模型失败（在状态码判断之前就 return True）。于是三次之后 deepseek 被判
+# 「down」，**此后所有纯文本请求**都被改道到 glm-5.3 → GLM-5.2，这两个也不
+# 支持图片，遇到同一条带图请求继续 400，把整条链一起打成 down。
+# 实测：14:38–14:44 该模型连续 16 次调用全部成功（13 万 token 会话也跑通），
+# 14:44:19 起一条带图请求就让它在用户眼里「突然不可用」。
+#
+# 官方的 smart-router 有断路器，但它建在「同一个 provider+model 的传输健康」
+# 之上，且有官方维护的模型能力表做前置过滤；我们既拿不到完整能力表，又会在
+# 能力类错误上误判，保留这个机制只会把「请求写错了」说成「模型坏了」。
+# 上游真挂了时，已有的 429/5xx 退避重试与号池换号会正常兜住，不需要它。
+# ---------------------------------------------------------------------------
 
 
 def _codearts_stream_idle():
@@ -4390,6 +4299,66 @@ def _codearts_response_format_error(payload):
             "tools/function calling." % kind)
 
 
+def _codearts_vision_capable(model):
+    """该模型是否支持图片输入；查不到就返回 None（不拦）。"""
+    try:
+        catalog = codearts_catalog()
+    except Exception:
+        return None
+    wanted = ca_codearts.resolve_model(str(model or "")) or str(model or "")
+    for item in catalog.get("models") or []:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "")
+        if mid != wanted and ca_codearts.resolve_model(mid) != wanted:
+            continue
+        vision = bool(item.get("supportsImages")) and not item.get(
+            "disabledMultimodal")
+        return vision
+    return None
+
+
+def _payload_has_image(messages):
+    """消息里有没有图片分片（chat / responses / 已转换的 messages 通用）。"""
+    if not isinstance(messages, list):
+        return False
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if str(part.get("type") or "") in (
+                        "image_url", "input_image", "image"):
+                    return True
+                if "image_url" in part:
+                    return True
+    return False
+
+
+def _codearts_vision_error(model, messages):
+    """把图片发给纯文本模型时的拒绝文案；没问题就返回 None。
+
+    以前这条只在**上游回 400 之后**才补一句说明：请求白跑一趟、白占一个会话
+    名额，而且那个 400 走的是「上游流内错误帧」路径，被 outcome=upstream_aborted
+    记成模型失败，连败三次就把模型判成「坏了」（2026-10-24 线上：一条带图请求
+    让 deepseek-v4.1-flash 连续 16 次成功之后突然"不可用"，降级链把后续纯文本
+    请求全改道到另外两个同样不支持图片的模型，一起打成 down）。现在在发请求
+    之前就问一句模型能力：不支持就直接回 400，不碰上游。
+    """
+    if not _payload_has_image(messages):
+        return None
+    if _codearts_vision_capable(model) is not False:
+        # True = 这个模型支持读图；None = 清单里没有它/取不到，按「不拦」处理
+        # （宁可让上游去判，也不误伤一个可能是视觉模型的新模型）。
+        return None
+    return ("model %r does not support image input (not multimodal). "
+            "Remove the image from the message, or switch to a model that "
+            "accepts images." % model)
+
+
 def _codearts_choice_count_error(payload):
     """``n>1`` 的拒绝文案；不拒绝就返回 None。
 
@@ -4961,10 +4930,6 @@ def codearts_model_meta(m):
         meta["tags"] = truth["tags"]
     if truth.get("scenario"):
         meta["scenario"] = truth["scenario"]
-    try:
-        meta["health"] = model_health(m.get("id"))
-    except Exception:
-        pass
     # ---- 思考档位 ----
     # 逆向后确认：strengths 里的字符串直接就是请求里的 reasoning_effort
     # （客户端 mB() 拼成 {reasoningEffort: 值}）。上游**不接受关闭思考**，
@@ -5127,10 +5092,8 @@ def model_entry(mid, meta):
     # ---- misc ----
     if meta.get("credits"):
         item["credits"] = meta["credits"]
-    # 健康度与官方选模标签（health 由 model_health 提供，tags/scenario 来自
-    # agent-center 的 custom_config.tags —— 官方 flagship/fallback 选模真值）。
-    if meta.get("health"):
-        item["health"] = meta["health"]
+    # 官方选模标签（tags/scenario 来自 agent-center 的 custom_config.tags ——
+    # 官方 flagship/fallback 选模真值）。
     if meta.get("tags"):
         item["tags"] = meta["tags"]
     if meta.get("scenario"):
@@ -7434,9 +7397,9 @@ class Handler(BaseHTTPRequestHandler):
         text = "%s %s" % (code or "", detail or "")
         msg = "codearts %s: %s" % (code or "error", detail or "")
         if ("001001020" in text or "not multimodal" in text.lower()):
-            # 只说 "not multimodal" 用户不知道该换哪个 —— 直接把能用的列出来。
-            msg += (" — 该模型不支持图片输入，请改用 Qwen3-VL-235B 或 "
-                    "kimi-k2.6-vl，或去掉消息里的图片")
+            # 兜底：正常情况请求阶段就被 _codearts_vision_error 拦下了，走到
+            # 这里说明模型能力当时没查到（清单里没有它/取数失败）。
+            msg += " — 当前模型不支持视觉功能（not multimodal），请去掉图片或换一个支持读图的模型"
         if label:
             msg += " (account %s)" % label
         if st == 429:
@@ -9848,10 +9811,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_codearts_chat(self, payload):
         """把一个 OpenAI 形状的请求转发给码道，再把结果转回 OpenAI 形状。"""
-        # 模型健康降级：请求的模型熔断中时按链换健康的（未启用/链空则原样）。
-        _apply_model_fallback(payload)
         for bad in (_codearts_choice_count_error(payload),
                     _codearts_response_format_error(payload),
+                    _codearts_vision_error(payload.get("model"),
+                                           payload.get("messages")),
                     ca_protocol.empty_conversation_error(payload.get("messages"))):
             if not bad:
                 continue
@@ -9948,6 +9911,10 @@ class Handler(BaseHTTPRequestHandler):
         if empty:
             # 上游对「只有 instructions」的请求回 81001，报错点太远，先拦。
             return self._error(400, empty, "invalid_request_error")
+        blind = _codearts_vision_error(chat_req.get("model"),
+                                       chat_req.get("messages"))
+        if blind:
+            return self._error(400, blind, "invalid_request_error")
         if want_stream and CODEARTS_STREAM_PASSTHROUGH:
             # 事件翻译器本来就直接吃 SSE 行流，接上实时行流就是真流式：
             # 上游吐一帧、客户端收一帧，不必等整条回答生成完。
@@ -10018,11 +9985,9 @@ class Handler(BaseHTTPRequestHandler):
         流式路径喂的是已经读完的 ``_BufferedSSELines``。这里换成本地实时行流
         （``lease.byte_lines``）就变成真转发 —— 翻译器不用改一行。
         """
-        # 模型健康降级（chat 入口同一套；就地改 chat_req["model"]）。
-        _apply_model_fallback(chat_req)
         model = str(chat_req.get("model") or "")
         # 模型名归一（2026-10-25）：客户端大小写混写（GLM-5.3 / glm / glm-5.3）
-        # 曾把统计、限额、降级链分裂成多个桶。这里统一解析成上游真名；
+        # 曾把统计、限额分裂成多个桶。这里统一解析成上游真名；
         # 认不出的原样放行（resolve_model 的既有契约）。
         model = ca_codearts.resolve_model(model)
         # 角色归一 + 消息修复。修复这一环以前只在 build_upstream_body
@@ -10259,6 +10224,10 @@ class Handler(BaseHTTPRequestHandler):
         empty = ca_protocol.empty_conversation_error(chat_req.get("messages"))
         if empty:
             return anthropic_error(400, empty, "invalid_request_error")
+        blind = _codearts_vision_error(chat_req.get("model"),
+                                       chat_req.get("messages"))
+        if blind:
+            return anthropic_error(400, blind, "invalid_request_error")
         if want_stream and CODEARTS_STREAM_PASSTHROUGH:
             # 同 Responses：翻译器吃 SSE 行流，喂实时流就是真转发。
             return self._messages_codearts_stream(chat_req, anthropic_error)
@@ -10324,10 +10293,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _messages_codearts_stream(self, chat_req, anthropic_error):
         """Anthropic Messages 协议的码道流式（Claude Code 走这条）。"""
-        _apply_model_fallback(chat_req)
         model = str(chat_req.get("model") or "")
         # 模型名归一（2026-10-25）：客户端大小写混写（GLM-5.3 / glm / glm-5.3）
-        # 曾把统计、限额、降级链分裂成多个桶。这里统一解析成上游真名；
+        # 曾把统计、限额分裂成多个桶。这里统一解析成上游真名；
         # 认不出的原样放行（resolve_model 的既有契约）。
         model = ca_codearts.resolve_model(model)
         # 角色归一 + 消息修复。修复这一环以前只在 build_upstream_body

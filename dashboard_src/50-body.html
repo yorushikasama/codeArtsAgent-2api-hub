@@ -685,34 +685,6 @@
       <section>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
-            <h2 style="margin:0">模型降级链 <em id="setFallbackState"></em></h2>
-            <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              请求的模型连败进熔断（连败 3 次且 60 秒内）时，按下面这条链换第一个健康的模型继续服务；
-              链耗尽或未启用时照发原模型，绝不硬拒。模型健康度见「模型」页的 health 列。
-            </div>
-          </div>
-          <button onclick="saveModelFallback(this)">保存</button>
-        </div>
-        <div class="card" style="padding:14px 16px">
-          <label style="display:flex;align-items:center;gap:8px;font-size:13px">
-            <input id="setFallbackEnabled" type="checkbox" style="width:16px;height:16px">
-            启用降级链（关掉只保留健康度展示，不换模型）
-          </label>
-          <div style="margin-top:10px;font-size:13px">
-            链与顺序（逗号分隔，从左到右依次尝试）：
-            <input id="setFallbackChain" type="text" spellcheck="false"
-                   placeholder="glm-5.3,openpangu-2.0-flash,deepseek-v4.1-flash"
-                   style="width:100%;margin-top:6px">
-          </div>
-          <div style="margin-top:8px;font-size:12px;color:var(--dim)">
-            可用模型（点击追加到链尾）：<span id="setFallbackChips"></span>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-          <div>
             <h2 style="margin:0">日志落库 <em id="setLogDbState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
               默认关闭：日志只留在内存（最新 2000 条，重启即失），与上游一致。开启后每条日志追加写入

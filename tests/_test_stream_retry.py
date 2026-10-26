@@ -1211,112 +1211,84 @@ finally:
 
 
 # ---------------------------------------------------------------------------
-# 2026-10-24 模型健康熔断 + 降级链（学习官方 smart-router/model-selector）：
-#   连败 ≥3 且在 60s 冷却窗内 → 熔断；record_usage(completed)=成功清零，
-#   record_error 只在 5xx/上游中断/0203 时记失败（限流/参数错不算）；
-#   熔断时按面板链换第一个健康模型，链耗尽/开关关照发原模型（绝不硬拒）。
-#   另：agent-center 的 tags(flagship/fallback)/scenario 进 /v1/models 元数据。
+# 2026-10-24 晚：模型健康熔断 + 降级链已**移除**。
+#
+# 它把「请求内容不对」误判成「模型坏了」：客户端把图片发给纯文本模型，上游
+# 回 InferHub.001001020.406 not multimodal —— 这是请求的问题（换任何纯文本
+# 模型都一样），但那条 400 走上游流内错误帧路径、outcome 记作
+# upstream_aborted，而判据把 upstream_aborted 一律算失败（在状态码判断之前
+# 就 return True）。三次之后模型被判 down，此后**所有纯文本请求**都被改道
+# 到降级链上的另外两个同样不支持图片的模型，一起打成 down。线上实测：该
+# 模型连续 16 次成功（13 万 token 会话也跑通）后，一条带图请求就让它"突然
+# 不可用"。
+#
+# 现在改成：入口处先问模型能力，纯文本模型带图直接回 400 并指名换哪个视觉
+# 模型；不再有熔断、不再有换模型。
 # ---------------------------------------------------------------------------
 
-P._MODEL_HEALTH.clear()
-P.note_model_result("GLM-5.3", False)          # 大小写归一
-P.note_model_result("glm-5.3", False)
-check("熔断器：2 败未到阈值（degraded）",
-      not P._model_blocked("glm-5.3")
-      and P.model_health("glm-5.3") == "degraded", None)
-P.note_model_result("glm-5.3", False)
-check("熔断器：3 败进熔断（down）",
-      P._model_blocked("glm-5.3") and P.model_health("glm-5.3") == "down",
-      None)
-P.note_model_result("glm-5.3", True)
-check("熔断器：一次成功即复位（ok）",
-      not P._model_blocked("glm-5.3") and P.model_health("glm-5.3") == "ok",
-      None)
-check("熔断器：没记录的模型是 ok", P.model_health("kimi-k3") == "ok", None)
+for _gone in ("note_model_result", "_model_blocked", "model_health",
+              "_health_counts_failure", "_apply_model_fallback"):
+    check("已移除：%s 不再存在" % _gone,
+          not hasattr(P, _gone), None)
+check("已移除：熔断阈值常量不再存在",
+      not hasattr(P, "CODEARTS_MODEL_BREAKER_THRESHOLD")
+      and not hasattr(P, "CODEARTS_MODEL_BREAKER_COOLDOWN"), None)
+check("已移除：/v1/models 不再宣告 health 字段",
+      "health" not in P.codearts_model_meta({"id": "glm-5.3"}), None)
 
-check("判据：504 算模型失败", P._health_counts_failure(504, "x", "failed"),
-      None)
-check("判据：upstream_aborted 算",
-      P._health_counts_failure(502, "x", "upstream_aborted"), None)
-check("判据：0203 文案算",
-      P._health_counts_failure(504, "APIG.0203 Backend timeout", "failed"),
-      None)
-check("判据：429 限流不算", not P._health_counts_failure(429, "r", "failed"),
-      None)
-check("判据：400 参数错不算",
-      not P._health_counts_failure(400, "param", "failed"), None)
-
-# 降级链行为（stub 掉面板调参）
-_orig_tuning = P.codearts_tuning
-_CHAIN = {"model_fallbacks": "glm-5.3,openpangu-2.0-flash,deepseek-v4.1-flash",
-          "model_fallback_enabled": True}
+# ---- 图片预检：纯文本模型带图，请求阶段就 400（不碰上游） ----
+_IMG_MSGS = [{"role": "user", "content": [
+    {"type": "text", "text": "看图"},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}]}]
+_TXT_MSGS = [{"role": "user", "content": "纯文本"}]
+_orig_catalog = P.codearts_catalog
 try:
-    P._MODEL_HEALTH.clear()
-    P.codearts_tuning = lambda: dict(_CHAIN)
-    _pl = {"model": "glm-5.3"}
-    check("降级：模型健康时不换",
-          P._apply_model_fallback(_pl) == "glm-5.3"
-          and _pl["model"] == "glm-5.3", None)
-    for _ in range(3):
-        P.note_model_result("glm-5.3", False)
-    _pl = {"model": "glm-5.3"}
-    check("降级：熔断时按链换第一个健康的",
-          P._apply_model_fallback(_pl) == "openpangu-2.0-flash"
-          and _pl["model"] == "openpangu-2.0-flash", None)
-    for _ in range(3):
-        P.note_model_result("openpangu-2.0-flash", False)
-    _pl = {"model": "glm-5.3"}
-    check("降级：链上第二个也熔断时顺延",
-          P._apply_model_fallback(_pl) == "deepseek-v4.1-flash", None)
-    for _ in range(3):
-        P.note_model_result("deepseek-v4.1-flash", False)
-    _pl = {"model": "glm-5.3"}
-    check("降级：链耗尽照发原模型（绝不硬拒）",
-          P._apply_model_fallback(_pl) == "glm-5.3"
-          and _pl["model"] == "glm-5.3", None)
-    P.codearts_tuning = lambda: dict(_CHAIN, model_fallback_enabled=False)
-    _pl = {"model": "glm-5.3"}
-    check("降级：开关关掉时照发",
-          P._apply_model_fallback(_pl) == "glm-5.3", None)
-    # 冷却窗一过自然放行（半开）
-    with P._MODEL_HEALTH_LOCK:
-        P._MODEL_HEALTH["glm-5.3"]["last_fail"] -= (
-            P.CODEARTS_MODEL_BREAKER_COOLDOWN + 1.0)
-    check("熔断器：冷却窗过期自然放行（半开）",
-          not P._model_blocked("glm-5.3"), None)
+    P.codearts_catalog = lambda force=False: {"models": [
+        {"id": "deepseek-v4.1-flash", "supportsImages": False,
+         "disabledMultimodal": False},
+        {"id": "Qwen3-VL-235B", "supportsImages": True,
+         "disabledMultimodal": False},
+        {"id": "glm-5.3", "supportsImages": True,
+         "disabledMultimodal": True},   # 上游宣告多模态但通道不支持读图
+    ]}
+    check("预检：认得出 image_url 分片",
+          P._payload_has_image(_IMG_MSGS)
+          and not P._payload_has_image(_TXT_MSGS), None)
+    check("预检：纯文本模型 + 图 -> 拒绝文案",
+          bool(P._codearts_vision_error("deepseek-v4.1-flash", _IMG_MSGS)),
+          None)
+    _blind = P._codearts_vision_error("deepseek-v4.1-flash", _IMG_MSGS) or ""
+    check("预检：文案点明「该模型不支持视觉」",
+          "does not support image input" in _blind, _blind[:60])
+    check("预检：文案不指名推荐其它模型（用户要求）",
+          "Qwen3-VL" not in _blind and "kimi" not in _blind.lower(), None)
+    check("预检：视觉模型 + 图 -> 放行",
+          P._codearts_vision_error("Qwen3-VL-235B", _IMG_MSGS) is None, None)
+    check("预检：纯文本模型 + 纯文本 -> 放行",
+          P._codearts_vision_error("deepseek-v4.1-flash", _TXT_MSGS) is None,
+          None)
+    check("预检：disabledMultimodal 视为不支持图",
+          P._codearts_vision_capable("glm-5.3") is False, None)
+    check("预检：能力查不到时放行（不误伤新模型）",
+          P._codearts_vision_error("brand-new-vl", _IMG_MSGS) is None, None)
+    # Responses 形状（input_image）同样认得
+    check("预检：认得出 input_image 分片",
+          P._payload_has_image([{"role": "user", "content": [
+              {"type": "input_image", "image_url": "data:x"}]}]), None)
 finally:
-    P.codearts_tuning = _orig_tuning
-    P._MODEL_HEALTH.clear()
+    P.codearts_catalog = _orig_catalog
 
-# record_usage/record_error 的挂接（直接调用真函数，看状态翻转）
-P._MODEL_HEALTH.clear()
-P.record_error("glm-5.3", 504, "APIG.0203 Backend timeout", key="t")
-P.record_error("glm-5.3", 504, "APIG.0203 Backend timeout", key="t")
-check("挂接：两次 0203 记两笔失败", P.model_health("glm-5.3") == "degraded",
-      None)
-P.record_error("glm-5.3", 429, "rate limited", key="t")
-check("挂接：429 不记失败（仍是 degraded 不是 down）",
-      P.model_health("glm-5.3") == "degraded", None)
-P.record_usage("glm-5.3", {"prompt_tokens": 1, "completion_tokens": 1},
-               key="t", outcome="completed")
-check("挂接：completed 清零失败", P.model_health("glm-5.3") == "ok", None)
-P._MODEL_HEALTH.clear()
-
-# 设置面：默认链可解析、非法段被拒
+# 设置面：降级链两个键已从默认表消失，老 settings.json 里的残留值不报错
 import ca_settings as SET
 _cfg = SET.codearts_config("nonexistent")
-check("设置：默认降级链",
-      _cfg["model_fallbacks"].startswith("glm-5.3,")
-      and _cfg["model_fallback_enabled"] is True, None)
+check("设置：model_fallbacks 已从默认表移除",
+      "model_fallbacks" not in _cfg
+      and "model_fallback_enabled" not in _cfg, None)
 try:
-    SET.validate_codearts_patch({"model_fallbacks": "a b,c"})
-    check("设置：非法模型段被拒", False, None)
+    SET.validate_codearts_patch({"model_fallbacks": "glm-5.3"})
+    check("设置：再写 model_fallbacks 按未知键拒绝", False, None)
 except ValueError:
-    check("设置：非法模型段被拒", True, None)
-check("设置：合法链可通过",
-      SET.validate_codearts_patch(
-          {"model_fallbacks": "glm-5.3, kimi-k3 "})
-      == {"model_fallbacks": "glm-5.3,kimi-k3"}, None)
+    check("设置：再写 model_fallbacks 按未知键拒绝", True, None)
 
 # tags/scenario 进 /v1/models 元数据（stub agent-center + 查 meta 组装）
 _saved_a, _saved_d = C.agent_center_agents, C.agent_center_agent_detail
@@ -1337,8 +1309,8 @@ try:
           == {"tags": ["flagship", "chat"], "scenario": "chat"}, None)
     check("选模真值：未知模型返回空", C.model_truth_meta("nope") == {}, None)
     _meta = P.codearts_model_meta({"id": "glm-5.3"})
-    check("/v1/models：health 字段存在", _meta.get("health") == "ok",
-          _meta.get("health"))
+    check("/v1/models：不再带 health 字段（熔断已移除）",
+          "health" not in _meta, _meta.get("health"))
     check("/v1/models：tags/scenario 已带出",
           _meta.get("tags") == ["flagship", "chat"]
           and _meta.get("scenario") == "chat", None)

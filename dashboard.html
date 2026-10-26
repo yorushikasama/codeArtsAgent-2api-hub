@@ -3133,34 +3133,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <section>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
           <div>
-            <h2 style="margin:0">模型降级链 <em id="setFallbackState"></em></h2>
-            <div style="font-size:12px;color:var(--dim);margin-top:4px">
-              请求的模型连败进熔断（连败 3 次且 60 秒内）时，按下面这条链换第一个健康的模型继续服务；
-              链耗尽或未启用时照发原模型，绝不硬拒。模型健康度见「模型」页的 health 列。
-            </div>
-          </div>
-          <button onclick="saveModelFallback(this)">保存</button>
-        </div>
-        <div class="card" style="padding:14px 16px">
-          <label style="display:flex;align-items:center;gap:8px;font-size:13px">
-            <input id="setFallbackEnabled" type="checkbox" style="width:16px;height:16px">
-            启用降级链（关掉只保留健康度展示，不换模型）
-          </label>
-          <div style="margin-top:10px;font-size:13px">
-            链与顺序（逗号分隔，从左到右依次尝试）：
-            <input id="setFallbackChain" type="text" spellcheck="false"
-                   placeholder="glm-5.3,openpangu-2.0-flash,deepseek-v4.1-flash"
-                   style="width:100%;margin-top:6px">
-          </div>
-          <div style="margin-top:8px;font-size:12px;color:var(--dim)">
-            可用模型（点击追加到链尾）：<span id="setFallbackChips"></span>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-          <div>
             <h2 style="margin:0">日志落库 <em id="setLogDbState"></em></h2>
             <div style="font-size:12px;color:var(--dim);margin-top:4px">
               默认关闭：日志只留在内存（最新 2000 条，重启即失），与上游一致。开启后每条日志追加写入
@@ -5936,18 +5908,6 @@ async function loadSettings(showToast){
         setCodeartsBusy: codeartsCfg.busy_cooldown,
         setCodeartsTpm: codeartsCfg.tpm_cooldown,
       };
-      // 模型降级链：开关 + 顺序输入框 + 可点选追加的模型 chips。
-      const fbEnabled = codeartsCfg.model_fallback_enabled !== false;
-      const fbEnabledInput = document.getElementById('setFallbackEnabled');
-      if(fbEnabledInput) fbEnabledInput.checked = fbEnabled;
-      const fbState = document.getElementById('setFallbackState');
-      if(fbState){
-        fbState.textContent = fbEnabled ? '(已启用)' : '(未启用)';
-        fbState.style.color = fbEnabled ? 'var(--accent2)' : 'var(--dim)';
-      }
-      const fbChainInput = document.getElementById('setFallbackChain');
-      if(fbChainInput) fbChainInput.value = codeartsCfg.model_fallbacks || '';
-      renderFallbackChips();
       Object.keys(codeartsInputs).forEach(function(id){
         const el = document.getElementById(id);
         if(el && typeof codeartsInputs[id] === 'number') el.value = codeartsInputs[id];
@@ -6245,62 +6205,6 @@ async function saveCodeartsTuning(btn){
   try {
     await postJSON('/settings/save', {codearts: payload});
     toast('已保存：码道并发与冷却', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-  } finally {
-    if(btn) btn.disabled = false;
-  }
-}
-
-function renderFallbackChips(){
-  const host = document.getElementById('setFallbackChips');
-  const input = document.getElementById('setFallbackChain');
-  if(!host || !input) return;
-  const inChain = new Set(
-    input.value.split(',').map(x => x.trim()).filter(Boolean));
-  host.textContent = '';
-  (window.MODELS_DATA || []).forEach(function(m){
-    if(!m || !m.id) return;
-    const chip = document.createElement('span');
-    chip.textContent = m.id;
-    chip.title = '点击追加到链尾';
-    chip.dataset.modelId = m.id;
-    chip.style.cssText = ('display:inline-block;margin:2px 6px 2px 0;padding:1px 8px;'
-        + 'border:1px solid var(--border);border-radius:10px;font-size:12px;cursor:pointer;'
-        + (inChain.has(m.id) ? 'color:var(--accent2);border-color:var(--accent2);' : ''));
-    chip.onclick = function(){
-      const parts = input.value.split(',').map(x => x.trim()).filter(Boolean);
-      if(parts.indexOf(m.id) < 0) parts.push(m.id);
-      input.value = parts.join(',');
-      renderFallbackChips();
-    };
-    host.appendChild(chip);
-  });
-  if(!host.childNodes.length){
-    host.textContent = '（模型清单加载后可点选）';
-  }
-}
-
-async function saveModelFallback(btn){
-  const enabledInput = document.getElementById('setFallbackEnabled');
-  const chainInput = document.getElementById('setFallbackChain');
-  const enabled = !!(enabledInput && enabledInput.checked);
-  const segs = (chainInput && chainInput.value || '').split(',')
-    .map(x => x.trim()).filter(Boolean);
-  for(const seg of segs){
-    if(!/^[A-Za-z0-9._-]+$/.test(seg)){
-      toast('链里有非法模型名：' + seg, 'bad');
-      return;
-    }
-  }
-  if(btn) btn.disabled = true;
-  try {
-    await postJSON('/settings/save', {codearts: {
-      model_fallbacks: segs.join(','),
-      model_fallback_enabled: enabled,
-    }});
-    toast('已保存：模型降级链' + (enabled ? '' : '（未启用）'), 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');

@@ -1321,18 +1321,6 @@ async function loadSettings(showToast){
         setCodeartsBusy: codeartsCfg.busy_cooldown,
         setCodeartsTpm: codeartsCfg.tpm_cooldown,
       };
-      // 模型降级链：开关 + 顺序输入框 + 可点选追加的模型 chips。
-      const fbEnabled = codeartsCfg.model_fallback_enabled !== false;
-      const fbEnabledInput = document.getElementById('setFallbackEnabled');
-      if(fbEnabledInput) fbEnabledInput.checked = fbEnabled;
-      const fbState = document.getElementById('setFallbackState');
-      if(fbState){
-        fbState.textContent = fbEnabled ? '(已启用)' : '(未启用)';
-        fbState.style.color = fbEnabled ? 'var(--accent2)' : 'var(--dim)';
-      }
-      const fbChainInput = document.getElementById('setFallbackChain');
-      if(fbChainInput) fbChainInput.value = codeartsCfg.model_fallbacks || '';
-      renderFallbackChips();
       Object.keys(codeartsInputs).forEach(function(id){
         const el = document.getElementById(id);
         if(el && typeof codeartsInputs[id] === 'number') el.value = codeartsInputs[id];
@@ -1630,62 +1618,6 @@ async function saveCodeartsTuning(btn){
   try {
     await postJSON('/settings/save', {codearts: payload});
     toast('已保存：码道并发与冷却', 'ok');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-  } finally {
-    if(btn) btn.disabled = false;
-  }
-}
-
-function renderFallbackChips(){
-  const host = document.getElementById('setFallbackChips');
-  const input = document.getElementById('setFallbackChain');
-  if(!host || !input) return;
-  const inChain = new Set(
-    input.value.split(',').map(x => x.trim()).filter(Boolean));
-  host.textContent = '';
-  (window.MODELS_DATA || []).forEach(function(m){
-    if(!m || !m.id) return;
-    const chip = document.createElement('span');
-    chip.textContent = m.id;
-    chip.title = '点击追加到链尾';
-    chip.dataset.modelId = m.id;
-    chip.style.cssText = ('display:inline-block;margin:2px 6px 2px 0;padding:1px 8px;'
-        + 'border:1px solid var(--border);border-radius:10px;font-size:12px;cursor:pointer;'
-        + (inChain.has(m.id) ? 'color:var(--accent2);border-color:var(--accent2);' : ''));
-    chip.onclick = function(){
-      const parts = input.value.split(',').map(x => x.trim()).filter(Boolean);
-      if(parts.indexOf(m.id) < 0) parts.push(m.id);
-      input.value = parts.join(',');
-      renderFallbackChips();
-    };
-    host.appendChild(chip);
-  });
-  if(!host.childNodes.length){
-    host.textContent = '（模型清单加载后可点选）';
-  }
-}
-
-async function saveModelFallback(btn){
-  const enabledInput = document.getElementById('setFallbackEnabled');
-  const chainInput = document.getElementById('setFallbackChain');
-  const enabled = !!(enabledInput && enabledInput.checked);
-  const segs = (chainInput && chainInput.value || '').split(',')
-    .map(x => x.trim()).filter(Boolean);
-  for(const seg of segs){
-    if(!/^[A-Za-z0-9._-]+$/.test(seg)){
-      toast('链里有非法模型名：' + seg, 'bad');
-      return;
-    }
-  }
-  if(btn) btn.disabled = true;
-  try {
-    await postJSON('/settings/save', {codearts: {
-      model_fallbacks: segs.join(','),
-      model_fallback_enabled: enabled,
-    }});
-    toast('已保存：模型降级链' + (enabled ? '' : '（未启用）'), 'ok');
     loadSettings();
   } catch(e) {
     toast('保存失败: ' + e.message, 'bad');
