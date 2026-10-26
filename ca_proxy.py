@@ -6150,6 +6150,20 @@ def sum_usage(total, part):
     return total
 
 
+def _attach_pending_reasoning(msg, pending):
+    """把暂存的 reasoning 挂到 assistant 消息上；已有关键字就有则不覆盖。
+
+    返回挂载后应清零的 pending：调用方统一写回 ``pending = _attach...(m, p)``。
+    Responses→Chat 转换里三处（assistant 文本合并、function_call 合并、
+    custom_tool_call 合并）此前各抄一份「if pending and 没有就设，然后清空」，
+    2026-10-26 提取。
+    """
+    if pending and "reasoning_content" not in msg:
+        msg["reasoning_content"] = pending
+        return ""
+    return pending
+
+
 def _responses_input_to_messages(payload):
     """Turn the Responses input items into chat messages."""
     messages = []
@@ -6183,14 +6197,13 @@ def _responses_input_to_messages(payload):
                             prev["content"] = str(prev["content"]) + chr(10) + str(body)
                         else:
                             prev["content"] = body
-                        if pending_reasoning and "reasoning_content" not in prev:
-                            prev["reasoning_content"] = pending_reasoning
-                            pending_reasoning = ""
+                        pending_reasoning = _attach_pending_reasoning(
+                            prev, pending_reasoning)
                     else:
                         msg_dict = {"role": role, "content": body}
-                        if role == "assistant" and pending_reasoning:
-                            msg_dict["reasoning_content"] = pending_reasoning
-                            pending_reasoning = ""
+                        if role == "assistant":
+                            pending_reasoning = _attach_pending_reasoning(
+                                msg_dict, pending_reasoning)
                         messages.append(msg_dict)
             elif itype == "reasoning":
                 # Reasoning item from previous assistant turn in Responses API.
@@ -6280,18 +6293,16 @@ def _responses_input_to_messages(payload):
                         prev["tool_calls"].append(tc_item)
                     else:
                         prev["tool_calls"] = [tc_item]
-                    if pending_reasoning and "reasoning_content" not in prev:
-                        prev["reasoning_content"] = pending_reasoning
-                        pending_reasoning = ""
+                    pending_reasoning = _attach_pending_reasoning(
+                        prev, pending_reasoning)
                 else:
                     msg_dict = {
                         "role": "assistant",
                         "content": "",
                         "tool_calls": [tc_item],
                     }
-                    if pending_reasoning:
-                        msg_dict["reasoning_content"] = pending_reasoning
-                        pending_reasoning = ""
+                    pending_reasoning = _attach_pending_reasoning(
+                        msg_dict, pending_reasoning)
                     messages.append(msg_dict)
             elif itype == "custom_tool_call":
                 # Freeform tool call coming back as conversation history.
@@ -6315,18 +6326,16 @@ def _responses_input_to_messages(payload):
                         prev["tool_calls"].append(tc_item)
                     else:
                         prev["tool_calls"] = [tc_item]
-                    if pending_reasoning and "reasoning_content" not in prev:
-                        prev["reasoning_content"] = pending_reasoning
-                        pending_reasoning = ""
+                    pending_reasoning = _attach_pending_reasoning(
+                        prev, pending_reasoning)
                 else:
                     msg_dict = {
                         "role": "assistant",
                         "content": "",
                         "tool_calls": [tc_item],
                     }
-                    if pending_reasoning:
-                        msg_dict["reasoning_content"] = pending_reasoning
-                        pending_reasoning = ""
+                    pending_reasoning = _attach_pending_reasoning(
+                        msg_dict, pending_reasoning)
                     messages.append(msg_dict)
             elif itype == "custom_tool_call_output":
                 # Result of a freeform tool call (e.g. apply_patch output).
@@ -10132,34 +10141,46 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 return None
 
-            elapsed_ms = int((time.time() - lease.started_at) * 1000)
-            usage = tap["usage"] or holder.get("usage") or {}
-            if tap.get("error"):
-                # 走到这里还带着 error，说明错误帧没能打断翻译器（见
-                # tap_lines 的契约）。宁可多记一条失败，也不能记成成功。
-                record_error(model, 502, tap["error"][:200],
-                             elapsed_ms=elapsed_ms, account=lease.account_label,
-                             usage=usage, stream=True,
-                             outcome="upstream_aborted", key=self._key_id())
-                return None
-            # 首帧时刻在翻译循环里捕获（口径与 chat 入口一致）；gen = elapsed − ttft。
-            ttft_ms = (int((t_first - lease.started_at) * 1000)
-                       if t_first is not None else None)
-            gen_ms = (elapsed_ms - ttft_ms) if ttft_ms is not None else None
-            try:
-                record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
-                             ttft_ms=ttft_ms, gen_ms=gen_ms,
-                             effort=_sent_reasoning_effort(
-                                 getattr(lease, "extra", None)),
-                             account=lease.account_label, key=self._key_id(),
-                             outcome="completed")
-            except Exception:
-                pass
+            self._record_stream_completed(
+                model, lease, tap, holder, t_first, self._key_id())
             return None
         finally:
             # 先关连接（上游立刻回收会话），再 idle + 还名额。反过来会让
             # 「本地已放行新人」和「上游还没收到 idle」重叠，白吃 1041。
             lease.close()
+
+    def _record_stream_completed(self, model, lease, tap, holder, t_first,
+                                 key):
+        """两个协议桥（Responses / Messages）正常收尾的共用落账段。
+
+        2026-10-26 自 _responses_codearts_stream 与 _messages_codearts_stream
+        提取：两段逐字节相同（错误帧优先记失败、ttft/gen 口径、effort 取
+        实际发出的档位）。chat 入口的收尾不住这里——它自己握有 content_parts
+        与 finish_reason，不走 tap/holder 这层。
+        """
+        elapsed_ms = int((time.time() - lease.started_at) * 1000)
+        usage = tap["usage"] or holder.get("usage") or {}
+        if tap.get("error"):
+            # 走到这里还带着 error，说明错误帧没能打断翻译器（见
+            # tap_lines 的契约）。宁可多记一条失败，也不能记成成功。
+            record_error(model, 502, tap["error"][:200],
+                         elapsed_ms=elapsed_ms, account=lease.account_label,
+                         usage=usage, stream=True,
+                         outcome="upstream_aborted", key=key)
+            return
+        # 首帧时刻在翻译循环里捕获（口径与 chat 入口一致）；gen = elapsed − ttft。
+        ttft_ms = (int((t_first - lease.started_at) * 1000)
+                   if t_first is not None else None)
+        gen_ms = (elapsed_ms - ttft_ms) if ttft_ms is not None else None
+        try:
+            record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
+                         ttft_ms=ttft_ms, gen_ms=gen_ms,
+                         effort=_sent_reasoning_effort(
+                             getattr(lease, "extra", None)),
+                         account=lease.account_label, key=key,
+                         outcome="completed")
+        except Exception:
+            pass
 
     def _record_aborted(self, model, lease, tap, holder, key):
         """客户端中途走了：落一行 ``client_aborted``。
@@ -10449,29 +10470,8 @@ class Handler(BaseHTTPRequestHandler):
                     pass
                 return None
 
-            elapsed_ms = int((time.time() - lease.started_at) * 1000)
-            usage = tap["usage"] or holder.get("usage") or {}
-            if tap.get("error"):
-                # 走了到这里还带着 error：说明错误帧没能打断翻译器。宁可
-                # 多记一条失败，也不能把失败记成成功。
-                record_error(model, 502, tap["error"][:200],
-                             elapsed_ms=elapsed_ms, account=lease.account_label,
-                             usage=usage, stream=True,
-                             outcome="upstream_aborted", key=self._key_id())
-                return None
-            # 首帧时刻在翻译循环里捕获（口径与 chat 入口一致）；gen = elapsed − ttft。
-            ttft_ms = (int((t_first - lease.started_at) * 1000)
-                       if t_first is not None else None)
-            gen_ms = (elapsed_ms - ttft_ms) if ttft_ms is not None else None
-            try:
-                record_usage(model, usage, stream=True, elapsed_ms=elapsed_ms,
-                             ttft_ms=ttft_ms, gen_ms=gen_ms,
-                             effort=_sent_reasoning_effort(
-                                 getattr(lease, "extra", None)),
-                             account=lease.account_label, key=self._key_id(),
-                             outcome="completed")
-            except Exception:
-                pass
+            self._record_stream_completed(
+                model, lease, tap, holder, t_first, self._key_id())
             return None
         finally:
             lease.close()
