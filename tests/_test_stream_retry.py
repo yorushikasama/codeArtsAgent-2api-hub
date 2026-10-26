@@ -1275,6 +1275,18 @@ try:
     check("预检：认得出 input_image 分片",
           P._payload_has_image([{"role": "user", "content": [
               {"type": "input_image", "image_url": "data:x"}]}]), None)
+
+    # ---- 三个入口的预检都必须记账（2026-10-26 线上暴露的统计失真）----
+    # 以前只有 chat 入口调 record_error；responses / messages 的预检直接
+    # return，于是这些本地拒绝在面板的成功率、错误分布、用量里全部隐形。
+    # 这里按源码结构钉住：两处预检各自紧跟一次 record_error。
+    import inspect as _inspect
+    for _fn_name in ("_responses_codearts", "_messages_codearts"):
+        _src = _inspect.getsource(getattr(P.Handler, _fn_name))
+        check("%s：空会话预检后记账" % _fn_name,
+              _src.count("record_error(") >= 2, None)
+        check("%s：两类预检都记账（record_error 出现 >=2 次）" % _fn_name,
+              _src.count("record_error(") == 2, _src.count("record_error("))
 finally:
     P.codearts_catalog = _orig_catalog
 

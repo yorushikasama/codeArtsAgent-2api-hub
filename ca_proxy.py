@@ -7885,22 +7885,26 @@ class Handler(BaseHTTPRequestHandler):
         # 总耗时从「全部加和」压到「最慢的那一路」。
         def _fetch_upstream(session):
             out = {}
+            # 两路都带 allow_stale：缓存过一秒就同步打上游的话，面板每次
+            # 「过期那一下」都要等 1.2–2.2 秒（三账号并行也压不到 1 秒以下，
+            # 瓶颈是单账号两路上游）。现在过期值照常返回、后台补新，
+            # 用户看到的最多是几十秒前的积分/签到状态（面板本来就标着刷新
+            # 时间），换来的是账号页瞬间打开。
             # 体验版积分（客户端「总已用积分 x / y」那一条）。token 额度那一栏
             # 已随福利渠道一起下线（opengw 不再提供服务），面板只显示积分。
             try:
                 out["credit"] = ca_codearts.credit_package(
                     session.get("accessKey"), session.get("secretKey"),
-                    session.get("securitytoken"))
+                    session.get("securitytoken"), allow_stale=True)
             except Exception as exc:  # noqa: BLE001
                 out["credit"] = None
                 out["creditError"] = str(exc)
             # 每日签到（活动页「每日签到领 1000 积分」）。第三个体系：积分总量
-            # 走 snap-manager，签到走 snap-access /v1/ops。清单按 AK 缓存一分钟，
-            # 轮询不会每次都打上游。
+            # 走 snap-manager，签到走 snap-access /v1/ops。
             try:
                 out["welfare"] = ca_codearts.welfare_daily(
                     session.get("accessKey"), session.get("secretKey"),
-                    session.get("securitytoken"))
+                    session.get("securitytoken"), allow_stale=True)
             except Exception as exc:  # noqa: BLE001
                 out["welfare"] = None
                 out["welfareError"] = str(exc)
@@ -7936,6 +7940,10 @@ class Handler(BaseHTTPRequestHandler):
         return self._json(200, {
             "accounts": items,
             "count": len(items),
+            # 与 /health 的 accounts / accounts_ready 同口径，省得两个数字打架：
+            # 面板原来只显示「未过期/总数」，和 /health 的「账号数/就绪数」是
+            # 两套说法（一个按 STS 是否过期，一个按能否服务），并排看容易误解。
+            "count_ready": sum(1 for it in items if not it.get("sts_expired")),
             # 每号并发容量（上游账号级上限 3，网关默认用 2，留 1 个给 IDE）
             "concurrency_per_account": codearts_concurrency(),
             # 上游每号会话名额：并发容量的天花板（codearts_concurrency 的上限），
@@ -9910,10 +9918,16 @@ class Handler(BaseHTTPRequestHandler):
         empty = ca_protocol.empty_conversation_error(chat_req.get("messages"))
         if empty:
             # 上游对「只有 instructions」的请求回 81001，报错点太远，先拦。
+            # 与 chat 入口同口径：本地拒绝也要落一行账，否则面板的成功率与
+            # 错误分布里看不到这些请求（三个入口必须一致）。
+            record_error(chat_req.get("model") or "unknown", 400, empty,
+                         stream=want_stream, key=self._key_id())
             return self._error(400, empty, "invalid_request_error")
         blind = _codearts_vision_error(chat_req.get("model"),
                                        chat_req.get("messages"))
         if blind:
+            record_error(chat_req.get("model") or "unknown", 400, blind,
+                         stream=want_stream, key=self._key_id())
             return self._error(400, blind, "invalid_request_error")
         if want_stream and CODEARTS_STREAM_PASSTHROUGH:
             # 事件翻译器本来就直接吃 SSE 行流，接上实时行流就是真流式：
@@ -10223,10 +10237,15 @@ class Handler(BaseHTTPRequestHandler):
 
         empty = ca_protocol.empty_conversation_error(chat_req.get("messages"))
         if empty:
+            # 同 Responses：本地拒绝也要落一行账（三个入口同口径）。
+            record_error(chat_req.get("model") or "unknown", 400, empty,
+                         stream=want_stream, key=self._key_id())
             return anthropic_error(400, empty, "invalid_request_error")
         blind = _codearts_vision_error(chat_req.get("model"),
                                        chat_req.get("messages"))
         if blind:
+            record_error(chat_req.get("model") or "unknown", 400, blind,
+                         stream=want_stream, key=self._key_id())
             return anthropic_error(400, blind, "invalid_request_error")
         if want_stream and CODEARTS_STREAM_PASSTHROUGH:
             # 同 Responses：翻译器吃 SSE 行流，喂实时流就是真转发。

@@ -980,7 +980,7 @@ def credit_package_clear_cache(access_key=None):
 
 
 def credit_package(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOUT,
-                   use_cache=True):
+                   use_cache=True, allow_stale=False):
     """体验版积分配额：已用 / 总量 / 剩余 / 各分项。
 
     就是客户端「总已用积分 x / y」那一栏的同一个接口（见 CREDIT_PACKAGE_PATH）。
@@ -991,16 +991,28 @@ def credit_package(access_key, secret_key, security_token, timeout=DEFAULT_TIMEO
     失败缓存 CREDIT_ERROR_TTL 秒，命中失败缓存时原样再抛。注意 None 是**成功
     值**（账号没有体验版套餐），所以失败标记放在 error 串上，与 _welfare_cache
     用「result is None」判失败不同。
+
+    ``allow_stale=True``：过期条目**照旧返回**，同时在后台刷一次。面板每 5 秒
+    轮询账号列表，而这两路上游实测 0.4–2.2 秒；过期就走同步请求的话，用户每
+    分钟都会看到一次「点开账号页卡两三秒」。宁可先给一分钟内的旧数字（面板本来
+    就标着刷新时间），也不阻塞在 HTTP 上。
     """
     key = access_key or ""
     now = time.time()
     if use_cache:
         with _credit_cache_lock:
             hit = _credit_cache.get(key)
-        if hit and hit[0] > now:
-            if hit[2]:
-                raise CodeArtsError(hit[2])
-            return hit[1]
+        if hit:
+            fresh = hit[0] > now
+            if fresh or allow_stale:
+                if not fresh:
+                    _refresh_soon("credit", key,
+                                  lambda: credit_package(
+                                      access_key, secret_key, security_token,
+                                      timeout=timeout, use_cache=False))
+                if hit[2]:
+                    raise CodeArtsError(hit[2])
+                return hit[1]
     try:
         result = _credit_package_fetch(access_key, secret_key, security_token,
                                        timeout=timeout)
@@ -1011,6 +1023,37 @@ def credit_package(access_key, secret_key, security_token, timeout=DEFAULT_TIMEO
     with _credit_cache_lock:
         _credit_cache[key] = (time.time() + CREDIT_CACHE_TTL, result, "")
     return result
+
+
+#: 后台刷新去重：同一 (kind, key) 正在刷时不再排第二个，避免面板 5 秒轮询
+#: 把同一个账号的两路上游查成并发风暴。
+_REFRESH_INFLIGHT = set()
+_REFRESH_INFLIGHT_LOCK = threading.Lock()
+
+
+def _refresh_soon(kind, key, fn):
+    """排一次后台刷新（不阻塞调用方）。同一 (kind,key) 同时只跑一个。"""
+    token = (kind, key)
+    with _REFRESH_INFLIGHT_LOCK:
+        if token in _REFRESH_INFLIGHT:
+            return
+        _REFRESH_INFLIGHT.add(token)
+
+    def run():
+        try:
+            fn()
+        except Exception:      # noqa: BLE001 —— 后台刷新失败无所谓，旧值继续用
+            pass
+        finally:
+            with _REFRESH_INFLIGHT_LOCK:
+                _REFRESH_INFLIGHT.discard(token)
+
+    try:
+        threading.Thread(target=run, daemon=True,
+                         name="ca-refresh-%s" % kind).start()
+    except Exception:          # noqa: BLE001 —— 起不了线程就丢掉这次刷新
+        with _REFRESH_INFLIGHT_LOCK:
+            _REFRESH_INFLIGHT.discard(token)
 
 
 def _credit_package_fetch(access_key, secret_key, security_token,
@@ -2889,23 +2932,34 @@ def _welfare_request(access_key, secret_key, security_token, method, path,
 
 
 def welfare_activities(access_key, secret_key, security_token,
-                       timeout=DEFAULT_TIMEOUT, use_cache=True):
+                       timeout=DEFAULT_TIMEOUT, use_cache=True,
+                       allow_stale=False):
     """积分活动清单。返回 {"channel", "items", "daily"}。
 
     ``daily`` 是「每日签到」那一条（type=USER_LOGIN），没有就是 None。
     结果按 AK 缓存 WELFARE_CACHE_TTL 秒；失败缓存 WELFARE_ERROR_TTL 秒，
     **永久失败**（渠道被收回之类）缓存 WELFARE_PERMANENT_TTL 秒 —— 见
     welfare_permanent_failure 的说明。
+
+    ``allow_stale=True`` 与 credit_package 同款：过期条目照旧返回，后台刷一次，
+    让面板轮询不必等这一路上游（实测 0.4–1.4 秒）。
     """
     key = access_key or ""
     now = time.time()
     if use_cache:
         with _welfare_cache_lock:
             hit = _welfare_cache.get(key)
-        if hit and hit[0] > now:
-            if hit[1] is None:
-                raise CodeArtsError(hit[2])
-            return hit[1]
+        if hit:
+            fresh = hit[0] > now
+            if fresh or allow_stale:
+                if not fresh:
+                    _refresh_soon("welfare", key,
+                                  lambda: welfare_activities(
+                                      access_key, secret_key, security_token,
+                                      timeout=timeout, use_cache=False))
+                if hit[1] is None:
+                    raise CodeArtsError(hit[2])
+                return hit[1]
     try:
         data = _welfare_request(access_key, secret_key, security_token, "GET",
                                 WELFARE_DELIVERY_PATH,
@@ -2930,10 +2984,11 @@ def welfare_activities(access_key, secret_key, security_token,
 
 
 def welfare_daily(access_key, secret_key, security_token,
-                  timeout=DEFAULT_TIMEOUT, use_cache=True):
+                  timeout=DEFAULT_TIMEOUT, use_cache=True, allow_stale=False):
     """只看每日签到那一条；清单里没有返回 None。"""
     return welfare_activities(access_key, secret_key, security_token,
-                              timeout=timeout, use_cache=use_cache)["daily"]
+                              timeout=timeout, use_cache=use_cache,
+                              allow_stale=allow_stale)["daily"]
 
 
 def welfare_claim(access_key, secret_key, security_token, campaign_id,

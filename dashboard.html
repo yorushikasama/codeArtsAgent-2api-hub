@@ -3503,7 +3503,15 @@ function caUpdateCardSummary(list){
   }
   const rows = list;
   const alive = rows.filter(function(a){ return !a.sts_expired; }).length;
-  acctEl.textContent = alive + "/" + rows.length;
+  // 「有效/总数」写法在多账号时才加分母：单账号显示 "1/1" 容易让人以为
+  // 网关只认到一个号（实际是 1 个有效、共 1 个）。`/health` 那边报的是
+  // accounts / accounts_ready，两个数字口径不同，这里只把话说清楚。
+  acctEl.textContent = (rows.length > 1) ? (alive + "/" + rows.length)
+                                         : String(rows.length);
+  if(acctEl.parentNode){
+    acctEl.parentNode.title = '共 ' + rows.length + ' 个账号，其中 ' + alive +
+      ' 个 STS 有效；和 /health 的 accounts/accounts_ready 是同一批账号';
+  }
 
   let remain = 0, total = 0, used = 0, got = false;
   rows.forEach(function(a){
