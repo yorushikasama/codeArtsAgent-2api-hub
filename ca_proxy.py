@@ -1508,6 +1508,59 @@ def start_sts_refresher():
         % (CODEARTS_STS_TICK_SECONDS, CODEARTS_REFRESH_MARGIN))
 
 
+class _RemainingAccount(object):
+    """给 ca_usage 的剩余用量估算用的最小账号载体。
+
+    账号池（WorkBuddy 时代）删除后，``_remaining_payload(accounts=...)`` 的
+    调用方没人再传账号 —— 而它的默认值是空列表，于是**每一行都被跳过**，
+    面板「剩余用量估算」永远显示「暂无数据」（2026-10-26 线上确认：用量分段
+    里有数据、rows 恒为 0）。这里把码道会话包成它认的形状：
+    ``uid`` / ``realm`` / ``enabled`` / ``nickname`` / ``model_caps``。
+
+    ``model_caps`` 留空字典：撞线锚点存在 ca_usage 自己的事件日志里（
+    ``state["events"]``），这条历史持久化字段只是老账号档的兜底格式。
+    """
+
+    __slots__ = ("uid", "realm", "enabled", "nickname", "model_caps")
+
+    def __init__(self, uid, nickname="", realm=None, model_caps=None):
+        self.uid = uid
+        self.realm = realm or CURRENT_REALM
+        self.enabled = True
+        self.nickname = nickname or ""
+        self.model_caps = model_caps if isinstance(model_caps, dict) else {}
+
+
+def _remaining_accounts():
+    """当前码道账号 → _RemainingAccount 列表（给剩余用量估算）。
+
+    ``uid`` 取**账号 label**（`hid_bgatv9rp4x32nge` 这种），不是华为云的
+    account id（`01a11965c88b…`）：用量缓冲与撞线事件的键来自
+    ``record_usage(account=...)`` / ``record_error(account=...)``，而调用方
+    传的一直是 label（见 usage.jsonl 的 account 字段）。两套 id 混用会让
+    ``realm_of.get(uid)`` 全部落空，每一行都被跳过 —— 那正是「剩余用量估算」
+    长期 rows=0 的第二层原因（2026-10-26 实测：usage 缓冲 17 组全在，
+    realm 查不到，一行都不产出）。
+
+    读不到会话时返回空列表：估算退化成「没有账号参与」，面板显示「暂无数据」
+    —— 与以前一致，不会因为目录暂时读不出就抛 500。
+    """
+    try:
+        sessions = ca_codearts.load_sessions(ACCOUNTS_DIR)
+    except Exception:      # noqa: BLE001 —— 目录坏了不该让面板接口 500
+        return []
+    out = []
+    for session in sessions:
+        account = session.get("account") or {}
+        uid = str(account.get("label") or "")
+        if not uid:
+            continue
+        out.append(_RemainingAccount(
+            uid, nickname=str(account.get("label") or ""),
+            realm=CURRENT_REALM))
+    return out
+
+
 def remaining_usage(ttl=None):
     """Cached payload: the panel polls every 5s, the numbers change far slower.
 
@@ -1524,7 +1577,9 @@ def remaining_usage(ttl=None):
         if entry["data"] is not None and (now - entry["at"]) < ttl:
             return entry["data"]
     # 重建在缓存锁外：它自己会拿状态锁扫描，命中等它的调用不该被拖住。
-    data = _remaining_payload()
+    # accounts 必须显式传：`_remaining_payload` 的默认值是空列表，不传就
+    # 一行都不产出（见 _RemainingAccount 的说明）。
+    data = _remaining_payload(now, _remaining_accounts())
     with _remaining_cache_lock:
         _remaining_cache.update({"at": time.time(), "built_at": time.time(),
                                  "data": data})

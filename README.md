@@ -13,7 +13,7 @@
 - **三种协议**：`/v1/chat/completions`、`/v1/responses`（Codex）、`/v1/messages`（Claude Code / Anthropic SDK，面板开关，默认关闭）；
 - **实测模型清单**：`/v1/models` 只列**实测可推理**的模型（当前 11 个），带上下文窗口、最大输出、思考档位与视觉能力宣告，不拿服务端目录凑数；
 - **官方客户端对齐**：出站头族、思考档位白名单、逐模型 `max_tokens`、`tool_stream` 与服务器排队协议均按官方客户端逆向对齐——断流、拒答与 `APIG.0203` 显著减少；
-- **韧性栈**：建连预算 → 退避重试 → flow-control 分流 → 模型健康熔断 → 可配置降级链 → 大上下文 history-snip 软剪枝；
+- **韧性栈**：建连预算 → 退避重试 → flow-control 分流 → 请求前能力预检 → 大上下文 history-snip 软剪枝；
 - **账号接入**：看板点链接走华为云 PKCE + DPoP 授权，浏览器直接回跳本机网关；STS 临时凭证约 2 小时到期，网关自动续期；
 - **每日签到**：00:05 自动为所有码道账号签到领积分，账号卡片直接看「今日已领」；
 - **Web 看板**：调用量、积分消耗、Token 时序、成功率、工作回溯热力图、请求流水、账号与设置一屏可查。
@@ -70,7 +70,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- **105 个套件：82 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- **106 个套件：83 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - 面板页的源码按域拆在 `dashboard_src/`（11 个片段：样式 / i18n / 面板脚本
   按域 4 段 / 数据看板页等），`dashboard.html` 由
   `python scripts/build_dashboard.py` 纯拼接生成（无模板、无压缩、无依赖）；
@@ -94,7 +94,7 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
 
 <p align="center"><img src="docs/images/dashboard-analytics.png" alt="数据看板" width="920"></p>
 
-**设置**——面板密码、API Key 管理、界面语言、上游超时、码道并发与冷却、模型降级链、用量聚合保留窗口、日志落库等全部运行参数，保存即生效：
+**设置**——面板密码、API Key 管理、界面语言、上游超时、码道并发与冷却、用量聚合保留窗口、日志落库等全部运行参数，保存即生效：
 
 <p align="center"><img src="docs/images/dashboard-settings.png" alt="设置页" width="920"></p>
 
@@ -202,8 +202,9 @@ export ANTHROPIC_AUTH_TOKEN="你在看板设置中添加的 API Key"
 **推理超时**：目录类接口 20 秒够用，推理不够——实测 GLM-5.2 单次回答要 17 秒以上。推理读超时默认 **180 秒**
 （`CODEARTS_CHAT_TIMEOUT` 可覆盖），响应头超时默认 120 秒，建连总预算 210 秒（`CODEARTS_OPEN_BUDGET`）。
 
-**模型降级链**：同一模型连续失败 3 次熔断 60 秒；熔断或持续失败时按降级链换模型重试
-（默认 `glm-5.3 → openpangu-2.0-flash → deepseek-v4.1-flash`）。链可在设置页开关、排序与增删。
+**请求前能力预检**：带图片的请求发给纯文本模型时，网关在**请求阶段**就回 400 说明该模型
+不支持视觉（不再白跑一趟上游、不占会话名额）。以前把这类错误记成模型故障并触发熔断降级链，
+一条带图请求就能让整条链在面板上"变坏"——该机制已移除（2026-10-24）。
 
 **排障速查：三种「看着像网关坏了」的情况**
 
