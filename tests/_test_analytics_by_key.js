@@ -30,8 +30,7 @@ dom.installDom({
 let api;
 try {
   api = new Function(code + `
-    ; return { renderKeyTable, keyModelPills,
-               applyKeyBeforeHidden };`)();
+    ; return { renderKeyTable, keyModelPills };`)();
 } catch (e) {
   console.log('LOAD ERROR:', e.message);
   process.exit(1);
@@ -171,41 +170,5 @@ check('a panel with no keys is told so', document.getElementById('analyticsKeyNo
 api.renderKeyTable({});
 check('a payload without the axis at all does not throw', document.getElementById('analyticsKeyTbody').innerHTML.includes('colspan="7"'));
 
-console.log();
-console.log('[7] the (切换前) legacy row folds away on demand');
-api.renderKeyTable({ keys: keys });
-const wrap = document.getElementById('keyBeforeSwitch');
-const box = document.getElementById('keyBeforeToggle');
-check('the row is shown by default',
-      document.getElementById('analyticsKeyTbody').innerHTML.includes('(切换前)'));
-check('the switch starts off', box.checked === false);
-api.applyKeyBeforeHidden(true);
-out = document.getElementById('analyticsKeyTbody').innerHTML;
-check('flipping it on removes exactly that one row',
-      !out.includes('(切换前)') && (out.match(/<tr>/g) || []).length === 5,
-      (out.match(/<tr>/g) || []).length);
-check('the other unattributed buckets are left alone', out.includes('(无 key)'));
-check('the row count follows the visible rows',
-      document.getElementById('analyticsKeyCount').textContent === '(5 把)');
-check('the footer stops explaining a row that is no longer there',
-      !document.getElementById('analyticsKeyNote').innerHTML.includes('(切换前)'));
-check('the checkbox stays in sync with the state', box.checked === true);
-check('the choice is not written to the browser store',
-      localStorage.getItem('ca-key-hide-before') === null);
-api.applyKeyBeforeHidden(false);
-check('flipping it back restores the row',
-      document.getElementById('analyticsKeyTbody').innerHTML.includes('(切换前)'));
-check('a payload with no such row hides the switch entirely',
-      (api.renderKeyTable({ keys: [key({ name: 'x' })] }),
-       wrap.style.display === 'none'));
-// The restore path reads the same single boolean: only a real true folds the
-// row, so a hand-edited "true" or a 1 cannot hide it by accident.
-check('only a stored boolean true folds the row',
-      api.applyKeyBeforeHidden('true') === false
-      && api.applyKeyBeforeHidden(1) === false
-      && api.applyKeyBeforeHidden(true) === true);
-api.applyKeyBeforeHidden(false);
-
-console.log();
 console.log('PASS=' + pass + ' FAIL=' + fail);
 process.exit(fail ? 1 : 0);

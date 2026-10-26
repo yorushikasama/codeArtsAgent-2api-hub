@@ -5854,8 +5854,6 @@ async function loadSettings(showToast){
 
     // 账号区折叠：服务端没存过、存坏了，或后端根本没这个字段，都按展开算。
     applyAccountsCollapsed(data.accounts_collapsed === true);
-    // 「(切换前)」行开关同理：只有明确存过 true 才收起，其余都照常显示。
-    applyKeyBeforeHidden(data.key_before_hidden === true);
     // 顶部页签显示：字段缺失或存坏了都按「全部显示」算，见 normaliseHiddenPages。
     applyHiddenPages(data.hidden_pages);
     // 账号页签模式：同样只有明确存过 true 才拆开，其余（没存过、存坏了、
@@ -7988,23 +7986,9 @@ function renderAnalytics(data){
 
 /* 按 API Key 的归属表。口径与账号表完全一致（window 桶 = 当前选中范围），
    所以两张表的请求数应当相等；对不上是数据问题，不是渲染能修的，故这里
-   不隐藏任何会兜差额的行——(未知 key) 正是用来兜住差额的。唯一能收起的是
-   「(切换前)」：它是升级前的历史尾巴，只减不增，收起与否都不影响对账。 */
+   不隐藏任何会兜差额的行——(未知 key) 正是用来兜住差额的。 */
 
-/* 「(切换前)」行开关的状态。表格每 5 秒重绘一次，所以状态不能存在渲染函数
-   里，得放在外面；偏好与账号区折叠一样存服务端的 accounts/settings.json
-   （key_before_hidden），不用 localStorage。 */
-let keyBeforeHidden = false;
 let lastKeyData = null;
-/* 唯一的写入口：内存状态、复选框与表格一起改，三者不会不同步。 */
-function applyKeyBeforeHidden(hidden){
-  keyBeforeHidden = hidden === true;
-  const box = document.getElementById('keyBeforeToggle');
-  if(box) box.checked = keyBeforeHidden;
-  if(lastKeyData) renderKeyTable(lastKeyData);
-  return keyBeforeHidden;
-}
-// 显式选择走既有的 settings save 通道（一个键的 patch，不动别的设置）。
 
 function keyModelPills(k){
   const pills = (k.models || []).map(m =>
@@ -8029,21 +8013,14 @@ function renderKeyTable(data){
   const note = document.getElementById('analyticsKeyNote');
   const keys = data.keys || [];
   lastKeyData = data;
-  const wrap = document.getElementById('keyBeforeSwitch');
-  const box = document.getElementById('keyBeforeToggle');
-  const hasBefore = keys.some(k => k.key === '__before_keys__');
-  // 新装的环境没有这一行，就没得收，开关也不该出现。
-  if(wrap) wrap.style.display = hasBefore ? '' : 'none';
-  if(box) box.checked = keyBeforeHidden;
-  const shown = keyBeforeHidden ? keys.filter(k => k.key !== '__before_keys__') : keys;
+  const shown = keys;
   if(countEm) countEm.textContent = shown.length ? '(' + shown.length + ' 把)' : '';
 
   if(note){
     const named = keys.filter(k => k.source !== 'bucket');
     const parts = [];
     if(!named.length) parts.push('设置里还没有任何 API Key，全部流量都落在下面的未归属行里。');
-    // 收起那行时就不再解释那行，否则读者找不到话里指的东西。
-    if(!keyBeforeHidden) parts.push('Key 维度只从本次升级之后开始记录：更早的请求没有这个字段，会一直留在「(切换前)」里且不会再增长。');
+    parts.push('Key 维度只从本次升级之后开始记录：更早的请求没有这个字段，会一直留在「(切换前)」里且不会再增长。');
     note.innerHTML = parts.join(' ');
   }
 
