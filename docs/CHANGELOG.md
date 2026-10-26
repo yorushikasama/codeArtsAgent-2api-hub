@@ -1,5 +1,15 @@
 ## Unreleased
 
+**2026-10-26：图片能力预检取代模型熔断、账号页签删除、估算与面板修复**
+
+- **模型熔断降级链整体移除，改成请求前图片能力预检**：上游对纯文本模型收图返回 `InferHub.001001020.406 not multimodal`，这条 400 以流内错误帧到达，被 `_health_counts_failure` 在判状态码之前就算成「模型硬失败」——连续 3 次后整个模型被标down，降级链把请求轮换到另一个同样不看图的模型上，于是整条链表现出「全部不可用」。链路本身没有坏（实测 deepseek-v4.1-flash 此前连续 16 次成功，只有那一次带图请求失败）。现在删掉 `note_model_result` / `_model_blocked` / `model_health` / `_apply_model_fallback` 与两个 breaker 环境变量、`/v1/models` 的 `health` 字段、面板降级链 UI 与 `model_fallback_enabled` / `model_fallbacks` 设置键；改为三个协议入口在发请求前查 `/v1/model/builtin` 的 `supports_images`，只对带图的请求在本地直接 400，文案不提具体模型名（「当前模型不支持视觉功能（not multimodal），请去掉图片或换一个支持读图的模型」）。本地预检拒绝也走 `record_error`，统计里看得见。`tests/_test_stream_retry.py` 的熔断段改成「已移除」断言 + 预检断言。
+- **「账号独立成一个页签」整族删除**：这个开关从未真正可用——`applyAccountsTabLayout(true)` 要把账号区块插到 `accountsHomeAnchor` 前面，而这个锚点在标记里根本不存在（全仓 grep 为 0），搬移永远静默失败，于是打开开关后「账号」页只有页脚、正文全空。删掉 `ACCOUNTS_SEPARATE_TAB_KEY` / `accounts_separate_tab()` / `set_accounts_separate_tab()`、`runtime_settings_view` 字段、`/settings/save` 白名单项与写入分支、前端 `applyAccountsTabLayout` / `accountsPageSections` / `insertBeforeAnchor` / `saveAccountsSeparateTab` 与 `_accountsSeparateTab` 状态、账号页导航按钮与 `pageAccounts` 容器、设置页对应区块与 5 条 i18n 词条；码道账号区块改为静态摆在网关页（控制栏之后、最近请求之前，与拆分前一致）。`?tab=accounts` 的旧书签与上次停留页签一律退回网关页，不会点亮一个空容器。顺带清掉只为搬移逻辑存在的死标识 `navGatewayLabel` / `gatewayPageTitle` / `gatewayPageDesc`。
+- **剩余用量估算长期显示「暂无数据」**：两个各自静默的原因叠在一起——`remaining_usage()` 调 `_remaining_payload(now, accounts)` 时压根没传 `accounts`（rows 恒为空），以及对每个账号取 `uid` 用了账号 **id** 而用量缓冲与事件是按账号 **label** 记的（`record_usage(account=...)` 传的是 label），即便传了也匹配不上。现在新增 `_RemainingAccount` 最小载体 + `_remaining_accounts()`（uid 取 label），服务器实测 rows 从 0 变 9。新增 `tests/_test_remaining_accounts.py` 把这两个根因各钉一条断言（用 `_remaining_payload_locked`，避开刷新覆盖假缓冲）。
+- **账号列表每次请求 2.1 秒 → 1 毫秒**：`credit_package` / `welfare_activities` / `welfare_daily` 加 `allow_stale=True` 的 stale-while-revalidate——过期缓存直接返回，同时 `_refresh_soon()` 起后台线程刷新（按 (kind, key) 去重）。实测冷 2.140s → 热 0.001s。面板响应补 `count_ready`（未过期账号数），与 `/health` 的 `accounts_ready` 口径对齐，修掉「/health 说 3/3、面板显示 1/1」。
+- **禁用复选框看起来像「未勾选」**：`input:disabled:checked` 在部分浏览器下 accent-color 被灰掉，读者以为开关没打开。补 CSS 让禁用勾选态保持清晰的强调色、未勾选态半透明，两种状态一眼可分；「设置」页签的说明补上「灰底勾选、不可点击」与「清单按顶部现有页签现场生成」。
+- **`key_before_hidden` 死配置删除**：从「从未有过 UI」——`applyKeyBeforeHidden` / `keyBeforeHidden` / `renderKeyTable` 里的隐藏分支与 `KEY_BEFORE_HIDDEN_KEY` 一起删掉，`(切换前)` 行恒显示。
+- **三入口预检统一记账**：responses / messages 两个入口的两类预检（本地拒绝）补 `record_error(...)`，与 chat 入口一致，共 4 处——此前本地拒绝在统计里完全看不见。
+
 **STS 时间驱动续期、官方形状完整镜像、WorkBuddy 死路径退役与运营闭环（2026-10-25）**
 
 **可用性：从 28.5% 失败率到 2.2%**

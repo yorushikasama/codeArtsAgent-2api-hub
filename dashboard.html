@@ -991,7 +991,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   };
 
   // 3. Tab 初始化（与下方主脚本的 MAIN_TABS 保持一致）
-  var TABS = ['gateway','accounts','tasks','analytics','settings','logs'];
+  var TABS = ['gateway','analytics','settings','logs'];
   var pick = null;
   try {
     var q = new URLSearchParams(location.search).get('tab');
@@ -1189,11 +1189,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     '签到记录已刷新': 'Activity log refreshed',
     '网关': 'Gateway',
     '网关与账号': 'Gateway & accounts',
-    '账号独立成一个页签': 'Accounts as a separate tab',
-    '账号单独一页': 'Accounts on their own page',
-    '(已开启)': '(on)',
-    '已开启：账号独立成一个页签': 'On: accounts get their own tab',
-    '已关闭：账号与网关回到同一页': 'Off: accounts are back on the gateway page',
     '面板窗口限高': 'Panel window height cap',
     '每个窗口（区块）超过这个高度时在窗口内部滚动，不再把整页拉长；滚动时标题行固定在窗口顶部。单位像素；填 0 表示不限。': 'Each window scrolls internally once it is taller than this, instead of stretching the page; its title row stays pinned to the top while scrolling. In pixels; 0 means no limit.',
     '窗口最高高度（像素，0 = 不限）': 'Max window height (px, 0 = no limit)',
@@ -2461,10 +2456,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <h1><span class="dot" id="statusDot"></span>CodeArts 网关</h1>
     <nav class="main-nav">
       <button class="main-nav-btn active" id="btnNavGateway" onclick="switchMainTab('gateway')">
-        <span id="navGatewayLabel">网关</span>
-      </button>
-      <button class="main-nav-btn" id="btnNavAccounts" onclick="switchMainTab('accounts')">
-        账号
+        网关与账号
       </button>
       <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
         数据看板
@@ -2542,8 +2534,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
   <div id="pageGateway" class="main-page">
   <!-- 页面头部：标题 + 一行说明，与其它页面的头部结构保持一致 -->
   <div style="margin-bottom:16px">
-    <h2 id="gatewayPageTitle" style="margin:0;font-size:19px;color:var(--fg);font-family:var(--brush);font-weight:700;letter-spacing:.08em">网关与账号</h2>
-    <div id="gatewayPageDesc" style="font-size:12px;color:var(--dim);margin-top:4px">管理码道账号与网关模型，查看当日调用量、积分消耗、成功率与最近请求。</div>
+    <h2 style="margin:0;font-size:19px;color:var(--fg);font-family:var(--brush);font-weight:700;letter-spacing:.08em">网关与账号</h2>
+    <div style="font-size:12px;color:var(--dim);margin-top:4px">管理码道账号与网关模型，查看当日调用量、积分消耗、成功率与最近请求。</div>
   </div>
   <!-- 出口：只有一个（华为云码道），没有可切换的对象。
        原来这里是两张「版本中枢」卡片，点一下切出口/看默认出口 ——
@@ -2573,9 +2565,25 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <div class="cards" id="cards"></div>
   </div>
 
-  <!-- 合并模式（设置里「账号独立成一个页签」关闭，默认）时，账号页的三个区块搬到
-       这里，位置与拆分前一致：控制栏之后、最近请求之前。拆分模式下这里是空的。 -->
-  <span id="accountsSectionsAnchor" hidden></span>
+  <!-- 码道账号：只管理码道（华为云）账号。旧的账号池、出站身份、内存扫描导入等
+       已整体移除。「账号独立成一个页签」的开关已删除（它搬不动区块、账号页永远
+       空白），区块现在静态放在这里——控制栏之后、最近请求之前，与拆分前一致。 -->
+  <section>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div>
+        <h2 style="margin:0">码道账号</h2>
+        <div style="font-size:12px;color:var(--dim);margin-top:4px">
+          华为云码道走 PKCE + DPoP 授权，会话存放在 <code>accounts/codearts/</code>；
+          积分签到与 STS 续期都在账号弹窗里。
+        </div>
+      </div>
+      <button onclick="openCodeartsLogin()">添加 / 管理码道账号</button>
+    </div>
+    <div id="codeartsPageList" data-codearts-list><p class="hint">正在读取…</p></div>
+    <p class="hint" style="margin:12px 0 0">
+      点上方按钮打开账号弹窗：可积分签到、手动续期、重新授权或删除账号。
+    </p>
+  </section>
 
   <!-- 融合后的：模型性能与用量矩阵 -->
   
@@ -2641,31 +2649,8 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
 
   </div><!-- /pageGateway -->
   
-  <div id="pageAccounts" class="main-page">
-  <!-- 账号页：只管理码道（华为云）账号。旧的账号池、出站身份、
-       内存扫描导入等已整体移除，不再出现在这个面板里。 -->
-  <section>
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-      <div>
-        <h2 style="margin:0">码道账号</h2>
-        <div style="font-size:12px;color:var(--dim);margin-top:4px">
-          华为云码道走 PKCE + DPoP 授权，会话存放在 <code>accounts/codearts/</code>；
-          积分签到与 STS 续期都在账号弹窗里。
-        </div>
-      </div>
-      <button onclick="openCodeartsLogin()">添加 / 管理码道账号</button>
-    </div>
-    <div id="codeartsPageList" data-codearts-list><p class="hint">正在读取…</p></div>
-    <p class="hint" style="margin:12px 0 0">
-      点上方按钮打开账号弹窗：可积分签到、手动续期、重新授权或删除账号。
-    </p>
-  </section>
-  </div><!-- /pageAccounts -->
   
   
-  <!-- 账号页（issue #176）：账号多起来之后，网关页的卡片与最近请求被一长串账号
-       挤到下面，所以账号列表与「当前禁用总览」单独成一个菜单，签到/活跃记录也
-       放在这里——它回答的正是「这个账号昨天到底签成了没有」。 -->
   <div id="pageAnalytics" class="main-page">
     <div class="wrap">
 <!-- ====================== 页头 + 范围 ====================== -->
@@ -2946,23 +2931,6 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
       <div id="setPagesList" style="display:flex;flex-wrap:wrap;gap:8px 20px"></div>
     </section>
 
-    <section>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-        <div>
-          <h2 style="margin:0">账号独立成一个页签 <em id="setAccountsSeparateState"></em></h2>
-          <div style="font-size:12px;color:var(--dim);margin-top:4px">
-            关闭（默认）时，账号列表、「当前禁用」与「签到与活跃记录」留在「网关与账号」页，位置与拆分前一致；开启后它们搬到独立的「账号」页，顶部页签变成 网关 → 账号 → 数据看板 → 设置 → 运行日志，网关页只剩网关自己的东西——账号多起来之后翻起来更短。两侧的区块与行为完全一样，只是分在哪一页；关闭后 ?tab=accounts 的书签会退回「网关与账号」页。
-          </div>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-            <input id="setAccountsSeparate" type="checkbox" style="width:16px;height:16px">
-            账号单独一页
-          </label>
-          <button onclick="saveAccountsSeparateTab(this)">保存</button>
-        </div>
-      </div>
-    </section>
 
     <section>
       <h2>面板窗口限高 <em id="setWinMaxHeightState"></em></h2>
@@ -5006,7 +4974,7 @@ function generatePageList(current, total){
 
 // Tab ids in nav order. One list so the restore path and the nav cannot
 // drift apart.
-const MAIN_TABS = ['gateway', 'accounts', 'analytics', 'settings', 'logs'];
+const MAIN_TABS = ['gateway', 'analytics', 'settings', 'logs'];
 const MAIN_TAB_STORE = 'codearts-hub-main-tab';
 let currentMainTab = 'gateway';
 let analyticsRange = 'today';
@@ -5141,10 +5109,6 @@ async function startDashboard(){
   updateRecentLimitButtons();
   // The head script already resolved this before first paint; re-apply it
   // here so the data loaders for the active page actually run.
-  // 账号区块默认是「合并到网关页」。以前只有 /settings 成功返回后才搬一次，
-  // 那个请求一失败/超时，区块就留在隐藏的 pageAccounts 里 —— 页面上看起来
-  // 就是「账号与积分汇总整块消失」。先按默认摆一遍，设置回来再按真实值调整。
-  applyAccountsTabLayout(false);
   switchMainTab(MAIN_TABS.includes(window.__MAIN_TAB__) ? window.__MAIN_TAB__ : 'gateway');
   // 首屏把数据表接上排序：静态标记里就有的表不会被任何 loader 触发 render，
   // 轮询那条兜底要等 5 秒才轮到它。
@@ -5682,115 +5646,6 @@ async function togglePageVisibility(key){
 }
 // ==== 顶部页签显示结束 ====
 
-// ==== 账号页签模式开始 ====
-// 「账号」是独立成一个主菜单，还是留在「网关与账号」页，由服务端设置
-// accounts_separate_tab 决定（默认关闭 = 合并，与拆分前一致）。
-//
-// 三个账号区块始终是同一批 DOM 节点，只是挂在不同页下面：合并时挂到
-// #pageGateway 的锚点处（控制栏之后、最近请求之前，也就是拆分前的位置），
-// 拆分时挂回 #pageAccounts 的页头之后。挂在谁下面就归谁的侧栏——区块侧栏是
-// initPageNav() 现场扫描本页区块生成的，所以搬完不用另外维护导航。
-let _accountsSeparateTab = false;
-let _accountsSections = null;
-
-function accountsPageSections(){
-  // 区块可能已经被 initPageNav() 包进 .page-nav-body（页面内容整体包一层，
-  // grid 里才只剩「侧栏 + 内容」两项），所以页面 div 与那层包裹都要找一遍。
-  // 只在拿到非空结果时才记住：搬走之后账号页里就只剩页头了，那时再找也找不回来。
-  if(_accountsSections && _accountsSections.length) return _accountsSections;
-  const page = document.getElementById('pageAccounts');
-  if(!page) return [];
-  const scopes = [page];
-  Array.from(page.children).forEach(el => {
-    if(el.classList && el.classList.contains('page-nav-body')) scopes.push(el);
-  });
-  const found = [];
-  scopes.forEach(scope => Array.from(scope.children).forEach(el => {
-    if(el.tagName === 'SECTION' && found.indexOf(el) === -1) found.push(el);
-  }));
-  if(found.length) _accountsSections = found;
-  return found;
-}
-
-
-
-// 插到锚点前面——插在锚点**所在的那个容器**里，而不是插到页面 div 上：
-// 锚点被 .page-nav-body 包起来之后就不再是页面 div 的直接子节点了，直接对页面
-// div 调 insertBefore 会抛 NotFoundError（而 loadSettings 的 try/catch 会把它
-// 吞掉，表现成「开关没反应」这种最难查的样子）。
-function insertBeforeAnchor(sections, anchor){
-  const host = anchor && anchor.parentNode;
-  if(!host || !sections.length) return false;
-  sections.forEach(s => host.insertBefore(s, anchor));
-  return true;
-}
-
-function applyAccountsTabLayout(separate){
-  _accountsSeparateTab = (separate === true);
-  const pageGateway = document.getElementById('pageGateway');
-  const pageAccounts = document.getElementById('pageAccounts');
-  if(!pageGateway || !pageAccounts) return _accountsSeparateTab;
-
-  const sections = accountsPageSections();
-  // 版本切换跟着账号区块走：拆分时回到账号页页头右侧，合并时搬到网关页的账号
-  // 区块正上方。合并模式下网关页最上面那两张出口卡片也能切版本，但账号区在页面
-  // 中段，要换一版得先滚回页首——跟着搬一次就不必了。
-  // 先摆它再摆区块：两者都是「插到锚点前面」，谁先插谁在前，顺序才是控件 → 区块。
-  const realmSwitch = document.getElementById('accountsRealmSwitch');
-  if(realmSwitch){
-    if(_accountsSeparateTab){
-      const home = document.getElementById('accountsHeader');
-      if(home && realmSwitch.parentNode !== home) home.appendChild(realmSwitch);
-    } else {
-      insertBeforeAnchor([realmSwitch], document.getElementById('accountsSectionsAnchor'));
-    }
-  }
-
-  if(_accountsSeparateTab){
-    // 两个页签：区块回账号页的页头之后，按原顺序。
-    insertBeforeAnchor(sections, document.getElementById('accountsHomeAnchor'));
-  } else {
-    // 一个页签：区块挂到网关页的锚点处，位置与拆分前一致。
-    insertBeforeAnchor(sections, document.getElementById('accountsSectionsAnchor'));
-  }
-
-  const btnAccounts = document.getElementById('btnNavAccounts');
-  if(btnAccounts) btnAccounts.style.display = _accountsSeparateTab ? '' : 'none';
-  // 名字跟着走：账号已经不在这一页了，就不能再叫「网关与账号」。
-  const gatewayLabel = document.getElementById('navGatewayLabel');
-  if(gatewayLabel) gatewayLabel.textContent = _accountsSeparateTab ? '网关' : '网关与账号';
-  // 页头（标题 + 一行说明）跟着走：账号在不在这一页，名字与说明都得对得上。
-  const pageTitle = document.getElementById('gatewayPageTitle');
-  if(pageTitle) pageTitle.textContent = _accountsSeparateTab ? '网关' : '网关与账号';
-  const pageDesc = document.getElementById('gatewayPageDesc');
-  if(pageDesc){
-    pageDesc.textContent = _accountsSeparateTab
-      ? '管理网关模型，查看当日调用量、积分消耗、成功率与最近请求。'
-      : '管理码道账号与网关模型，查看当日调用量、积分消耗、成功率、最近请求与模型清单。';
-  }
-  return _accountsSeparateTab;
-}
-
-// 显式选择走既有的 settings save 通道（一个键的 patch，不动别的设置）。
-async function saveAccountsSeparateTab(btn){
-  const el = document.getElementById('setAccountsSeparate');
-  const value = !!(el && el.checked);
-  if(btn) btn.disabled = true;
-  try {
-    await postJSON('/settings/save', {accounts_separate_tab: value});
-    applyAccountsTabLayout(value);
-    // 布局换了，导航、侧栏与当前页都要按新布局重算一遍；正停在「账号」页而
-    // 刚关掉开关时，switchMainTab 会把这一页退回「网关与账号」。
-    switchMainTab(currentMainTab);
-    toast(value ? '已开启：账号独立成一个页签' : '已关闭：账号与网关回到同一页');
-    loadSettings();
-  } catch(e) {
-    toast('保存失败: ' + e.message, 'bad');
-  } finally {
-    if(btn) btn.disabled = false;
-  }
-}
-// ==== 账号页签模式结束 ====
 
 // ==== 面板窗口限高开始 ====
 // 每个窗口（区块 + 日志终端）超过限高时在窗口内部滚动、标题行吸顶，整页不再被
@@ -5856,14 +5711,6 @@ async function loadSettings(showToast){
     applyAccountsCollapsed(data.accounts_collapsed === true);
     // 顶部页签显示：字段缺失或存坏了都按「全部显示」算，见 normaliseHiddenPages。
     applyHiddenPages(data.hidden_pages);
-    // 账号页签模式：同样只有明确存过 true 才拆开，其余（没存过、存坏了、
-    // 后端没这个字段）都保持上游那个合并的「网关与账号」页。
-    const separateTab = data.accounts_separate_tab === true;
-    applyAccountsTabLayout(separateTab);
-    const separateState = document.getElementById('setAccountsSeparateState');
-    if(separateState) separateState.textContent = separateTab ? '(已开启)' : '(默认：合并)';
-    const separateInput = document.getElementById('setAccountsSeparate');
-    if(separateInput) separateInput.checked = separateTab;
 
     // 面板窗口限高：字段缺失（后端旧一点）或存坏了都按默认 640px 算，0 = 不限。
     // 坏值回落默认状态这条口径与「顶部页签显示」「账号区折叠」一致，见
@@ -6733,9 +6580,9 @@ function switchMainTab(tab){
   // 被「顶部页签显示」收起来的页面同理：书签与上次停留的页签都不能把内容调出来，
   // 否则页面容器带着 hidden 被点亮，屏幕上一片空白。
   if(pageHidden(tab)) tab = firstVisiblePage();
-  // 账号页被合并掉之后（设置里的「账号独立成一个页签」关闭，默认），
-  // ?tab=accounts 的书签与上次停留的页签都退回「网关与账号」页——区块就在那一页里。
-  if(tab === 'accounts' && !_accountsSeparateTab) tab = 'gateway';
+  // 「账号」页签已删除（账号区块静态在网关页）：旧书签 ?tab=accounts 与上次
+  // 停留的页签一律退回「网关与账号」页，否则会点亮一个内容空白的容器。
+  if(tab === 'accounts') tab = 'gateway';
   currentMainTab = tab;
   // Remember the page across reloads. The URL is updated so the address bar
   // matches what is on screen and a copied link reopens the same page;
@@ -6749,19 +6596,16 @@ function switchMainTab(tab){
   try { localStorage.setItem(MAIN_TAB_STORE, tab); } catch(e){}
   const btnGateway = document.getElementById('btnNavGateway');
   const btnTasks = document.getElementById('btnNavTasks');
-  const btnAccounts = document.getElementById('btnNavAccounts');
   const btnAnalytics = document.getElementById('btnNavAnalytics');
   const btnLogs = document.getElementById('btnNavLogs');
   const btnSettings = document.getElementById('btnNavSettings');
   const pageGateway = document.getElementById('pageGateway');
   const pageTasks = document.getElementById('pageTasks');
-  const pageAccounts = document.getElementById('pageAccounts');
   const pageAnalytics = document.getElementById('pageAnalytics');
   const pageLogs = document.getElementById('pageLogs');
   const pageSettings = document.getElementById('pageSettings');
   const tabs = [
     ['gateway', btnGateway, pageGateway],
-    ['accounts', btnAccounts, pageAccounts],
     ['tasks', btnTasks, pageTasks],
     ['analytics', btnAnalytics, pageAnalytics],
     ['logs', btnLogs, pageLogs],
@@ -6775,7 +6619,7 @@ function switchMainTab(tab){
     // 每个页面各自按自己的区块重建侧栏；非当前页的区块变化在切过来时补上
     if(on) initPageNav(page);
   });
-  if(tab === 'accounts' || (!_accountsSeparateTab && tab === 'gateway')){
+  if(tab === 'gateway'){
     loadActivityBoard();
     loadCodeartsAccounts();
   }

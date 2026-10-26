@@ -2461,7 +2461,6 @@ def runtime_settings_view():
         "log_db_max_days": ca_settings.log_db_max_days(ACCOUNTS_DIR),
         "log_db_max_bytes": ca_settings.log_db_max_bytes(ACCOUNTS_DIR),
         "accounts_collapsed": ca_settings.accounts_collapsed(ACCOUNTS_DIR),
-        "accounts_separate_tab": ca_settings.accounts_separate_tab(ACCOUNTS_DIR),
         "hidden_pages": ca_settings.hidden_pages(ACCOUNTS_DIR),
         "update_check_enabled": ca_settings.update_check_enabled(ACCOUNTS_DIR),
         "upstream": ca_settings.upstream_config(ACCOUNTS_DIR),
@@ -6786,7 +6785,7 @@ def _validate_settings_patch(payload):
 
     for flag_key in ("enable_anthropic_messages", "egress_backoff_enabled",
                      "log_db_enabled", "accounts_collapsed",
-                     "accounts_separate_tab", "update_check_enabled"):
+                     "update_check_enabled"):
         if flag_key not in payload:
             continue
         raw = payload.get(flag_key)
@@ -6883,10 +6882,6 @@ def _apply_settings_patch(handler, plan):
         ca_settings.set_accounts_collapsed(ACCOUNTS_DIR,
                                            plan["accounts_collapsed"])
         reply["accounts_collapsed"] = plan["accounts_collapsed"]
-    if "accounts_separate_tab" in plan:
-        ca_settings.set_accounts_separate_tab(
-            ACCOUNTS_DIR, plan["accounts_separate_tab"])
-        reply["accounts_separate_tab"] = plan["accounts_separate_tab"]
     if "hidden_pages" in plan:
         # Reply with the normalised list, not the raw one: keys the request
         # spelled wrong are dropped on the way in, so the panel echoes back

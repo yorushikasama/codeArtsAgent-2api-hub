@@ -5,10 +5,7 @@
     <h1><span class="dot" id="statusDot"></span>CodeArts 网关</h1>
     <nav class="main-nav">
       <button class="main-nav-btn active" id="btnNavGateway" onclick="switchMainTab('gateway')">
-        <span id="navGatewayLabel">网关</span>
-      </button>
-      <button class="main-nav-btn" id="btnNavAccounts" onclick="switchMainTab('accounts')">
-        账号
+        网关与账号
       </button>
       <button class="main-nav-btn" id="btnNavAnalytics" onclick="switchMainTab('analytics')">
         数据看板
@@ -86,8 +83,8 @@
   <div id="pageGateway" class="main-page">
   <!-- 页面头部：标题 + 一行说明，与其它页面的头部结构保持一致 -->
   <div style="margin-bottom:16px">
-    <h2 id="gatewayPageTitle" style="margin:0;font-size:19px;color:var(--fg);font-family:var(--brush);font-weight:700;letter-spacing:.08em">网关与账号</h2>
-    <div id="gatewayPageDesc" style="font-size:12px;color:var(--dim);margin-top:4px">管理码道账号与网关模型，查看当日调用量、积分消耗、成功率与最近请求。</div>
+    <h2 style="margin:0;font-size:19px;color:var(--fg);font-family:var(--brush);font-weight:700;letter-spacing:.08em">网关与账号</h2>
+    <div style="font-size:12px;color:var(--dim);margin-top:4px">管理码道账号与网关模型，查看当日调用量、积分消耗、成功率与最近请求。</div>
   </div>
   <!-- 出口：只有一个（华为云码道），没有可切换的对象。
        原来这里是两张「版本中枢」卡片，点一下切出口/看默认出口 ——
@@ -117,9 +114,25 @@
     <div class="cards" id="cards"></div>
   </div>
 
-  <!-- 合并模式（设置里「账号独立成一个页签」关闭，默认）时，账号页的三个区块搬到
-       这里，位置与拆分前一致：控制栏之后、最近请求之前。拆分模式下这里是空的。 -->
-  <span id="accountsSectionsAnchor" hidden></span>
+  <!-- 码道账号：只管理码道（华为云）账号。旧的账号池、出站身份、内存扫描导入等
+       已整体移除。「账号独立成一个页签」的开关已删除（它搬不动区块、账号页永远
+       空白），区块现在静态放在这里——控制栏之后、最近请求之前，与拆分前一致。 -->
+  <section>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
+      <div>
+        <h2 style="margin:0">码道账号</h2>
+        <div style="font-size:12px;color:var(--dim);margin-top:4px">
+          华为云码道走 PKCE + DPoP 授权，会话存放在 <code>accounts/codearts/</code>；
+          积分签到与 STS 续期都在账号弹窗里。
+        </div>
+      </div>
+      <button onclick="openCodeartsLogin()">添加 / 管理码道账号</button>
+    </div>
+    <div id="codeartsPageList" data-codearts-list><p class="hint">正在读取…</p></div>
+    <p class="hint" style="margin:12px 0 0">
+      点上方按钮打开账号弹窗：可积分签到、手动续期、重新授权或删除账号。
+    </p>
+  </section>
 
   <!-- 融合后的：模型性能与用量矩阵 -->
   
@@ -185,31 +198,8 @@
 
   </div><!-- /pageGateway -->
   
-  <div id="pageAccounts" class="main-page">
-  <!-- 账号页：只管理码道（华为云）账号。旧的账号池、出站身份、
-       内存扫描导入等已整体移除，不再出现在这个面板里。 -->
-  <section>
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-      <div>
-        <h2 style="margin:0">码道账号</h2>
-        <div style="font-size:12px;color:var(--dim);margin-top:4px">
-          华为云码道走 PKCE + DPoP 授权，会话存放在 <code>accounts/codearts/</code>；
-          积分签到与 STS 续期都在账号弹窗里。
-        </div>
-      </div>
-      <button onclick="openCodeartsLogin()">添加 / 管理码道账号</button>
-    </div>
-    <div id="codeartsPageList" data-codearts-list><p class="hint">正在读取…</p></div>
-    <p class="hint" style="margin:12px 0 0">
-      点上方按钮打开账号弹窗：可积分签到、手动续期、重新授权或删除账号。
-    </p>
-  </section>
-  </div><!-- /pageAccounts -->
   
   
-  <!-- 账号页（issue #176）：账号多起来之后，网关页的卡片与最近请求被一长串账号
-       挤到下面，所以账号列表与「当前禁用总览」单独成一个菜单，签到/活跃记录也
-       放在这里——它回答的正是「这个账号昨天到底签成了没有」。 -->
   <div id="pageAnalytics" class="main-page">
     <div class="wrap">
 <!-- ====================== 页头 + 范围 ====================== -->
@@ -490,23 +480,6 @@
       <div id="setPagesList" style="display:flex;flex-wrap:wrap;gap:8px 20px"></div>
     </section>
 
-    <section>
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-        <div>
-          <h2 style="margin:0">账号独立成一个页签 <em id="setAccountsSeparateState"></em></h2>
-          <div style="font-size:12px;color:var(--dim);margin-top:4px">
-            关闭（默认）时，账号列表、「当前禁用」与「签到与活跃记录」留在「网关与账号」页，位置与拆分前一致；开启后它们搬到独立的「账号」页，顶部页签变成 网关 → 账号 → 数据看板 → 设置 → 运行日志，网关页只剩网关自己的东西——账号多起来之后翻起来更短。两侧的区块与行为完全一样，只是分在哪一页；关闭后 ?tab=accounts 的书签会退回「网关与账号」页。
-          </div>
-        </div>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
-          <label style="display:flex;align-items:center;gap:6px;font-size:13px;min-height:40px">
-            <input id="setAccountsSeparate" type="checkbox" style="width:16px;height:16px">
-            账号单独一页
-          </label>
-          <button onclick="saveAccountsSeparateTab(this)">保存</button>
-        </div>
-      </div>
-    </section>
 
     <section>
       <h2>面板窗口限高 <em id="setWinMaxHeightState"></em></h2>
