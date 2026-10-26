@@ -93,6 +93,14 @@ h1 span{color:var(--dim);font-weight:400;font-size:13px;margin-left:8px;font-fam
 main{padding:20px var(--page-pad) 60px;max-width:2000px;margin:0 auto}
 /* 原生控件与滚动条统一着朱砂色 */
 input[type="checkbox"],input[type="radio"]{accent-color:var(--accent)}
+/* 禁用但仍勾选的复选框（「设置」页签这类固定项）必须一眼看出「勾着的、只是
+   不让改」。以前没有这条：浏览器把禁用框画成一块灰方块，和「未勾选」长得
+   一模一样 —— 面板上就出现过「设置没勾上？是不是被收起来了」的误会。 */
+input[type="checkbox"]:disabled:checked,input[type="radio"]:disabled:checked{
+  accent-color:color-mix(in srgb,var(--accent) 58%,var(--line-hover));
+  opacity:1;cursor:not-allowed}
+input[type="checkbox"]:disabled:not(:checked),input[type="radio"]:disabled:not(:checked){
+  opacity:.5;cursor:not-allowed}
 ::selection{background:var(--accent-soft);color:var(--fg)}
 *{scrollbar-width:thin;scrollbar-color:color-mix(in srgb,var(--accent) 26%,var(--line-hover)) transparent}
 ::-webkit-scrollbar{width:10px;height:10px}
@@ -2933,7 +2941,7 @@ button.page-nav-top:hover{background:var(--panel2);border-color:var(--accent);co
     <section>
       <h2>顶部页签显示 <em id="setPagesState"></em></h2>
       <div style="font-size:12px;color:var(--dim);margin-bottom:12px">
-        取消勾选就把该页签从顶部收起来，勾回来即恢复；清单按顶部现有的页签现场生成，上游增删页面这里自动跟上；偏好存在本网关，换浏览器、重启服务都记得。「设置」是这一页自己的入口，固定保留。
+        取消勾选就把该页签从顶部收起来，勾回来即恢复；清单按顶部现有的页签现场生成，网关版本增删页面后这里自动跟上；偏好存在本网关，换浏览器、重启服务都记得。「设置」是这一页自己的入口，收起来就没别的地方能放回去，所以固定保留（灰底勾选、不可点击）。
       </div>
       <div id="setPagesList" style="display:flex;flex-wrap:wrap;gap:8px 20px"></div>
     </section>
