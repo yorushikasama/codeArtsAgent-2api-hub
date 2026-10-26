@@ -762,17 +762,6 @@ function renderAvailableModels(){
   applyTableSort('modelsTable');
 }
 
-let CURRENT_GROWTH_UID = 'all';
-
-
-
-
-
-
-
-
-
-
 const fmt = n => (n ?? 0).toLocaleString('en-US');
 /* Token 数的紧凑显示：<1 万精确显示（千分位），≥1 万 K，≥100 万 M，≥10 亿 B；
    小数位随量级收缩（123K / 12.3K / 1.23K），尾零去掉。单位用大写 K/M/B，
@@ -872,7 +861,7 @@ function cellRaw(cell){
 
 /* 单元格取值。数字列忽略千分位、货币符号和百分号，并换算单位——否则「950 ms」和
    「4.01 s」会按 950 > 4.01 排反。量级单位只认大写 K/M/G：小写 m 在界面上是
-   「分钟」（fmtLeft 的 29m），当成百万去缩放会把冷却时间排得乱七八糟。取不到数的
+   「分钟」（冷却列的 29m），当成百万去缩放会把冷却时间排得乱七八糟。取不到数的
    格（「—」「-」「未查询」）返回 null，恒沉底，不随升降序翻转。 */
 function cellSortValue(cell, kind){
   if(!cell) return null;

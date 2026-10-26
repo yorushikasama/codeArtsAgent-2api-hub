@@ -233,11 +233,11 @@ async function loadStatic(){
   } catch(e){ console.error('heat failed', e); }
   buildHeatGrid(state.heat);
   renderPerfFold();
-  // 剩余用量 / 积分扣减 / 积分获取历史：原版区块的数据管道原来挂在旧 loadAnalytics 上，
+  // 剩余用量 / 积分扣减历史：原版区块的数据管道原来挂在旧 loadAnalytics 上，
   // 页面换成新版后这里补回调用（展开对应折叠区时还会再刷一次）。
+  // 积分获取历史（loadCreditGrants）的表体与渲染已整体移除，不再调用。
   try{ loadRemainingUsage(); }catch(e){}
   try{ loadCreditHistory(); }catch(e){}
-  try{ loadCreditGrants(); }catch(e){}
 }
 
 /* ---------------- KPI ---------------- */
@@ -762,8 +762,8 @@ window.addEventListener('resize', () => { drawSeries(); drawSparks(); });
    本页的 numSpan/data-tip 元素自动生效。 */
 try { ensureHoverTip(); } catch(e){}
 
-/* 剩余用量 / 积分扣减 / 积分获取历史：数据由原版管道（loadRemainingUsage /
-   loadCreditHistory / loadCreditGrants）画进折叠区；展开时按需再刷新一次
+/* 剩余用量 / 积分扣减历史：数据由原版管道（loadRemainingUsage /
+   loadCreditHistory）画进折叠区；展开时按需再刷新一次
    （老版是每次进入看板都拉，这里收窄到按需）。积分扣减历史要跟随本页的范围
    选择器（旧管线的 analyticsRange 只认 today/week/month/all/custom）。 */
 function syncOldRange(){
@@ -796,16 +796,6 @@ if (typeof SORT_DENY_TABLES !== 'undefined' && SORT_DENY_TABLES && SORT_DENY_TAB
 }
 
 })();
-
-async function onKeyBeforeToggle(box){
-  const next = !!(box && box.checked);
-  applyKeyBeforeHidden(next);
-  try {
-    await postJSON('/settings/save', {key_before_hidden: next});
-  } catch(e) {
-    toast('「(切换前)」行开关保存失败: ' + e.message, 'bad');
-  }
-}
 
 function hiddenPages(){
   return _hiddenPages.slice();

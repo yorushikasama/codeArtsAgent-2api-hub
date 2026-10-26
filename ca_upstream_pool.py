@@ -386,21 +386,6 @@ class _KeepAlivePool(object):
         except Exception:
             pass
 
-    # ---- 测试与诊断 ----
-
-    def idle_counts(self):
-        """每个键当前的空闲连接数（测试断言容量与回收用）。"""
-        with self._lock:
-            return {k: len(v) for k, v in self._idle.items() if v}
-
-    def close_all(self):
-        """关掉所有空闲连接（测试清理用）。"""
-        with self._lock:
-            conns = [c for entries in self._idle.values() for c, _ in entries]
-            self._idle.clear()
-        for conn in conns:
-            self._close(conn)
-
 
 _POOL = _KeepAlivePool()
 
@@ -408,16 +393,6 @@ _POOL = _KeepAlivePool()
 def stats():
     """池的累计计数快照。"""
     return dict(_POOL.stats)
-
-
-def idle_counts():
-    """每个池键的空闲连接数快照。"""
-    return _POOL.idle_counts()
-
-
-def close_all():
-    """关掉池里所有空闲连接。"""
-    _POOL.close_all()
 
 
 # ---------------------------------------------------------------------------

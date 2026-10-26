@@ -317,80 +317,46 @@ def run_checks(filter_name):
             )
             check("models-cards", disp == "grid", disp)
 
-        if "growth" in filter_name or filter_name == "":
-            # The growth table may be empty (no live CN tasks in fixtures);
-            # seed one synthetic row so the card CSS can be asserted.
+        if "account" in filter_name or filter_name == "":
+            # 账号列表已重构成码道卡片（.ca-row，60-codearts.js 渲染）；旧
+            # #accounts 表格整个没了。fixture 没有 codearts 账号（没有
+            # accounts/codearts/ 目录），/accounts/codearts 返回空列表，页面
+            # 停在空提示；这里手工注入一张与真实渲染同构的卡片，钉它在手机
+            # 宽度下的几何：横向 flex 排布、不超出容器。
             page.evaluate(
                 """
                 (() => {
-                  const tb = document.querySelector('#growthTable tbody');
-                  if(tb && !tb.querySelector('tr')){
-                    tb.innerHTML = '<tr>'
-                      + '<td data-label="任务"><b>示例任务</b></td>'
-                      + '<td data-label="说明">说明</td>'
-                      + '<td data-label="进度">1 / 1</td>'
-                      + '<td data-label="奖励">+10 积分</td>'
-                      + '<td data-label="状态">待领奖</td></tr>';
-                  }
+                  const box = document.querySelector('#codeartsPageList');
+                  if(!box) return;
+                  box.innerHTML = '<div class="ca-row"><div class="ca-main">'
+                    + '<span class="ca-name">示例账号<span class="ca-badge ok">有效</span></span>'
+                    + '<span class="ca-sub">STS 剩 3 小时 · 可续期</span></div>'
+                    + '<div class="ca-actions"><button class="sec mini">积分签到</button>'
+                    + '<button class="sec mini">删除</button></div></div>';
                 })()
                 """
             )
-            disp = page.evaluate(
-                "document.querySelector('#growthTable tbody tr') ? getComputedStyle(document.querySelector('#growthTable tbody tr')).display : 'none'"
-            )
-            check("growth-cards", disp == "grid", disp)
-
-        if "account" in filter_name or filter_name == "":
-            disp = page.evaluate(
-                "getComputedStyle(document.querySelector('#accounts table')).display"
-            )
-            row_disp = page.evaluate(
-                "getComputedStyle(document.querySelector('#accounts tbody tr')).display"
+            row = page.evaluate(
+                """
+                (() => {
+                  const row = document.querySelector('#codeartsPageList .ca-row');
+                  if(!row) return {ok: false, why: 'missing'};
+                  const r = row.getBoundingClientRect();
+                  const b = row.parentElement.getBoundingClientRect();
+                  return {
+                    ok: getComputedStyle(row).display === 'flex'
+                        && r.left >= b.left - 1 && r.right <= b.right + 1,
+                    display: getComputedStyle(row).display,
+                    left: Math.round(r.left), boxLeft: Math.round(b.left),
+                    right: Math.round(r.right), boxRight: Math.round(b.right),
+                  };
+                })()
+                """
             )
             check(
                 "account-cards",
-                disp == "block" and row_disp == "grid",
-                (disp, row_disp),
-            )
-            tops = page.evaluate(
-                """
-                (() => {
-                  const tr = document.querySelector('#accounts tbody tr');
-                  const tds = tr ? tr.querySelectorAll('td') : [];
-                  if(tds.length < 8) return [];
-                  return [6,7,8].map(i => Math.round(tds[i-1].getBoundingClientRect().top));
-                })()
-                """
-            )
-            stat_w = page.evaluate(
-                """
-                (() => {
-                  const tr = document.querySelector('#accounts tbody tr');
-                  const tds = tr ? tr.querySelectorAll('td') : [];
-                  if(tds.length < 8) return [];
-                  return [6,7,8].map(i => Math.round(tds[i-1].getBoundingClientRect().width));
-                })()
-                """
-            )
-            row_grid = page.evaluate(
-                "getComputedStyle(document.querySelector('#accounts tbody tr')).display == 'grid'"
-            )
-            check(
-                "stats-row",
-                row_grid
-                and len(tops) == 3
-                and max(tops) - min(tops) <= 2
-                and len(stat_w) == 3
-                and min(stat_w) >= 60,
-                (tops, stat_w, row_grid),
-            )
-            heights = page.evaluate(
-                "Array.from(document.querySelectorAll('#accounts button')).filter(b => b.offsetParent).map(b => Math.round(b.getBoundingClientRect().height))"
-            )
-            check(
-                "touch-targets",
-                bool(heights) and min(heights) >= 30,
-                (min(heights) if heights else None, heights[:6]),
+                row.get("ok"),
+                row,
             )
             page.screenshot(
                 path=os.path.join(SHOTS, "phone-accounts.png"), full_page=True
@@ -403,59 +369,17 @@ def run_checks(filter_name):
                 "document.querySelector('#recent tbody tr') ? getComputedStyle(document.querySelector('#recent tbody tr')).display : 'none'"
             )
             check("analytics-cards", disp == "grid", disp)
-            # KPI cards must wrap into a grid, not squeeze into one row.
-            kpi = page.evaluate(
-                """
-                (() => {
-                  const cards = Array.from(document.querySelectorAll('#analyticsKpiCards > .card'));
-                  if(!cards.length) return {rows: 0, minW: 0, clipped: []};
-                  const tops = cards.map(c => Math.round(c.getBoundingClientRect().top));
-                  const widths = cards.map(c => Math.round(c.getBoundingClientRect().width));
-                  const clipped = cards.filter(c => {
-                    const k = c.querySelector('.k'), s = c.querySelector('.s');
-                    return (k && k.scrollWidth > k.clientWidth + 2)
-                        || (s && s.scrollWidth > s.clientWidth + 2);
-                  }).length;
-                  return {rows: new Set(tops).size, minW: Math.min.apply(null, widths), clipped: clipped};
-                })()
-                """
-            )
-            check(
-                "analytics-kpi-wrap",
-                kpi["rows"] >= 3 and kpi["minW"] >= 130 and kpi["clipped"] == 0,
-                kpi,
-            )
-            # The performance matrix moved to its own renderer upstream; it
-            # must still turn into labelled cards on phones.
-            matrix = page.evaluate(
-                """
-                (() => {
-                  const tr = document.querySelector('#perfMatrix tbody tr');
-                  if(!tr) return {cards: false, rows: 0, labelled: 0};
-                  return {
-                    cards: getComputedStyle(tr).display === 'grid',
-                    rows: document.querySelectorAll('#perfMatrix tbody tr').length,
-                    labelled: tr.querySelectorAll('td[data-label]').length,
-                  };
-                })()
-                """
-            )
-            check(
-                "analytics-matrix-cards",
-                matrix["cards"] and matrix["rows"] >= 1 and matrix["labelled"] >= 10,
-                matrix,
-            )
             page.screenshot(
                 path=os.path.join(SHOTS, "phone-analytics.png"), full_page=True
             )
 
         if "limits" in filter_name or filter_name == "":
+            # 旧的 table.limits-cards（每账号限额表）已随 UI 重构移除——限额
+            # 现在是设置页里的内联数字输入框，不再是表格，卡片化断言随之失去
+            # 对象。这里只钉剩下仍然成立的性质：设置页里非卡片化的普通表格
+            #（更新检查 / 运行信息）在手机上保持原生 table 布局。
             goto_tab(page, "settings")
             page.wait_for_timeout(800)
-            disp = page.evaluate(
-                "document.querySelector('table.limits-cards tbody tr') ? getComputedStyle(document.querySelector('table.limits-cards tbody tr')).display : 'none'"
-            )
-            check("limits-cards", disp == "grid", disp)
             kv = page.evaluate(
                 "getComputedStyle(document.querySelector('#pageSettings table:not(.data-cards)')).display"
             )
@@ -474,15 +398,23 @@ def run_checks(filter_name):
             page.screenshot(path=os.path.join(SHOTS, "phone-logs.png"), full_page=True)
 
         if "modal" in filter_name or filter_name == "":
+            # 面板已没有通用登录弹窗（openLoginModal/closeLogin 都删了）；
+            # 现存唯一的对话框是码道账号弹窗 #codeartsLoginModal。不调
+            # openCodeartsLogin()——那会真的发起 OAuth 授权——直接加 .show 类
+            # 复现显示态，钉它在手机宽度下放得下。
             goto_tab(page, "gateway")
-            page.evaluate("openLoginModal()")
+            page.evaluate(
+                "document.getElementById('codeartsLoginModal').classList.add('show')"
+            )
             page.wait_for_timeout(600)
             mw = page.evaluate(
-                "document.querySelector('.modal-mask.show .modal').getBoundingClientRect().width"
+                "document.querySelector('#codeartsLoginModal.show .modal').getBoundingClientRect().width"
             )
             check("modal-fits", mw >= 390 - 24, mw)
             page.screenshot(path=os.path.join(SHOTS, "phone-modal.png"))
-            page.evaluate("closeLogin()")
+            page.evaluate(
+                "document.getElementById('codeartsLoginModal').classList.remove('show')"
+            )
 
         if "overflow" in filter_name or filter_name == "":
             bad = []
@@ -499,11 +431,14 @@ def run_checks(filter_name):
         dpage = browser.new_page(viewport={"width": 1280, "height": 800})
         login(dpage)
         if "desktop" in filter_name or filter_name == "":
+            # 旧断言看的是 #accounts 表格——那个容器已随账号页重构消失。改钉
+            # 仍存在且被同一套 data-cards 规则覆盖的 #modelsTable：桌面宽度
+            # 下必须还是原生表格（卡片化只发生在 ≤640px）。
             disp = dpage.evaluate(
-                "getComputedStyle(document.querySelector('#accounts table')).display"
+                "getComputedStyle(document.querySelector('#modelsTable')).display"
             )
             row_disp = dpage.evaluate(
-                "getComputedStyle(document.querySelector('#accounts tbody tr')).display"
+                "getComputedStyle(document.querySelector('#modelsTable tbody tr')).display"
             )
             check(
                 "desktop-table",

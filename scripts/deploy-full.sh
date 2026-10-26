@@ -13,7 +13,7 @@
 #
 # 保留在服务器上的运行时数据（搬运白名单，改这里）：
 #   accounts/ usage/ logs/ catalog/ _archive*/ quick-deploy.sh release/
-#   restart-codearts-hub.* start-codearts-hub-lan.bat find_err.js
+#   restart-codearts-hub.* start-codearts-hub-lan.bat
 set -euo pipefail
 
 DEST="${WB_DEPLOY_DEST:-ubuntu@155.248.163.15}"
@@ -39,7 +39,7 @@ if [ -d "$DIR" ]; then
   KEEP=""
   for item in accounts usage logs catalog quick-deploy.sh release \
               restart-codearts-hub.bat restart-codearts-hub.command \
-              restart-codearts-hub.sh start-codearts-hub-lan.bat find_err.js; do
+              restart-codearts-hub.sh start-codearts-hub-lan.bat; do
     [ -e "$DIR/$item" ] && KEEP="$KEEP $item"
   done
   for item in "$DIR"/_archive-*; do
