@@ -1,5 +1,30 @@
 ## Unreleased
 
+**2026-10-27：逆向官方客户端，图片能力改用 AgentCenter 真值**
+
+- **图片能力真值来源改为 AgentCenter，与官方客户端同源**。逆向本机 CodeArts Agent（`vscode-codebot/out/extension.js` 10.5 MB + `agentkernelServer` 173 MB）确认三件事：
+  1. 客户端**没有任何硬编码的模型能力表** —— 搜 `glm-5.3` / `deepseek-v4.1-flash` / `Qwen3-VL` / `kimi-k2.6-vl` / `openpangu` 全部命中 0，模型清单与能力全靠接口下发。
+  2. 判「能不能读图」的唯一依据是 AgentCenter 的 `gpts.models[].model_parameters.supports_images`（`TransferModel` / `SetMultimodalModels` 都只读这一个字段，结果写进 kernel 的 `multimodalModels` 配置）。`/v1/model/builtin` **不在读图判定链路上**，它只供设置页列模型。
+  3. kernel 里有一张**硬编码的多模态兜底清单**：`multimodalModels` 为空时自行认定 `["Qwen3.6-27B-VL", "Qwen3.5-397B-A17B-VL", "Qwen3-VL-235B"]` 能读图，并给 VLM 调用写死 `limit: {context: 32768, output: 8192}`；OMO 配置里 `multimodal-looker` 也写死成 `inferhub-provider/Qwen3.6-27B-VL`。这些是客户端侧的兜底，与我们无关，但排障时别误当成上游能力。
+
+  网关原先只查 builtin 清单，等于放弃了一条与官方同源、且随 `refresh_model_limits` 每小时刷新的真值。现在 `refresh_model_limits()` 顺手收下 `supports_images` 进 `_MODEL_VISION`（只认真正的布尔值，缺失/字符串一律不填，避免把「没问到」写成 False），`_codearts_vision_capable()` 与 `/v1/models` 都优先查它，查不到才退回 builtin —— 两个出口报同一个答案，不会再出现「面板说能读图、请求被本地拦下」的自相矛盾。
+
+- **上游 406 反向校准能力表（单向）**：`_note_vision_rejection()` 挂到三个失败出口（非 2xx、流内错误帧、deferred），上游真的回 `InferHub.001001020.406` 就把该模型记成不可读图。只降不升 —— 这个信号来自真打真回，比任何清单都硬；「清单说能、实际不能」的坑已经踩过（glm-5.3-flash，issue #315），不让它靠可疑清单自我恢复。
+
+- **实测 9 个模型的真实读图能力**（2026-10-27，直连上游 `CHAT_PATH`，每轮规范登记 busy/idle 会话名额，发 64×64 纯红 PNG，与纯文本请求对照）：
+
+  | 模型 | 纯文本 | 带图 |
+  |---|---|---|
+  | Qwen3-VL-235B | 正常 | **「红色」** |
+  | kimi-k2.6-vl | 正常 | **「红色」** |
+  | deepseek-v4.1-flash | 正常 | `InferHub.001001020.406 not multimodal` |
+  | glm-5.3 / GLM-5.2 / kimi-k3 | 正常 | 同上 406 |
+  | openpangu-2.0-pro / -flash / glm-5.2-sft-harmony | 正常 | 同上 406 |
+
+  即：码道上只有 Qwen3-VL-235B 与 kimi-k2.6-vl 能读图，其余 7 个一律纯文本。这也为之前的判断画上句号 —— `deepseek-v4.1-flash` 在 CodeArts 上**确实不能读图**（网上说的多模态是模型本身的能力，不是这条通道开放的能力）。AgentCenter 与 builtin 两个来源在这 9 个模型上结论完全一致。
+
+- 新增 12 项断言（`tests/_test_stream_retry.py`）：真值优先于清单、表里没有时回退、406 单向降级、无关错误不改表、`refresh_model_limits` 确实收 `supports_images` 且只认布尔值。既有预检测试段现在会先清空真值表（测的是清单回退那条路），`finally` 里还原。
+
 **2026-10-26：图片能力预检取代模型熔断、账号页签删除、估算与面板修复**
 
 - **模型熔断降级链整体移除，改成请求前图片能力预检**：上游对纯文本模型收图返回 `InferHub.001001020.406 not multimodal`，这条 400 以流内错误帧到达，被 `_health_counts_failure` 在判状态码之前就算成「模型硬失败」——连续 3 次后整个模型被标down，降级链把请求轮换到另一个同样不看图的模型上，于是整条链表现出「全部不可用」。链路本身没有坏（实测 deepseek-v4.1-flash 此前连续 16 次成功，只有那一次带图请求失败）。现在删掉 `note_model_result` / `_model_blocked` / `model_health` / `_apply_model_fallback` 与两个 breaker 环境变量、`/v1/models` 的 `health` 字段、面板降级链 UI 与 `model_fallback_enabled` / `model_fallbacks` 设置键；改为三个协议入口在发请求前查 `/v1/model/builtin` 的 `supports_images`，只对带图的请求在本地直接 400，文案不提具体模型名（「当前模型不支持视觉功能（not multimodal），请去掉图片或换一个支持读图的模型」）。本地预检拒绝也走 `record_error`，统计里看得见。`tests/_test_stream_retry.py` 的熔断段改成「已移除」断言 + 预检断言。

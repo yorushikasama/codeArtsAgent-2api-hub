@@ -1242,6 +1242,10 @@ _IMG_MSGS = [{"role": "user", "content": [
     {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}]}]
 _TXT_MSGS = [{"role": "user", "content": "纯文本"}]
 _orig_catalog = P.codearts_catalog
+_orig_vision_table = dict(P.ca_codearts._MODEL_VISION)
+# 预检现在优先查 AgentCenter 真值表；本段要测的是「清单回退」这条路，
+# 所以先把真值表清空，测完在 finally 里还原（模块级状态，不还原会串到后面）。
+P.ca_codearts._MODEL_VISION.clear()
 try:
     P.codearts_catalog = lambda force=False: {"models": [
         {"id": "deepseek-v4.1-flash", "supportsImages": False,
@@ -1289,6 +1293,63 @@ try:
               _src.count("record_error(") == 2, _src.count("record_error("))
 finally:
     P.codearts_catalog = _orig_catalog
+    P.ca_codearts._MODEL_VISION.clear()
+    P.ca_codearts._MODEL_VISION.update(_orig_vision_table)
+
+# ---- AgentCenter 真值优先于 builtin 清单（2026-10-27 逆向 + 线上实测）----
+# 官方客户端判「能不能读图」只读 model_parameters.supports_images，不看
+# /v1/model/builtin —— 那份清单只供设置页列模型。网关原先只查 builtin，
+# 等于放弃了一条与官方同源、而且每小时都在刷新的真值来源。
+_VISION_TABLE = P.ca_codearts._MODEL_VISION
+_saved = dict(_VISION_TABLE)
+try:
+    _VISION_TABLE.clear()
+    _VISION_TABLE["deepseek-v4.1-flash"] = False
+    _VISION_TABLE["Qwen3-VL-235B"] = True
+    P.codearts_catalog = lambda force=False: {"models": [
+        # 故意与真值表相反：真值表说不能、清单说能（glm-5.3-flash 那种坑）
+        {"id": "deepseek-v4.1-flash", "supportsImages": True,
+         "disabledMultimodal": False},
+        {"id": "Qwen3-VL-235B", "supportsImages": False,
+         "disabledMultimodal": False},
+    ]}
+    check("真值：AgentCenter 说不能读图时压过清单的「能」",
+          P._codearts_vision_capable("deepseek-v4.1-flash") is False, None)
+    check("真值：AgentCenter 说能读图时压过清单的「不能」",
+          P._codearts_vision_capable("Qwen3-VL-235B") is True, None)
+    check("真值：表里没有的模型退回清单",
+          P._codearts_vision_capable("never-heard-of-it") is None, None)
+    # 上游真报 406 之后，这个模型被记成不可读图（单向：只降不升）
+    P.ca_codearts._MODEL_VISION["Qwen3-VL-235B"] = True
+    P._note_vision_rejection("Qwen3-VL-235B", "InferHub.001001020.406",
+                             "The request model is not multimodal")
+    check("真值：上游 406 把「能读图」单向降级为不能",
+          P.ca_codearts.model_vision_truth("Qwen3-VL-235B") is False, None)
+    P._note_vision_rejection("Qwen3-VL-235B", "", "irrelevant error")
+    check("真值：无关错误不改写能力表",
+          P.ca_codearts.model_vision_truth("Qwen3-VL-235B") is False, None)
+    # 反向永不发生：已经是 False 的模型不会被任何路径改成 True
+    P._note_vision_rejection("deepseek-v4.1-flash", "001001020", "not multimodal")
+    check("真值：406 只降不升（False 保持 False）",
+          P.ca_codearts.model_vision_truth("deepseek-v4.1-flash") is False, None)
+    check("真值：未知模型遇到 406 记成不能",
+          (P._note_vision_rejection("mystery-model", "001001020", "not multimodal"),
+           P.ca_codearts.model_vision_truth("mystery-model"))[1] is False, None)
+finally:
+    _VISION_TABLE.clear()
+    _VISION_TABLE.update(_saved)
+
+# ---- refresh_model_limits 必须真正收 supports_images ----
+# 逆向确认这个字段就在 gpts.models[].model_parameters 里，和 input_length /
+# max_tokens 同一层；以前只取后两个，把能力标签整条丢掉了。
+import inspect as _inspect2
+_rl_src = _inspect2.getsource(P.ca_codearts.refresh_model_limits)
+check("刷新：从 AgentCenter 收 supports_images",
+      'supports_images' in _rl_src, None)
+check("刷新：只收真正的布尔值（不把缺失/字符串当 False）",
+      "isinstance(raw_vision, bool)" in _rl_src, None)
+check("刷新：能力与限值分开计数（vision 单独统计）",
+      "vision += 1" in _rl_src and "fresh += 1" in _rl_src, None)
 
 # 设置面：降级链两个键已从默认表消失，老 settings.json 里的残留值不报错
 import ca_settings as SET

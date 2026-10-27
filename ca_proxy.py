@@ -4353,12 +4353,31 @@ def _codearts_response_format_error(payload):
 
 
 def _codearts_vision_capable(model):
-    """该模型是否支持图片输入；查不到就返回 None（不拦）。"""
+    """该模型是否支持图片输入；查不到就返回 None（不拦）。
+
+    两个来源，按可信度排：
+
+      1. ``AgentCenter`` 的 ``model_parameters.supports_images``（见
+         ``ca_codearts.model_vision_truth``）。官方客户端判「能不能读图」用的
+         就是这一个字段，我们从 ``refresh_model_limits`` 那条已有的每小时刷新
+         里顺手收下，所以它跟官方同源、也比 builtin 清单跟新得快。
+      2. ``/v1/model/builtin`` 的 ``supportsImages``。AgentCenter 没覆盖到的
+         模型（还没刷到、或不在那个 agent 的清单里）退回这里。
+
+    两者都没有就返回 None —— 交给上游去判，不误伤可能是视觉模型的新模型。
+    线上实测（2026-10-27 直连上游逐模型发图）两个来源在 9 个模型上结论一致。
+    """
+    wanted = ca_codearts.resolve_model(str(model or "")) or str(model or "")
+    try:
+        truth = ca_codearts.model_vision_truth(wanted)
+    except Exception:
+        truth = None
+    if truth is not None:
+        return truth
     try:
         catalog = codearts_catalog()
     except Exception:
         return None
-    wanted = ca_codearts.resolve_model(str(model or "")) or str(model or "")
     for item in catalog.get("models") or []:
         if not isinstance(item, dict):
             continue
@@ -4389,6 +4408,24 @@ def _payload_has_image(messages):
                 if "image_url" in part:
                     return True
     return False
+
+
+def _note_vision_rejection(model, code, detail):
+    """上游报了 not multimodal 就把这个模型记成不可读图（单向）。
+
+    预检靠的是 manifest（AgentCenter / builtin 清单）里报的能力；万一某次清单
+    说能、上游实际不能（glm-5.3-flash 就是这种：元数据宣告多模态，实际通道没
+    接视觉），这次真打出来的 406 就是最硬的证据 —— 记下来，下一次同样的请求
+    在本地就被拦住，不用再白占一个会话名额、也不用等清单刷新。
+    """
+    text = ("%s %s" % (code or "", detail or "")).lower()
+    if "001001020" not in text and "not multimodal" not in text:
+        return
+    try:
+        ca_codearts.note_vision_rejected(
+            ca_codearts.resolve_model(str(model or "")) or str(model or ""))
+    except Exception:                      # noqa: BLE001 —— 只是记账，不能影响回包
+        pass
 
 
 def _codearts_vision_error(model, messages):
@@ -5062,6 +5099,14 @@ def model_entry(mid, meta):
     # ---- modality / capability ----
     # disabledMultimodal explicitly turns image input off; absent means allowed.
     vision = bool(meta.get("supportsImages")) and not meta.get("disabledMultimodal")
+    # AgentCenter 的真值优先（与 _codearts_vision_capable 同一口径，两个出口
+    # 报同一个答案；否则会出现「面板说能读图、请求被本地拦下」的自相矛盾）。
+    try:
+        truth = ca_codearts.model_vision_truth(mid)
+    except Exception:
+        truth = None
+    if truth is not None:
+        vision = truth
     if mid == "glm-5.3-flash":
         # 强制修正：上游元数据虽宣告支持多模态，但后端实际未接入视觉通道（见 issue #315）
         vision = False
@@ -9200,6 +9245,7 @@ class Handler(BaseHTTPRequestHandler):
             # 下次才能区分「上下文太长 / max_tokens 越界 / 图片给了非多模态」。
             log("codearts request shape on failure: model=%s %s"
                 % (model, _codearts_request_shape(payload, messages, max_tokens)))
+            _note_vision_rejection(model, code, detail)
             record_error(model, st, ("%s %s" % (code, detail))[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=account_label, key=self._key_id())
@@ -9222,6 +9268,7 @@ class Handler(BaseHTTPRequestHandler):
             log("codearts stream finished with an error frame after %d chars: "
                 "model=%s %s" % (len(content) + len(reasoning), model,
                                  frame_err[:160]))
+            _note_vision_rejection(model, "", frame_err)
             record_error(model, _st, frame_err[:200],
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          account=account_label, usage=usage, stream=want_stream,
@@ -9486,6 +9533,7 @@ class Handler(BaseHTTPRequestHandler):
         # usage.jsonl 记 502、客户端收 504，同一个失败两个答案。
         st, _et = ca_stream.fail_spec(status, code, detail, anthropic)
         dump_failed_request(payload, messages, max_tokens)
+        _note_vision_rejection(model, code, detail)
         record_error(model, st, ("%s %s" % (code, detail))[:200],
                      elapsed_ms=elapsed_ms, account=account_label,
                      key=self._key_id())

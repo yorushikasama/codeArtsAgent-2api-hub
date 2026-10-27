@@ -1456,6 +1456,51 @@ _MODEL_LIMITS_REFRESHED_AT = [0.0]
 #: 再 fallback 的」——这份元数据随 refresh_model_limits 一起刷。
 _MODEL_META = {}
 
+#: 图片能力真值：``model_id -> bool``，来自 AgentCenter
+#: ``gpts.models[].model_parameters.supports_images``。
+#:
+#: 为什么要单独一张表（2026-10-27 逆向本地客户端得到）：官方 kernel 判定
+#: 「这个模型能不能读图」用的就是这个字段 —— ``TransferModel`` /
+#: ``SetMultimodalModels`` 都只读 ``model_parameters.supports_images``，再把
+#: 结果写进 kernel 的 ``multimodalModels`` 配置。``/v1/model/builtin`` 那份
+#: 清单**不在这条链路上**，它只供设置页列模型用。
+#:
+#: 两个来源在线上实测一致（2026-10-27 直连上游逐模型发 64×64 PNG：只有
+#: Qwen3-VL-235B / kimi-k2.6-vl 回「红色」，其余 7 个一律
+#: ``InferHub.001001020.406 not multimodal``），但 AgentCenter 是官方客户端
+#: 同源、且随 ``refresh_model_limits`` 每小时跟新，上游上新模型时不必等我们
+#: 改代码；builtin 清单则受 builtin 自身的缓存与 ``routable`` 过滤影响。
+#: 表里**没有**的模型表示「还没问到」，调用方不能当成 False。
+_MODEL_VISION = {}
+
+
+def model_vision_truth(model_id):
+    """AgentCenter 报的图片能力：True / False；没问到返回 None。
+
+    只认明确的布尔值：上游把字段给成 ``"true"`` 字符串或干脆不给我们都不猜，
+    交给调用方回退到 builtin 清单再判断。
+    """
+    value = _MODEL_VISION.get(str(model_id or ""))
+    return value if isinstance(value, bool) else None
+
+
+def note_vision_rejected(model_id):
+    """上游明确说了 not multimodal：把这个模型记成不可读图。
+
+    **单向**：只把 True 改成 False，绝不反过来把 False 改成 True。理由是这个
+    信号来自真打真回的错误帧（``InferHub.001001020.406``），比任何清单都硬；
+    而反过来「某个清单说能，实际不能」的坑已经踩过（glm-5.3-flash，issue
+    #315），不能让它靠一份可疑清单自我恢复。
+    """
+    mid = str(model_id or "").strip()
+    if not mid:
+        return
+    if _MODEL_VISION.get(mid) is True:
+        _MODEL_VISION[mid] = False
+        _qlog("vision truth corrected by upstream 406: %s -> False" % mid)
+    else:
+        _MODEL_VISION.setdefault(mid, False)
+
 
 def model_truth_meta(model_id):
     """模型的官方选模元数据（tags/scenario）；没拉到返回空 dict。"""
@@ -1490,9 +1535,19 @@ def refresh_model_limits(access_key, secret_key, security_token,
                                            timeout=timeout) or {}
         models = ((detail.get("gpts") or {}).get("models")) or []
         fresh = 0
+        vision = 0
         for item in models:
             mp = (item or {}).get("model_parameters") or {}
             mid = str(mp.get("model_id") or "").strip()
+            # 图片能力与限值分两条独立的路更新：一个模型只补齐了
+            # supports_images 但没给 input_length 时，视觉预检也该立刻受益。
+            # 只收真正的布尔值 —— 上游给字符串或给空，宁可不填（调用方会
+            # 回退到 builtin 清单），也不要把「没问到」写成 False。
+            if mid:
+                raw_vision = mp.get("supports_images")
+                if isinstance(raw_vision, bool):
+                    _MODEL_VISION[mid] = raw_vision
+                    vision += 1
             try:
                 inp = int(mp.get("input_length") or 0)
                 out = int(mp.get("max_tokens") or 0)
@@ -1507,13 +1562,14 @@ def refresh_model_limits(access_key, secret_key, security_token,
             if mid and inp > 0 and out > 0:
                 BUILTIN_MODEL_LIMITS[mid] = (inp, out)
                 fresh += 1
-        if fresh:
+        if fresh or vision:
             _MODEL_LIMITS_REFRESHED_AT[0] = now
             # resolve_model 的大小写索引是模块级缓存，表变了不重建的话，
             # 新收录的模型永远走不到归一（查表/钳制全部 miss）。
             global _MODEL_INDEX
             _MODEL_INDEX = None
-            _qlog("model limits refreshed from AgentCenter: %d models" % fresh)
+            _qlog("model limits refreshed from AgentCenter: %d models, "
+                  "%d vision flags" % (fresh, vision))
     except Exception:                      # noqa: BLE001 —— 刷新失败保留旧值
         pass
 
