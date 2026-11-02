@@ -63,19 +63,24 @@ def frame_error(piece):
     码道的形状是 ``{"error_code": ..., "error_msg": ...}``；OpenAI 兼容层
     偶尔回 ``{"error": {"code": ..., "message": ...}}``。两种都认，因为它们的
     含义完全一样 —— 这一轮已经废了。
+
+    MESSAGE 过一道 ``_clarify``：有的上游文案会把原因说反（81003 说「模型
+    不存在」，实际是间歇性抖动），照原文透给客户端会让它去改模型名。见
+    ``_CLARIFY``。匹配必须带上 code —— 81003 只出现在 code 里。
     """
     if not isinstance(piece, dict):
         return ""
     code = piece.get("error_code")
     if code:
         msg = piece.get("error_msg") or piece.get("error") or ""
-        return ("%s %s" % (code, msg)).strip()
+        return ("%s %s" % (code, _clarify_msg(code, msg))).strip()
     err = piece.get("error")
     if isinstance(err, dict):
-        return ("%s %s" % (err.get("code") or err.get("type") or "",
-                           err.get("message") or err.get("msg") or "")).strip()
+        sub = err.get("code") or err.get("type") or ""
+        return ("%s %s" % (sub, _clarify_msg(
+            sub, err.get("message") or err.get("msg") or ""))).strip()
     if isinstance(err, str) and err:
-        return err
+        return _clarify_msg("", err)
     return ""
 
 
@@ -558,6 +563,41 @@ def error_detail(text):
                   or (d.get("error") or {}).get("message") or "")
         code = (d.get("error_code")
                 or (d.get("error") or {}).get("code") or "")
-        return str(code), str(detail)
+        return str(code), _clarify_msg(code, detail)
     except Exception:
-        return "", (text or "")[:200]
+        raw = (text or "")[:200]
+        return "", _clarify_msg("", raw)
+
+
+#: 上游文案会**误导客户端判错方向**的几处，统一换成能看懂的说法。
+#:
+#: ``ModelArts.81003.401``：「The model does not exist or you do not have
+#: access to it.」看上去像模型名写错了，实际是上游**间歇性**抖动 —— 2026-11-02
+#: 线上实测：同一个名字在清单里（``/v1/model/builtin`` 有它），直连探测小请求
+#: 多次成功，经网关 stream/非 stream 都能 200；同一时段 glm-5.3 在同一账号上
+#: 一直成功（所以不是账号失效、也不是 STS 过期 —— 那两个报 APIG.0301 /
+#: STS5.1806）。照原文回下去，客户端会把「等一会儿再试就好」读成「这个模型
+#: 不存在」，于是去改模型名（实测改成一个不在服务清单里的名字反而被网关 404
+#: 拒掉）。文案改成如实描述，模型名本身是对的那种情况才不会再被误判。
+#:
+#: 键是**错误码的子串**（小写）。81003 只出现在 code 里、error_msg 原文里没有，
+#: 所以匹配要把 code 一起带上。
+_CLARIFY = {
+    "modelarts.81003":
+        "upstream transient error on this model (the model name is valid and "
+        "is in the catalogue; this is an intermittent fault on the model "
+        "service side) - retry in a moment",
+}
+
+
+def _clarify_msg(code, msg):
+    """按错误码把有误导性的上游文案换成准确说法；没命中原样返回原文。
+
+    只看 ``msg`` 不够：81003 在 code 里。所以这里两个一起匹配。
+    """
+    text = str(msg or "")
+    haystack = ("%s %s" % (code or "", text)).lower()
+    for key, better in _CLARIFY.items():
+        if key in haystack:
+            return better
+    return text

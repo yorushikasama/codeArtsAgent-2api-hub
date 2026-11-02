@@ -1,5 +1,13 @@
 ## Unreleased
 
+**2026-11-02：1806 死账号不再进可用池；81003 文案不再误导**
+
+- **`_usable()` / `codearts_catalog()` 排除已确认续不上的账号**。线上（2026-11-02）`hw025261281007156` 的 STS 已过期 5.9 天、refresh_token 早被外部客户端轮换死（17:28:03 已正确打出 1806 日志并标记 `_STS_DEAD_EXTERNALLY`），可它**照样留在可用池里被挑中**：续期必败，请求带着过期凭证打上游换回 `APIG.0301 Incorrect IAM authentication information`，客户端看到 502。`CODEARTS_AUTH_COOLDOWN` 只有 300 秒，冷却一过又被选中，如此反复。根因是 `_sts_dead_by_external()` 的判定只用在签到、续期本身和面板展示三处，**唯独没用在挑号上** —— 于是「面板说这个号废了、调度还在用它」。现在两处池子筛选都跳过已标记账号；重新登录换出新的 refresh_token 后标记自动解除，账号立即回到池子，不需要重启。新增 3 项断言（`tests/_test_sts_dead_external.py`）：过期但可续期仍进池、1806 已标记的不进池、重登录自愈后立即回池。
+
+- **81003 的报错文案不再说「模型不存在」**。`InferHub.ModelArts.81003.401 The model does not exist or you do not have access to it.` 会把人引向「模型名写错了」，实际是上游**间歇性**抖动：该名字在 `/v1/model/builtin` 清单里，直连探测小请求多次成功，经网关 stream / 非 stream 都能 200；同一时段 `glm-5.3` 在同一账号上一直成功（排除账号失效与 STS 过期 —— 那两个报 `APIG.0301` / `STS5.1806`）。照原文回下去，客户端会把它判成不可重试的「模型不存在」，于是去改模型名（2026-11-02 实测：改成不在服务清单里的 `deepseek-v4.1-flash-1017` 反而被网关 404 拒掉）。现在 `ca_stream.frame_error`（流内错误帧，ZCode 实际走的那条）与 `error_detail`（非流式）都过一道 `_clarify_msg(code, msg)`，按**错误码**匹配后换成「上游瞬时故障、模型名有效、稍后重试」。状态码不变（仍是 502）、**不加重试** —— 只改说法，不动调度。新增 5 项断言（`tests/_test_stream_tail.py`）：两条路径都被改写、错误码保留、406 等其它码原样不动。
+
+  > 两条**刻意没做**的：① 401 后自动换号重试 —— `penalize` 的 300 秒冷却已经让下一轮自然换号，网关再加一层会和客户端自带重试叠成「一次请求吃满 3 个并发名额」；② 把 81003 判成可重试 —— 它常出现在流已吐出内容之后（`after N chars`），重开会把两段回答拼在一起，且这正是当初删掉熔断降级链时踩过的坑（见 2026-10-26 那条）。
+
 **2026-10-27：逆向官方客户端，图片能力改用 AgentCenter 真值**
 
 - **图片能力真值来源改为 AgentCenter，与官方客户端同源**。逆向本机 CodeArts Agent（`vscode-codebot/out/extension.js` 10.5 MB + `agentkernelServer` 173 MB）确认三件事：

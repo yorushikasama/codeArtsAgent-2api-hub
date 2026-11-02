@@ -3104,10 +3104,26 @@ class _CodeartsAccountPool:
 
     @staticmethod
     def _usable():
+        """STS 还能用（或还能续）的账号。
+
+        「过期但 ``renewable``」曾经一律算可用 —— 可续期只是个**声明**
+        （存档里还有 refresh_token），续得上续不上要打了才知道。2026-11-02
+        线上踩到：hw025261 的 STS 已过期 5.9 天、refresh_token 早被轮换死
+        （1806），可它照样留在池子里被挑中，续期必败、请求带着过期凭证打
+        上游换回 ``APIG.0301``，客户端看到的是 502。冷却 300 秒一到又会再
+        被选中，如此反复。
+
+        ``_sts_dead_by_external`` 是**已经确认**续不上的账号（1806 实证），
+        所以这里必须把它排除 —— 以前这个判定只用在签到、续期本身和面板
+        展示上，唯独没用在挑号上，于是「面板说这个号废了、调度还在用它」。
+        重新登录换出新的 refresh_token 后标记自动解除，账号自然回到池子。
+        """
         usable = []
         for sess in ca_codearts.load_sessions(ACCOUNTS_DIR):
             _left, expired, renewable = _codearts_left(sess)
             if not expired or renewable:
+                if _sts_dead_by_external(sess):
+                    continue
                 usable.append(sess)
         return usable
 
@@ -4477,10 +4493,16 @@ def codearts_catalog(force=False):
     # 「可用」= STS 未过期，**或虽然过期但还能续期**。以前只留前者，导致服务
     # 闲置两小时后 /v1/models 里的码道模型整体消失、看板「刷新榜单」也只会
     # 回「没有可用码道账号」—— 明明账号还在、refresh_token 也还有效。
+    #
+    # 也不能把「声明可续期」当成「续得上」：1806 实证续不上的账号（见
+    # ``_sts_dead_by_external``）要在这里排除，否则它是唯一账号时，清单会
+    # 拿一个必然 401 的凭证去拉，/v1/models 于是永远空着而原因写成别的东西。
     usable = []
     for candidate in sessions:
         _, expired, renewable = _codearts_left(candidate)
         if not expired or renewable:
+            if _sts_dead_by_external(candidate):
+                continue
             usable.append(candidate)
     if not usable:
         # 把「为什么空」写进 errors：面板要靠它告诉用户是没账号还是 STS 过期，

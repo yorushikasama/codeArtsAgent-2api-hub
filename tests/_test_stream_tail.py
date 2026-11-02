@@ -95,6 +95,27 @@ check("错误帧：只有 message 的裸 error 对象",
 check("普通帧不算错误", S.frame_error({"choices": [{"delta": {}}]}) == "", None)
 check("坏输入不炸", S.frame_error(None) == "" and S.frame_error("x") == "", None)
 
+# 81003 的上游文案会把原因说反（「模型不存在」）—— 照原文透下去，客户端会去
+# 改模型名（2026-11-02 实测：改成不在服务清单里的名字反而被网关 404 拒掉）。
+_81003 = {"error_code": "InferHub.ModelArts.81003.401",
+          "error_msg": "The model does not exist or you do not have access to it."}
+_frame_81003 = S.frame_error(_81003)
+check("81003 改写成「上游瞬时」而不是「模型不存在」",
+      "does not exist" not in _frame_81003
+      and "transient" in _frame_81003, _frame_81003)
+check("81003 改写后仍保留错误码",
+      _frame_81003.startswith("InferHub.ModelArts.81003.401 "), _frame_81003)
+check("81003 非流式（error_detail）同样改写",
+      "does not exist" not in S.error_detail(json.dumps(_81003))[1],
+      S.error_detail(json.dumps(_81003)))
+check("其它错误码的文案不被改写（406 保持原样）",
+      S.frame_error({"error_code": "InferHub.001001020.406",
+                     "error_msg": "not multimodal"})
+      == "InferHub.001001020.406 not multimodal", None)
+check("没有 81003 的错误不动",
+      S.frame_error({"error_code": "ModelArts.81101", "error_msg": "TPM limit"})
+      == "ModelArts.81101 TPM limit", None)
+
 check("finish_reason=error 算失败",
       S.finish_error({"finish_reason": "error"}) is True, None)
 check("finish_reason=ERROR（大写）也算",

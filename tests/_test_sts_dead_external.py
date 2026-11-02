@@ -96,6 +96,43 @@ class DeadExternalTests(unittest.TestCase):
         _reset()
         self.assertFalse(P._sts_dead_by_external(SESS))
 
+    def _usable_with(self, *sessions):
+        with mock.patch.object(ca_codearts, "load_sessions",
+                               return_value=list(sessions)):
+            return P._CODEARTS_POOL._usable()
+
+    def test_usable_keeps_expired_but_renewable_account(self):
+        # 过期但续得上：照旧进池（闲置两小时不能把模型清单打成空）。
+        live = dict(SESS, expires_at="2020-01-01T00:00:00.000Z")
+        with mock.patch.object(ca_codearts, "summarize",
+                               return_value={"sts_expired": True,
+                                             "renewable": True,
+                                             "sts_remaining_seconds": -10}):
+            self.assertEqual(self._usable_with(live), [live])
+
+    def test_usable_drops_dead_external_account(self):
+        # 1806 确认续不上的号不能留在池子里：否则每轮挑号都可能选中它，
+        # 续期必败、请求带过期凭证打上游换回 APIG.0301（2026-11-02 线上：
+        # hw025261 过期 5.9 天仍被选中，冷却 300 秒一到又循环）。
+        dead = dict(SESS, expires_at="2020-01-01T00:00:00.000Z")
+        P._STS_DEAD_EXTERNALLY["acct-1"] = PREFIX
+        with mock.patch.object(ca_codearts, "summarize",
+                               return_value={"sts_expired": True,
+                                             "renewable": True,
+                                             "sts_remaining_seconds": -10}):
+            self.assertEqual(self._usable_with(dead), [])
+
+    def test_usable_returns_account_after_relogin(self):
+        # 重新登录换出新 token 链 → 标记自愈 → 立即回到池子，不需要重启。
+        healed = dict(SESS, expires_at="2020-01-01T00:00:00.000Z",
+                      refresh_token="RT-CHAIN-B-999999999999")
+        P._STS_DEAD_EXTERNALLY["acct-1"] = PREFIX
+        with mock.patch.object(ca_codearts, "summarize",
+                               return_value={"sts_expired": True,
+                                             "renewable": True,
+                                             "sts_remaining_seconds": -10}):
+            self.assertEqual(self._usable_with(healed), [healed])
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
