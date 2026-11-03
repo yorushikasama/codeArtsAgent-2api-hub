@@ -250,7 +250,8 @@ def restart():
     P._usage_cache_progress.clear()
     P._usage_cache_checkpointed.clear()
     P._usage_cache_last_attempt = time.time()
-    P._realm_disk_cache.update({"key": None, "map": None})
+    # _realm_disk_cache 已随 WorkBuddy 代码本体（77af496）一起删除：它的使用方
+    # 在那次重构里没了，变量成了孤儿。这里原本的重置是空操作，去掉。
 
 
 def cache_files():

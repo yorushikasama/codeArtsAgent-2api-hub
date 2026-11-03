@@ -580,6 +580,18 @@ def summarize(session, now=None):
 # CodeAgent3.0、tracing 层名 Kernel），照抄以免被网关按客户端特征拦。
 GATEWAY_USER_AGENT = "CodeAgent3.0-Kernel"
 
+#: 冒充的官方客户端版本。**一处定义、多处引用** —— 以前 chat_headers 里写
+#: 26.10.1、两处 AgentCenter 头写 26.10.0，同一份代码里三个值，谁也不知道
+#: 该跟哪个。
+#:
+#: 2026-11-03 逆向本机 ``CodeArts Agent 26.10.100`` 得到的真值：版本号来自
+#: 扩展 package.json 的 ``version``（`Br()` 读的就是它），请求头里
+#: ``plugin-version`` / ``ide-version`` 都取这个值。
+#:
+#: 这些头是**纯身份元数据**，上游不据它鉴权（实测改成别的值照样 200），
+#: 所以升版本不会影响可用性；保持一致只是为让日志/排障对得上真实客户端。
+GATEWAY_CLIENT_VERSION = "26.10.100"
+
 
 def _local_client_ip():
     """本机 IP（client-ip 头用，官方传的是局域网 IP，纯遥测）。
@@ -703,9 +715,21 @@ CHAT_PATH = CHAT_BASE + "chat/completions"
 #: 可推理模型（逐个实测过）。**只收内置目录里的**：限时福利渠道已由官方
 #: 下线（2026-10-23 实测 opengw /api/v1/gateway/config 回
 #: ``[4000] invalid channel, group not found``），原来那 4 个福利模型里
-#: ``deepseek-v4-flash-0731`` / ``glm-5.3-flash`` / ``deepseek-v4-pro-0813``
-#: 两条通道都打不通（不带 maas_type 是 002002009 未注册，带上就是 4004.200），
-#: 已从名单移除；``deepseek-v4.1-flash`` 上游已内置化，照常保留。
+#: ``deepseek-v4-flash-0731`` / ``deepseek-v4-pro-0813`` 两条通道都打不通
+#: （不带 maas_type 是 002002009 未注册，带上就是 4004.200），已从名单移除；
+#: ``deepseek-v4.1-flash`` 上游已内置化，照常保留。
+#:
+#: ``glm-5.3-flash`` 曾被一并移除，但那是**福利通道**的结论。2026-11-03 复查：
+#: 它已经进了内置目录（``/v1/model/builtin`` 里 ``enable=true``），直连推理
+#: 入口实测 200 正常出字 —— 所以现在由 ``refresh_model_limits`` 自动收录，
+#: 不需要在这张种子表里重复列一遍。这也说明「某个名字打不通」的结论有时效：
+#: 通道会变，模型会内置化，判断要跟上游目录走。
+#:
+#: **这张表不再是唯一来源** —— 它是一个「已知 + 实测过」的种子表，
+#: ``refresh_model_limits`` 每小时把上游目录里 ``enable=true`` 的模型并进
+#: ``_EXTRA_MODELS``（见 ``known_models``）。上游 2026-11 之后上新的
+#: ``glm-5.3-flash`` / ``kimi-k3.1-pro`` / ``deepseek-v4.1-flash-1017``
+#: 就都是这么进来的，不用再改代码。
 CHAT_MODELS = ("deepseek-v4.1-flash",
                "glm-5.3",
                "GLM-5.2", "Qwen3-VL-235B", "kimi-k2.6-vl",
@@ -714,9 +738,44 @@ CHAT_MODELS = ("deepseek-v4.1-flash",
                # 2026-10-23 补：上游内置目录新出现，且 `display_enabled=true`
                # （官方 IDE 的模型选择器里能看到）。实测推理入口 200 正常出字。
                # 不加这一条的后果很隐蔽 —— 清单里没有它，请求会被判成「不是
-               # 码道模型」掉进 WorkBuddy 池，只配了码道账号的部署回
-               # 503 no usable account，报错和模型名毫无关系。
+               # 码道模型」而落到 404「model is not served by this gateway」，
+               # 报错和「模型名写错了」长得一模一样，没人猜得到是网关没收录。
                "kimi-k3")
+
+
+#: 上游目录里 ``enable=true`` 的模型，由 ``refresh_model_limits`` 自动并入。
+#:
+#: 为什么需要（2026-11-03 实测）：``refresh_model_limits`` 的注释一直写着
+#: 「上游哪天上新模型，网关不用等手表更新」，可它**只写 ``BUILTIN_MODEL_LIMITS``
+#: （限值），从不写这张白名单** —— 于是新模型的 max_tokens 能自动更新、能不能
+#: 用却永远卡在 ``CHAT_MODELS``。上游清单里明明有 ``glm-5.3-flash`` /
+#: ``kimi-k3.1-pro`` / ``deepseek-v4.1-flash-1017``（实测三个都能跑通），
+#: 网关却判 ``is_codearts_model=False``，请求于是落到 ``_dispatch_chat_post``
+#: 末尾的 404 分支（``model '...' is not served by this gateway``）——
+#: 报错读起来就是「模型名不对」，没人猜得到是网关没收录。
+#:
+#: 只收 ``enable=true``：上游用 ``enable=false`` 标记下架/停用，收进来只会
+#: 得到一个必然失败的模型名。``display_enabled`` **不作为条件** ——
+#: ``Qwen3-VL-235B`` / ``kimi-k2.6-vl`` 就是 ``display_enabled=false``
+#: （官方 IDE 不展示，只作 kernel 内部 VLM 兜底），但它们实测能跑，
+#: 是这个网关上唯一能读图的两个模型，不能因为「官方界面不显示」就丢掉。
+_EXTRA_MODELS = set()
+
+#: 自动收录进来的模型名（供面板/日志区分「种子表」与「上游发现」）。
+_EXTRA_MODELS_SEEN = set()
+
+
+def known_models():
+    """当前认得的全部可推理模型名（种子表 + 上游自动收录）。
+
+    ``is_codearts_model`` / ``resolve_model`` / ``/v1/models`` 都走这里，
+    不再直接读 ``CHAT_MODELS`` —— 那会让自动收录形同虚设。
+    """
+    names = list(CHAT_MODELS)
+    for name in sorted(_EXTRA_MODELS):
+        if name not in names:
+            names.append(name)
+    return tuple(names)
 
 
 # ---------------------------------------------------------------------------
@@ -857,12 +916,16 @@ GROUP_BUILTIN = "builtin"
 def _model_index():
     """大小写无关的模型名索引：``lower()`` → 上游真名。
 
-    两张表都收：可推理名单（CHAT_MODELS）、实测上限表。真实名字以先出现的
-    为准 —— 两张表的键本来就一致，``setdefault`` 只是防以后有人只改一张表时
-    把名字改出两个写法。
+    两张表都收：``known_models()``（种子表 + 上游自动收录）、实测上限表。
+    真实名字以先出现的为准 —— ``setdefault`` 只是防以后有人只改一张表时把
+    名字改出两个写法。
+
+    收 ``known_models()`` 而不是 ``CHAT_MODELS``：自动收录进 ``_EXTRA_MODELS``
+    的模型必须同时能被 ``resolve_model`` 归一，否则「认得了」但「大小写对不上
+    / 限值查不到」，等于没收录。
     """
     index = {}
-    for name in CHAT_MODELS:
+    for name in known_models():
         index.setdefault(str(name).lower(), name)
     for table in (BUILTIN_MODEL_LIMITS,):
         for name in table:
@@ -880,10 +943,10 @@ def resolve_model(model_id):
     ``GLM-5.2`` 全大写、``glm-5.3`` 全小写、``Qwen3-VL-235B`` 混合，而客户端
     习惯一律写小写。原样接收会在三个地方同时出错，且**都不报「模型名不对」**：
 
-      1. 分流判错（最严重）：``is_codearts_model("glm-5.2")`` 为假，请求掉进
-         WorkBuddy 账号池；那个池在这个部署里是空的，于是回
-         ``503 no usable account`` —— 一个和模型名毫无关系的
-         报错，用户根本看不出是自己把大写写成了小写。
+      1. 分流判错（最严重）：``is_codearts_model("glm-5.2")`` 为假，请求落到
+         404 分支回 ``model 'glm-5.2' is not served by this gateway`` ——
+         读起来就是「网关不服务这个模型」，用户根本看不出是自己把大写写成了
+         小写。（WorkBuddy 账号池已于 2026-10-23 移除，那条 503 分支没有了。）
       2. ``max_tokens`` 夹不住：``BUILTIN_MODEL_LIMITS`` 查不到 → 客户端发
          128000 原样上去 → ``InferHub.001001005.400``，这条路还会被当成
          不可重试的参数错。
@@ -1321,7 +1384,7 @@ def agent_center_agents(access_key, secret_key, security_token,
         "Agent-Type": "AgentCenter",
         "X-Language": "zh-cn",
         "Content-Type": "application/json",
-        "plugin-version": "26.10.0",
+        "plugin-version": GATEWAY_CLIENT_VERSION,
         "User-Agent": GATEWAY_USER_AGENT,
     }
     if security_token:
@@ -1343,7 +1406,7 @@ def agent_center_agent_detail(access_key, secret_key, security_token,
         "Agent-Type": "AgentCenter",
         "X-Language": "zh-cn",
         "Content-Type": "application/json",
-        "plugin-version": "26.10.0",
+        "plugin-version": GATEWAY_CLIENT_VERSION,
         "User-Agent": GATEWAY_USER_AGENT,
     }
     if security_token:
@@ -1510,25 +1573,71 @@ def model_truth_meta(model_id):
 
 def refresh_model_limits(access_key, secret_key, security_token,
                          timeout=15.0):
-    """从 AgentCenter 拉模型真值并写回 BUILTIN_MODEL_LIMITS（TTL 1h）。
+    """从上游拉模型真值：限值 + 图片能力 + **模型白名单**（TTL 1h）。
+
+    三个来源、各管一段，别混：
+
+      · ``/v1/model/builtin`` → **有哪些模型**（``enable`` / ``display_enabled``
+        / ``supports_images``）。这是收录白名单的唯一依据 —— 它有
+        ``Qwen3-VL-235B`` / ``kimi-k2.6-vl`` 这两个 ``display_enabled=false``
+        的视觉模型，``gpts.models`` 里根本没有。
+      · ``gpts.models[]`` → **限值与元数据**（``input_length`` / ``max_tokens``
+        / ``tags`` / ``scenario``）。上游目录接口不返回这些，只有 AgentCenter
+        的 agent 详情里有。
+      · 两边的 ``supports_images`` 都收，以 builtin 的为准（``gpts`` 那份实际
+        全是 false，会把能读图的模型误标成纯文本）。
 
     挑 agent：名字叫 ``CodeAgent`` 的第一个（官方默认），否则清单第一个。
-    每条 ``model_parameters`` 只要 input_length / max_tokens 都能读出数字
-    就收录 —— 上游哪天上新模型，网关不用等手表更新。
+
+    收录只认 ``enable=true``：``enable=false`` 是上游的停用标记。**不按
+    ``display_enabled`` 过滤** —— 那是「官方界面展不展示」，不是「能不能用」。
     """
     now = time.time()
     if now - _MODEL_LIMITS_REFRESHED_AT[0] < MODEL_LIMITS_TTL:
         return
     try:
+        # ---- 一、白名单：以 builtin 目录为准 ----
+        added = 0
+        try:
+            listing = builtin_models(access_key, secret_key, security_token,
+                                     timeout=timeout) or []
+        except Exception:                  # noqa: BLE001 —— 目录失败不影响限值
+            listing = []
+        already = set(str(n).lower() for n in CHAT_MODELS)
+        for raw in listing:
+            mid = str((raw or {}).get("model_id") or "").strip()
+            if not mid:
+                continue
+            # enable 缺失时按「启用」处理：老版本目录没有这个字段，
+            # 一律当停用会让整份清单失效。只有明确的 false 才算停用。
+            if raw.get("enable") is False:
+                continue
+            raw_vision = raw.get("supports_images")
+            if isinstance(raw_vision, bool):
+                # builtin 的 supports_images 是权威（gpts 那份全是 false）。
+                _MODEL_VISION[mid] = raw_vision
+            if str(mid).lower() in already:
+                continue
+            _EXTRA_MODELS.add(mid)
+            _EXTRA_MODELS_SEEN.add(mid)
+            already.add(str(mid).lower())
+            added += 1
+
+        # ---- 二、限值与元数据：gpts.models[] ----
         agents = agent_center_agents(access_key, secret_key, security_token,
                                      timeout=timeout) or {}
-        listing = agents.get("agents") or []
-        agent_id = next((a.get("agent_id") for a in listing
+        agent_list = agents.get("agents") or []
+        agent_id = next((a.get("agent_id") for a in agent_list
                          if isinstance(a, dict)
                          and str(a.get("agent_name") or "") == "CodeAgent"
                          and a.get("agent_id")),
-                        listing[0].get("agent_id") if listing else None)
+                        agent_list[0].get("agent_id") if agent_list else None)
         if not agent_id:
+            if added:
+                _MODEL_LIMITS_REFRESHED_AT[0] = now
+                _reset_model_index()
+                _qlog("model catalogue: +%d new model(s): %s"
+                      % (added, ", ".join(sorted(_EXTRA_MODELS_SEEN))))
             return
         detail = agent_center_agent_detail(access_key, secret_key,
                                            security_token, agent_id,
@@ -1543,9 +1652,12 @@ def refresh_model_limits(access_key, secret_key, security_token,
             # supports_images 但没给 input_length 时，视觉预检也该立刻受益。
             # 只收真正的布尔值 —— 上游给字符串或给空，宁可不填（调用方会
             # 回退到 builtin 清单），也不要把「没问到」写成 False。
+            #
+            # **已经有权威值就不覆盖**：builtin 说 Qwen3-VL 能读图，gpts 这份
+            # 却给 false，按后到的覆盖会把它降级成纯文本、连带拦掉读图请求。
             if mid:
                 raw_vision = mp.get("supports_images")
-                if isinstance(raw_vision, bool):
+                if isinstance(raw_vision, bool) and mid not in _MODEL_VISION:
                     _MODEL_VISION[mid] = raw_vision
                     vision += 1
             try:
@@ -1562,16 +1674,23 @@ def refresh_model_limits(access_key, secret_key, security_token,
             if mid and inp > 0 and out > 0:
                 BUILTIN_MODEL_LIMITS[mid] = (inp, out)
                 fresh += 1
-        if fresh or vision:
+        if fresh or vision or added:
             _MODEL_LIMITS_REFRESHED_AT[0] = now
-            # resolve_model 的大小写索引是模块级缓存，表变了不重建的话，
-            # 新收录的模型永远走不到归一（查表/钳制全部 miss）。
-            global _MODEL_INDEX
-            _MODEL_INDEX = None
-            _qlog("model limits refreshed from AgentCenter: %d models, "
-                  "%d vision flags" % (fresh, vision))
+            _reset_model_index()
+            _qlog("model truth refreshed from AgentCenter: %d limit(s), "
+                  "%d vision flag(s), %d new model(s)"
+                  % (fresh, vision, added))
     except Exception:                      # noqa: BLE001 —— 刷新失败保留旧值
         pass
+
+
+def _reset_model_index():
+    """让 ``resolve_model`` 的大小写索引在下次调用时重建。
+
+    表变了不重建的话，新收录的模型永远走不到归一（查表/钳制全部 miss）。
+    """
+    global _MODEL_INDEX
+    _MODEL_INDEX = None
 
 
 def thinking_strengths_for(model):
@@ -1928,11 +2047,11 @@ def chat_headers(access_key, secret_key, security_token, payload_hash,
         headers["model-name"] = urllib.parse.quote(str(model), safe="")
     # 官方 HC 白名单路径的头（2026-10-24 对照官方 kernel 日志 header-debug）：
     # APIG 可能按 plugin/ide 身份区分请求待遇 —— 我们此前一个都不带，上游
-    # 眼里是个「不明客户端」。值照抄官方（plugin-version/ide-version 26.10.1）。
+    # 眼里是个「不明客户端」。值照抄官方（见 GATEWAY_CLIENT_VERSION）。
     headers["plugin-name"] = "codemate_vscode"
-    headers["plugin-version"] = "26.10.1"
+    headers["plugin-version"] = GATEWAY_CLIENT_VERSION
     headers["ide-name"] = "VSCode"
-    headers["ide-version"] = "26.10.1"
+    headers["ide-version"] = GATEWAY_CLIENT_VERSION
     headers["X-Language"] = "zh-cn"
     headers["client-ip"] = _local_client_ip()
     if session_retry is not None:

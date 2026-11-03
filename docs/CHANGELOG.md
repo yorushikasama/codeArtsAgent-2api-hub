@@ -1,5 +1,37 @@
 ## Unreleased
 
+**2026-11-03：清理 WorkBuddy 遗留 —— 死表 `ca_catalog.py` 在污染码道模型的元数据**
+
+WorkBuddy 账号池本体早在 2026-10-23 就删干净了（`_dispatch_chat_post` 里非码道模型一律 404，没有任何「第二条上游」的代码路径）。但**它的静态模型表还在跑**：
+
+- **删掉 `ca_catalog.py`（1032 行）**。这张 39 条的静态目录是 WorkBuddy 时代的产物，唯一引用点是 `model_catalog_meta()` 的兜底分支 —— 而它查的 `_models_cache` **全项目没有任何写入点**（只有初始化与读取），所以那个分支**永远命中死表**。更要命的是死表里的模型名和码道重叠，于是码道模型会拿到 WorkBuddy 的元数据（2026-11-03 实测）：
+
+  | 模型 | 死表返回 | 码道真值 |
+  |---|---|---|
+  | `glm-5.3` / `GLM-5.2` `maxOutputTokens` | **48000** | 65536 |
+  | `deepseek-v4.1-flash` `maxOutputTokens` | **128000** | 65536 |
+  | 上述三个的 `supportsImages` | **True** | False |
+
+  `supportsImages: True` 最危险：`/v1/responses` 靠它判能力，信了就会把带图请求发给纯文本模型，再被上游 `Infer001020.406 not multimodal` 打回 —— 正是之前踩过的那个坑。现在 `model_catalog_meta()` 对码道模型只认 `ca_codearts` 的真值（`BUILTIN_MODEL_LIMITS` + `_MODEL_VISION`），非码道模型返回 `{}`（网关只服务码道，没有第二份目录）。
+
+- **清掉「掉进 WorkBuddy 池」的过期说法**。`is_codearts_model` / `resolve_model` / `_EXTRA_MODELS` 的注释里都写着「请求被判成非码道 → 掉进 WorkBuddy 池 → 503 no usable account」，但池删除后实际行为是 **404 `model '...' is not served by this gateway`**。这两句的差别很要紧：404 读起来像「模型名写错了」，503 像「网关没账号」—— 排障时方向完全不同。`catalog_meta()` 补了说明：它现在恒为 `None`（`_catalog_meta` 再无写入点），保留是因为面板旧版兼容分支还在读它。
+
+  > 顺带纠正我 2026-11-02 在 CHANGELOG 里写错的一句：那天把 81003 的成因写成「请求掉进 WorkBuddy 池回 503」，实际是 404 —— 当时照抄了过期注释、没核对代码。
+
+**2026-11-03：逆向 CodeArts Agent 26.10.100 —— 上游新模型能自动进白名单了**
+
+逆向本机 `CodeArts Agent 26.10.100`（`vscode-codebot` 扩展 26.10.100 + `agentkernelServer` 174 MB / Bun 1.3.14 打包、内嵌模块源码可直接按字节偏移读）后，对照网关实现，发现三处真差异。**结论：模型能力判定与图片链路与 10-27 那次一致，没问题；出问题的是「新模型收不进来」。**
+
+- **上游新模型永远进不了网关白名单（真 bug，已修）**。`refresh_model_limits` 的注释一直写着「上游哪天上新模型，网关不用等手表更新」，实现里却**只写 `BUILTIN_MODEL_LIMITS`（限值），从不写白名单** —— 于是新模型的 `max_tokens` 能自动刷新、**能不能用却永远卡在 `CHAT_MODELS` 这张手写表**。线上实测（2026-11-03）：上游 `/v1/model/builtin` 有 12 个模型，网关只认 9 个，缺的 `glm-5.3-flash`、`kimi-k3.1-pro`、`deepseek-v4.1-flash-1017` **三个逐个直连实测全部 200 能跑**；而网关判 `is_codearts_model=False` → 请求掉进 WorkBuddy 池 → 只配码道账号的部署回 `503 no usable account`，报错和模型名毫无关系。（这正是前一天 `deepseek-v4.1-flash-1017` 被 404 拒掉的真正原因 —— 不是模型名不存在，是网关没收录。）现在 `refresh_model_limits` 同时做三件事：① 从 `/v1/model/builtin` 收 `enable=true` 的模型进 `_EXTRA_MODELS`；② 从 `gpts.models[]` 收限值/元数据；③ 图片能力两边都收但**以 builtin 为准**（`gpts` 那份实测 `supports_images` 全是 false，按后到覆盖会把 Qwen3-VL 降级成纯文本）。新增 `known_models()` 统一出口，`is_codearts_model` / `resolve_model` / `/v1/models` / 404 文案全部改走它，不再直接读 `CHAT_MODELS`。`CHAT_MODELS` 降级为「已知 + 实测过」的种子表。6 项新断言钉住：新模型被收录、停用模型不收、缺 `enable` 按启用、种子表不被改写。
+
+  > 两个刻意的取舍：① **不按 `display_enabled` 过滤** —— 那是「官方界面展不展示」，不是「能不能用」。`Qwen3-VL-235B` / `kimi-k2.6-vl` 正是 `display_enabled=false`（官方 IDE 不显示，只作 kernel 内部 VLM 兜底），但它们是这个网关上**唯一能读图**的两个模型，丢了就没视觉能力了。② 只收 `enable=true`，`enable=false` 是上游的停用标记。
+
+- **版本号三处不一致（已统一）**。逆向确认官方 `plugin-version` / `ide-version` 取的是扩展 package.json 的 `version`，当前是 **26.10.100**。网关里 `chat_headers` 写 `26.10.1`、两处 AgentCenter 头写 `26.10.0` —— 同一份代码三个值。现在统一成 `GATEWAY_CLIENT_VERSION = "26.10.100"`。这些是纯身份元数据（实测改成别的值照样 200），升版本不影响可用性，只是让日志与真实客户端对得上。
+
+- **两处上游限值与网关静态表不符（已被自动刷新覆盖，记录备查）**：`GLM-5.2` 上游 `input_length=196608`，静态表写 `1048576`（高估 5.3 倍）；`glm-5.2-sft-harmony` 输出 `65535` 而表里 `131072`；`openpangu-2.0-{pro,flash}` 输出 `65535` 而表里 `131072`。`refresh_model_limits` 拉到真值即自动修正，静态表只作「还没拉到目录时」的兜底。
+
+  > 逆向还确认了两件与网关无关、但排障时容易误解的事：① 真正驱动对话的模型清单是 `/v1/agent-center/agents/detail` 的 `gpts.models[]`（10 个），`/v1/model/builtin`（12 个）主要供设置页与 kernel 的 VLM 兜底 —— 两者差集正是那两个 `display_enabled=false` 的视觉模型。② AgentKernel 二进制里有一套按模型名的硬编码兜底（默认模型 `GLM-5.1`、VLM 兜底 `Qwen3.6-27B-VL`、`context:32768/output:8192`、temperature/topP 白名单），那是 opencode 派生的 provider 适配层，**不是产品模型能力表**，代理侧一律以 `model_parameters` 透传为准。
+
 **2026-11-02：1806 死账号不再进可用池；81003 文案不再误导**
 
 - **`_usable()` / `codearts_catalog()` 排除已确认续不上的账号**。线上（2026-11-02）`hw025261281007156` 的 STS 已过期 5.9 天、refresh_token 早被外部客户端轮换死（17:28:03 已正确打出 1806 日志并标记 `_STS_DEAD_EXTERNALLY`），可它**照样留在可用池里被挑中**：续期必败，请求带着过期凭证打上游换回 `APIG.0301 Incorrect IAM authentication information`，客户端看到 502。`CODEARTS_AUTH_COOLDOWN` 只有 300 秒，冷却一过又被选中，如此反复。根因是 `_sts_dead_by_external()` 的判定只用在签到、续期本身和面板展示三处，**唯独没用在挑号上** —— 于是「面板说这个号废了、调度还在用它」。现在两处池子筛选都跳过已标记账号；重新登录换出新的 refresh_token 后标记自动解除，账号立即回到池子，不需要重启。新增 3 项断言（`tests/_test_sts_dead_external.py`）：过期但可续期仍进池、1806 已标记的不进池、重登录自愈后立即回池。

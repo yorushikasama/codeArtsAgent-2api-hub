@@ -12,8 +12,12 @@
 #   / WB_DEPLOY_REPO / WB_DEPLOY_BRANCH
 #
 # 保留在服务器上的运行时数据（搬运白名单，改这里）：
-#   accounts/ usage/ logs/ catalog/ _archive*/ quick-deploy.sh release/
+#   accounts/ usage/ logs/ _archive*/ quick-deploy.sh release/
 #   restart-codearts-hub.* start-codearts-hub-lan.bat
+#
+# catalog/ 2026-11-03 起不再搬运：那是 WorkBuddy 时代 /v3/config 响应的落盘
+# 副本，仓库里的代码从来没有读过它（README 原文就写「Nothing reads it back」）。
+# 服务器上残留的旧目录会被留在上一个 .old-* 目录里，不影响运行。
 set -euo pipefail
 
 DEST="${WB_DEPLOY_DEST:-ubuntu@155.248.163.15}"
@@ -37,7 +41,7 @@ git clone -q --depth 1 -b "$BRANCH" "$REPO_URL" "$NEW"
 # 运行时数据白名单搬运：只有这些从旧目录过来，其余一律以仓库为准。
 if [ -d "$DIR" ]; then
   KEEP=""
-  for item in accounts usage logs catalog quick-deploy.sh release \
+  for item in accounts usage logs quick-deploy.sh release \
               restart-codearts-hub.bat restart-codearts-hub.command \
               restart-codearts-hub.sh start-codearts-hub-lan.bat; do
     [ -e "$DIR/$item" ] && KEEP="$KEEP $item"

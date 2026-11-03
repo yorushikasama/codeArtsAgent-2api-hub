@@ -70,7 +70,6 @@ import urllib.error
 import urllib.request
 import uuid
 import ca_activity
-import ca_catalog
 import ca_codearts
 import ca_protocol
 import ca_webtools
@@ -1632,10 +1631,6 @@ def remaining_usage_etag():
 # nothing on the poll path.
 
 
-_realm_disk_cache = {"key": None, "map": None}
-_realm_disk_lock = threading.Lock()
-
-
 _count_cache = {}
 _count_lock = threading.Lock()
 # The count only feeds the "N records" label. The poll interval is 5s, so a
@@ -2703,6 +2698,16 @@ def catalog_meta(realm=None):
      "fetched_at": unix seconds when the gateway obtained the batch,
      "file_mtime": unix seconds of the desktop cache file's own write
                    (only for the config-file sources), else None}
+
+    **现在恒为 None**（2026-11-03）：清单来源追踪是 WorkBuddy 账号池时代的
+    产物 —— 那时目录可能来自远端 API、桌面缓存文件或内置快照。池删除后只剩
+    码道一条来源（``ca_codearts.codearts_catalog``），没有「这批数据是哪来的」
+    这个问题要回答。``_catalog_meta`` 再也没有写入点，于是这里永远返回 None，
+    ``/v1/models`` 的 ``catalog`` 字段也就不会出现。
+
+    留着这个函数是因为面板的旧版兼容分支还在读它（``dashboard.html`` 那句
+    「旧版服务端没有该字段时如实提示」）；删掉会让那条分支失去存在理由，
+    一起清理属于面板侧的事。
     """
     r = realm or CURRENT_REALM
     with _lock:
@@ -4532,7 +4537,10 @@ def codearts_catalog(force=False):
     except Exception as exc:
         models, errors = [], {"catalog": str(exc)}
     # 只暴露实测可用的那些：服务端报了但打不通的模型进清单只会误导客户端。
-    models = [m for m in models if m.get("id") in ca_codearts.CHAT_MODELS
+    # 白名单校验走 known_models()（种子表 + 上游自动收录），否则上游新上的
+    # 模型明明在目录里、却被这一行挡掉。
+    _known = ca_codearts.known_models()
+    models = [m for m in models if m.get("id") in _known
               and m.get("routable", True)]
     _CODEARTS_CATALOG.update({"at": now, "models": models, "errors": errors})
     return _CODEARTS_CATALOG
@@ -4891,12 +4899,15 @@ def is_codearts_model(model_id):
     """这个模型名是不是码道的（**大小写无关**）。
 
     上游模型 id 的大小写是混的（``GLM-5.2`` / ``glm-5.3`` / ``Qwen3-VL-235B``），
-    客户端却习惯一律小写。精确比较会让 ``glm-5.2`` 判成「不是码道模型」，请求
-    掉进 WorkBuddy 池，在只配了码道账号的部署里回一个
-    ``503 no usable account`` —— 报错和模型名毫无关系，用户根本猜不到原因。
-    见 ca_codearts.resolve_model。
+    客户端却习惯一律小写。精确比较会让 ``glm-5.2`` 判成「不是码道模型」，
+    请求于是走进 ``_dispatch_chat_post`` 末尾那条 404 分支，
+    回 ``model 'glm-5.2' is not served by this gateway`` —— 看起来像「网关不
+    支持这个模型」，实际只是大小写没对上。见 ca_codearts.resolve_model。
     """
-    return ca_codearts.resolve_model(model_id) in ca_codearts.CHAT_MODELS
+    # 查 known_models()（种子表 + 上游自动收录），不是 CHAT_MODELS ——
+    # 后者是手写白名单，上游新上的模型永远进不来，请求会被判成「不是码道
+    # 模型」而落到 404（见 ca_codearts._EXTRA_MODELS 的说明）。
+    return ca_codearts.resolve_model(model_id) in ca_codearts.known_models()
 
 
 def codearts_deployed():
@@ -4912,7 +4923,8 @@ def codearts_deployed():
 
 
 def unserved_model_message(model_id):
-    available = [m for m in ca_codearts.CHAT_MODELS] if codearts_deployed() else []
+    available = (list(ca_codearts.known_models()) if codearts_deployed()
+                 else [])
     hint = ""
     if codearts_deployed():
         # 常见情况是客户端自带一套模型名（Claude Code / Codex CLI 都是硬编码的），
@@ -5750,26 +5762,37 @@ def _thinking_enabled(model, payload):
 
 
 def model_catalog_meta(model):
-    """The catalog metadata dict for a model, or {}.
+    """模型的目录元数据（码道真值），查不到返回 {}。
 
-    Read from the same merged catalog that /v1/models advertises.
-    Deliberately side-effect free: it reads the already-populated model cache
-    and the shipped static tables only. Calling fetch_models() here would let a
-    cold cache trigger an upstream discovery round-trip from inside request
-    handling, turning one chat call into a network fetch.
+    **码道模型不再查 ``ca_catalog``**。那张 39 条的静态表是 WorkBuddy 账号池
+    时代的产物（池已于 2026-10-23 删除），但它的模型名和工作表重叠，于是
+    ``glm-5.3`` / ``deepseek-v4.1-flash`` / ``GLM-5.2`` 这些码道模型会命中它、
+    拿到**错的**元数据（2026-11-03 实测）：
+
+      · ``maxOutputTokens`` 48000 / 128000 —— 上游真值是 65536；
+      · ``supportsImages`` 全是 True —— 上游对这三个一律回
+        ``Infer001020.406 not multimodal``。
+
+    后者尤其危险：``/v1/responses`` 靠这里判能力，信了它就会把带图请求发给
+    纯文本模型，再被上游 406 打回。所以码道模型一律只认 ``ca_codearts`` 的
+    真值（``BUILTIN_MODEL_LIMITS`` + ``_MODEL_VISION``），查不到就返回 {}，
+    让调用方走自己的默认，而不是拿另一个产品的表来猜。
     """
     if not model:
         return {}
     try:
-        realm = detect_model_realm(model) or CURRENT_REALM
-        entries = (_models_cache.get(realm) or {}).get("data")
-        if not entries:
-            table = getattr(ca_catalog, "STATIC_CN_MODELS", None) or ca_catalog.STATIC_MODELS
-            entries = [(m.get("id"), m) for m in table if isinstance(m, dict)]
-        m_lower = str(model).strip().lower()
-        for mid, meta in entries:
-            if str(mid).strip().lower() == m_lower:
-                return meta or {}
+        canonical = ca_codearts.resolve_model(model)
+        if canonical in ca_codearts.known_models():
+            limits = ca_codearts.BUILTIN_MODEL_LIMITS.get(canonical)
+            vision = ca_codearts._MODEL_VISION.get(canonical)
+            meta = {}
+            if limits:
+                meta["maxInputTokens"], meta["maxOutputTokens"] = limits
+            if isinstance(vision, bool):
+                meta["supportsImages"] = vision
+            return meta
+        # 非码道模型：网关只服务码道，这里没有第二份目录可查。
+        return {}
     except Exception as exc:
         log("catalog meta lookup failed for '%s': %s" % (model, exc))
     return {}

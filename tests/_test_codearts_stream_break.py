@@ -1563,8 +1563,11 @@ check("纯函数层不查模型表：不传默认值就不补 max_tokens",
       _m)
 _w = P.messages_to_chat({"model": "glm-5.3",
                          "messages": [{"role": "user", "content": "hi"}]})
+# 65536 = CodeArts 对 glm-5.3 的输出上限（BUILTIN_MODEL_LIMITS，与上游
+# AgentCenter 的 max_tokens 一致）。以前这里写 48000，那是 WorkBuddy 静态
+# 目录的值 —— ca_catalog 已删除，码道模型只认码道真值。
 check("包装层仍按模型表补默认 max_tokens（行为不变）",
-      _w.get("max_tokens") == P.model_default_max_output_tokens("glm-5.3") == 48000, _w)
+      _w.get("max_tokens") == P.model_default_max_output_tokens("glm-5.3") == 65536, _w)
 check("显式 max_tokens 优先于默认值",
       P.messages_to_chat({"model": "glm-5.3", "max_tokens": 7,
                           "messages": [{"role": "user", "content": "hi"}]})["max_tokens"] == 7,

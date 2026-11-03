@@ -523,5 +523,53 @@ check("没被封的码道模型照常走码道",
       and _ok_out.get("code") == 200, (_ban3.reached, _ok_out))
 
 print()
+print("== 上游新模型自动收录（2026-11-03）==")
+# 背景：refresh_model_limits 的注释一直写「上游上新模型网关不用等手表更新」，
+# 但它只写 BUILTIN_MODEL_LIMITS（限值），从不写白名单 —— 于是上游清单里明明
+# 有 glm-5.3-flash / kimi-k3.1-pro / deepseek-v4.1-flash-1017（三个实测都能
+# 跑通），网关却判 is_codearts_model=False，请求掉进 WorkBuddy 池回
+# 503 no usable account。这一节钉住「收录真的会发生」。
+_saved_bm = C.builtin_models
+_saved_aa, _saved_ad = C.agent_center_agents, C.agent_center_agent_detail
+try:
+    C._EXTRA_MODELS.clear()
+    C._EXTRA_MODELS_SEEN.clear()
+    C._reset_model_index()
+    C.builtin_models = lambda *a, **k: [
+        # 新模型：种子表里没有 → 必须收
+        {"model_id": "brand-new-model", "enable": True,
+         "display_enabled": True, "supports_images": False},
+        # enable=false 是上游的停用标记 → 不能收
+        {"model_id": "retired-model", "enable": False,
+         "display_enabled": True, "supports_images": False},
+        # 缺 enable 字段：老目录没有它，按启用处理
+        {"model_id": "legacy-model", "supports_images": False},
+    ]
+    C.agent_center_agents = lambda *a, **k: {"agents": []}
+    C.agent_center_agent_detail = lambda *a, **k: {}
+    C._MODEL_LIMITS_REFRESHED_AT[0] = 0.0
+    C.refresh_model_limits("ak", "sk", None)
+
+    check("收录：上游新增的 enable=true 模型进了白名单",
+          "brand-new-model" in C.known_models(), C.known_models())
+    check("收录：is_codearts_model 认它（不再掉进 WorkBuddy 池）",
+          P.is_codearts_model("brand-new-model"), None)
+    check("收录：大小写归一也认（限值查得到才钳得住 max_tokens）",
+          C.resolve_model("BRAND-NEW-MODEL") == "brand-new-model", None)
+    check("收录：enable=false 的停用模型不收",
+          "retired-model" not in C.known_models(), C.known_models())
+    check("收录：缺 enable 字段按启用处理（老目录兼容）",
+          "legacy-model" in C.known_models(), C.known_models())
+    check("收录：种子表本身不被改写",
+          len(C.CHAT_MODELS) == 9, len(C.CHAT_MODELS))
+finally:
+    C.builtin_models = _saved_bm
+    C.agent_center_agents, C.agent_center_agent_detail = _saved_aa, _saved_ad
+    C._EXTRA_MODELS.clear()
+    C._EXTRA_MODELS_SEEN.clear()
+    C._MODEL_LIMITS_REFRESHED_AT[0] = 0.0
+    C._reset_model_index()
+
+print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)
