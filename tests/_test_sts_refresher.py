@@ -128,11 +128,21 @@ thread = next((t for t in threading.enumerate() if t.name == "codearts-sts"),
               None)          # 先抓线程对象：它 tick 满两次就会按设计自杀
 while time.time() < deadline and len(ticks) < 2:
     time.sleep(0.02)
+# **等线程真的退出再还原桩**。以前这里直接还原，后台线程可能还活着、
+# 下一轮 tick 撞上已经换回原函数的 `_sts_refresher_once` —— 那个会去读真实的
+# accounts 目录（服务器上有真账号），在负载高的机器上要么慢要么抛，把断言
+# 搅成偶发失败（2026-11-04 部署门禁就栽在这：单独跑 6 次全过，跑全套时挂）。
+# join 等的是「线程自己按设计退出」，不是赌时序。
+if thread is not None:
+    thread.join(timeout=5)
 proxy._sts_refresher_once = orig_once
 proxy.CODEARTS_STS_TICK_SECONDS = orig_tick
 check("codearts-sts 线程已启动且为 daemon",
       thread is not None and thread.daemon is True, threading.enumerate())
 check("巡检函数至少被 tick 了两次", len(ticks) >= 2, ticks)
+check("还原桩之前线程已自行退出（不再有后台 tick 干扰后续断言）",
+      thread is not None and not thread.is_alive(),
+      [t.name for t in threading.enumerate()])
 
 print()
 print("[4] 常量自洽：巡检间隔必须显著小于续期 margin")
