@@ -4449,6 +4449,248 @@ def _note_vision_rejection(model, code, detail):
         pass
 
 
+#: 转写图片用的 VLM，按顺序试。官方客户端在「当前模型不支持视觉」时也是这么
+#: 干的：kernel 的 ImageAnalyzePlugin 把图片 part 整个换成
+#: ``[Image: analyzed by VLM, see results below]``，再用一个 VLM 把图描述成
+#: 文字塞进上下文，主模型只读文字（见 2026-11-04 逆向，kernel 偏移 105208799 /
+#: 105210500 / 105181308）。客户端自己那份兜底清单是
+#: ``["Qwen3.6-27B-VL","Qwen3.5-397B-A17B-VL","Qwen3-VL-235B"]`` —— 那两个
+#: Qwen3.x 在码道通道上问不到，所以这里用实测能跑的两个。
+#:
+#: kimi-k2.6-vl 优先：它是官方 CHANGELOG 里「多模态模型由 Qwen3-VL 切换至
+#: Kimi K2.6」的目标，视觉推理更稳；失败再退 Qwen3-VL-235B。
+CODEARTS_VISION_DESCRIBERS = ("kimi-k2.6-vl", "Qwen3-VL-235B")
+
+#: 转写的提示词。照抄官方那句「结构化描述、包含所有视觉细节」，但补了中文场景
+#: 常见的几项（代码截图、UI 布局、报错文本）—— 码道上用户贴图十有八九是这些。
+#: 明确要求「不要臆测」：VLM 编出来的细节比没有描述更危险，主模型会当真。
+_VISION_PROMPT = (
+    "请把这张图片完整、如实地转成文字，供一个看不到图的模型阅读。要求：\n"
+    "1. 覆盖所有可见细节：颜色、尺寸、布局、文字、组件、图表数据。\n"
+    "2. 图里有文字就**原样抄下来**（代码、报错信息、按钮标签、表格内容），"
+    "保留缩进与换行。\n"
+    "3. 是界面截图就说明区域划分与控件位置；是代码就输出代码块；是图表就说清"
+    "坐标轴、单位与关键数值。\n"
+    "4. 只描述你真正看到的。看不清或不存在的内容明确写「不清晰」或省略，"
+    "**不要推测、不要补全**。\n"
+    "直接输出描述，不要加「好的」这类开场白。"
+)
+
+#: 单张图的转写超时（秒）。VLM 比文本模型慢，但也不能把客户端连接一直按着：
+#: 一张复杂截图实测 5~15 秒，给到 60 秒足够，超时就如实报错而不是静默丢图。
+VISION_DESCRIBE_TIMEOUT = ca_env.number("CODEARTS_VISION_TIMEOUT", 60.0,
+                                        minimum=5.0)
+
+
+def _image_urls_in(messages):
+    """按顺序取出所有图片的 URL（data URL 或 http）。重复的只留一份。"""
+    urls = []
+    seen = set()
+    if not isinstance(messages, list):
+        return urls
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            url = ""
+            if isinstance(part.get("image_url"), dict):
+                url = str(part["image_url"].get("url") or "")
+            elif part.get("type") in ("image", "input_image"):
+                # Anthropic 形状可能已经转过，也可能是裸 url。
+                if isinstance(part.get("source"), dict):
+                    src = part["source"]
+                    media = str(src.get("media_type") or "image/png")
+                    data = src.get("data") or ""
+                    if data:
+                        url = "data:%s;base64,%s" % (media, data)
+                    elif src.get("url"):
+                        url = str(src["url"])
+                elif part.get("image_url"):
+                    url = str(part["image_url"])
+            if url and url not in seen:
+                seen.add(url)
+                urls.append(url)
+    return urls
+
+
+def _describe_image(model, image_url, timeout=None):
+    """让 VLM 把一张图转成文字。返回 (描述, 错误)。
+
+    走的是与普通推理同一条上游通道（同一套 AK/SK 签名与会话名额），只是模型
+    换成视觉模型。失败**不抛**，把原因交回调用方 —— 静默丢图比报错糟得多。
+
+    名额生命周期与聊天路径一致：先 busy 登记，读完 idle 注销，**finally 保证
+    注销**。不归还的话转写一次就吃一个并发名额（每账号只有 3 个），几次之后
+    所有请求都会撞 ``TM.00001041``。
+    """
+    if not image_url:
+        return "", "empty image"
+    try:
+        session, account_key = _CODEARTS_POOL.acquire(
+            CODEARTS_SLOT_WAIT, model=model)
+    except Exception as exc:               # noqa: BLE001
+        return "", "no slot: %s" % exc
+    if session is None:
+        return "", "no usable codearts account (all busy or cooling)"
+    label = (session.get("account") or {}).get("label")
+    cred = (session.get("accessKey"), session.get("secretKey"),
+            session.get("securitytoken"))
+    session_id, hb_ok, hb_detail = codearts_session_busy(
+        cred, label, account_key=account_key)
+    if not hb_ok:
+        log("vision: session busy failed: %s" % hb_detail)
+    try:
+        status, text = ca_codearts.chat_for_model(
+            cred[0], cred[1], cred[2], model,
+            [{"role": "user",
+              "content": [
+                  {"type": "text", "text": _VISION_PROMPT},
+                  {"type": "image_url", "image_url": {"url": image_url}},
+              ]}],
+            max_tokens=2048, stream=False,
+            timeout=timeout or VISION_DESCRIBE_TIMEOUT)
+    except Exception as exc:               # noqa: BLE001 —— 网络/签名失败都算转写失败
+        return "", "%s: %s" % (type(exc).__name__, str(exc)[:160])
+    finally:
+        # 先注销会话、再还名额（与聊天路径同一顺序：反过来下一个请求可能在
+        # 上游还没收到 idle 时就开始 busy，两个会话撞在一起）。
+        codearts_session_idle(cred, session_id)
+        _CODEARTS_POOL.release(account_key)
+    if status not in (200, 201):
+        code, detail = ca_stream.error_detail(text)
+        return "", "upstream %s %s %s" % (status, code, detail[:160])
+    # 非流式返回的是**普通 JSON**，不是 SSE —— 拿 collect_sse 去解只会得到
+    # 空字符串（它按 `data:` 前缀切帧）。这里按 chat.completion 的形状取
+    # choices[0].message.content；万一上游仍回了 SSE（stream 参数被忽略），
+    # 再退回 collect_sse。
+    described = ""
+    try:
+        data = json.loads(text or "")
+    except (TypeError, ValueError):
+        data = None
+    if isinstance(data, dict):
+        choices = data.get("choices") or []
+        if choices and isinstance(choices[0], dict):
+            message = choices[0].get("message") or {}
+            described = str(message.get("content") or "").strip()
+        if not described:
+            err = data.get("error")
+            if isinstance(err, dict):
+                return "", "upstream error: %s" % (
+                    err.get("message") or err.get("code") or "unknown")
+    if not described:
+        content, _reasoning, _usage, frame_err, _tc = ca_stream.collect_sse(
+            text, {})
+        described = (content or "").strip()
+        if frame_err and not described:
+            return "", "upstream error frame: %s" % frame_err[:160]
+    if not described:
+        return "", "VLM returned empty description"
+    return described, ""
+
+
+def _describe_images(messages, timeout=None):
+    """把消息里所有图片转成文字描述。返回 (描述列表, 错误列表)。
+
+    多张图按出现顺序编号描述，主模型靠编号区分「第一张 / 第二张」。
+    """
+    urls = _image_urls_in(messages)
+    if not urls:
+        return [], []
+    described, failures = [], []
+    for idx, url in enumerate(urls, 1):
+        text, err = "", ""
+        used = ""
+        # 按顺序试每个 VLM：kimi-k2.6-vl 优先，挂了再退 Qwen3-VL-235B。
+        for candidate in CODEARTS_VISION_DESCRIBERS:
+            text, err = _describe_image(candidate, url, timeout=timeout)
+            if text:
+                used = candidate
+                break
+        if text:
+            described.append("【图 %d｜由 %s 转写】\n%s"
+                             % (idx, used, text))
+        else:
+            failures.append("图 %d 转写失败：%s" % (idx, err or "unknown"))
+    return described, failures
+
+
+def _transcribe_images_for(model, messages):
+    """主模型读不了图时，先把图转成文字并**原地改写** messages。
+
+    返回 ``(改写的条数, 失败原因列表)``。这里直接改 ``messages`` 里的 content
+    数组：把 ``image_url`` / ``image`` 分片换成一段文字描述，与官方客户端
+    ImageAnalyzePlugin 的做法一致（kernel 偏移 105208799：图片 part 变
+    ``type:"text"``、``delete url``，主模型只读 VLM 的文字）。
+
+    为什么不在网关侧「透传原图 + 让上游报 406」：那条路会让一次带图请求白占
+    一个会话名额，还被记成 upstream_aborted 计入模型失败率。
+
+    返回的 failures 非空时，调用方要把「哪些图没转成」告诉用户 —— 静默少一张
+    图比整个请求失败更难查：用户会以为模型「没看懂」，其实是根本没收到。
+    """
+    if not messages or _codearts_vision_capable(model) is not False:
+        # 模型自己能读图（或能力未知）：原样放行，不动 messages。
+        return 0, []
+    urls = _image_urls_in(messages)
+    if not urls:
+        return 0, []
+    described, failures = _describe_images(messages)
+    if not described and failures:
+        # 一张都没转成：交给调用方回 400，别把图悄悄删掉再发请求。
+        return 0, failures
+    # 按顺序把每处图片分片替换成对应的描述。多图用同样的顺序配描述，
+    # 编号由 _describe_images 保证（都是按 messages 里出现顺序）。
+    queue = list(described)
+    replaced = 0
+    for msg in messages:
+        if not isinstance(msg, dict):
+            continue
+        content = msg.get("content")
+        if not isinstance(content, list):
+            continue
+        new_parts = []
+        for part in content:
+            is_image = (isinstance(part, dict) and (
+                str(part.get("type") or "") in ("image_url", "input_image", "image")
+                or "image_url" in part))
+            if not is_image:
+                new_parts.append(part)
+                continue
+            text = queue.pop(0) if queue else ""
+            if text:
+                new_parts.append({"type": "text", "text": text})
+                replaced += 1
+            else:
+                # 这张没转成：留一句占位，让模型知道「这里本来有张图但没读到」，
+                # 而不是让上下文凭空少一段（用户和模型都会被搞糊涂）。
+                new_parts.append({
+                    "type": "text",
+                    "text": "[此处原有一张图片，但视觉转写失败，内容未知]",
+                })
+        msg["content"] = new_parts
+    return replaced, failures
+
+
+def _vision_transcribed_notice(described, failures):
+    """转写成功后追加给用户的提示（放在 system 之后的 user 文本里）。
+
+    只在全部转写成功时给一句短的；有失败时把失败原因一并说清，让用户知道
+    「模型看到的是部分信息」而不是以为自己传的图没生效。
+    """
+    if not described:
+        return ""
+    if not failures:
+        return ""
+    return ("\n\n[网关提示] 以下图片未能转写，模型看不到它们的内容：%s"
+            % "；".join(failures))
+
+
 def _codearts_vision_error(model, messages):
     """把图片发给纯文本模型时的拒绝文案；没问题就返回 None。
 
@@ -4458,6 +4700,10 @@ def _codearts_vision_error(model, messages):
     让 deepseek-v4.1-flash 连续 16 次成功之后突然"不可用"，降级链把后续纯文本
     请求全改道到另外两个同样不支持图片的模型，一起打成 down）。现在在发请求
     之前就问一句模型能力：不支持就直接回 400，不碰上游。
+
+    **注意**：纯文本模型 + 图片现在不再一律拒绝 —— 调用方会先尝试
+    ``_describe_images`` 把图转成文字（与官方客户端 ImageAnalyzePlugin 同构），
+    转写成功就照常发请求。这个函数只在**转写也失败**时兜底。
     """
     if not _payload_has_image(messages):
         return None
@@ -4465,9 +4711,10 @@ def _codearts_vision_error(model, messages):
         # True = 这个模型支持读图；None = 清单里没有它/取不到，按「不拦」处理
         # （宁可让上游去判，也不误伤一个可能是视觉模型的新模型）。
         return None
-    return ("model %r does not support image input (not multimodal). "
-            "Remove the image from the message, or switch to a model that "
-            "accepts images." % model)
+    return ("model %r does not support image input (not multimodal), and the "
+            "image could not be transcribed by a vision model. Remove the "
+            "image from the message, or switch to a model that accepts images."
+            % model)
 
 
 def _codearts_choice_count_error(payload):
@@ -9961,6 +10208,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def _handle_codearts_chat(self, payload):
         """把一个 OpenAI 形状的请求转发给码道，再把结果转回 OpenAI 形状。"""
+        # 主模型读不了图就先转写（与官方 ImageAnalyzePlugin 同构）。必须在下面
+        # 的 _codearts_vision_error 之前做：转写成功后 messages 里已经没有图片
+        # 分片，那道「不支持视觉」的拦截自然不会再触发。
+        _transcribed, _vfail = _transcribe_images_for(
+            payload.get("model"), payload.get("messages"))
+        if _vfail and not _transcribed:
+            _msg = ("image input could not be transcribed by a vision model: %s"
+                    % "；".join(_vfail))
+            record_error(payload.get("model") or "unknown", 400, _msg,
+                         stream=payload.get("stream"), key=self._key_id())
+            return self._error(400, _msg, "invalid_request_error")
         for bad in (_codearts_choice_count_error(payload),
                     _codearts_response_format_error(payload),
                     _codearts_vision_error(payload.get("model"),
@@ -10057,6 +10315,15 @@ class Handler(BaseHTTPRequestHandler):
         翻译在进站时由 responses_to_chat() 完成；这里只负责把码道的
         chat-completions 结果转回 Responses 的 JSON / 事件流。
         """
+        # 主模型读不了图就先转写（与 chat / messages 两个入口同口径）。
+        _transcribed, _vfail = _transcribe_images_for(
+            chat_req.get("model"), chat_req.get("messages"))
+        if _vfail and not _transcribed:
+            _msg = ("image input could not be transcribed by a vision model: %s"
+                    % "；".join(_vfail))
+            record_error(chat_req.get("model") or "unknown", 400, _msg,
+                         stream=want_stream, key=self._key_id())
+            return self._error(400, _msg, "invalid_request_error")
         empty = ca_protocol.empty_conversation_error(chat_req.get("messages"))
         if empty:
             # 上游对「只有 instructions」的请求回 81001，报错点太远，先拦。
@@ -10377,6 +10644,15 @@ class Handler(BaseHTTPRequestHandler):
         def anthropic_error(code, message, err_type=None):
             return self._anthropic_error(code, message, err_type)
 
+        # 主模型读不了图就先转写（与 chat / responses 两个入口同口径）。
+        _transcribed, _vfail = _transcribe_images_for(
+            chat_req.get("model"), chat_req.get("messages"))
+        if _vfail and not _transcribed:
+            _msg = ("image input could not be transcribed by a vision model: %s"
+                    % "；".join(_vfail))
+            record_error(chat_req.get("model") or "unknown", 400, _msg,
+                         stream=want_stream, key=self._key_id())
+            return anthropic_error(400, _msg, "invalid_request_error")
         empty = ca_protocol.empty_conversation_error(chat_req.get("messages"))
         if empty:
             # 同 Responses：本地拒绝也要落一行账（三个入口同口径）。

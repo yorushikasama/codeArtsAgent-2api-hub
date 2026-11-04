@@ -1289,8 +1289,10 @@ try:
         _src = _inspect.getsource(getattr(P.Handler, _fn_name))
         check("%s：空会话预检后记账" % _fn_name,
               _src.count("record_error(") >= 2, None)
-        check("%s：两类预检都记账（record_error 出现 >=2 次）" % _fn_name,
-              _src.count("record_error(") == 2, _src.count("record_error("))
+        # 2026-11-04 起多了一处：图片转写全部失败时的 record_error（三个入口
+        # 同为 3 处）。原先这里写死 == 2，加了转写路径后必须同步。
+        check("%s：空会话 + 视觉预检 + 转写失败都记账（3 处）" % _fn_name,
+              _src.count("record_error(") == 3, _src.count("record_error("))
 finally:
     P.codearts_catalog = _orig_catalog
     P.ca_codearts._MODEL_VISION.clear()
@@ -1338,6 +1340,77 @@ try:
 finally:
     _VISION_TABLE.clear()
     _VISION_TABLE.update(_saved)
+
+# ---- 图片转写：纯文本模型带图时先让 VLM 转成文字（2026-11-04）----
+# 官方客户端从来不让主模型读图：kernel 的 ImageAnalyzePlugin 把图片 part 整个
+# 换成 "[Image: analyzed by VLM...]"，再用一个 VLM 把图描述成文字塞进上下文
+# （kernel 偏移 105208799 / 105210500 / 105181308）。网关原先是直接 400 拒绝，
+# 用户传图在这些模型上等于不可用。现在按同一思路：转写成功就照常发请求。
+_VRT = P.ca_codearts._MODEL_VISION
+_saved_vrt = dict(_VRT)
+_orig_describe_image = P._describe_image
+try:
+    _VRT.clear()
+    _VRT["glm-5.3"] = False          # 纯文本
+    _VRT["Qwen3-VL-235B"] = True     # 视觉
+    _IMG = [{"role": "user", "content": [
+        {"type": "text", "text": "看图"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAA"}}]}]
+
+    # 1) 视觉模型：原样放行，不转写、不动 messages
+    _m1 = copy.deepcopy(_IMG)
+    _n1, _f1 = P._transcribe_images_for("Qwen3-VL-235B", _m1)
+    check("转写：视觉模型不改写消息", _n1 == 0 and not _f1, (_n1, _f1))
+    check("转写：视觉模型的图片还在", P._payload_has_image(_m1), None)
+
+    # 2) 纯文本模型 + VLM 成功：图片分片被换成文字描述
+    P._describe_image = lambda model, url, timeout=None: ("一张红色的图片", "")
+    _m2 = copy.deepcopy(_IMG)
+    _n2, _f2 = P._transcribe_images_for("glm-5.3", _m2)
+    check("转写：纯文本模型带图会被改写", _n2 == 1 and not _f2, (_n2, _f2))
+    check("转写：图片分片消失、换成文字",
+          not P._payload_has_image(_m2)
+          and "红色的图片" in json.dumps(_m2, ensure_ascii=False),
+          json.dumps(_m2, ensure_ascii=False)[:120])
+    check("转写：改写后视觉预检不再拦（真会用这个模型）",
+          P._codearts_vision_error("glm-5.3", _m2) is None, None)
+
+    # 3) VLM 全挂：不改写、把失败原因交回调用方（不能静默丢图）
+    P._describe_image = lambda model, url, timeout=None: ("", "VLM down")
+    _m3 = copy.deepcopy(_IMG)
+    _n3, _f3 = P._transcribe_images_for("glm-5.3", _m3)
+    check("转写：VLM 全挂时不改写消息", _n3 == 0, _n3)
+    check("转写：VLM 全挂要交回失败原因", bool(_f3) and "VLM down" in _f3[0], _f3)
+    check("转写：VLM 全挂时图片仍在（不会被悄悄删掉）",
+          P._payload_has_image(_m3), None)
+
+    # 4) 主视觉模型挂了要按顺序退到下一个
+    _tried = []
+    def _fail_first(model, url, timeout=None):
+        _tried.append(model)
+        if model == P.CODEARTS_VISION_DESCRIBERS[0]:
+            return "", "boom"
+        return "退路成功", ""
+    P._describe_image = _fail_first
+    _m4 = copy.deepcopy(_IMG)
+    _n4, _f4 = P._transcribe_images_for("glm-5.3", _m4)
+    check("转写：首选 VLM 失败会退到下一个",
+          _tried == list(P.CODEARTS_VISION_DESCRIBERS) and _n4 == 1 and not _f4,
+          (_tried, _n4, _f4))
+    check("转写：VLM 顺序是 kimi-k2.6-vl 优先",
+          P.CODEARTS_VISION_DESCRIBERS[0] == "kimi-k2.6-vl",
+          P.CODEARTS_VISION_DESCRIBERS)
+
+    # 5) 没有图片就不该触发转写（省一次上游调用）
+    P._describe_image = lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("不该被调用"))
+    _n5, _f5 = P._transcribe_images_for(
+        "glm-5.3", [{"role": "user", "content": "纯文本"}])
+    check("转写：纯文本请求不触发 VLM", _n5 == 0 and not _f5, (_n5, _f5))
+finally:
+    P._describe_image = _orig_describe_image
+    _VRT.clear()
+    _VRT.update(_saved_vrt)
 
 # ---- refresh_model_limits 必须真正收 supports_images ----
 # 逆向确认这个字段就在 gpts.models[].model_parameters 里，和 input_length /

@@ -1,5 +1,53 @@
 ## Unreleased
 
+**2026-11-04：图片不再被拒，改用 VLM 转写（与官方客户端同构）**
+
+逆向本机 CodeArts Agent 的视觉链路后，发现我们对「纯文本模型 + 图片」的处理和官方**完全不同**：官方**从来不让主模型读图**，我们却直接回 400 拒绝。
+
+- **官方做法（kernel 偏移实证）**：图片 part 进入 messages 之前就被整个替换掉 ——
+  ```js
+  $.type = "text";
+  $.text = "[Image: analyzed by VLM, see results below]";
+  delete $.mime; delete $.url; delete $.source; delete $.filename;
+  ```
+  （偏移 `105208799`）。随后用一个 VLM 把图描述成文字，以 synthetic text part 注入
+  `[Image Analysis: via VLM, scene: ...]`（偏移 `105210500`）。VLM 由 `jR()` 选定
+  （偏移 `105181308`），候选来自 `multimodalModels` 配置，为空时用硬编码兜底
+  `["Qwen3.6-27B-VL","Qwen3.5-397B-A17B-VL","Qwen3-VL-235B"]`（偏移 `105166011`）。
+  **主模型收到的永远是文字，不是图片** —— 这就是为什么「原生支持视觉的模型在码道上被判不支持」：客户端根本不需要它们支持，看图的是另一个 VLM。
+
+- **网关原先的行为**：`_codearts_vision_error()` 在请求阶段直接回
+  `400 model does not support image input (not multimodal)`。用户在这些模型上贴图
+  等于不可用，与官方体验差了一整个能力。
+
+- **现在**：三个入口（chat / responses / messages）在发请求前调
+  `_transcribe_images_for()` —— 主模型读不了图时，用 VLM 把每张图转成文字描述并
+  **原地替换**掉那个 part，再照常发请求。实测 `glm-5.3`（`supports_images=false`）
+  带一张纯绿图，正确回答「绿色」。
+
+  几个刻意的取舍：
+  - **VLM 顺序 `kimi-k2.6-vl` → `Qwen3-VL-235B`**（`CODEARTS_VISION_DESCRIBERS`）。
+    官方兜底清单里的 `Qwen3.6-27B-VL` / `Qwen3.5-397B-A17B-VL` 在码道通道上问不到；
+    kimi 优先是因为官方 CHANGELOG 把多模态从 Qwen3-VL 切到了 Kimi K2.6。
+  - **转写失败不静默丢图**：全部失败就回 400 并把原因写进报文；部分失败则保留
+    占位文本 `[此处原有一张图片，但视觉转写失败，内容未知]`，让模型知道「这里有图但
+    没读到」，而不是让上下文凭空少一段。
+  - **会话名额照常借还**：转写走同一条上游通道，`try/finally` 保证 idle 注销 +
+    名额归还。不归还的话每转写一次吃一个并发名额（每账号只有 3 个），几次之后
+    全站撞 `TM.00001041`。
+  - **视觉模型不受影响**：`_codearts_vision_capable() is True` 时原样放行，
+    不转写、不改 messages（省一次上游调用，也避免二次描述损失细节）。
+
+- 11 项新断言（`tests/_test_stream_retry.py`）：视觉模型不改写、纯文本模型被改写、
+  改写后预检不再拦、VLM 全挂时不丢图且交回原因、首选 VLM 失败退到下一个、
+  纯文本请求不触发 VLM、VLM 顺序。
+
+  > 两个反向澄清：① `multimodal-looker` 与视觉链路**无关** —— 它是 oh-my-opencode
+  > 插件的 agent 槽位，且被故意钉成非 VL 的 `Qwen3.6-27B`，kernel 二进制里搜它零命中。
+  > ② `supports_images` 在客户端只控制「能不能附图」（按钮显隐 + 选中即移除），
+  > **不控制转写开关** —— 转写是无条件执行的。所以那个字段为 false 并不代表
+  > 「这条通道读不了图」，只代表「官方 UI 不让你在这个模型上贴图」。
+
 **2026-11-04：模型能力一律跟上游走，删掉按模型名写死的能力判断**
 
 - **`thinking_variants()` 漏了 `return`，逆向出来的档位接口从来没生效过**。函数一路算到 `out` 就落到下一个常量定义，**永远返回 `None`**（2026-11-04 实测线上复现）。调用方拿到 `None` 当成「上游没数据」，于是只剩 `THINKING_STRENGTHS_SEED` 那份写死的种子在起作用。而上游其实一直有完整数据：`POST /v1/model/thinking-variants` 返回 `GLM-5.2 → {strengths:["high","max"], default:"high"}`、其余内置模型 `strengths:[]`。
