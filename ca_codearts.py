@@ -1448,6 +1448,11 @@ def thinking_variants(access_key, secret_key, security_token, model_names,
         strengths = [str(x) for x in (info.get("strengths") or []) if x]
         out[name] = {"strengths": strengths,
                      "default": info.get("default_strength") or ""}
+    # 这个 return 以前漏了 —— 函数一路算到 out 就落到下一个常量定义，永远
+    # 返回 None。调用方（refresh_thinking_strengths / model_catalog）拿到 None
+    # 后当成「上游没数据」，于是永远只有 THINKING_STRENGTHS_SEED 那份写死的
+    # 种子在起作用，上游档位表从来没生效过。
+    return out
 
 
 #: 各模型的思考档位白名单：``reasoning_effort`` 只允许取列表里的值。
@@ -1596,8 +1601,9 @@ def refresh_model_limits(access_key, secret_key, security_token,
     if now - _MODEL_LIMITS_REFRESHED_AT[0] < MODEL_LIMITS_TTL:
         return
     try:
-        # ---- 一、白名单：以 builtin 目录为准 ----
+        # ---- 一、白名单 + 图片能力：以 builtin 目录为准 ----
         added = 0
+        vision = 0
         try:
             listing = builtin_models(access_key, secret_key, security_token,
                                      timeout=timeout) or []
@@ -1614,7 +1620,10 @@ def refresh_model_limits(access_key, secret_key, security_token,
                 continue
             raw_vision = raw.get("supports_images")
             if isinstance(raw_vision, bool):
-                # builtin 的 supports_images 是权威（gpts 那份全是 false）。
+                # builtin 的 supports_images 是权威（gpts 那份全是 false），
+                # 这里的值直接覆盖 —— 图片能力的真来源就是它。
+                if _MODEL_VISION.get(mid) is not raw_vision:
+                    vision += 1
                 _MODEL_VISION[mid] = raw_vision
             if str(mid).lower() in already:
                 continue
@@ -1644,17 +1653,16 @@ def refresh_model_limits(access_key, secret_key, security_token,
                                            timeout=timeout) or {}
         models = ((detail.get("gpts") or {}).get("models")) or []
         fresh = 0
-        vision = 0
         for item in models:
             mp = (item or {}).get("model_parameters") or {}
             mid = str(mp.get("model_id") or "").strip()
             # 图片能力与限值分两条独立的路更新：一个模型只补齐了
-            # supports_images 但没给 input_length 时，视觉预检也该立刻受益。
-            # 只收真正的布尔值 —— 上游给字符串或给空，宁可不填（调用方会
-            # 回退到 builtin 清单），也不要把「没问到」写成 False。
+            # input_length 但没给 supports_images 时，限值也该立刻生效。
             #
-            # **已经有权威值就不覆盖**：builtin 说 Qwen3-VL 能读图，gpts 这份
-            # 却给 false，按后到的覆盖会把它降级成纯文本、连带拦掉读图请求。
+            # **builtin 已经给过就不覆盖**：builtin 的 supports_images 是
+            # 权威，gpts 这份实测全是 false，按后到的覆盖会把 Qwen3-VL /
+            # kimi-k2.6-vl 降级成纯文本、连带拦掉读图请求。只有 builtin
+            # 没覆盖到的模型（还没刷到），才用 gpts 的值兜底。
             if mid:
                 raw_vision = mp.get("supports_images")
                 if isinstance(raw_vision, bool) and mid not in _MODEL_VISION:

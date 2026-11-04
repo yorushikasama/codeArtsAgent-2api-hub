@@ -1,5 +1,19 @@
 ## Unreleased
 
+**2026-11-04：模型能力一律跟上游走，删掉按模型名写死的能力判断**
+
+- **`thinking_variants()` 漏了 `return`，逆向出来的档位接口从来没生效过**。函数一路算到 `out` 就落到下一个常量定义，**永远返回 `None`**（2026-11-04 实测线上复现）。调用方拿到 `None` 当成「上游没数据」，于是只剩 `THINKING_STRENGTHS_SEED` 那份写死的种子在起作用。而上游其实一直有完整数据：`POST /v1/model/thinking-variants` 返回 `GLM-5.2 → {strengths:["high","max"], default:"high"}`、其余内置模型 `strengths:[]`。
+
+  影响不只是「少个功能」：`glm-5.3` 档位为空是**所有模型里最关键的一条** —— 官方对它永远不发 `reasoning_effort`，我们以前把客户端的 `effort=max` 原样转发，上游深度思考几十秒不吐首字节，正好撞进 APIG 的 ~60s 空闲上限（2026-10-23 同一请求连断四次）。这条保护一直靠种子表撑着，上游改配置时不会跟着变。现在补上 `return out`，档位表按上游实时值生效，种子只作拉取失败时的兜底。
+
+- **删掉 `glm-5.3-flash` 的硬编码能力修正**（`ca_proxy.py` 与面板 `60-codearts.js` 各一处）。那是 issue #315 时期的一次性补丁：当时上游清单写 `supports_images=true`，而实际通道回 `406 not multimodal`，于是用 `if mid == "glm-5.3-flash": vision = False` 按死，面板上盖一个「文本 (实测无视觉)」的警告章。2026-11-04 复查：上游对这个模型**已经明确返回 `supports_images=false`**，补丁成了过期死分支；而按模型名写死的真正代价是 —— 上游哪天真的给它开通视觉，这两处会一直把它按住不放。现在能力**只**来自上游三处：AgentCenter 的 `supports_images`、`/v1/model/builtin` 的 `supports_images`、以及真打真回 406 时的反向校准（`note_vision_rejected`）。面板只在服务端下发 `vision_note`（406 的实际记录）时才显示警告章。
+
+- **`vision flags` 计数口径修正**：以前只统计 `gpts.models[]` 一侧，而 builtin 那侧（图片能力的**真正来源**）写入时压根不计数，于是日志长期打印 `0 vision flag(s)`，看起来像「上游没给图片能力」，实际给了。
+
+  验证方式：把 stub 的 `supports_images` 在 True/False 之间来回改，`/v1/models` 的 `supports_vision` 与 `input_modalities` 立刻跟着变，没有任何本地分支参与。
+
+- 新增 8 项断言（`tests/_test_codearts_models.py`）：档位表真的返回 dict、`strengths`/`default`/空数组/非 dict 条目各自的处理，以及能力在两个方向上都必须跟随上游、且不再产生 `vision_note`。
+
 **2026-11-03：清理 WorkBuddy 遗留 —— 死表 `ca_catalog.py` 在污染码道模型的元数据**
 
 WorkBuddy 账号池本体早在 2026-10-23 就删干净了（`_dispatch_chat_post` 里非码道模型一律 404，没有任何「第二条上游」的代码路径）。但**它的静态模型表还在跑**：

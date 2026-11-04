@@ -3937,13 +3937,18 @@ function renderAvailableModels(){
     }
 
     // 2. 模型能力 (Vision, Tool calls)
+    //   能力**全部来自服务端下发的字段**，这里不按模型 id 做任何特判。
+    //   以前有一条 `m.id === 'glm-5.3-flash'` 会盖上「文本 (实测无视觉)」的
+    //   警告章 —— 那是 issue #315 的一次性补丁，2026-11-04 复查上游已对该
+    //   模型明确给 supports_images=false，特判既过期、又会在上游开通视觉后
+    //   继续按住它。现在只有服务端给出 vision_note（真打真回 406 的校准记录）
+    //   时才显示警告章，其余一律按 supports_vision 走。
     const caps = [];
     const hasVis = m.supports_vision || m.vision || m.multimodal || (m.input_modalities && m.input_modalities.includes('image'));
     if(hasVis){
       caps.push('<span class="badge ok" style="font-size:11px">视觉</span>');
-    } else if(m.id === 'glm-5.3-flash' || m.vision_note){
-      const tip = m.vision_note || '上游配置宣告支持多模态，但实际后端未接入视觉通道，已强制修正为纯文本';
-      caps.push('<span class="badge warn" style="font-size:11px;background:var(--warn-soft);color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,transparent)" title="' + esc(tip) + '">文本 (实测无视觉)</span>');
+    } else if(m.vision_note){
+      caps.push('<span class="badge warn" style="font-size:11px;background:var(--warn-soft);color:var(--warn);border-color:color-mix(in srgb,var(--warn) 35%,transparent)" title="' + esc(m.vision_note) + '">文本 (实测无视觉)</span>');
     } else {
       caps.push('<span class="badge" style="color:var(--dim);font-size:11px">文本</span>');
     }

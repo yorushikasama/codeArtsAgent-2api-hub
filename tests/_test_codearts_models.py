@@ -571,5 +571,62 @@ finally:
     C._reset_model_index()
 
 print()
+print("== thinking_variants 必须真的返回解析结果（2026-11-04）==")
+# 这个函数以前漏了 `return out`：一路算到 out 就落到下一个常量定义，永远
+# 返回 None。花了大代价逆向出来的「POST /v1/model/thinking-variants 取档位表」
+# 于是一直没生效 —— 调用方拿到 None 当「上游没数据」，只剩写死的种子在用。
+# 现有测试全都把 thinking_variants stub 掉，所以从来没测到函数本身。
+_saved_http = C._http
+try:
+    C._http = lambda *a, **k: {"variants": {
+        "GLM-5.2": {"strengths": ["high", "max"], "default_strength": "high"},
+        "GLM-5.3": {"strengths": [], "default_strength": ""},
+        "broken": "not-a-dict",
+    }}
+    _v = C.thinking_variants("ak", "sk", None, ["GLM-5.2", "GLM-5.3"])
+    check("档位表：真的返回 dict（不是 None）",
+          isinstance(_v, dict), type(_v))
+    check("档位表：strengths 解析正确",
+          _v.get("GLM-5.2") == {"strengths": ["high", "max"], "default": "high"}, _v)
+    check("档位表：空数组原样保留（=没有可调档位）",
+          _v.get("GLM-5.3") == {"strengths": [], "default": ""}, _v)
+    check("档位表：非 dict 条目被跳过",
+          "broken" not in _v, _v)
+finally:
+    C._http = _saved_http
+
+print()
+print("== 能力不能按模型名写死（2026-11-04）==")
+# glm-5.3-flash 曾有一条写死的 `vision = False` 补丁（issue #315 时代：上游
+# 清单写 supports_images=true、实际回 406）。上游后来已改成 false，补丁成了
+# 死分支；更糟的是上游真开通视觉后它会把模型一直按住。现在能力只跟上游走。
+_saved_bm2 = C.builtin_models
+_saved_aa2 = C.agent_center_agents
+try:
+    for _declared in (True, False):
+        C.builtin_models = (lambda *a, _d=_declared, **k: [
+            {"model_id": "glm-5.3-flash", "enable": True,
+             "supports_images": _d}])
+        C.agent_center_agents = lambda *a, **k: {"agents": []}
+        C._MODEL_VISION.clear()
+        C._MODEL_LIMITS_REFRESHED_AT[0] = 0.0
+        C.refresh_model_limits("ak", "sk", None)
+        _cat = C.normalize_builtin(C.builtin_models())
+        _entry = P.model_entry(_cat[0]["id"], P.codearts_model_meta(_cat[0]))
+        check("能力跟上游：declared=%s → /v1/models vision=%s"
+              % (_declared, _declared),
+              _entry.get("supports_vision") is _declared, _entry.get("supports_vision"))
+        check("能力跟上游：declared=%s → 不再有硬编码 vision_note" % _declared,
+              not _entry.get("vision_note"), _entry.get("vision_note"))
+finally:
+    C.builtin_models = _saved_bm2
+    C.agent_center_agents = _saved_aa2
+    C._MODEL_VISION.clear()
+    C._MODEL_LIMITS_REFRESHED_AT[0] = 0.0
+    C._EXTRA_MODELS.clear()
+    C._EXTRA_MODELS_SEEN.clear()
+    C._reset_model_index()
+
+print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))
 sys.exit(1 if FAIL else 0)

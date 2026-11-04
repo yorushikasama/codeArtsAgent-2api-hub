@@ -5141,10 +5141,15 @@ def model_entry(mid, meta):
         truth = None
     if truth is not None:
         vision = truth
-    if mid == "glm-5.3-flash":
-        # 强制修正：上游元数据虽宣告支持多模态，但后端实际未接入视觉通道（见 issue #315）
-        vision = False
-        item["vision_note"] = "上游宣告多模态但实际通道不支持读图，已修正为纯文本" 
+    # 这里**没有按模型名的硬编码修正**，以后也不要加。曾经有一条
+    # ``if mid == "glm-5.3-flash": vision = False``，附一句「上游宣告多模态但
+    # 实际不支持」的说明 —— 那是 issue #315 时的一次性补丁：当时上游清单写
+    # ``supports_images=true``、实际通道回 406。2026-11-04 复查，上游对这个
+    # 模型已经明确给 ``supports_images=false``，补丁成了过期的死分支。
+    #
+    # 能力的唯一来源是上游：AgentCenter 与 builtin 两个清单（上面两段），
+    # 加上真打真回时的 406 反向校准（``note_vision_rejected``）。按模型名写死
+    # 的代价是：上游哪天真给这个模型开通视觉，这里会一直把它按住不放。
     tools = bool(meta.get("supportsToolCall"))
     thinks = bool(meta.get("supportsReasoning"))
     inputs = ["text"] + (["image"] if vision else [])
