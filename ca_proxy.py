@@ -1218,6 +1218,10 @@ def _daily_state_copy(source):
     }
 
 
+def _empty_daily_state():
+    return {"tokens": {}, "credits": {}, "models": {}}
+
+
 def daily_usage_stats(ttl=None):
     """Today's per-account usage folded from the log, cached for `ttl` seconds.
 
@@ -1238,14 +1242,14 @@ def daily_usage_stats(ttl=None):
         if c["day"] == day and c["totals"] is not None:
             state = _daily_state_copy(c)
         else:
-            state = {"tokens": {}, "credits": {}, "models": {}}
+            state = _empty_daily_state()
         offset = int(c["offset"] or 0)
         try:
             size = os.path.getsize(USAGE_LOG)
         except OSError:
             size = 0
         if offset > size:
-            state = {"tokens": {}, "credits": {}, "models": {}}
+            state = _empty_daily_state()
             offset = 0
         try:
             state, offset = _scan_daily_usage(offset, state)
@@ -2418,6 +2422,11 @@ def runtime_settings_view():
             "realm": entry.get("realm") or "",
             "models": list(entry.get("models") or []),
             "enabled": entry.get("enabled", True) is not False,
+            # 三个按 key 的限额都要带出来：面板的编辑框是「读回来 → 改 → 提交
+            # 整份列表」，少回一个字段，操作员下次一保存就把它清零了。
+            "concurrency_limit": int(entry.get("concurrency_limit") or 0),
+            "rate_limit_rpm": int(entry.get("rate_limit_rpm") or 0),
+            "credit_limit": float(entry.get("credit_limit") or 0),
             "masked": (raw[:4] + "*" * 6 + raw[-4:]) if len(raw) > 8 else "*" * len(raw),
             "source": entry.get("source") or "panel",
             "created_at": entry.get("created_at") or "",
@@ -6104,6 +6113,15 @@ def gateway_hint(status, message):
             or "maximum context" in lower):
         return ("request context exceeds the model's limit; reduce "
                 "history/message size")
+    # 本地按 key 的限额：这些 429 **不是**上游限流，等一会儿也不会好
+    # （积分额度尤其不会 —— 它是总量，不按天重置）。放在上游 rate limit
+    # 那条之前，否则用户会照着「retry after reset」一直重试。
+    if "积分额度已用尽" in text:
+        return ("this key's lifetime credit quota is spent; raise or reset it in "
+                "the panel's Settings page - retrying will not help")
+    if status == 429 and "may send" in lower and "per minute" in lower:
+        return ("this key hit its per-minute request cap; wait for the window "
+                "to slide, or raise the cap in Settings")
     if status == 429 or "rate limit" in lower or "frequency limit" in lower:
         return "rate limited by upstream; retry after reset"
     if status == 402 or ("insufficient" in lower and "credit" in lower):
@@ -6977,6 +6995,91 @@ def _release_key_slot(key_entry):
         else:
             _key_active_concurrency.pop(k_id, None)
 
+
+# ---------------------------------------------------------------------------
+# Per-key throttle: requests per minute + lifetime credit quota
+# ---------------------------------------------------------------------------
+#
+# 并发上限管「同时几条」，这两种管「多久一条」和「一辈子能花多少」——
+# 把 key 分给别人时，真正要防的是后两件事：并发为 0 的 key 只要不并行，
+# 就能一口气把账号积分烧光。
+#
+# 两者都只挂在 `_dispatch_chat_with_accounting` 这一个入口上：/v1/chat/
+# completions、/v1/responses、/v1/messages 三个协议都从那里进，按 key 的
+# 并发上限也是这么做的（见 _acquire_key_slot）—— 一个判据，三条路径一致。
+KEY_RATE_WINDOW_SECONDS = 60.0
+
+#: key id -> deque[单调秒]。用单调时钟而不是 wall clock：服务器对时把
+#: 系统时间往回调一次，wall clock 窗口就会卡住（或者瞬间放行一大批）。
+_key_rate_windows = {}
+_key_rate_lock = threading.Lock()
+
+
+def _key_rate_reserve(key_entry):
+    """记一次请求并判断是否超每分钟上限。返回 (ok, limit, retry_after)。
+
+    先记账再判断：被拒的这一次也算进窗口。否则一个卡在重试循环里的客户端
+    能靠「一直被拒 / 永远不占额度」把网关刷成空转。
+    """
+    limit = ca_settings.key_rate_limit(key_entry)
+    if limit <= 0:
+        return True, 0, 0.0
+    if not isinstance(key_entry, dict) or not key_entry.get("id"):
+        return True, 0, 0.0
+    k_id = key_entry["id"]
+    now = time.monotonic()
+    with _key_rate_lock:
+        window = _key_rate_windows.setdefault(k_id, deque())
+        cutoff = now - KEY_RATE_WINDOW_SECONDS
+        while window and window[0] <= cutoff:
+            window.popleft()
+        window.append(now)
+        if len(window) <= limit:
+            return True, limit, 0.0
+        # 窗口里最老的那一条滑出去才有名额。
+        retry_after = max(0.0, window[0] + KEY_RATE_WINDOW_SECONDS - now)
+        return False, limit, retry_after
+
+
+def _key_rate_reset():
+    """丢开所有窗口（测试用；面板改限额不需要它，下一个窗口自然生效）。"""
+    with _key_rate_lock:
+        _key_rate_windows.clear()
+
+
+def _key_credit_check(key_entry):
+    """按 key 的**累计**积分额度。返回 (ok, limit, used)。
+
+    累计而不是每日：把 key 交出去要防的是「这个人一共能烧掉多少」，而每日
+    额度一过午夜就清零，管不住总量。
+
+    已用量读不到（``key_credit_total`` 返回 None）时**放行**并留日志：一次
+    读盘抖动不该把所有人的 key 都停掉。这与每日 token 限额那边「读失败当成
+    未知、绝不当成已满」同一条规矩。
+    """
+    limit = ca_settings.key_credit_limit(key_entry)
+    if limit <= 0:
+        return True, 0.0, 0.0
+    if not isinstance(key_entry, dict):
+        return True, 0.0, 0.0
+    k_id = key_entry.get("id")
+    if not k_id:
+        return True, 0.0, 0.0
+    used = ca_usage.key_credit_total(k_id)
+    if used is None:
+        log("key credit total unavailable for %r; letting the request through"
+            % k_id, level="WARN")
+        return True, limit, 0.0
+    return used < limit, limit, used
+
+
+def _key_credit_message(entry, limit, used):
+    name = (entry or {}).get("name") or "未命名"
+    return ("API Key「%s」的积分额度已用尽：累计已用 %.2f / 上限 %.2f 积分。"
+            "这是这个 Key 一生可用的总量，不会按天重置；要调高或清零请在"
+            "看板「设置」页修改这个 Key 的积分额度。"
+            % (name, used, limit))
+
 # ---------------------------------------------------------------------------
 # 面板设置保存：校验与写入分成两段
 #
@@ -7069,6 +7172,19 @@ def _validate_settings_patch(payload):
                 limit = max(0, int(raw_limit or 0))
             except (TypeError, ValueError):
                 limit = 0
+            # 两个节流字段同一套「提交里没有就沿用已存值」的规矩：面板缓存
+            # 可能是旧版（根本不知道这些字段），按缺失就当 0 会把操作员设过
+            # 的额度在任意一次保存后悄悄清掉。
+            if "rate_limit_rpm" in item:
+                raw_rpm = item.get("rate_limit_rpm")
+            else:
+                raw_rpm = stored.get("rate_limit_rpm")
+            rpm = ca_settings._non_negative_int(raw_rpm)
+            if "credit_limit" in item:
+                raw_credit = item.get("credit_limit")
+            else:
+                raw_credit = stored.get("credit_limit")
+            credit_limit = ca_settings._non_negative_float(raw_credit)
             created_at = (item.get("created_at")
                           or (stored.get("created_at")
                               if entry_id in existing else None)
@@ -7081,6 +7197,8 @@ def _validate_settings_patch(payload):
                 "models": models,
                 "enabled": enabled,
                 "concurrency_limit": limit,
+                "rate_limit_rpm": rpm,
+                "credit_limit": credit_limit,
                 "created_at": created_at,
             })
         plan["api_keys"] = (cleaned, delete_ids if upsert else None)
@@ -7707,11 +7825,18 @@ class Handler(BaseHTTPRequestHandler):
         # 返回 None，于是已回完 502 的路径又被当成成功继续走 result["model"]，
         # 每条失败请求都在日志里留一段 TypeError 栈，还把真实错误埋掉。
         return RESPONDED
-    def _anthropic_error(self, code, message, err_type=None):
+    def _anthropic_error(self, code, message, err_type=None, retry_after=None):
         """Reply with the Anthropic JSON error envelope, not OpenAI's."""
         self._handle_expect_continue()
         self._discard_body()
+        # 与 _error 同口径：429/503 带 Retry-After，否则客户端只能盲猜。
+        # Anthropic 客户端同样读这个头（Claude Code 按它退避）。
+        if retry_after is None and code in (429, 503):
+            retry_after = LOCAL_RETRY_AFTER_SECONDS
+        if retry_after:
+            self._retry_after = max(1, int(retry_after))
         self._json(code, anthropic_error_obj(code, message, err_type))
+        self._retry_after = None
         return RESPONDED
     def _rate_limited(self, exc):
         """429 with Retry-After, so clients back off instead of hammering.
@@ -7861,6 +7986,7 @@ class Handler(BaseHTTPRequestHandler):
         rows written before the key field existed.
         """
         return (self.key_entry or {}).get("id") or None
+
     def _banned_model_error(self, model):
         """被封锁的模型直接报错，不碰上游、不扣任何点数。"""
         if not is_model_banned(model):
@@ -9210,17 +9336,47 @@ class Handler(BaseHTTPRequestHandler):
             request_finished()
 
     def _dispatch_chat_with_accounting(self, path, payload, is_messages_route):
+        # 三种按 key 的闸门都放在这里，顺序按成本从低到高：并发（求内存）→
+        # 每分钟（求时间）→ 累计积分（增量折一次日志）。任何一道拦下都直接
+        # 429，不碰上游、不占会话名额。
+        #
+        # count_tokens 是纯本地估算、不打上游，也不产生任何用量，让它占
+        # 计数额度会让 Claude Code 这种「每轮先数一遍 token」的客户端把
+        # 额度白白吃掉一半。
+        metered = not path.endswith("/count_tokens")
+
+        def key_throttled(message, retry_after=None):
+            record_error(payload.get("model") or "unknown", 429, message,
+                         stream=payload.get("stream"), key=self._key_id())
+            if is_messages_route:
+                return self._anthropic_error(429, message, "rate_limit_error",
+                                             retry_after=retry_after)
+            return self._error(429, message, "rate_limit_error",
+                               retry_after=retry_after)
+
         # Check per-key concurrency limit (#359)
         key_ok, cur_key_conc, max_key_conc = _acquire_key_slot(self.key_entry)
         if not key_ok:
             key_name = (self.key_entry or {}).get("name") or self._key_id() or "当前 Key"
             message = ("Rate limit reached: API key '%s' reached its concurrency limit (%d in flight); retry shortly"
                        % (key_name, max_key_conc))
-            record_error(payload.get("model") or "unknown", 429, message,
-                         stream=payload.get("stream"), key=self._key_id())
-            if is_messages_route:
-                return self._anthropic_error(429, message, "rate_limit_error")
-            return self._error(429, message, "rate_limit_error")
+            return key_throttled(message)
+
+        if metered:
+            rate_ok, rate_limit, retry_after = _key_rate_reserve(self.key_entry)
+            if not rate_ok:
+                key_name = (self.key_entry or {}).get("name") or "当前 Key"
+                message = ("Rate limit reached: API key '%s' may send %d "
+                           "request(s) per minute; retry in %.1fs"
+                           % (key_name, rate_limit, retry_after))
+                _release_key_slot(self.key_entry)
+                return key_throttled(message, retry_after=retry_after)
+            quota_ok, quota_limit, quota_used = _key_credit_check(self.key_entry)
+            if not quota_ok:
+                _release_key_slot(self.key_entry)
+                return key_throttled(
+                    _key_credit_message(self.key_entry, quota_limit,
+                                        quota_used))
 
         try:
             if is_messages_route:

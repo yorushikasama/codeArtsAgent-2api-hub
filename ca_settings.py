@@ -458,6 +458,47 @@ def key_allows_model(entry, model):
     return any(fnmatch.fnmatchcase(name, pattern) for pattern in patterns)
 
 
+def _non_negative_int(value):
+    """One key throttle field. Junk, negatives and bools collapse to 0 (= off).
+
+    bool is an int subclass, so ``True`` would otherwise store 1 and silently
+    throttle the key to one request per minute - the same trap the panel's
+    section-height field already documents.
+    """
+    if isinstance(value, bool):
+        return 0
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _non_negative_float(value):
+    if isinstance(value, bool):
+        return 0.0
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def key_rate_limit(entry):
+    """Requests per minute this key may send; 0 means unthrottled."""
+    return _non_negative_int((entry or {}).get("rate_limit_rpm"))
+
+
+def key_credit_limit(entry):
+    """Credits this key may spend **in total** over its lifetime; 0 = unlimited.
+
+    Total, not per-day: the point of handing someone a key is to cap what they
+    can ever burn out of the shared account pool, and a daily cap just resets
+    every midnight. Credits rather than tokens because the account's own daily
+    guards are already token-based, and what an operator actually cares about
+    is how much of the paid pool that key can consume.
+    """
+    return _non_negative_float((entry or {}).get("credit_limit"))
+
+
 def _clean_key_entry(entry):
     """Normalize one stored key entry; returns None when unusable.
 
@@ -483,6 +524,10 @@ def _clean_key_entry(entry):
         "key": key,
         "models": _clean_model_patterns(entry.get("models")),
         "concurrency_limit": concurrency,
+        # 每分钟请求数上限。0 = 不限，也是所有旧配置读回来的值。
+        "rate_limit_rpm": _non_negative_int(entry.get("rate_limit_rpm")),
+        # 这个 key 一生可消耗的积分总额上限。0 = 不限。
+        "credit_limit": _non_negative_float(entry.get("credit_limit")),
         "enabled": False if deleted_at else entry.get("enabled", True) is not False,
         "created_at": entry.get("created_at") or time.strftime("%Y/%m/%d %H:%M"),
         "deleted_at": deleted_at,

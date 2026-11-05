@@ -4043,6 +4043,67 @@ def _analytics_all_time(realm):
         _usage_cache_maybe_save("analytics", offset)
     return maps, offset
 
+
+# ---------------------------------------------------------------------------
+# 按 key 的**累计**积分（key 的总额度用）
+# ---------------------------------------------------------------------------
+# 不能复用 _analytics_all_time：那一份只在面板被打开时才往前折，没人开面板
+# 它就永远停在冷状态；而额度判定必须在**每条请求**上都准。
+#
+# 这里单独维护一个累加器：第一次有人问才建，建的时候从文件头读一遍（一次性
+# 成本，日志已经按 MB 计也就几十毫秒），之后跟着字节偏移增量折，跨重启从
+# checkpoint 续——和 daily / snapshot 那几套同一个套路。
+_key_credit_state = {"key": None, "offset": 0, "credits": {}, "tail": b""}
+_key_credit_lock = threading.Lock()
+
+
+def _key_credit_advance():
+    """把新增的用量行折进 _key_credit_state（调用方持锁）。返回是否成功。"""
+    state = _key_credit_state
+    log_key = _usage_log_key()
+    if state["key"] != log_key:
+        # 日志被轮转 / 换目录：从头重折，否则会拿旧文件的偏移去读新文件。
+        state.update({"key": log_key, "offset": 0, "credits": {}, "tail": b""})
+
+    def fold(row):
+        k_id = row.get("key")
+        if not k_id:
+            return
+        credit = row.get("credit") or 0
+        if credit:
+            state["credits"][k_id] = state["credits"].get(k_id, 0.0) + credit
+
+    offset, error = _scan_usage_from(state["offset"], fold)
+    if error is not None:
+        _log("key credit fold failed: %s" % error)
+        return False
+    state["offset"] = offset
+    return True
+
+
+def key_credit_total(key_id):
+    """`key_id` 至今累计花掉的积分（key 总额度判定用）。
+
+    返回 None 表示「读不到」（日志打不开 / 折到一半出错）。调用方必须把
+    None 和 0 分开：读盘失败被当成「还没花」，等于额度形同虚设；被当成
+    「已花满」，等于一次 I/O 抖动就把所有人的 key 停掉。调用方现在的选择
+    是**放行**并在日志里留痕。
+    """
+    k_id = str(key_id or "")
+    if not k_id:
+        return None
+    with _key_credit_lock:
+        if not _key_credit_advance():
+            return None
+        return float(_key_credit_state["credits"].get(k_id) or 0.0)
+
+
+def key_credit_reset():
+    """丢开累加器（测试用）。"""
+    with _key_credit_lock:
+        _key_credit_state.update({"key": None, "offset": 0, "credits": {},
+                                  "tail": b""})
+
 def _analytics_state_advance(realm):
     """（不折叠）取/建状态、采纳 checkpoint、判废归零。
 
