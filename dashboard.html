@@ -3534,6 +3534,23 @@ async function loadCodeartsAccounts(){
     set('<p class="hint">还没有码道账号。走完一次授权就能添加一个。</p>');
     return;
   }
+  // 积分 / 签到现在读的是后台定时落盘的快照（面板不再现场等上游），所以
+  // 要明确告诉用户「这份数字有多旧」：新鲜时什么都不显示，超过一分钟才提。
+  // 以前这两个数是请求路径上现取的，用户天然知道是实时值；改成快照之后
+  // 「知道自己多旧」这条信息必须补上，否则旧数字会被当成实时值。
+  const snap = (r && r.snapshot) || null;
+  let snapNote = '';
+  if(snap && snap.present && snap.age_seconds != null){
+    const age = Number(snap.age_seconds) || 0;
+    if(age >= 60){
+      snapNote = '<p class="hint" style="margin:6px 0 2px">'
+        + '积分/签到为 ' + caLeft(age) + '前的快照'
+        + (snap.stale ? '（后台刷新可能已停，稍后会重试）' : '') + '</p>';
+    }
+  }else if(snap && !snap.present){
+    snapNote = '<p class="hint" style="margin:6px 0 2px">'
+      + '尚未生成后台快照，这次是现场向上游取的（较慢，之后会变快）</p>';
+  }
   // 渲染放进 try：一旦某一项抛错，之前的表现是 set() 永远不执行、页面就一直
   // 停在「正在读取…」，看不出任何线索（fmtTime 那次就是这么被藏住的）。
   let html;
@@ -3606,7 +3623,7 @@ async function loadCodeartsAccounts(){
     set('<p class="hint">账号列表渲染失败：' + esc(e && e.message ? e.message : e) + '</p>');
     return;
   }
-  set(html);
+  set(snapNote + html);
 }
 
 /* 每日签到（活动页「每日签到领 1000 积分」）的状态行。它是 /v1/ops 的
@@ -5801,6 +5818,8 @@ async function loadSettings(showToast){
       masked: k.masked || '',
       models: Array.isArray(k.models) ? k.models.slice() : [],
       concurrency_limit: parseInt(k.concurrency_limit || 0, 10) || 0,
+      rate_limit_rpm: parseInt(k.rate_limit_rpm || 0, 10) || 0,
+      credit_limit: parseFloat(k.credit_limit || 0) || 0,
       enabled: k.enabled !== false,
       created_at: k.created_at || '',
       _editing: false,
@@ -6315,6 +6334,16 @@ function renderKeyRows(){
         +     '<input type="number" min="0" max="1000" id="editKeyConc_' + i + '" value="' + (row.concurrency_limit || '') + '" placeholder="0 代表不限制" '
         +       'style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
         +   '</div>'
+        +   '<div>'
+        +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">每分钟请求数 <span style="color:var(--dim-light)">(选填，0 = 不限)</span></div>'
+        +     '<input type="number" min="0" max="100000" id="editKeyRpm_' + i + '" value="' + (row.rate_limit_rpm || '') + '" placeholder="0 代表不限制" '
+        +       'style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
+        +   '</div>'
+        +   '<div>'
+        +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">积分总额度 <span style="color:var(--dim-light)">(选填，0 = 不限；累计，不按天重置)</span></div>'
+        +     '<input type="number" min="0" step="0.01" id="editKeyCredit_' + i + '" value="' + (row.credit_limit || '') + '" placeholder="如 500，用满后这个 Key 一律 429" '
+        +       'style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
+        +   '</div>'
         +   '<div style="grid-column:1 / -1">'
         +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">模型限制 <span style="color:var(--dim-light)">(选填，留空 = 不限制)</span></div>'
           +     '<input type="text" id="editKeyModels_' + i + '" value="' + esc(modelPatternsText(row.models)) + '" placeholder="如 deepseek* 或 gpt-6-astra；多个用逗号分隔，支持 * 通配" '
@@ -6343,6 +6372,12 @@ function renderKeyRows(){
     const concBadge = (row.concurrency_limit && row.concurrency_limit > 0)
       ? '<span class="badge s mini" style="font-size:11px">并发上限 ' + row.concurrency_limit + '</span>'
       : '';
+    const rpmBadge = (row.rate_limit_rpm && row.rate_limit_rpm > 0)
+      ? '<span class="badge s mini" style="font-size:11px">' + row.rate_limit_rpm + ' 次/分</span>'
+      : '';
+    const creditBadge = (row.credit_limit && row.credit_limit > 0)
+      ? '<span class="badge s mini" style="font-size:11px">额度 ' + row.credit_limit + ' 积分</span>'
+      : '';
     const modelBadge = (Array.isArray(row.models) && row.models.length)
       ? '<span class="badge s" style="font-size:11px">限 ' + esc(modelPatternsText(row.models)) + '</span>'
       : '';
@@ -6358,6 +6393,8 @@ function renderKeyRows(){
       +       statusBadge
       +       modelBadge
         +       concBadge
+      +       rpmBadge
+      +       creditBadge
       +     '</div>'
       +     '<div style="font-size:12px;color:var(--dim);display:flex;align-items:center;gap:16px;flex-wrap:wrap">'
       +       '<span>Key: <span class="mono" style="color:var(--fg);font-weight:500">' + esc(displayKey) + '</span></span>'
@@ -6405,6 +6442,8 @@ async function saveSingleKey(index, btn){
   const keyInput = document.getElementById('editKeyValue_' + index);
   const modelsInput = document.getElementById('editKeyModels_' + index);
     const concInput = document.getElementById('editKeyConc_' + index);
+    const rpmInput = document.getElementById('editKeyRpm_' + index);
+    const creditInput = document.getElementById('editKeyCredit_' + index);
 
   const name = nameInput ? nameInput.value.trim() : (row.name || '');
   const keyVal = keyInput ? keyInput.value.trim() : (row.key || '');
@@ -6417,6 +6456,8 @@ async function saveSingleKey(index, btn){
   row.name = name || '未命名';
   row.models = parseModelPatterns(modelsInput ? modelsInput.value : modelPatternsText(row.models));
     row.concurrency_limit = Math.max(0, parseInt((concInput ? concInput.value : row.concurrency_limit) || 0, 10) || 0);
+    row.rate_limit_rpm = Math.max(0, parseInt((rpmInput ? rpmInput.value : row.rate_limit_rpm) || 0, 10) || 0);
+    row.credit_limit = Math.max(0, parseFloat((creditInput ? creditInput.value : row.credit_limit) || 0) || 0);
   if(keyVal) row.key = keyVal;
   row._editing = false;
 
@@ -6475,6 +6516,8 @@ function addApiKeyRow(){
     key: randomKeyValue(),
     models: [],
       concurrency_limit: 0,
+    rate_limit_rpm: 0,
+    credit_limit: 0,
     enabled: true,
     masked: '',
     _editing: true
@@ -6547,6 +6590,8 @@ async function saveApiKeys(btn){
       name: row.name || '',
       models: row.models || [],
         concurrency_limit: parseInt(row.concurrency_limit || 0, 10) || 0,
+      rate_limit_rpm: parseInt(row.rate_limit_rpm || 0, 10) || 0,
+      credit_limit: parseFloat(row.credit_limit || 0) || 0,
       enabled: row.enabled !== false,
       // Blank means "keep the stored key", which the server honours per row.
       key: (row.key || '').trim(),

@@ -1225,6 +1225,8 @@ async function loadSettings(showToast){
       masked: k.masked || '',
       models: Array.isArray(k.models) ? k.models.slice() : [],
       concurrency_limit: parseInt(k.concurrency_limit || 0, 10) || 0,
+      rate_limit_rpm: parseInt(k.rate_limit_rpm || 0, 10) || 0,
+      credit_limit: parseFloat(k.credit_limit || 0) || 0,
       enabled: k.enabled !== false,
       created_at: k.created_at || '',
       _editing: false,
@@ -1739,6 +1741,16 @@ function renderKeyRows(){
         +     '<input type="number" min="0" max="1000" id="editKeyConc_' + i + '" value="' + (row.concurrency_limit || '') + '" placeholder="0 代表不限制" '
         +       'style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
         +   '</div>'
+        +   '<div>'
+        +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">每分钟请求数 <span style="color:var(--dim-light)">(选填，0 = 不限)</span></div>'
+        +     '<input type="number" min="0" max="100000" id="editKeyRpm_' + i + '" value="' + (row.rate_limit_rpm || '') + '" placeholder="0 代表不限制" '
+        +       'style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
+        +   '</div>'
+        +   '<div>'
+        +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">积分总额度 <span style="color:var(--dim-light)">(选填，0 = 不限；累计，不按天重置)</span></div>'
+        +     '<input type="number" min="0" step="0.01" id="editKeyCredit_' + i + '" value="' + (row.credit_limit || '') + '" placeholder="如 500，用满后这个 Key 一律 429" '
+        +       'style="width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font:inherit;color:var(--fg)">'
+        +   '</div>'
         +   '<div style="grid-column:1 / -1">'
         +     '<div style="font-size:12px;color:var(--dim);margin-bottom:4px;font-weight:500">模型限制 <span style="color:var(--dim-light)">(选填，留空 = 不限制)</span></div>'
           +     '<input type="text" id="editKeyModels_' + i + '" value="' + esc(modelPatternsText(row.models)) + '" placeholder="如 deepseek* 或 gpt-6-astra；多个用逗号分隔，支持 * 通配" '
@@ -1767,6 +1779,12 @@ function renderKeyRows(){
     const concBadge = (row.concurrency_limit && row.concurrency_limit > 0)
       ? '<span class="badge s mini" style="font-size:11px">并发上限 ' + row.concurrency_limit + '</span>'
       : '';
+    const rpmBadge = (row.rate_limit_rpm && row.rate_limit_rpm > 0)
+      ? '<span class="badge s mini" style="font-size:11px">' + row.rate_limit_rpm + ' 次/分</span>'
+      : '';
+    const creditBadge = (row.credit_limit && row.credit_limit > 0)
+      ? '<span class="badge s mini" style="font-size:11px">额度 ' + row.credit_limit + ' 积分</span>'
+      : '';
     const modelBadge = (Array.isArray(row.models) && row.models.length)
       ? '<span class="badge s" style="font-size:11px">限 ' + esc(modelPatternsText(row.models)) + '</span>'
       : '';
@@ -1782,6 +1800,8 @@ function renderKeyRows(){
       +       statusBadge
       +       modelBadge
         +       concBadge
+      +       rpmBadge
+      +       creditBadge
       +     '</div>'
       +     '<div style="font-size:12px;color:var(--dim);display:flex;align-items:center;gap:16px;flex-wrap:wrap">'
       +       '<span>Key: <span class="mono" style="color:var(--fg);font-weight:500">' + esc(displayKey) + '</span></span>'
@@ -1829,6 +1849,8 @@ async function saveSingleKey(index, btn){
   const keyInput = document.getElementById('editKeyValue_' + index);
   const modelsInput = document.getElementById('editKeyModels_' + index);
     const concInput = document.getElementById('editKeyConc_' + index);
+    const rpmInput = document.getElementById('editKeyRpm_' + index);
+    const creditInput = document.getElementById('editKeyCredit_' + index);
 
   const name = nameInput ? nameInput.value.trim() : (row.name || '');
   const keyVal = keyInput ? keyInput.value.trim() : (row.key || '');
@@ -1841,6 +1863,8 @@ async function saveSingleKey(index, btn){
   row.name = name || '未命名';
   row.models = parseModelPatterns(modelsInput ? modelsInput.value : modelPatternsText(row.models));
     row.concurrency_limit = Math.max(0, parseInt((concInput ? concInput.value : row.concurrency_limit) || 0, 10) || 0);
+    row.rate_limit_rpm = Math.max(0, parseInt((rpmInput ? rpmInput.value : row.rate_limit_rpm) || 0, 10) || 0);
+    row.credit_limit = Math.max(0, parseFloat((creditInput ? creditInput.value : row.credit_limit) || 0) || 0);
   if(keyVal) row.key = keyVal;
   row._editing = false;
 
@@ -1899,6 +1923,8 @@ function addApiKeyRow(){
     key: randomKeyValue(),
     models: [],
       concurrency_limit: 0,
+    rate_limit_rpm: 0,
+    credit_limit: 0,
     enabled: true,
     masked: '',
     _editing: true
@@ -1971,6 +1997,8 @@ async function saveApiKeys(btn){
       name: row.name || '',
       models: row.models || [],
         concurrency_limit: parseInt(row.concurrency_limit || 0, 10) || 0,
+      rate_limit_rpm: parseInt(row.rate_limit_rpm || 0, 10) || 0,
+      credit_limit: parseFloat(row.credit_limit || 0) || 0,
       enabled: row.enabled !== false,
       // Blank means "keep the stored key", which the server honours per row.
       key: (row.key || '').trim(),

@@ -70,6 +70,7 @@ import urllib.error
 import urllib.request
 import uuid
 import ca_activity
+import ca_account_snapshot
 import ca_codearts
 import ca_protocol
 import ca_webtools
@@ -8390,12 +8391,18 @@ class Handler(BaseHTTPRequestHandler):
         capacity_now = codearts_concurrency()
         sessions = ca_codearts.load_sessions(ACCOUNTS_DIR)
 
-        # 每账号的两路上游查询（体验版积分 + 每日签到）。以前串行：每次弹窗
-        # 打开 / 每 5 秒轮询都要为 N 个账号付 2N 次 1-2s 的上游 HTTP，用户感知
-        # 「每次进去都加载很久」。两路都是独立 HTTP + 各自带锁的按 AK 缓存
-        # （_credit_cache / _welfare_cache），天然可并行 —— 线程池 fan-out 后
-        # 总耗时从「全部加和」压到「最慢的那一路」。
+        # 积分 / 签到优先读**后台物化的快照**（见 ca_account_snapshot）。
+        # 以前这两路是在请求路径上懒加载的：冷启动（含每次重启后第一次进
+        # 面板）要为 N 个账号付 2N 次上游 HTTP —— 线上实测 4 账号并行仍要
+        # 3.6 秒，用户感知就是「每次进去都转半天」。现在由后台线程每分钟
+        # 拉一遍写盘，这里只读文件，实测 0 秒。
+        #
+        # 快照读不到（首次启动还没跑过一轮 / 文件坏了）就退回原来的懒加载
+        # 路径 —— 快照是加速手段，不能成为面板打不开的新原因。
+        snapshot = ca_account_snapshot.load_snapshot(ACCOUNTS_DIR)
+
         def _fetch_upstream(session):
+            """按会话取两路上游。只在没有快照时走到这里。"""
             out = {}
             # 两路都带 allow_stale：缓存过一秒就同步打上游的话，面板每次
             # 「过期那一下」都要等 1.2–2.2 秒（三账号并行也压不到 1 秒以下，
@@ -8422,14 +8429,20 @@ class Handler(BaseHTTPRequestHandler):
                 out["welfareError"] = str(exc)
             return out
 
-        # 每账号 2 路并发，总池子按账号数翻倍、封顶 8：账号就几个，开大了只会
-        # 让上游以为被压测。空列表给 1（ThreadPoolExecutor 不收 0）。
-        workers = min(8, max(1, len(sessions) * 2))
-        try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-                fetched = list(pool.map(_fetch_upstream, sessions))
-        except Exception:  # noqa: BLE001  线程池本身起不来：退回串行，别让面板空转
-            fetched = [_fetch_upstream(session) for session in sessions]
+        if snapshot is not None:
+            fetched = [ca_account_snapshot.account_entry(
+                snapshot, (session.get("account") or {}).get("id"))
+                or {"credit": None, "welfare": None}
+                for session in sessions]
+        else:
+            # 每账号 2 路并发，总池子按账号数翻倍、封顶 8：账号就几个，开大了只会
+            # 让上游以为被压测。空列表给 1（ThreadPoolExecutor 不收 0）。
+            workers = min(8, max(1, len(sessions) * 2))
+            try:
+                with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
+                    fetched = list(pool.map(_fetch_upstream, sessions))
+            except Exception:  # noqa: BLE001  线程池本身起不来：退回串行，别让面板空转
+                fetched = [_fetch_upstream(session) for session in sessions]
 
         items = []
         for session, extra in zip(sessions, fetched):
@@ -8449,8 +8462,17 @@ class Handler(BaseHTTPRequestHandler):
             port = self.server.server_address[1]
         except Exception:
             port = None
+        # 快照的新鲜度一并回给面板：数据旧了要能显示「N 分钟前」，
+        # 而不是让人误以为是实时值。
+        age = ca_account_snapshot.snapshot_age(snapshot)
         return self._json(200, {
             "accounts": items,
+            "snapshot": {
+                "present": snapshot is not None,
+                "age_seconds": None if age is None else round(age, 1),
+                "stale": (age is not None
+                          and age > ca_account_snapshot.ACCOUNT_SNAPSHOT_STALE),
+            },
             "count": len(items),
             # 与 /health 的 accounts / accounts_ready 同口径，省得两个数字打架：
             # 面板原来只显示「未过期/总数」，和 /health 的「账号数/就绪数」是
@@ -11257,6 +11279,10 @@ def _bootstrap_runtime(args):
     UPDATES.start()
     start_checkin_scheduler()
     start_sts_refresher()
+    # 账号面板的积分 / 签到快照：后台每分钟物化一份落盘，面板只读文件。
+    # 放在 sts 巡检之后启动 —— 它要求会话已经可用于签名。
+    ca_account_snapshot.bind(shutting_down=shutting_down)
+    ca_account_snapshot.start_refresher(ACCOUNTS_DIR, log=log)
     return api_key_generated
 
 def _report_first_run(args):

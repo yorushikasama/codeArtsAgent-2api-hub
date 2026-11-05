@@ -19,7 +19,8 @@ import tempfile
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "docs", "ENV.md")
-SCAN = ("ca_proxy.py", "ca_usage.py", "ca_codearts.py")
+SCAN = ("ca_proxy.py", "ca_usage.py", "ca_codearts.py",
+        "ca_account_snapshot.py")
 
 #: 这些 env 只是启动默认：面板设置保存过就以面板为准（settings key 同名）
 PANEL = {"CODEARTS_CONCURRENCY", "CODEARTS_STREAM_IDLE", "CODEARTS_STREAM_MAX_IDLE",

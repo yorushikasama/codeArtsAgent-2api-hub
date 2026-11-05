@@ -246,6 +246,23 @@ async function loadCodeartsAccounts(){
     set('<p class="hint">还没有码道账号。走完一次授权就能添加一个。</p>');
     return;
   }
+  // 积分 / 签到现在读的是后台定时落盘的快照（面板不再现场等上游），所以
+  // 要明确告诉用户「这份数字有多旧」：新鲜时什么都不显示，超过一分钟才提。
+  // 以前这两个数是请求路径上现取的，用户天然知道是实时值；改成快照之后
+  // 「知道自己多旧」这条信息必须补上，否则旧数字会被当成实时值。
+  const snap = (r && r.snapshot) || null;
+  let snapNote = '';
+  if(snap && snap.present && snap.age_seconds != null){
+    const age = Number(snap.age_seconds) || 0;
+    if(age >= 60){
+      snapNote = '<p class="hint" style="margin:6px 0 2px">'
+        + '积分/签到为 ' + caLeft(age) + '前的快照'
+        + (snap.stale ? '（后台刷新可能已停，稍后会重试）' : '') + '</p>';
+    }
+  }else if(snap && !snap.present){
+    snapNote = '<p class="hint" style="margin:6px 0 2px">'
+      + '尚未生成后台快照，这次是现场向上游取的（较慢，之后会变快）</p>';
+  }
   // 渲染放进 try：一旦某一项抛错，之前的表现是 set() 永远不执行、页面就一直
   // 停在「正在读取…」，看不出任何线索（fmtTime 那次就是这么被藏住的）。
   let html;
@@ -318,7 +335,7 @@ async function loadCodeartsAccounts(){
     set('<p class="hint">账号列表渲染失败：' + esc(e && e.message ? e.message : e) + '</p>');
     return;
   }
-  set(html);
+  set(snapNote + html);
 }
 
 /* 每日签到（活动页「每日签到领 1000 积分」）的状态行。它是 /v1/ops 的

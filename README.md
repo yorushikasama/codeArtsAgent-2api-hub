@@ -11,9 +11,10 @@
 - **开箱即用**：纯 Python 标准库，零第三方依赖；`start-codearts-hub.bat` / `.command` / `.sh` 双击即启；
 - **单一上游**：只对接华为云码道（`snap-access.cn-north-4.myhuaweicloud.com`），账号、限额与用量都按这一个出口记账；
 - **三种协议**：`/v1/chat/completions`、`/v1/responses`（Codex）、`/v1/messages`（Claude Code / Anthropic SDK，面板开关，默认关闭）；
-- **实测模型清单**：`/v1/models` 只列**实测可推理**的模型（当前 11 个），带上下文窗口、最大输出、思考档位与视觉能力宣告，不拿服务端目录凑数；
+- **模型清单自动跟进**：`/v1/models` 只列**可用**的模型，带上下文窗口、最大输出、思考档位与视觉能力；清单不是写死的白名单——每小时从上游 `/v1/model/builtin` 收 `enable=true` 的新模型，上游上新不用改代码；
+- **图片自动转写**：主模型不支持视觉时，网关先用视觉模型（`kimi-k2.6-vl` → `Qwen3-VL-235B`）把图**转成文字描述**再发请求，与官方客户端同构——所以 `glm-5.3` / `deepseek` 这类纯文本模型也能「看图」；
 - **官方客户端对齐**：出站头族、思考档位白名单、逐模型 `max_tokens`、`tool_stream` 与服务器排队协议均按官方客户端逆向对齐——断流、拒答与 `APIG.0203` 显著减少；
-- **韧性栈**：建连预算 → 退避重试 → flow-control 分流 → 请求前能力预检 → 大上下文 history-snip 软剪枝；
+- **韧性栈**：建连预算 → 退避重试 → flow-control 分流 → 请求前能力预检（图片自动转写）→ 大上下文 history-snip 软剪枝；
 - **账号接入**：看板点链接走华为云 PKCE + DPoP 授权，浏览器直接回跳本机网关；STS 临时凭证约 2 小时到期，网关自动续期；
 - **每日签到**：00:05 自动为所有码道账号签到领积分，账号卡片直接看「今日已领」；
 - **Web 看板**：调用量、积分消耗、Token 时序、成功率、工作回溯热力图、请求流水、账号与设置一屏可查。
@@ -70,7 +71,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- **106 个套件：83 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- **108 个套件：85 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - 面板页的源码按域拆在 `dashboard_src/`（11 个片段：样式 / i18n / 面板脚本
   按域 4 段 / 数据看板页等），`dashboard.html` 由
   `python scripts/build_dashboard.py` 纯拼接生成（无模板、无压缩、无依赖）；
@@ -101,6 +102,8 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
 **Anthropic Messages 开关**——Claude Code 接入入口，默认关闭，知晓缓存语义差异后一键开启：
 
 <p align="center"><img src="docs/images/dashboard-anthropic.png" alt="设置页：Anthropic Messages 开关" width="920"></p>
+
+> 四张图取自一个真实运行中的实例，账号名已替换为通用标签。
 
 ---
 
@@ -173,7 +176,7 @@ export ANTHROPIC_AUTH_TOKEN="你在看板设置中添加的 API Key"
 | POST | /v1/responses | Responses API 协议接口（Codex） |
 | POST | /v1/messages | Anthropic Messages 协议（面板开关，默认关闭；关闭时返回 400 说明） |
 | POST | /v1/messages/count_tokens | Anthropic 计数估算，随 Messages 入口开关 |
-| GET | /v1/models | 实测可用的模型列表（含能力与规格宣告） |
+| GET | /v1/models | 当前可用模型列表（含上下文窗口、最大输出、思考档位与视觉能力宣告） |
 | GET | /accounts/codearts | 码道账号列表：STS 剩余 / 并发 / 积分与签到状态（需面板会话） |
 | POST | /accounts/codearts/login/start | 生成码道授权链接（PKCE + DPoP），返回 `authUrl` 与 `state`（需面板会话） |
 | GET | /accounts/codearts/login/poll?state= | 轮询码道登录结果：`pending` / `ok` / `error` / `expired`（需面板会话） |
@@ -199,12 +202,42 @@ export ANTHROPIC_AUTH_TOKEN="你在看板设置中添加的 API Key"
 网关每账号一个信号量（默认 2，留 1 个余量），满员自动换号；并发、续期间隔与两种冷却都能在设置页调，
 保存后**下一个请求就生效**，不用重启。
 
+**按 Key 的三道闸门**（把 Key 分发出去时用，设置页每个 Key 各自可调，`0` = 不限）：
+
+| 限制 | 管什么 | 超额返回 |
+|---|---|---|
+| 最大并发 | **同时**几条在跑 | 429 + `Retry-After` |
+| 每分钟请求数 | 多快能来，60 秒**滑动**窗口 | 429 + `Retry-After`（窗口剩余秒数） |
+| 积分总额度 | 这个 Key **一生**能烧多少积分 | 429（不会自愈，需在设置页改额度） |
+
+积分额度是**累计总量**、不按天重置——把 Key 交出去要防的就是「这个人一共能花掉多少」。
+已用量从 `usage.jsonl` 增量累加，重启后自动续算；改额度立即生效，填 `0` 即解除。
+`count_tokens` 这类纯本地计算不打上游、不产生用量，**不占**这三道额度。
+读用量日志失败时按「放行 + 告警」处理，不会因为一次 I/O 抖动就把所有 Key 停掉。
+
+**账号卡片为什么打得开得快**：积分与签到这两栏不是进面板时才去问上游的。
+后台线程每 60 秒（`CODEARTS_ACCOUNT_SNAPSHOT_TICK`）拉一遍全部账号，写进
+`accounts/account-snapshot.json`；面板直接读这个文件。线上实测（4 账号）：
+
+| | 耗时 |
+|---|---|
+| 现场问上游（改造前，含每次重启后第一次进面板） | **3.6 秒** |
+| 读快照 | **0.01 秒** |
+
+快照超过 `CODEARTS_ACCOUNT_SNAPSHOT_STALE`（默认 300 秒）没更新时，面板会标注
+「积分为 N 分钟前的快照」——旧数字不会被当成实时值。文件坏了 / 还没生成 / 版本不认识
+时自动退回原来「现场问上游」的慢路径，**不会**因此让面板打不开。
+
 **推理超时**：目录类接口 20 秒够用，推理不够——实测 GLM-5.2 单次回答要 17 秒以上。推理读超时默认 **180 秒**
 （`CODEARTS_CHAT_TIMEOUT` 可覆盖），响应头超时默认 120 秒，建连总预算 210 秒（`CODEARTS_OPEN_BUDGET`）。
 
-**请求前能力预检**：带图片的请求发给纯文本模型时，网关在**请求阶段**就回 400 说明该模型
-不支持视觉（不再白跑一趟上游、不占会话名额）。以前把这类错误记成模型故障并触发熔断降级链，
-一条带图请求就能让整条链在面板上"变坏"——该机制已移除（2026-10-24）。
+**图片怎么处理**：主模型不支持视觉时，网关**不让这次请求失败**，而是先用视觉模型把图转成
+文字描述再发（`kimi-k2.6-vl` 优先，失败退 `Qwen3-VL-235B`）。这与官方客户端完全同构——
+逆向确认 CodeArts Agent 的 kernel 在图片进入上下文之前就把它整个替换成
+`[Image: analyzed by VLM, see results below]`，主模型从头到尾只读文字。所以
+`glm-5.3` / `deepseek` 这类 `supports_images=false` 的模型照样能「看图」，只是多花一次
+VLM 调用（约几秒）。转写全失败才回 400，并把原因写清；部分失败会在上下文里留占位说明，
+不会静默丢图。
 
 **排障速查：三种「看着像网关坏了」的情况**
 
