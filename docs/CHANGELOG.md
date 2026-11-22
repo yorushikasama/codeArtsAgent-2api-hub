@@ -1,5 +1,46 @@
 ## Unreleased
 
+**2026-11-22：账号不再被 1806 误判判死（连累 25 个请求全 503）**
+
+11-22 09:27–09:33，25 个请求全 `503 no usable codearts account`，持续 6 分钟，
+客户端最后自己断了。而同一个账号在 15:36 重启后**立刻续期成功**（日志写的是
+`renewed STS ... (was -14736s left)`，也就是已经过期 4 小时）。也就是说那 6 小时
+里网关认定「这个号彻底废了」，实际上它完全健康。
+
+两个缺陷叠在一起才造成这个结果，缺一个都不会：
+
+**A. 「token 变了就自愈」这条分支永远走不到。** 1806 标记存的指纹是
+`refresh_token[:24]`，可 refresh_token 是 **JWT**，前 24 个字符是固定头部：
+
+    eyJ0eXAiOiJKV1QiLCJhbGci     ← 线上 4 个账号、跨 5 天的 token，全同
+
+于是「token 变化 → 解除标记」形同虚设，账号一旦被标记就等于**判死到进程重启**。
+11-20 09:53 用户明明重新授权过一次（`码道账号已添加：hid_bgatv9rp4x32nge`），
+网关照旧把新号挡在池外。
+
+**B. 我们自己的读超时被误诊成「被 IDE 抢占」。** 换 token 的 HTTP 用的是
+`urlopen(timeout=20)`，而这个超时是**每次 socket 操作**的上限。refresh_token 是
+**一次性轮换**的：上游很可能已经受理、作废了旧 token、把新 token 回在这个 response
+里，而我们在 `read()` 上超时把它丢掉了。退避 32 秒后拿**同一张已被用掉的旧
+token** 重试，必然 1806 —— 日志原文：
+
+    23:26:47 codearts: STS renew failed for hid_bgat...: The read operation timed out
+    23:27:19 codearts: STS 链被外部客户端轮换（1806）：hid_bgat... —— 停止自动续期
+
+一次纯网络抖动，就这样变成了「链永久作废」的判决，账号躺了 2.5 天。
+
+三处修法：
+
+- `_http(..., idempotent=False)`：换 token（`refresh` / `exchange_code`）声明
+  非幂等。请求**已发出**而结果未知（读超时、EOF、连接重置）时给异常打
+  `indeterminate`，与「连接都没建立」（refused / DNS / 握手失败）区分开 ——
+  后者重试是安全的。
+- `_ensure_fresh` 遇到 `indeterminate` **不打 1806 标记、不暂停续期**，只记一条
+  「这张一次性 token 可能已被我们自己用掉，需要重新登录」。账号不会被判死。
+- 1806 标记本身加两道自愈：指纹改成**整串 sha256**；再加**定期再探**
+  （`CODEARTS_STS_REPROBE`，默认 3600 秒）。真死的号会再标一次，假死的就此复活。
+  重新登录/手动续期成功时（`codearts_clear_cooldown_for`）当场清标记，不等巡检。
+
 **2026-11-22：大请求写上游不再被 120 秒 socket 超时掐死**
 
 线上 11-15 21:00–23:00 出现 26 次 502，**全部**是链路层异常（

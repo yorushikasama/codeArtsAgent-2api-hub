@@ -318,6 +318,113 @@ check("没有 refresh_token 的会话不会被误判为可续期",
 shutil.rmtree(_root3, ignore_errors=True)
 
 
+print()
+print("[续期超时] refresh_token 一次性轮换：结果未知必须标出来，不能当普通网络错误")
+
+# 2026-11-19 线上：换 token 的 read 超时之后 32 秒拿到 1806，网关把账号判成
+# 「链被外部客户端占用」，2.5 天内一次续期都不再试（11-22 上午 6 分钟 25 个
+# 请求全 503）。根因是 urlopen 的 timeout 只包 socket 操作：上游可能已经
+# 受理并作废了旧 token，response 却在我们这边超时丢掉了。重试拿同一张旧
+# token 去换必然 1806。所以 refresh() 必须声明 idempotent=False。
+
+
+class _AfterSendTimeout(urllib.error.URLError):
+    pass
+
+
+_seen_idempotent = {}
+
+
+def _fake_token_post(key, form, idempotent=True):
+    _seen_idempotent["refresh"] = idempotent
+    if not idempotent:
+        raise C.CodeArtsError("请求超时：The read operation timed out")
+    return {}
+
+
+_real_token_request = C._token_request
+C._token_request = _fake_token_post
+try:
+    try:
+        C.refresh(_key, _pkce, "RT-CHAIN-A")
+        _raised = None
+    except C.CodeArtsError as _e:
+        _raised = _e
+finally:
+    C._token_request = _real_token_request
+
+check("refresh() 走的是非幂等分支（idempotent=False）",
+      _seen_idempotent.get("refresh") is False, _seen_idempotent)
+
+
+# 授权码也是一次性的（换过就失效），同样按非幂等声明：读超时意味着
+# 「可能已经换成功但凭据丢了」，不能让调用方悄悄重试同一个 code。
+def _record_idempotent(key, form, idempotent=True):
+    _seen_idempotent["exchange"] = idempotent
+    return {}
+
+
+C._token_request = _record_idempotent
+try:
+    C.exchange_code(_key, "AUTH-CODE", _pkce, 8788)
+finally:
+    C._token_request = _real_token_request
+check("exchange_code() 也不假设幂等（同为换 token 的 POST）",
+      _seen_idempotent.get("exchange") is False, _seen_idempotent)
+
+_exc = None
+
+
+def _fake_http_timeout(*a, **k):
+    raise urllib.error.URLError("The read operation timed out")
+
+
+_real_urlopen = C.urllib.request.urlopen
+C.urllib.request.urlopen = _fake_http_timeout
+try:
+    try:
+        C._http("POST", "https://example.invalid/x", body="a=1",
+                idempotent=False)
+    except C.CodeArtsError as _e:
+        _exc = _e
+finally:
+    C.urllib.request.urlopen = _real_urlopen
+check("_http 把 read 超时标成 indeterminate",
+      _exc is not None and getattr(_exc, "indeterminate", False) is True, _exc)
+
+_exc2 = None
+C.urllib.request.urlopen = _fake_http_timeout
+try:
+    try:
+        C._http("GET", "https://example.invalid/x", idempotent=True)
+    except C.CodeArtsError as _e:
+        _exc2 = _e
+finally:
+    C.urllib.request.urlopen = _real_urlopen
+check("幂等请求（目录类）不带 indeterminate 标记",
+      _exc2 is not None and getattr(_exc2, "indeterminate", False) is False,
+      _exc2)
+
+_exc3 = None
+
+
+def _fake_refused(*a, **k):
+    raise urllib.error.URLError("[Errno 111] Connection refused")
+
+
+C.urllib.request.urlopen = _fake_refused
+try:
+    try:
+        C._http("POST", "https://example.invalid/x", body="a=1",
+                idempotent=False)
+    except C.CodeArtsError as _e:
+        _exc3 = _e
+finally:
+    C.urllib.request.urlopen = _real_urlopen
+check("连接阶段就被拒（上游没处理）不算 indeterminate，可安全重试",
+      _exc3 is not None and getattr(_exc3, "indeterminate", False) is False,
+      _exc3)
+
 
 print()
 print("PASS=%d FAIL=%d" % (PASS, FAIL))

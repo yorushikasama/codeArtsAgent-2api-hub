@@ -1,14 +1,23 @@
-"""1806「外部占用」生命周期的契约：确认一次，之后静默，重登录自愈。
+"""1806「外部占用」生命周期的契约：确认一次、暂停、定期再探、重登录自愈。
 
 背景（2026-10-25 实测）：官方 IDE 与网关共用账号时，refresh_token 单链被
 IDE 每小时轮换推进，网关手里的 token 一次性作废（STS5.1806）。修复前
 refresher 每 30 秒替死账号打一次注定失败的续期 —— 一天 2800+ 条 WARN 与
-同样数量的上游请求。此套件钉住三件事：
+同样数量的上游请求。
 
-  1. 首次 1806 → 标记「外部占用」，打一次说明日志；
-  2. 标记后巡检静默跳过（不再调 refresh_session，不再刷 WARN）；
-  3. token 变了（重新登录换新链）→ 自动解除，恢复续期；
-     其它错误（网络/5xx）不标记，照常重试。
+2026-11-19/22 线上又暴露出两个把账号**永久判死**的缺陷，本套件一并钉住：
+
+  A. 指纹用 ``refresh_token[:24]``。refresh_token 是 JWT，前 24 字符是固定
+     头部 ``eyJ0eXAiOiJKV1QiLCJhbGci``，每张新 token 都一样 —— 「token 变了
+     就自愈」那条分支永远不可能命中。用户 11-20 09:53 明明重新授权过，
+     网关仍把号当死的排除在池外，11-20 16:20 与 11-22 09:27 的 503 全出自
+     这里。现在改成整串 sha256。
+
+  B. 换 token 的 read 超时被当成普通网络错误。refresh_token 一次性轮换，
+     上游很可能已经受理并作废了旧 token，只是 response 丢了。靠退避重试
+     拿同一张旧 token 去换，必然 1806 —— 于是「我们自己超时」被误诊成
+     「被 IDE 抢占」，账号被判死 2.5 天。现在 ``indeterminate`` 单独一条路，
+     不标记、不暂停续期。
 
     python tests/_test_sts_dead_external.py
 """
@@ -26,17 +35,43 @@ _TMP = isolated_data_dirs("wb-sts-dead-")
 import ca_codearts  # noqa: E402
 import ca_proxy as P  # noqa: E402
 
+#: 和线上一样是 JWT 形状 —— 前 24 字符刻意做成**固定头部**，
+#: 这样「拿前缀当指纹」的写法在这里就会露馅（见模块 docstring A）。
+_JWT_HEAD = "eyJ0eXAiOiJKV1QiLCJhbGciOK"
 SESS = {
     "accessKey": "AK", "secretKey": "SK", "securitytoken": "ST",
-    "refresh_token": "RT-CHAIN-A-000000000000",
+    "refresh_token": _JWT_HEAD + "CHAIN-A.payload-a.sig-a",
     "expires_at": "2026-10-25T03:00:00.000Z",
     "account": {"id": "acct-1", "label": "acct-1"},
 }
-PREFIX = SESS["refresh_token"][:24]
+#: 另一张 token，头部完全相同、只有载荷不同（真实 JWT 就是这样）。
+OTHER_SESS = dict(SESS, refresh_token=_JWT_HEAD + "CHAIN-B.payload-b.sig-b")
+
+
+def _mark(sess=SESS, age_seconds=0.0):
+    """按线上结构打标记。"""
+    P._STS_DEAD_EXTERNALLY["acct-1"] = (
+        P._token_fingerprint(sess), P.time.time() - age_seconds)
 
 
 def _reset():
     P._STS_DEAD_EXTERNALLY.clear()
+
+
+class FingerprintTests(unittest.TestCase):
+    """缺陷 A：指纹必须区分得开两张真 token。"""
+
+    def test_jwt_prefix_is_identical_but_fingerprints_differ(self):
+        # 这条要是挂了，说明指纹又退回到「取前 N 字符」——
+        # 而 JWT 头是常量，等于所有 token 同一个指纹。
+        self.assertEqual(SESS["refresh_token"][:24],
+                         OTHER_SESS["refresh_token"][:24])
+        self.assertNotEqual(P._token_fingerprint(SESS),
+                            P._token_fingerprint(OTHER_SESS))
+
+    def test_empty_token_has_empty_fingerprint(self):
+        self.assertEqual(P._token_fingerprint({}), "")
+        self.assertEqual(P._token_fingerprint({"refresh_token": ""}), "")
 
 
 class DeadExternalTests(unittest.TestCase):
@@ -61,7 +96,7 @@ class DeadExternalTests(unittest.TestCase):
         self.assertEqual(len(warned), 1, warned)
 
     def test_marked_account_is_silent_on_later_ticks(self):
-        P._STS_DEAD_EXTERNALLY["acct-1"] = PREFIX
+        _mark()
         with mock.patch.object(
                 ca_codearts, "ensure_fresh_session") as fresh:
             out = P._ensure_fresh(SESS)
@@ -70,13 +105,56 @@ class DeadExternalTests(unittest.TestCase):
         self.assertEqual(self.logs, [])    # 不再刷日志
 
     def test_relogin_new_token_heals_the_mark(self):
-        P._STS_DEAD_EXTERNALLY["acct-1"] = PREFIX
-        renewed = dict(SESS, refresh_token="RT-CHAIN-B-999999999999")
-        self.assertFalse(P._sts_dead_by_external(renewed))
-        # 且解除后真会去续期
+        # 缺陷 A 的正面用例：头部相同、载荷不同 = 真的换了 token。
+        _mark()
+        self.assertFalse(P._sts_dead_by_external(OTHER_SESS))
         with mock.patch.object(ca_codearts, "ensure_fresh_session",
-                               return_value=renewed) as fresh:
-            P._ensure_fresh(renewed)
+                               return_value=OTHER_SESS) as fresh:
+            P._ensure_fresh(OTHER_SESS)
+        fresh.assert_called_once()
+
+    def test_reprobe_after_interval_retries_the_renewal(self):
+        # 缺陷 B 的兜底：即使 token 没换，隔够久也要再试一次 ——
+        # 「1806」未必是真的，可能只是我们自己把那张一次性 token 超时用掉了。
+        _mark(age_seconds=P._STS_DEAD_REPROBE_SECONDS + 1)
+        self.assertFalse(P._sts_dead_by_external(SESS))
+        with mock.patch.object(ca_codearts, "ensure_fresh_session",
+                               return_value=SESS) as fresh:
+            P._ensure_fresh(SESS)
+        fresh.assert_called_once()
+        self.assertTrue(any("再探" in l for l in self.logs), self.logs)
+
+    def test_reprobe_that_fails_again_re_marks(self):
+        _mark(age_seconds=P._STS_DEAD_REPROBE_SECONDS + 1)
+        with mock.patch.object(
+                ca_codearts, "ensure_fresh_session",
+                side_effect=ca_codearts.CodeArtsError(
+                    "[STS5.1806] the refresh token has been used")):
+            P._ensure_fresh(SESS)
+        # 重新标记 → 接下来的 tick 继续静默，不会每 30 秒打一次上游
+        self.assertTrue(P._sts_dead_by_external(SESS))
+        with mock.patch.object(
+                ca_codearts, "ensure_fresh_session") as fresh:
+            P._ensure_fresh(SESS)
+        fresh.assert_not_called()
+
+    def test_indeterminate_failure_does_not_mark_or_pause(self):
+        # 缺陷 B：read 超时 = 一次性 token 可能已被我们自己用掉。
+        # 这跟「被 IDE 抢占」是两码事，不能停掉续期，也不该留 1806 标记。
+        exc = ca_codearts.CodeArtsError("请求超时：The read operation timed out")
+        exc.indeterminate = True
+        with mock.patch.object(ca_codearts, "ensure_fresh_session",
+                               side_effect=exc):
+            P._ensure_fresh(SESS)
+        self.assertFalse(P._STS_DEAD_EXTERNALLY)
+        self.assertFalse(P._sts_dead_by_external(SESS))
+        logged = " ".join(self.logs)
+        self.assertIn("result unknown", logged)
+        self.assertNotIn("1806）", logged)   # 没有打「链被外部轮换」那条
+        # 下一个 tick 照常续期（不是死号）
+        with mock.patch.object(ca_codearts, "ensure_fresh_session",
+                               return_value=SESS) as fresh:
+            P._ensure_fresh(SESS)
         fresh.assert_called_once()
 
     def test_transient_errors_do_not_mark(self):
@@ -91,7 +169,7 @@ class DeadExternalTests(unittest.TestCase):
         # 面板字段 sts_dead_external 的来源就是 _sts_dead_by_external：
         # 标记时为真，未标记/自愈后为假（视图组装在 _get_codearts_accounts，
         # 那一层走完整 HTTP，这里钉住判定函数本身的两个象限）。
-        P._STS_DEAD_EXTERNALLY["acct-1"] = PREFIX
+        _mark()
         self.assertTrue(P._sts_dead_by_external(SESS))
         _reset()
         self.assertFalse(P._sts_dead_by_external(SESS))
@@ -115,7 +193,7 @@ class DeadExternalTests(unittest.TestCase):
         # 续期必败、请求带过期凭证打上游换回 APIG.0301（2026-11-02 线上：
         # hw025261 过期 5.9 天仍被选中，冷却 300 秒一到又循环）。
         dead = dict(SESS, expires_at="2020-01-01T00:00:00.000Z")
-        P._STS_DEAD_EXTERNALLY["acct-1"] = PREFIX
+        _mark()
         with mock.patch.object(ca_codearts, "summarize",
                                return_value={"sts_expired": True,
                                              "renewable": True,
@@ -124,14 +202,43 @@ class DeadExternalTests(unittest.TestCase):
 
     def test_usable_returns_account_after_relogin(self):
         # 重新登录换出新 token 链 → 标记自愈 → 立即回到池子，不需要重启。
-        healed = dict(SESS, expires_at="2020-01-01T00:00:00.000Z",
-                      refresh_token="RT-CHAIN-B-999999999999")
-        P._STS_DEAD_EXTERNALLY["acct-1"] = PREFIX
+        # 这是缺陷 A 在调度层的表现：以前前缀相同，这条路径永远走不到。
+        healed = dict(OTHER_SESS, expires_at="2020-01-01T00:00:00.000Z")
+        _mark()
         with mock.patch.object(ca_codearts, "summarize",
                                return_value={"sts_expired": True,
                                              "renewable": True,
                                              "sts_remaining_seconds": -10}):
             self.assertEqual(self._usable_with(healed), [healed])
+
+    def test_relogin_clears_the_mark_immediately(self):
+        # 登录成功 / 手动续期会调 codearts_clear_cooldown_for：那一刻就把
+        # 1806 标记清掉，而不是等下一次巡检靠指纹比对自愈。
+        _mark()
+        with mock.patch.object(ca_codearts, "load_sessions",
+                               return_value=[SESS]):
+            P.codearts_clear_cooldown_for("acct-1")
+        self.assertFalse(P._STS_DEAD_EXTERNALLY)
+        self.assertTrue(any("解除 1806" in l for l in self.logs), self.logs)
+
+
+class IndeterminateClassificationTests(unittest.TestCase):
+    """``_after_send``：哪些 URLError 才算「请求已发出、结果未知」。"""
+
+    def test_read_timeouts_count_as_after_send(self):
+        for reason in ("The read operation timed out",
+                       "The write operation timed out",
+                       "EOF occurred in violation of protocol (_ssl.c:983)",
+                       "Connection reset by peer",
+                       "Remote end closed connection without response",
+                       "<urlopen error [Errno 104] Connection reset by peer>"):
+            self.assertTrue(ca_codearts._after_send(reason), reason)
+
+    def test_connect_failures_are_safe_to_retry(self):
+        for reason in ("[Errno 111] Connection refused",
+                       "Name or service not known",
+                       "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"):
+            self.assertFalse(ca_codearts._after_send(reason), reason)
 
 
 if __name__ == "__main__":

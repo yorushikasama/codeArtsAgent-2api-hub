@@ -3564,6 +3564,11 @@ def codearts_clear_cooldown_for(label_or_id):
     昵称与 id 都可能给到（登录成功时回的是 label），所以两个都试：把匹配的
     那一个键清掉，顺带清它的模型级冷却 —— 换了新凭据，之前的 429/401 结论
     都不再成立。
+
+    1806 的「外部占用」标记也在这里一并清掉：那条结论说的是**旧 token 链**
+    已废，重新登录换出的新链不该继承它。指纹比对本来也会自愈，但那是下一次
+    巡检（最多 30 秒 + 一个注定失败的请求）才生效；登录成功这一刻直接清掉，
+    面板上「已恢复」与拿到的新登录状态才是同一个时刻。
     """
     value = str(label_or_id or "").strip()
     if not value:
@@ -3576,6 +3581,10 @@ def codearts_clear_cooldown_for(label_or_id):
             continue
         _CODEARTS_POOL.clear_cooldown(str(account.get("id") or ""))
         _CODEARTS_POOL.clear_cooldown(str(account.get("label") or ""))
+        aid = str(account.get("id") or "")
+        if aid and _STS_DEAD_EXTERNALLY.pop(aid, None):
+            log("codearts: 账号 %s 已重新登录/换出 token，解除 1806 外部占用标记"
+                % (account.get("label") or aid))
 
 
 #: 我们自己造过、还没注销的上游会话（user-session-id）落盘一份。
@@ -5276,21 +5285,62 @@ def _codearts_left(sess):
 
 
 #: STS5.1806 专项：refresh_token 链被外部客户端推进（官方 IDE 同账号续期）
-#: 后，网关手里的 token 永久作废 —— 唯一恢复途径是重新登录。记录结构：
-#: account_id -> 死掉那张 token 的前缀（重新登录会换新 token，前缀变了即自愈）。
+#: 后，网关卡里的 token 作废 —— 恢复途径是重新登录。记录结构：
+#: account_id -> (那张死 token 的指纹, 标记时刻)。
+#:
+#: **指纹必须覆盖整串 token。** 原来取 ``refresh_token[:24]``，可 refresh_token
+#: 是 JWT，前 24 个字符是**固定头部** ``eyJ0eXAiOiJKV1QiLCJhbGci`` —— 每张新
+#: token 都一样，于是「token 变了就自愈」那条分支**永远不可能命中**：账号一旦
+#: 被标记就等于永久判死，只有进程重启能解。2026-11-20 09:53 用户明明重新授权
+#: 过 hid_bgat，网关仍把它当死号排除在池外，11-20 16:20 与 11-22 09:27 的 503
+#: （后者连续 25 条、持续 6 分钟）全出自这里。
 _STS_DEAD_EXTERNALLY = {}
+
+#: 被判「外部占用」后隔多久再探一次。1806 **未必**是真的：我们自己换 token 时
+#: 一次 read 超时就能把那张一次性 token 用掉，下一个 tick 拿同一张去换必然
+#: 1806 —— 看上去和「被 IDE 抢占」一模一样（2026-11-19 23:26:47 超时 →
+#: 23:27:19 1806 就是这条路径）。探一次代价是 1 个注定失败的上游请求；永久
+#: 判死的代价是整个账号停摆，那次停了 2.5 天。
+_STS_DEAD_REPROBE_SECONDS = ca_env.number("CODEARTS_STS_REPROBE", 3600.0,
+                                          minimum=60.0)
+
+
+def _token_fingerprint(sess):
+    """refresh_token 的身份指纹。
+
+    整串哈希，不取前缀 —— 前缀是 JWT 固定头，取它等于把这个账号的所有 token
+    都算成同一张，自愈分支形同虚设（见上面 _STS_DEAD_EXTERNALLY 的说明）。
+    """
+    token = str(sess.get("refresh_token") or "")
+    if not token:
+        return ""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()[:32]
 
 
 def _sts_dead_by_external(sess):
-    """这个账号的 token 链是否已被外部轮换死掉（1806 已确认）。"""
+    """这个账号的 token 链是否已被外部轮换死掉（1806 已确认）。
+
+    两条自愈路径，缺一条就会把账号永久判死：
+
+      · **token 换了**（用户重新登录）→ 立刻解除，恢复续期；
+      · **到了再探间隔** → 放回续期流程试一次。真死的会再标一次（时钟重置），
+        假死的（我们自己超时把那一次性 token 用掉了）就此复活。
+    """
     aid = (sess.get("account") or {}).get("id") or ""
-    dead_prefix = _STS_DEAD_EXTERNALLY.get(aid)
-    if not dead_prefix:
+    state = _STS_DEAD_EXTERNALLY.get(aid)
+    if not state:
         return False
-    current = str(sess.get("refresh_token") or "")[:24]
-    if current and current != dead_prefix:
-        # token 变了 = 用户重新登录过了：自动解除，恢复正常续期
-        del _STS_DEAD_EXTERNALLY[aid]
+    dead_fp, marked_at = state
+    current = _token_fingerprint(sess)
+    if current and current != dead_fp:
+        _STS_DEAD_EXTERNALLY.pop(aid, None)   # 巡检/面板/请求多线程都会调，用 pop
+        return False
+    if (time.time() - marked_at) >= _STS_DEAD_REPROBE_SECONDS:
+        # 到期再探：先解除，让这一次续期真的发出去。失败就重新标记。
+        if _STS_DEAD_EXTERNALLY.pop(aid, None):
+            log("codearts: 再探 1806 死号 %s（%.0f 分钟前标记）"
+                % ((sess.get("account") or {}).get("label") or aid,
+                   (time.time() - marked_at) / 60.0))
         return False
     return True
 
@@ -5314,11 +5364,20 @@ def _ensure_fresh(sess):
     except Exception as exc:      # noqa: BLE001
         label = (sess.get("account") or {}).get("label")
         aid = (sess.get("account") or {}).get("id") or ""
-        if "1806" in str(exc):
-            _STS_DEAD_EXTERNALLY[aid] = str(sess.get("refresh_token") or "")[:24]
-            log("codearts: STS 链被外部客户端轮换（1806）：%s —— 停止自动续期，"
-                "重新登录后自动恢复（官方 IDE 等同账号客户端会推进同一条链）"
-                % label, level="WARN")
+        if getattr(exc, "indeterminate", False):
+            # 换 token 的请求发出去了、答复没收到 —— 那张一次性 token **已经
+            # 被我们自己用掉**，存档里这张是废的。但这跟「被 IDE 抢占」是两码
+            # 事：账号本身完好，重新登录也没用（登录要人操作）。这里不打 1806
+            # 标记（那会停掉全部续期），只如实记一条，让用户知道该重新授权。
+            log("codearts: STS renew result unknown for %s: %s —— 一次性 refresh "
+                "token 可能已被我们这次请求用掉，存档里的已作废；需要重新登录"
+                % (label, exc), level="WARN")
+        elif "1806" in str(exc):
+            _STS_DEAD_EXTERNALLY[aid] = (_token_fingerprint(sess), time.time())
+            log("codearts: STS 链被外部客户端轮换（1806）：%s —— 暂停自动续期 "
+                "%.0f 分钟后再探（重登录或 token 变化即恢复；官方 IDE 等同账号"
+                "客户端会推进同一条链）"
+                % (label, _STS_DEAD_REPROBE_SECONDS / 60.0), level="WARN")
         else:
             log("codearts: STS renew failed for %s: %s" % (label, exc),
                 level="WARN")

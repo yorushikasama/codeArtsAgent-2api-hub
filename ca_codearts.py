@@ -92,7 +92,12 @@ ERROR_CODES = {
 
 
 class CodeArtsError(Exception):
-    """授权链路上的可预期失败。"""
+    """授权链路上的可预期失败。
+
+    ``indeterminate=True`` 表示**请求可能已被上游处理**，但我们没拿到结果
+    （典型：写完之后读响应超时）。对一次性凭据（refresh_token）这类操作，
+    调用方不能把它当成可安全重试的网络错误 —— 见 ``_http`` 的说明。
+    """
 
     def __init__(self, message, code="", status=0, payload=None):
         super().__init__(message)
@@ -100,10 +105,28 @@ class CodeArtsError(Exception):
         self.code = code
         self.status = status
         self.payload = payload
+        self.indeterminate = False
 
     def __str__(self):
         head = f"[{self.code}] " if self.code else ""
         return f"{head}{self.message}"
+
+
+#: 「请求已经发出去」的特征。命中这些说明对端可能已经处理，只是答复没收到；
+#: 未命中（refused / 解析失败 / 握手失败）则连接都没建立，重试安全。
+_AFTER_SEND_MARKERS = (
+    "timed out", "timeout", "timedout",
+    "eof occurred", "incompleteread", "incomplete read",
+    "connection reset", "connection aborted", "broken pipe",
+    "remote end closed", "remote disconnected",
+    "bad status line", "malformed status",
+)
+
+
+def _after_send(reason):
+    """URLError.reason 是否意味着「已经发出去、结果未知」。"""
+    text = str(reason or "").lower()
+    return any(marker in text for marker in _AFTER_SEND_MARKERS)
 
 
 # ---------------------------------------------------------------------------
@@ -378,7 +401,25 @@ def authorize_url(port, pkce, ticket_id, theme=1, locale="zh-cn",
 
 
 def _http(method, url, headers=None, body=None, timeout=DEFAULT_TIMEOUT,
-          query=None):
+          query=None, idempotent=True):
+    """发一次 HTTP 并归一错误。``idempotent=False`` 表示「重复发送会改变
+    上游状态」——此时超时绝不能被当成普通的网络抖动。
+
+    为什么需要这个开关：``urllib`` 的 timeout 是**每次 socket 操作**的上限。
+    换 token 用的 refresh_token 是**一次性轮换**的，上游很可能已经受理并推进
+    了整条链（旧 token 当场作废、新 token 只回给这一个 response），而我们在
+    ``read()`` 上超时丢掉了这个 response。此时异常文本是「read operation
+    timed out」，看起来跟一次纯网络抖动毫无区别 —— 调用方会照常退避重试，
+    但重试拿的还是那张已经被用掉的旧 token，于是必得 1806。
+
+    2026-11-19 线上就是这条路径：23:26:47 ``STS renew failed: The read
+    operation timed out`` → 32 秒后 1806 → 账号被判定「链已断」锁进
+    ``_STS_DEAD_EXTERNALLY``，此后 2.5 天内一次续期都不再尝试，最终 11-22
+    上午 6 分钟里 25 个请求全 503。
+
+    所以这里把「结果不确定」明确标出来（``CodeArtsError.indeterminate``），
+    让续期层知道：**这张 token 不能再用，但账号本身没坏**。
+    """
     data = body.encode("utf-8") if isinstance(body, str) else body
     if query:
         # query 由调用方交给 aksk_sign 参与签名后，这里按同一排序拼回 URL ——
@@ -398,7 +439,18 @@ def _http(method, url, headers=None, body=None, timeout=DEFAULT_TIMEOUT,
         raw = exc.read() if hasattr(exc, "read") else b""
         status = exc.code
     except urllib.error.URLError as exc:
-        raise CodeArtsError(f"连接不上 {urllib.parse.urlsplit(url).netloc}：{exc.reason}") from exc
+        netloc = urllib.parse.urlsplit(url).netloc
+        err = CodeArtsError(f"连接不上 {netloc}：{exc.reason}")
+        # 只有「请求已经发出去、结果没拿回来」才叫不确定。连接阶段就被拒
+        # （refused / DNS / TLS 握手）时上游根本没处理，重试是安全的。
+        if not idempotent and _after_send(exc.reason):
+            err.indeterminate = True
+        raise err from exc
+    except (socket.timeout, TimeoutError) as exc:   # urlopen 之外的裸超时
+        err = CodeArtsError(f"请求超时：{exc}")
+        if not idempotent:
+            err.indeterminate = True
+        raise err from exc
     text = raw.decode("utf-8", "replace")
     try:
         payload = json.loads(text) if text.strip() else {}
@@ -417,8 +469,12 @@ def _http(method, url, headers=None, body=None, timeout=DEFAULT_TIMEOUT,
     return payload
 
 
-def _token_request(key, form):
-    """POST {iamSts}/v1/oauth2/tokens，DPoP 签名覆盖实际 URL。"""
+def _token_request(key, form, idempotent=True):
+    """POST {iamSts}/v1/oauth2/tokens，DPoP 签名覆盖实际 URL。
+
+    ``idempotent=False`` 用于 refresh_token 换 token：那张 token 是一次性的，
+    上游受理即作废，重试必然 1806。见 ``_http``。
+    """
     url = IAM_STS + IAM_TOKEN_API
     proof = dpop_proof(key, "POST", url)
     return _http(
@@ -428,6 +484,7 @@ def _token_request(key, form):
             "Content-Type": "application/x-www-form-urlencoded",
         },
         body=urllib.parse.urlencode(form),
+        idempotent=idempotent,
     )
 
 
@@ -436,6 +493,10 @@ def exchange_code(key, code, pkce, port):
 
     返回 {credentials:{access_key_id, secret_access_key, security_token,
     expiration}, refresh_token}。
+
+    授权码同样是一次性的（换过就失效），所以也按非幂等声明：读超时意味着
+    「可能已经换成功但凭据丢了」，此时**不能**让调用方悄悄重试同一个 code
+    还以为只是网络抖动。实际后果是用户要重新授权一次 —— 明确比静默好。
     """
     return _token_request(key, {
         "client_id": CLIENT_ID,
@@ -443,17 +504,22 @@ def exchange_code(key, code, pkce, port):
         "code_verifier": pkce["codeVerifier"],
         "grant_type": "authorization_code",
         "redirect_uri": redirect_uri(port),
-    })
+    }, idempotent=False)
 
 
 def refresh(key, pkce, refresh_token):
-    """刷新。注意官方也带 code_verifier —— 不是笔误，服务端会校验。"""
+    """刷新。注意官方也带 code_verifier —— 不是笔误，服务端会校验。
+
+    这里的 ``idempotent=False`` 是**线上事故的直接修复**（2026-11-19）：换
+    token 超时后上游已经把这张 refresh_token 用掉了，重试只会拿到 1806，
+    而 1806 会被网关读成「链被外部客户端占用、永久作废」。
+    """
     return _token_request(key, {
         "client_id": CLIENT_ID,
         "code_verifier": pkce["codeVerifier"],
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
-    })
+    }, idempotent=False)
 
 
 # ---------------------------------------------------------------------------

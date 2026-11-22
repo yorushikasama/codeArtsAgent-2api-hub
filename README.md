@@ -121,7 +121,11 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
 - **DPoP 私钥与 refresh_token 绑定**（`cnf.jkt` 把 token 钉在登录时那把 P-256 私钥上），
   续期必须用同一把私钥签 proof。私钥随会话存在 `accounts/codearts/<账号ID>.json`，别把该目录同步出去。
 - **refresh_token 是一次性轮换**的：每次续期成功都会换一张新的，旧的立即作废。
-  若提示 `STS5.1806`，说明这张被别的客户端用掉了或已过 30 天，只能重新登录。
+  若提示 `STS5.1806`，说明这张被别的客户端用掉了或已过 30 天，需要重新登录。
+  **但这不总是「永久作废」**：换 token 的请求如果超时/断连，上游可能已经用掉
+  旧 token 而我们没收到新 token —— 网关把这种情况单独识别（`indeterminate`），
+  不写进「链已断」的判决。被判 1806 的账号也会**每小时自动再探一次**
+  （`CODEARTS_STS_REPROBE`），重新登录或续期成功则当场解除，不会一直躺在池外。
 - **STS 到期不等于账号失效**：AK/SK 只是几小时的临时凭据，到期前网关自动续（`CODEARTS_REFRESH_MARGIN`，默认 300 秒；后台巡检线程每 `CODEARTS_STS_TICK`（默认 30 秒）扫一遍，空闲也会续），不需要重新走浏览器。
 
 **每日签到**：网关内置调度器，默认每天 **00:05**（`CODEARTS_CHECKIN_AT` 可调）为所有账号签到领积分；
