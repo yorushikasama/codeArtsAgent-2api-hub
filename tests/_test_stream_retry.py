@@ -823,28 +823,37 @@ def _run_queue_flow(script, cap=180.0):
     """script: [(method, 次序)] 决定每次 urlopen 的行为。返回 (status, text)。
 
     POST 的行为从 script['post'] 列表里按序取；GET 一律按 script['get'] 取。
+
+    POST 那一路打在 ``_send_chat_post`` 上（不再是 ``urllib.request.urlopen``）：
+    推理请求现在自己走 http.client —— 写 body 与读响应头要分开预算，否则
+    大 body 会把「等响应头」的 120 秒耗在写阶段上（见
+    ca_codearts._send_chat_post 的注释）。打在它上面才是准确的接缝。
+    GET（排队轮询）仍然走 urlopen，桩不变。
     """
     posts = list(script["post"])
     gets = list(script["get"])
     state = {"n": 0}
 
+    def fake_post(url, body, headers, write_timeout, read_timeout):
+        state["n"] += 1
+        act = posts.pop(0) if posts else ("ok", None)
+        if act[0] == "429":
+            raise _ue.HTTPError(
+                "u", 429, "Too Many",
+                _Headers(act[1] or {"queue-status": "queued",
+                                    "trace-id": "tr", "retry-after": "0.05"}),
+                _io.BytesIO(b""))
+        return _FakeResp(b"")
+
     def fake(req, timeout=None):
-        if req.get_method() == "POST":
-            state["n"] += 1
-            act = posts.pop(0) if posts else ("ok", None)
-            if act[0] == "429":
-                raise _ue.HTTPError(
-                    "u", 429, "Too Many",
-                    _Headers(act[1] or {"queue-status": "queued",
-                                        "trace-id": "tr", "retry-after": "0.05"}),
-                    _io.BytesIO(b""))
-            return _FakeResp(b"")
         act = gets.pop(0) if gets else ("promoted", None)
         if act[0] == "raise":
             raise OSError("poll boom")
         return _FakeResp(_json.dumps(act[1]).encode())
 
+    real_post = C._send_chat_post
     real = _ur.urlopen
+    C._send_chat_post = fake_post
     _ur.urlopen = fake
     saved_cap = C.QUEUE_MAX_WAIT
     C.QUEUE_MAX_WAIT = cap
@@ -856,6 +865,7 @@ def _run_queue_flow(script, cap=180.0):
             resp.close()
         return st, text
     finally:
+        C._send_chat_post = real_post
         _ur.urlopen = real
         C.QUEUE_MAX_WAIT = saved_cap
 
@@ -1099,20 +1109,22 @@ check("server_retry_after：坏标记 → 0",
 
 # open_chat 的 retry-after 头标记（复用排队测试的桩手法）
 def _run_retry_after_flow(headers, code=429):
-    real = _ur.urlopen
+    # 桩打在 _send_chat_post 上：推理请求自己走 http.client（写/读分开预算），
+    # 打桩 urlopen 不再拦得住它。
+    real_post = C._send_chat_post
 
-    def fake(req, timeout=None):
+    def fake_post(url, body, hdrs, write_timeout, read_timeout):
         raise _ue.HTTPError("u", code, "lim", _Headers(headers),
                             _io.BytesIO(b'{"error_code":"x","error_msg":"y"}'))
 
-    _ur.urlopen = fake
+    C._send_chat_post = fake_post
     try:
         st, resp, text = C.open_chat("ak", "sk", None, "glm-5.3",
                                      [{"role": "user", "content": "hi"}],
                                      max_tokens=8)
         return st, text
     finally:
-        _ur.urlopen = real
+        C._send_chat_post = real_post
 
 
 _st, _txt = _run_retry_after_flow({"retry-after-ms": "7000"})

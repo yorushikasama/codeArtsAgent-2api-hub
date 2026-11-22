@@ -71,7 +71,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- **108 个套件：85 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- **110 个套件：87 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - 面板页的源码按域拆在 `dashboard_src/`（11 个片段：样式 / i18n / 面板脚本
   按域 4 段 / 数据看板页等），`dashboard.html` 由
   `python scripts/build_dashboard.py` 纯拼接生成（无模板、无压缩、无依赖）；
@@ -230,6 +230,12 @@ export ANTHROPIC_AUTH_TOKEN="你在看板设置中添加的 API Key"
 
 **推理超时**：目录类接口 20 秒够用，推理不够——实测 GLM-5.2 单次回答要 17 秒以上。推理读超时默认 **180 秒**
 （`CODEARTS_CHAT_TIMEOUT` 可覆盖），响应头超时默认 120 秒，建连总预算 210 秒（`CODEARTS_OPEN_BUDGET`）。
+
+> **大请求的写阶段有独立预算**（`CODEARTS_CHAT_WRITE_TIMEOUT`，默认 300 秒）。socket 的超时是
+> **每次操作**的上限，而 `urllib` 会把同一个值同时给「写 body」和「等响应头」——上游读超大
+> body 要 9~21 秒，把对端 TCP 窗口填满时写阶段会卡住，卡的就是等响应头的那份预算
+> （2026-11-15 线上 26 次 502 全是这个）。现在写 body 与等响应头各花各的预算；body 超过
+> 1MB 时建连总预算也按体积放宽（1MB→2 倍，2MB→3 倍，封顶 3 倍），给大请求第二次机会。
 
 **图片怎么处理**：主模型不支持视觉时，网关**不让这次请求失败**，而是先用视觉模型把图转成
 文字描述再发（`kimi-k2.6-vl` 优先，失败退 `Qwen3-VL-235B`）。这与官方客户端完全同构——

@@ -2801,6 +2801,21 @@ CODEARTS_STREAM_RESTART_BUDGET = ca_env.number("CODEARTS_STREAM_RESTART_BUDGET",
 #: 收口 —— 与官方一样「在耐心范围内持续重试」，而不是快速报错。
 CODEARTS_OPEN_BUDGET = ca_env.number("CODEARTS_OPEN_BUDGET", 210.0, minimum=1.0)
 
+#: 大请求的建连预算倍数（2026-11-15 线上事故）。
+#:
+#: 210 秒的预算原本是按「一次 0203 要 60 秒」算的：60+2+60+5+60+8=195s，
+#: 刚好三次完整尝试。**大 body 把这个前提打破了**：写一个 60 万字符以上的
+#: body 到上游要 9~21 秒，写到一半还可能被 WAF 掐断（EOF / nginx 502），
+#: 掐断后 socket 要等到超时才报 —— 于是一次失败的尝试就吃掉 127 秒
+#: （线上实测：start +0s → write timeout +127s → budget exhausted +231s），
+#: 210 秒的预算根本不够再试一轮。
+#:
+#: 所以按 body 大小放宽：body 越大，单次尝试的**下界**越高，预算按比例给。
+#: 1MB 起步给 2 倍（420s），2MB 给 3 倍。上限 3 倍，免得一个卡死的请求
+#: 把网关拖到客户端超时之外。
+CODEARTS_LARGE_BODY_BYTES = 1024 * 1024
+CODEARTS_LARGE_BODY_BUDGET_MULT = 3.0
+
 #: 「再来一轮」的**成本估算**里，快速失败的那种算多久（秒）。
 #:
 #: 1041（并发会话满）与 429（TPM/请求数限流）都是上游立刻回的，实测毫秒级；
@@ -4931,6 +4946,58 @@ def _codearts_error_detail_with_quota(text):
         if _fc_msg:
             detail = ("%s | %s" % (detail, _fc_msg))[:200]
     return code, detail
+
+
+def _codearts_body_bytes(payload, messages):
+    """估算这次请求发给上游的 body 有多大（字节，近似）。
+
+    用来决定建连预算给多少：body 越大，上游读完它要的时间越长，写阶段被
+    掐断后等超时也更久（见 CODEARTS_LARGE_BODY_BUDGET_MULT 的注释）。
+
+    只估算量级，不追求精确 —— 它只用来在 1MB 上下选一个档位。算不准也
+    不会让请求失败（预算多给或少给一档而已）。
+    """
+    chars = 0
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        for call in message.get("tool_calls") or []:
+            try:
+                chars += len(json.dumps((call or {}).get("function") or {},
+                                        ensure_ascii=False))
+            except Exception:
+                pass
+        content = message.get("content")
+        if isinstance(content, str):
+            chars += len(content)
+        elif isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and isinstance(part.get("text"), str):
+                    chars += len(part["text"])
+    # 工具 schema 也在 body 里，而且不小（66 个 MCP 工具轻松上百 KB）。
+    tools = payload.get("tools") if isinstance(payload, dict) else None
+    if isinstance(tools, list):
+        try:
+            chars += len(json.dumps(tools, ensure_ascii=False))
+        except Exception:
+            pass
+    return chars
+
+
+def _codearts_open_budget_for(payload, messages):
+    """这次请求的建连预算（秒）。
+
+    默认 CODEARTS_OPEN_BUDGET（210s ≈ 三次完整尝试）。body 超过 1MB 时
+    按倍数放宽 —— 大 body 单次尝试的失败代价更高（写阶段超时就是 127s），
+    210s 只够试一次就宣告放弃，没有第二次机会。
+    """
+    size = _codearts_body_bytes(payload, messages)
+    if size < CODEARTS_LARGE_BODY_BYTES:
+        return CODEARTS_OPEN_BUDGET, size
+    # 1MB → 2 倍，2MB → 3 倍，往上封顶 3 倍。
+    mult = min(CODEARTS_LARGE_BODY_BUDGET_MULT,
+               1.0 + float(size) / CODEARTS_LARGE_BODY_BYTES)
+    return CODEARTS_OPEN_BUDGET * mult, size
 
 
 def _codearts_request_shape(payload, messages, max_tokens):
@@ -9960,14 +10027,19 @@ class Handler(BaseHTTPRequestHandler):
                     "attempt" % server_wait)
             elapsed = time.time() - t_start
             need = expected + next_sleep
+            # 预算按 body 大小放宽：大 body 单次失败的代价更高（写阶段超时
+            # 实测 127s），210s 只够试一次就没有第二次机会了（见
+            # CODEARTS_LARGE_BODY_BUDGET_MULT）。
+            open_budget, body_bytes = _codearts_open_budget_for(payload,
+                                                                  messages)
             if (retryable and payload.get("stream")
-                    and (elapsed > CODEARTS_OPEN_BUDGET
-                         or elapsed + need > CODEARTS_OPEN_BUDGET)):
+                    and (elapsed > open_budget
+                         or elapsed + need > open_budget)):
                 log("codearts open budget exhausted: model=%s %.0fs "
                     "(another attempt needs ~%.0fs: %.0fs backoff + ~%.0fs "
-                    "upstream, budget %.0fs) shape=%s"
+                    "upstream, budget %.0fs body=%dB) shape=%s"
                     % (model, elapsed, need, next_sleep, expected,
-                       CODEARTS_OPEN_BUDGET,
+                       open_budget, body_bytes,
                        _codearts_request_shape(payload, messages, max_tokens)))
                 retryable = False
             if not retryable or attempt >= len(delays):

@@ -338,7 +338,9 @@ _tail = list(C.iter_sse(_FakeResp([b"data: {}\n", b"data: [DONE]"])))
 check("iter_sse 吐出没有行尾的残行", _tail[-1] == "data: [DONE]", _tail)
 
 # open_chat：200 要交回未读句柄，错误要把响应体读完交给重试判定
-_REAL_URLOPEN = C.urllib.request.urlopen
+# 桩打在 _send_chat_post 上：推理请求自己走 http.client（写 body 与读响应头
+# 要分开预算，见 ca_codearts._send_chat_post），打桩 urlopen 拦不住它。
+_REAL_SEND_POST = C._send_chat_post
 
 
 class _OkResp(_FakeResp):
@@ -349,11 +351,11 @@ def _fake_open_ok(*a, **kw):
     return _OkResp([_RAW])
 
 
-C.urllib.request.urlopen = _fake_open_ok
+C._send_chat_post = _fake_open_ok
 try:
     _st, _resp, _txt = C.open_chat("a", "b", "c", "glm-5.3", [], max_tokens=16)
 finally:
-    C.urllib.request.urlopen = _REAL_URLOPEN
+    C._send_chat_post = _REAL_SEND_POST
 check("open_chat 成功时返回未读句柄", _st == 200 and _resp is not None and _txt == "",
       (_st, type(_resp).__name__))
 
@@ -363,11 +365,11 @@ def _fake_open_429(*a, **kw):
         "u", 429, "too many", {}, io.BytesIO(b'{"error_msg":"queue full"}'))
 
 
-C.urllib.request.urlopen = _fake_open_429
+C._send_chat_post = _fake_open_429
 try:
     _st2, _resp2, _txt2 = C.open_chat("a", "b", "c", "glm-5.3", [], max_tokens=16)
 finally:
-    C.urllib.request.urlopen = _REAL_URLOPEN
+    C._send_chat_post = _REAL_SEND_POST
 check("open_chat 失败时返回状态码+错误体、不给句柄",
       _st2 == 429 and _resp2 is None and "queue full" in _txt2,
       (_st2, _resp2, _txt2[:60]))

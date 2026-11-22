@@ -1,5 +1,52 @@
 ## Unreleased
 
+**2026-11-22：大请求写上游不再被 120 秒 socket 超时掐死**
+
+线上 11-15 21:00–23:00 出现 26 次 502，**全部**是链路层异常（
+`write operation timed out` 15 次、`EOF occurred in violation of protocol`
+6 次、nginx 502 五例），上游一次明确拒绝都没有；同期 body < 100k 字符的
+小请求 1187 个**零失败**。失败时间线：
+
+    start +0s -> write timeout +127s -> budget exhausted +231s -> error
+
+**机制要说准**（我第一版诊断是错的，改对了）：socket 的超时是**每次操作**
+的上限，不是累计。`sendall` 一口气写 1.2MB 只要 2.4 秒（线上实测），所以
+`write operation timed out` **不是**「写 body 写了 120 秒」，而是**单次
+sendall 卡了 120 秒** —— 对端 TCP 接收窗口被填满而它不读（上游读超大 body
+要 9~21 秒）。大 body 填满窗口的时间窗更长，所以更容易撞上。
+
+根因：`urllib.request.urlopen(timeout=T)` 的 T 同时给「写 body」和「等响应
+头」两段。写阶段被对端窗口堵住时，它吃掉的是本该用来等响应头的那份预算。
+
+修法：`ca_codearts._send_chat_post()` 自己走 `http.client`，**写 body 用
+独立预算、写完再用 `settimeout` 换成等响应头的预算**，两段各花各的。写
+阶段的预算按 body 体积给（`_write_timeout_for`：每 256KB +5s，上限
+`CODEARTS_CHAT_WRITE_TIMEOUT` = 300s）。
+
+同时把**建连总预算按 body 大小放宽**（`_codearts_open_budget_for`）：
+210 秒原本按「一次 0203 要 60 秒」算，三次完整尝试刚好装下；但一次大 body
+的写超时就是 127 秒，210 秒只够试一次就没有第二次机会。1MB 起步给 2 倍、
+2MB 给 3 倍，封顶 3 倍（不让卡死的请求拖到客户端超时之外）。
+
+几个踩过的坑都写进了测试：
+
+- **`skip_accept_encoding` 必须留 False**：`http.client` 在 True 时什么都不
+  加，而 urllib 发的是 `Accept-Encoding: identity`。少了这个头上游网关回
+  nginx 风格的 400（线上 A/B 实测：True → 400，False → 200）。
+- **`Connection: close` 要自己加**：urllib 的 `do_open` 会加，跟它保持一致的
+  头集，少一个都是「线上 400、本地 200」的候选原因。
+- **HTTP 错误状态要转成 `urllib.error.HTTPError`**：`http.client` 把 429
+  也当正常响应返回，不转的话服务端排队协议（读 `exc.headers` 的
+  `queue-status`）整个失效。
+- **测试的桩要打在 `_send_chat_post` 上**，不是 `urlopen` —— 后者已经拦不住
+  推理请求了。三处桩（`_test_stream_retry.py` 两处、
+  `_test_codearts_billing.py` 一处）已同步改到新接缝。
+
+新增 `tests/_test_chat_write_timeout.py`（12 项：分段预算、头集与 urllib
+逐字段一致、HTTPError 契约、读超时仍会触发）与
+`tests/_test_large_body_budget.py`（10 项：体积估算含 tools schema 与
+tool_calls 参数、预算单调增长、3 倍封顶）。
+
 **2026-11-04：账号卡片的积分/签到改后台物化，进面板不再等上游**
 
 面板每次打开都要按账号查两路上游（积分 / 每日签到）。本来就有 60 秒进程内缓存，

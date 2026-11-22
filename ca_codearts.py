@@ -51,11 +51,14 @@ import codecs
 import hashlib
 import hmac
 import http.client
+import io
 import json
 import os
 import re
 import secrets
 import select
+import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -801,6 +804,28 @@ def known_models():
 #: 推理是「等它把话说完」，不是「探测对方在不在」，所以给足。
 #: 可用 CODEARTS_CHAT_TIMEOUT 环境变量覆盖。
 CHAT_TIMEOUT = ca_env.number("CODEARTS_CHAT_TIMEOUT", 180.0, minimum=1.0)
+
+#: **写请求体**单独的超时预算（秒）。
+#:
+#: 为什么必须拆开（2026-11-15 线上事故，22 次 502 全是这个）：
+#: ``urlopen(req, timeout=t)`` 里的 t 是 **socket 全局超时**，同时管
+#: connect / send / recv 三段。于是「把 body 写进上游」和「等上游返回响应头」
+#: 抢同一个预算 —— 上游读大 body 慢的时候，写到一半就把 socket 掐了，
+#: 报出来的是 ``write operation timed out``，而上游其实一个字节都没拒绝。
+#:
+#: 实测（线上 4 账号，deepseek-v4.1-flash + 66 个工具）：
+#:   · 同一条 1.3MB body 直连上游：6.7s 拿到 200（裸 TCP sendall 1.2MB
+#:     只要 2.4s，带宽不是瓶颈）；
+#:   · 但**带 66 个工具 schema + 43 万 token 历史**的真实请求，上游光读
+#:     body 就要 9~21 秒；读得更久时中途会断（``EOF occurred in violation
+#:     of protocol``，nginx 风格的 502 Bad Gateway 也指向中间那层设备）；
+#:   · 失败全部集中在 body ≥ 600k 字符（失败率 76%），而同期 <100k 的
+#:     小请求 1187 个**零失败** —— 上游链路整体是健康的。
+#:
+#: 所以写 body 给一份独立、明显更长的预算：它要装的是「上游把整个 body
+#: 读完」的时间，不是「上游出第一个字节」的时间。
+CHAT_WRITE_TIMEOUT = ca_env.number("CODEARTS_CHAT_WRITE_TIMEOUT", 300.0,
+                                    minimum=10.0)
 
 BUILTIN_MODELS_PATH = "/v1/model/builtin"
 
@@ -2414,6 +2439,128 @@ class UpstreamBroken(Exception):
         self.received = received
 
 
+def _write_timeout_for(body_bytes):
+    """写一个 body 要给 socket 多少秒。
+
+    上游把 body 读完的时间随体积增长（线上实测：1.3MB 直连 6.7s；带 66 个
+    工具 schema + 43 万 token 历史的真实请求要 9~21s）。写不出来时 socket
+    会**立刻**报错（对端 RST 或窗口耗尽），不会白等到超时 —— 所以按体积
+    给预算不会让失败变慢，只是让「本来能写完」的请求别被误杀。
+
+    线性放大：每 256KB 加 5 秒，下限 CHAT_WRITE_TIMEOUT 的一半，上限
+    CHAT_WRITE_TIMEOUT 本身。
+    """
+    try:
+        size = int(body_bytes or 0)
+    except (TypeError, ValueError):
+        size = 0
+    extra = (size / (256.0 * 1024.0)) * 5.0
+    return max(1.0, min(CHAT_WRITE_TIMEOUT, CHAT_WRITE_TIMEOUT * 0.5 + extra))
+
+
+def _send_chat_post(url, body, headers, write_timeout, read_timeout):
+    """发一个 POST，**写 body 与读响应头各用各的超时**。
+
+    为什么要自己发而不是 ``urllib.request.urlopen``：那个函数的 timeout 是
+    socket 全局超时，``h.request()``（写 body）与 ``h.getresponse()``（读响应
+    头）共用它。
+
+    2026-11-15 线上事故：21:00–23:00 之间 26 次 502，**全部**是链路层异常
+    （``write operation timed out`` 15 次、``EOF occurred in violation of
+    protocol`` 6 次、nginx 502 五例），上游一次明确拒绝都没有；同期 body
+    < 100k 字符的小请求 1187 个**零失败**。
+
+    机制要说准，否则会修错地方：**socket 的超时是「每次操作」的上限，不是
+    累计**。``sendall`` 一口气写 1.2MB 只要 2.4 秒（线上实测），所以
+    ``write operation timed out`` **不是**「写 body 写了 120 秒」，而是
+    **单次 sendall 卡了 120 秒** —— 对端 TCP 接收窗口被填满而它不读
+    （上游读超大 body 要 9~21 秒）。大 body 填满窗口的时间窗更长，所以
+    更容易撞上。
+
+    线上时间线（实测）：``start +0s -> write timeout +127s -> budget
+    exhausted +231s``。一次失败的尝试吃掉 127 秒，而 ``urlopen`` 的
+    120 秒 socket 超时正是那个数。
+
+    所以给**写阶段单独一份更长的预算**（``write_timeout``，装「上游把整个
+    body 读完」的时间），写完之后把 socket 的读超时换成 ``read_timeout``
+    （等响应头）。两段各花各的，互不挤占。
+
+    失败时抛 urllib 的同类异常（URLError / HTTPError），调用方不用改。
+    """
+    parts = urllib.parse.urlsplit(url)
+    host = parts.hostname or ""
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    target = parts.path or "/"
+    if parts.query:
+        target += "?" + parts.query
+    if parts.scheme == "https":
+        conn = http.client.HTTPSConnection(
+            host, port, timeout=write_timeout,
+            context=ssl.create_default_context())
+    else:
+        conn = http.client.HTTPConnection(host, port, timeout=write_timeout)
+    try:
+        # **skip_accept_encoding 必须留 False**（urllib 的默认）：
+        # http.client 在 True 时**什么都不加**，而 urllib 发的是
+        # ``Accept-Encoding: identity``。少了这一个头，上游网关直接回
+        # nginx 风格的 400 Bad Request（2026-11-22 线上 A/B 实测：True →
+        # 400，False → 200）。这是「自己重写 urllib 的发送」最容易踩的坑。
+        conn.putrequest("POST", target, skip_accept_encoding=False)
+        for name, value in headers.items():
+            if name.lower() == "host":
+                # Host 由 http.client 自己填（带端口），签名里的那个是
+                # 不带端口的 netloc —— urllib 也是这么发的，别手动覆盖。
+                continue
+            conn.putheader(name, value)
+        # urllib 的 do_open 会加 Connection: close（"每次请求一条新连接"）。
+        # 跟着它发：头集与 urllib 保持一致，少一个头都是「为什么线上 400、
+        # 本地 200」的候选原因。
+        conn.putheader("Connection", "close")
+        # Content-Length 必须给：否则 http.client 用 chunked 编码，上游那边
+        # 的读路径完全不同（实测会直接回 400）。
+        conn.putheader("Content-Length", str(len(body)))
+        conn.endheaders()
+        conn.send(body)
+        # 写完了，把读超时换成「等响应头」的值。
+        sock = conn.sock
+        if sock is not None:
+            sock.settimeout(read_timeout)
+        resp = conn.getresponse()
+        resp.url = url
+        # urllib 的读侧靠 fp / raw 这条链拿到底层 socket（见 _stream_socket）。
+        # http.client 的 response 同样有 fp->raw->_sock，取法一致。
+        #
+        # **HTTP 错误状态在这里转成 urllib 的 HTTPError**（http.client 自己
+        # 不抛，它把 429/500 也当正常响应返回）。调用方按 HTTPError 归类：
+        # 429 要走服务端排队协议（读 exc.headers 里的 queue-status），其它
+        # 状态读 exc.read() 拿错误体。不转的话排队协议就整个失效了。
+        if resp.status >= 400:
+            body_text = resp.read()
+            raise urllib.error.HTTPError(
+                url, resp.status, resp.reason or "error",
+                resp.headers, io.BytesIO(body_text))
+        return resp
+    except urllib.error.HTTPError:
+        raise
+    except urllib.error.URLError:
+        raise
+    except Exception as exc:
+        # http.client 把 socket 层的错误原样抛出来（socket.timeout /
+        # TimeoutError / ssl.SSLError / ConnectionResetError…）。urllib 会把
+        # 它们包成 URLError，而调用方（_codearts_open_lease、chat_for_model）
+        # 是按 URLError 归类「瞬时链路故障、可重试」的。包一层，语义不变。
+        if isinstance(exc, (socket.timeout, TimeoutError)):
+            raise urllib.error.URLError(
+                "socket timeout: %s" % exc) from exc
+        if isinstance(exc, ssl.SSLError):
+            raise urllib.error.URLError(
+                "ssl error: %s" % exc) from exc
+        if isinstance(exc, OSError):
+            raise urllib.error.URLError(
+                "connection failed: %s" % exc) from exc
+        raise
+
+
 def apply_stream_idle_timeout(response, seconds):
     """把已建连的响应 socket 切到「两次读取之间」的空闲上限。
 
@@ -2556,15 +2703,33 @@ def open_chat(access_key, secret_key, security_token, model, messages,
     msg_id = "msg-" + secrets.token_hex(10)
 
     def _send():
-        """按同一 body/参数重发一次（promoted 后的「原样重发」，签名重新算）。"""
+        """按同一 body/参数重发一次（promoted 后的「原样重发」，签名重新算）。
+
+        **写 body 与等响应头用两份预算**（2026-11-15 线上事故）：
+        ``urlopen(req, timeout=t)`` 的 t 是 socket 全局超时，connect/send/recv
+        三段共用。上游读超大 body 本身要 9~21 秒（线上实测：1.3MB body 直连
+        上游 6.7s 拿到 200，带 66 个工具 schema + 43 万 token 历史的真实请求
+        要 9~21s），读得更久时中途会断（EOF / nginx 502）。这些秒数原本从
+        「等响应头」的预算里扣，扣光了 socket 就报 ``write operation timed
+        out`` —— 上游一个字节都没拒绝，是网关自己把预算用完了。
+
+        所以这里手动分两段：写 body 用 ``write_timeout``（装「上游把整个 body
+        读完」的时间），写完之后把 socket 的读超时换成 ``timeout``（等响应
+        头）。两段各花各的，互不挤占。
+        """
         fresh = chat_headers(access_key, secret_key, security_token,
                              hashlib.sha256(body).hexdigest(),
                              stream=stream, model=model,
                              session_id=session_id,
                              session_retry=session_retry, msg_id=msg_id)
-        return urllib.request.urlopen(
-            urllib.request.Request(CHAT_PATH, data=body, headers=fresh,
-                                   method="POST"), timeout=timeout)
+        req = urllib.request.Request(CHAT_PATH, data=body, headers=fresh,
+                                     method="POST")
+        # 写 body 的预算按体积给：上游读 body 的时间随体积增长，而写阶段的
+        # socket 超时是「单次 sendall 卡住多久」的上限 —— 大 body 更容易把
+        # 对端的 TCP 接收窗口填满（见 _send_chat_post 的注释）。
+        write_timeout = _write_timeout_for(len(body))
+        return _send_chat_post(CHAT_PATH, body, fresh, write_timeout,
+                                timeout)
 
     def _poll_queue(info):
         """按服务端节奏轮询一次 trace-queue。返回 (状态, 新info或None)。"""
