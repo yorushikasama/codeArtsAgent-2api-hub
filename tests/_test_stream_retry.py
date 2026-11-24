@@ -1407,11 +1407,20 @@ try:
     _m4 = copy.deepcopy(_IMG)
     _n4, _f4 = P._transcribe_images_for("glm-5.3", _m4)
     check("转写：首选 VLM 失败会退到下一个",
-          _tried == list(P.CODEARTS_VISION_DESCRIBERS) and _n4 == 1 and not _f4,
+          _tried == list(P.CODEARTS_VISION_DESCRIBERS[:2])
+          and _n4 == 1 and not _f4,
           (_tried, _n4, _f4))
-    check("转写：VLM 顺序是 kimi-k2.6-vl 优先",
-          P.CODEARTS_VISION_DESCRIBERS[0] == "kimi-k2.6-vl",
-          P.CODEARTS_VISION_DESCRIBERS)
+    #: 这里**不钉具体模型名**：VLM 候选随上游下架而换（2026-11-24 就是
+    #: kimi-k2.6-vl / Qwen3-VL-235B 双双 TM.000010051 无权调用，换成 kimi-k3
+    #: 系列）。钉名字只会让这条测试变成「改配置就得改测试」的噪声。真正要钉的
+    #: 是候选非空、且链路按顺序逐个真试过（上一条），以及不能拿已知读图造假的
+    #: 模型当 VLM。
+    check("转写：至少有一个 VLM 候选可用",
+          bool(P.CODEARTS_VISION_DESCRIBERS), P.CODEARTS_VISION_DESCRIBERS)
+    check("转写：不把已知读图能力造假的模型当 VLM",
+          not (set(P.CODEARTS_VISION_DESCRIBERS)
+               & set(C._VISION_DENIED)),
+          (P.CODEARTS_VISION_DESCRIBERS, C._VISION_DENIED))
 
     # 5) 没有图片就不该触发转写（省一次上游调用）
     P._describe_image = lambda *a, **k: (_ for _ in ()).throw(

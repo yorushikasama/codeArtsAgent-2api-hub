@@ -1630,7 +1630,20 @@ _MODEL_META = {}
 #: 同源、且随 ``refresh_model_limits`` 每小时跟新，上游上新模型时不必等我们
 #: 改代码；builtin 清单则受 builtin 自身的缓存与 ``routable`` 过滤影响。
 #: 表里**没有**的模型表示「还没问到」，调用方不能当成 False。
+#:
+#: **别按模型名在这里写死能力。** 2026-11-24 我差点犯这个错：拿一张 16×16
+#: PNG 问 glm-5.3-flash 颜色，它答 "White"，于是判定它「宣告能读、实际瞎猜」。
+#: 换成 32×32 再问，同一个模型准确答出 "Blue" —— 小图（或 max_tokens 太小）
+#: 下的错误答案不是能力证据，是观测噪声。所以 ``_VISION_DENIED`` 保持为空：
+#: 能力的唯一来源是上游清单 + 406 反向校准，**测试方法本身必须先可信**。
 _MODEL_VISION = {}
+
+#: 实测**不能**读图的模型（需要可靠证据才往里加）。
+#:
+#: 加条目的前提：同一张图（≥32×32）、足够的 max_tokens、标准 ``image_url``
+#: 分片格式，模型仍给出与图无关的答案，或回 ``001001020`` not multimodal。
+#: 目前为空 —— 之前把 glm-5.3-flash 放进来是我测错了（16×16 小图）。
+_VISION_DENIED = set()
 
 
 def model_vision_truth(model_id):
@@ -1638,8 +1651,14 @@ def model_vision_truth(model_id):
 
     只认明确的布尔值：上游把字段给成 ``"true"`` 字符串或干脆不给我们都不猜，
     交给调用方回退到 builtin 清单再判断。
+
+    ``_VISION_DENIED`` 里的模型**一律 False**，即使清单宣告为真 —— 那是实测
+    推翻宣告的结果（见该常量说明）。这一条必须先于查表，否则清单会盖掉实证。
     """
-    value = _MODEL_VISION.get(str(model_id or ""))
+    mid = str(model_id or "").strip()
+    if mid in _VISION_DENIED:
+        return False
+    value = _MODEL_VISION.get(mid)
     return value if isinstance(value, bool) else None
 
 
@@ -1647,13 +1666,17 @@ def note_vision_rejected(model_id):
     """上游明确说了 not multimodal：把这个模型记成不可读图。
 
     **单向**：只把 True 改成 False，绝不反过来把 False 改成 True。理由是这个
-    信号来自真打真回的错误帧（``InferHub.001001020.406``），比任何清单都硬；
-    而反过来「某个清单说能，实际不能」的坑已经踩过（glm-5.3-flash，issue
-    #315），不能让它靠一份可疑清单自我恢复。
+    信号来自真打真回的错误帧（``InferHub.001001020.406``），比任何清单都硬。
+
+    注意这条校准**覆盖不到「宣告能读、实际瞎猜」的模型** —— 那种情况上游不
+    报错，压根不会有 406 帧。glm-5.3-flash 就是这一类，只能靠 ``_VISION_DENIED``
+    按上图实测按住。
     """
     mid = str(model_id or "").strip()
     if not mid:
         return
+    if mid in _VISION_DENIED:
+        return                           # 已经是实证不可读，不必再记
     if _MODEL_VISION.get(mid) is True:
         _MODEL_VISION[mid] = False
         _qlog("vision truth corrected by upstream 406: %s -> False" % mid)
@@ -3252,7 +3275,10 @@ WELFARE_DELIVERY_PATH = "/v1/ops/delivery"
 WELFARE_CLAIM_PATH = "/v1/ops/claim"
 WELFARE_CONFIRM_PATH = "/v1/ops/confirm"
 WELFARE_CHANNEL = "IDE"
-WELFARE_DAILY_TYPE = "USER_LOGIN"
+#: 每日可重复签到的活动类型。**注意这只是必要条件，不是充分条件** ——
+#: ``USER_LOGIN`` 里同时包含「每日签到」和一次性「报名礼」，必须再结合
+#: ``claimable`` / ``status`` 才能分辨（见 ``select_dailies``）。
+WELFARE_DAILY_TYPES = ("USER_LOGIN",)
 
 #: 活动清单变化不快，面板每几秒轮询一次账号列表，按账号缓存一会儿。
 #: 失败也缓存（更短），免得接口坏掉时每次轮询都多打一次上游。
@@ -3294,17 +3320,34 @@ def welfare_permanent_failure(exc):
 
 
 def _welfare_item(raw):
-    """把 delivery 的一条活动归一成面板能直接用的形状。"""
+    """把 delivery 的一条活动归一成面板能直接用的形状。
+
+    ``displayConfig`` 是**嵌套的 JSON 字符串**，标题/说明/按钮文案都在里面，
+    顶层没有 description。不解析它，面板和日志里的活动说明就永远是空的
+    （2026-11-24 实测：顶层 ``description`` 一律 None）。
+    """
     status = str(raw.get("status") or "").upper()
+    display = {}
+    blob = raw.get("displayConfig")
+    if isinstance(blob, dict):
+        display = blob
+    elif isinstance(blob, str) and blob.strip():
+        try:
+            parsed = json.loads(blob)
+            if isinstance(parsed, dict):
+                display = parsed
+        except ValueError:
+            display = {}
     return {
         "campaign_id": raw.get("campaignId"),
-        "title": raw.get("title") or "",
+        "title": raw.get("title") or display.get("title") or "",
         "type": raw.get("type") or "",
         "status": status,
         "amount": raw.get("benefitAmount"),
         "unit": raw.get("benefitUnit") or "",
         "claimable": bool(raw.get("claimable")),
-        "description": raw.get("description") or "",
+        "description": (raw.get("description") or display.get("description")
+                        or ""),
         "claimed_at": raw.get("claimedAt") or "",
         "expire_at": raw.get("expireAt") or "",
     }
@@ -3387,14 +3430,94 @@ def welfare_activities(access_key, secret_key, security_token,
         raise
     items = [_welfare_item(raw) for raw in (data.get("items") or [])
              if isinstance(raw, dict)]
-    daily = next((it for it in items if it["type"] == WELFARE_DAILY_TYPE), None)
+    #: 「每日签到」**不止一条**。2026-11-24 实测清单里同时有三条 USER_LOGIN：
+    #:   42 Skill创新赛报名礼   2000 一次性（已 CONFIRMED，不可领）
+    #:   40 Skill创新赛每日签到礼 1000 可领
+    #:   34 每日签到领100积分     100 可领
+    #: 原来这里用 ``next()`` 只取第一条 USER_LOGIN —— 而那恰好是**已领过的一次性
+    #: 报名礼**（清单按 campaignId 倒序），于是每天判「今日已签到（2000 积分）」
+    #: 直接返回，34 和 40 从来没被领过。日志里那条 2000 就是铁证。
+    #:
+    #: ``daily`` 与 ``dailies`` 语义不同，别混：
+    #:   ``daily``   清单里的签到条目**本身**（不论领没领）—— 面板/快照靠它
+    #:               显示「今日已领」那一栏，全部领完后仍然要有值，否则那一栏
+    #:               会变空；
+    #:   ``dailies`` 此刻**还能领**的（见 select_dailies）—— 领取逻辑只认它。
+    dailies = select_dailies(items)
+    daily = _representative_daily(items, dailies)
     result = {
         "channel": data.get("channel") or "",
         "items": items,
         "daily": daily,
+        "dailies": dailies,
     }
     _welfare_cache[key] = (now + WELFARE_CACHE_TTL, result, "")
     return result
+
+
+def _representative_daily(items, dailies):
+    """面板要显示的那一条「每日签到」。
+
+    优先级：还能领的 → 已领过的签到条目（取最近领的）→ **None**。
+
+    最后一档必须返回 None，不能「兜底成任意 USER_LOGIN」：那样 campaign 42
+    （一次性报名礼，2000 积分）会冒充每日签到，面板就把一个早就到账的额度
+    当成今天的签到额展示 —— 这正是 2026-11-24 用户看到「今日已签到（2000
+    积分）」却对不上账的原因。宁可显示「暂无」，也不要给一个假的数。
+
+    「签到」的判定看标题/说明里有没有这个词：上游没有区分「每日可重复」与
+    「一次性」的字段（``type`` 两者都是 ``USER_LOGIN``），``triggerMode`` 也
+    都是 ``MANUAL_CLAIM``，所以只能用文案 + 已领状态来分辨。
+    """
+    if dailies:
+        return dailies[0]
+    candidates = []
+    for it in items:
+        if it.get("type") not in WELFARE_DAILY_TYPES:
+            continue
+        text = (it.get("title") or "") + (it.get("description") or "")
+        if "签到" in text:
+            candidates.append(it)
+    if not candidates:
+        return None
+    # 都领完了：展示最近领的那条（claimed_at 是上游给的 ISO 串，可直接字典序比）。
+    candidates.sort(key=lambda it: it.get("claimed_at") or "", reverse=True)
+    return candidates[0]
+
+
+#: 已领状态。出现在这三种之外（ELIGIBLE / 空）才算没领。
+WELFARE_CLAIMED_STATUSES = ("CLAIMED", "CONFIRMED", "CONSUMED")
+
+
+def welfare_claimed(item):
+    """这条活动是不是已经领过了。"""
+    return str((item or {}).get("status") or "").upper() in WELFARE_CLAIMED_STATUSES
+
+
+def select_dailies(items):
+    """挑出「还能领的每日签到」，按额度从大到小排。
+
+    判定条件三条同时成立，缺一条就会把一次性报名礼误当成每日签：
+      · ``type`` 在 ``WELFARE_DAILY_TYPES`` 里（上游用 USER_LOGIN 标记签到类）；
+      · 没领过（status 不在 CLAIMED/CONFIRMED/CONSUMED）；
+      · ``claimable`` 为真（上游算好的「此刻能不能领」，过期/未开始都是 False）。
+
+    只按 ``type`` 挑会选中 campaign 42 —— 它 type 同为 USER_LOGIN，但是一次性
+    报名礼且已 CONFIRMED，占着「每日签到」的名额让真正的签到期期漏领。
+    """
+    picked = []
+    for it in items or []:
+        if it.get("type") not in WELFARE_DAILY_TYPES:
+            continue
+        if welfare_claimed(it):
+            continue
+        if not it.get("claimable"):
+            continue
+        picked.append(it)
+    # 额度大的先领：万一大的一条今天已经没名额，小的一条还能捞回来。
+    picked.sort(key=lambda it: (-(it.get("amount") or 0),
+                                it.get("campaign_id") or 0))
+    return picked
 
 
 def welfare_daily(access_key, secret_key, security_token,
@@ -3449,36 +3572,87 @@ def welfare_claim(access_key, secret_key, security_token, campaign_id,
 
 def welfare_claim_daily(access_key, secret_key, security_token,
                         timeout=DEFAULT_TIMEOUT):
-    """签到：先看清单里今天的签到是不是已经领过，没有就 claim + confirm。
+    """签到：把清单里**所有还能领的每日签到**逐条领掉（claim + confirm）。
 
-    返回 claim 结果，并带 ``activity``（重新拉一次清单后的签到条目），
-    面板据此直接显示「今日已领」，不靠猜。
+    返回 ``{"ok", "already", "amount", "claimed": [...], "activity", ...}``，
+    其中 ``claimed`` 是这次真正领到的条目（可能多条，见 ``select_dailies``），
+    ``amount`` 是它们的额度之和。面板据此直接显示「今日已领 N 积分」，不靠猜。
+
+    为什么必须遍历：2026-11-24 实测清单里同时有多条 ``USER_LOGIN`` ——
+    基础「每日签到领100积分」（campaign 34）和活动期加开的「Skill创新赛每日
+    签到礼」（campaign 40，1000 积分）。旧实现只领第一条，而清单第一条恰好
+    是已领过的一次性报名礼（campaign 42），于是每天只报「已签到（2000 积分）」
+    却一分没进账，34/40 期期漏领。
+
+    一条失败不影响其余：某条额度被秒光（活动火爆）时，剩下能领的照样要落到。
     """
-    daily = welfare_daily(access_key, secret_key, security_token,
-                          timeout=timeout, use_cache=False)
-    if not daily:
+    listing = welfare_activities(access_key, secret_key, security_token,
+                                 timeout=timeout, use_cache=False)
+    picked = listing.get("dailies") or []
+    if not picked:
+        # 没有可领的。三种情况要分清，否则会把「今天全领完了」报成部署故障：
+        #   · 清单里有签到条目、且都处于已领状态 → 正常，already=True；
+        #   · 清单里有签到条目但都没到可领时间（未开始/已过期）→ 也如实返回，
+        #     不能报「没有每日签到」；
+        #   · 清单里压根没有签到条目 → 才是真没有（渠道下线/活动结束）。
+        done = listing.get("daily")
+        if done:
+            return {"ok": True, "already": True,
+                    "campaign_id": done.get("campaign_id"),
+                    "status": done.get("status"),
+                    "title": done.get("title") or "",
+                    "amount": 0, "claimed": [], "activity": done}
         raise CodeArtsError("活动清单里没有「每日签到」")
-    campaign_id = daily.get("campaign_id")
-    if daily.get("status") in ("CLAIMED", "CONFIRMED", "CONSUMED"):
-        return {"ok": True, "already": True, "campaign_id": campaign_id,
-                "status": daily["status"], "title": daily.get("title") or "",
-                "amount": daily.get("amount"),
-                "claimed_at": daily.get("claimed_at") or "",
-                "activity": daily}
-    result = welfare_claim(access_key, secret_key, security_token, campaign_id,
-                           timeout=timeout)
-    result["already"] = False
+    claimed = []
+    failures = []
+    total = 0
+    for item in picked:
+        campaign_id = item.get("campaign_id")
+        try:
+            got = welfare_claim(access_key, secret_key, security_token,
+                                campaign_id, timeout=timeout)
+        except Exception as exc:      # noqa: BLE001 —— 单条失败不拖累其它
+            failures.append({"campaign_id": campaign_id,
+                             "title": item.get("title") or "",
+                             "error": str(exc)[:160]})
+            continue
+        amount = got.get("amount")
+        if amount is None:
+            amount = item.get("amount")
+        claimed.append({"campaign_id": campaign_id,
+                        "title": got.get("title") or item.get("title") or "",
+                        "amount": amount,
+                        "status": got.get("status") or ""})
+        if isinstance(amount, (int, float)):
+            total += amount
+    if not claimed and failures:
+        raise CodeArtsError("签到全部失败：%s"
+                            % "; ".join("%s(%s)" % (f["title"] or f["campaign_id"],
+                                                    f["error"])
+                                        for f in failures))
+    result = {
+        "ok": True,
+        "already": False,
+        "campaign_id": claimed[0]["campaign_id"] if claimed else None,
+        "title": claimed[0]["title"] if claimed else "",
+        "status": claimed[0]["status"] if claimed else "",
+        "amount": total,
+        "claimed": claimed,
+        "activity": picked[0],
+    }
+    if failures:
+        result["failed"] = failures
+        #: 有失败但仍领到了：调用方据此提示「部分未领」，不要报整体失败。
+        result["partial"] = True
     try:
-        fresh = welfare_daily(access_key, secret_key, security_token,
-                              timeout=timeout, use_cache=False)
+        fresh = welfare_activities(access_key, secret_key, security_token,
+                                   timeout=timeout, use_cache=False)
     except Exception:
         fresh = None
     if fresh:
-        result["activity"] = fresh
-        if fresh.get("amount") is not None:
-            result["amount"] = fresh["amount"]
-    if result.get("amount") is None:
-        result["amount"] = daily.get("amount")
+        result["activity"] = fresh.get("daily") or picked[0]
+        result["remaining"] = [it.get("campaign_id")
+                               for it in (fresh.get("dailies") or [])]
     return result
 
 

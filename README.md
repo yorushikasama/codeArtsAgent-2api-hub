@@ -12,7 +12,7 @@
 - **单一上游**：只对接华为云码道（`snap-access.cn-north-4.myhuaweicloud.com`），账号、限额与用量都按这一个出口记账；
 - **三种协议**：`/v1/chat/completions`、`/v1/responses`（Codex）、`/v1/messages`（Claude Code / Anthropic SDK，面板开关，默认关闭）；
 - **模型清单自动跟进**：`/v1/models` 只列**可用**的模型，带上下文窗口、最大输出、思考档位与视觉能力；清单不是写死的白名单——每小时从上游 `/v1/model/builtin` 收 `enable=true` 的新模型，上游上新不用改代码；
-- **图片自动转写**：主模型不支持视觉时，网关先用视觉模型（`kimi-k2.6-vl` → `Qwen3-VL-235B`）把图**转成文字描述**再发请求，与官方客户端同构——所以 `glm-5.3` / `deepseek` 这类纯文本模型也能「看图」；
+- **图片自动转写**：主模型不支持视觉时，网关先用视觉模型（`kimi-k3.1-pro` → `kimi-k3` → `deepseek-v4.1-flash`）把图**转成文字描述**再发请求，与官方客户端同构——所以 `glm-5.3` / `deepseek` 这类纯文本模型也能「看图」；
 - **官方客户端对齐**：出站头族、思考档位白名单、逐模型 `max_tokens`、`tool_stream` 与服务器排队协议均按官方客户端逆向对齐——断流、拒答与 `APIG.0203` 显著减少；
 - **韧性栈**：建连预算 → 退避重试 → flow-control 分流 → 请求前能力预检（图片自动转写）→ 大上下文 history-snip 软剪枝；
 - **账号接入**：看板点链接走华为云 PKCE + DPoP 授权，浏览器直接回跳本机网关；STS 临时凭证约 2 小时到期，网关自动续期；
@@ -71,7 +71,7 @@ python tests/run_all.py            # 全部套件
 python tests/run_all.py realm      # 只跑名字里含 realm 的
 ```
 
-- **110 个套件：87 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
+- **111 个套件：88 个 Python + 23 个 JS**；JS 需要 PATH 上有 `node`，缺失时会跳过并提示。
 - 面板页的源码按域拆在 `dashboard_src/`（11 个片段：样式 / i18n / 面板脚本
   按域 4 段 / 数据看板页等），`dashboard.html` 由
   `python scripts/build_dashboard.py` 纯拼接生成（无模板、无压缩、无依赖）；
@@ -130,6 +130,12 @@ python tests/run_all.py realm      # 只跑名字里含 realm 的
 
 **每日签到**：网关内置调度器，默认每天 **00:05**（`CODEARTS_CHECKIN_AT` 可调）为所有账号签到领积分；
 当天失败的账号低频补试，签到结果在账号卡片上直接可见。
+
+> **签到不止一项**。上游的活动清单里可以同时有多条「登录即领」的活动
+> （基础「每日签到领100积分」+ 活动期加开的限时签到礼），网关会**逐条领完**，
+> 面板显示的是这次真领到的合计，不是清单里某个一次性活动的额度。
+> 只挑第一条的做法曾导致「面板说已签到 2000 积分、账上却没进账」——那条其实是
+> 早已到账的一次性「报名礼」。现在按 `claimable` + 未领状态筛，一条失败不影响其余。
 
 ---
 
@@ -242,7 +248,7 @@ export ANTHROPIC_AUTH_TOKEN="你在看板设置中添加的 API Key"
 > 1MB 时建连总预算也按体积放宽（1MB→2 倍，2MB→3 倍，封顶 3 倍），给大请求第二次机会。
 
 **图片怎么处理**：主模型不支持视觉时，网关**不让这次请求失败**，而是先用视觉模型把图转成
-文字描述再发（`kimi-k2.6-vl` 优先，失败退 `Qwen3-VL-235B`）。这与官方客户端完全同构——
+文字描述再发（`kimi-k3.1-pro` 优先，失败依次退 `kimi-k3` / `deepseek-v4.1-flash`）。这与官方客户端完全同构——
 逆向确认 CodeArts Agent 的 kernel 在图片进入上下文之前就把它整个替换成
 `[Image: analyzed by VLM, see results below]`，主模型从头到尾只读文字。所以
 `glm-5.3` / `deepseek` 这类 `supports_images=false` 的模型照样能「看图」，只是多花一次

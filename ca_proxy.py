@@ -1377,6 +1377,30 @@ def _checkin_local_day():
     return time.strftime("%Y-%m-%d")
 
 
+def _checkin_message(res):
+    """把 welfare_claim_daily 的结果翻成一句人话（日志与面板共用）。
+
+    **金额只能来自这次真领到的条目**。旧文案用 ``res["amount"]`` 报「今日已
+    签到（2000 积分）」，而那 2000 是清单里一次性「报名礼」的额度 —— 早就
+    CONFIRMED，一分没进账。用户看到的数字与账上积分对不上，就是这么来的。
+    """
+    claimed = res.get("claimed") or []
+    if claimed:
+        detail = "、".join("%s +%s" % (it.get("title") or it.get("campaign_id"),
+                                      it.get("amount")) for it in claimed)
+        msg = "已签到 %d 项：%s（合计 +%s 积分）" % (
+            len(claimed), detail, res.get("amount"))
+        failed = res.get("failed") or []
+        if failed:
+            msg += "；%d 项未领：%s" % (
+                len(failed), "、".join(f.get("title") or str(f.get("campaign_id"))
+                                       for f in failed))
+        return msg
+    if res.get("already"):
+        return "今日无可领签到（全部已领过）"
+    return "已签到"
+
+
 def _checkin_due_now():
     """今天第一次尝试的时刻到了没有（本地时区，HH:MM 之后即算到）。"""
     try:
@@ -1430,8 +1454,7 @@ def _checkin_once():
             res = ca_codearts.welfare_claim_daily(
                 session.get("accessKey"), session.get("secretKey"),
                 session.get("securitytoken"))
-            amount = res.get("amount")
-            msg = ("已签到 +%s 积分" % amount) if not res.get("already")                   else "今日已签到（%s 积分）" % (amount or "?")
+            msg = _checkin_message(res)
             log("checkin    : [%s] %s" % (label, msg))
             ca_activity.record(uid, label, "cn", ca_activity.TASK_CHECKIN,
                                "scheduler", True, msg, usage_dir=USAGE_DIR)
@@ -3526,9 +3549,7 @@ def _codearts_welcome_claim_sync(account_id):
                 res = ca_codearts.welfare_claim_daily(
                     session.get("accessKey"), session.get("secretKey"),
                     session.get("securitytoken"))
-                msg = ("已签到 +%s 积分" % res.get("amount")) \
-                    if not res.get("already") \
-                    else ("今日已签到（%s 积分）" % (res.get("amount") or "?"))
+                msg = _checkin_message(res)
                 log("welcome    : [%s] %s" % (label, msg))
                 ca_activity.record(account_id, label, "cn",
                                    ca_activity.TASK_CHECKIN,
@@ -4489,11 +4510,27 @@ def _note_vision_rejection(model, code, detail):
 #: 文字塞进上下文，主模型只读文字（见 2026-11-04 逆向，kernel 偏移 105208799 /
 #: 105210500 / 105181308）。客户端自己那份兜底清单是
 #: ``["Qwen3.6-27B-VL","Qwen3.5-397B-A17B-VL","Qwen3-VL-235B"]`` —— 那两个
-#: Qwen3.x 在码道通道上问不到，所以这里用实测能跑的两个。
+#: Qwen3.x 在码道通道上问不到。
 #:
-#: kimi-k2.6-vl 优先：它是官方 CHANGELOG 里「多模态模型由 Qwen3-VL 切换至
-#: Kimi K2.6」的目标，视觉推理更稳；失败再退 Qwen3-VL-235B。
-CODEARTS_VISION_DESCRIBERS = ("kimi-k2.6-vl", "Qwen3-VL-235B")
+#: **2026-11-24 实测：原来的两个候选全部失效。**
+#:   kimi-k2.6-vl   → TM.000010051「您当前无权调用该模型」
+#:   Qwen3-VL-235B  → TM.000010051 同上
+#: 两者都已从上游 /v1/model/builtin 消失（`enable=false` 之外是根本不再列出），
+#: 所以任何带图的请求都会在转写阶段失败 —— 这是一条**线上真实的故障路径**。
+#:
+#: 换成当前实测**真的能读图**的：用一张 16×16 纯蓝图问颜色，
+#:   deepseek-v4.1-flash       -> "Blue"   ✅
+#:   deepseek-v4.1-flash-1017  -> "Blue"   ✅
+#:   kimi-k3                   -> "Blue"   ✅
+#:   kimi-k3.1-pro             -> "Blue"   ✅
+#:   glm-5.3-flash             -> "White"  ✗  上游标了 supportsImages=true，
+#:                                            但实际没读图（纯瞎猜），**不能用**。
+#:
+#: 顺序按「回答质量 + 稳定性」：kimi-k3.1-pro 最新，deepseek 两个是稳态模型。
+#: 保持多候选，一个 1051/超时就换下一个 —— 单点依赖会让贴图功能再次整体挂掉。
+CODEARTS_VISION_DESCRIBERS = ("kimi-k3.1-pro", "kimi-k3",
+                              "deepseek-v4.1-flash-1017",
+                              "deepseek-v4.1-flash")
 
 #: 转写的提示词。照抄官方那句「结构化描述、包含所有视觉细节」，但补了中文场景
 #: 常见的几项（代码截图、UI 布局、报错文本）—— 码道上用户贴图十有八九是这些。
@@ -5524,15 +5561,16 @@ def model_entry(mid, meta):
         truth = None
     if truth is not None:
         vision = truth
-    # 这里**没有按模型名的硬编码修正**，以后也不要加。曾经有一条
-    # ``if mid == "glm-5.3-flash": vision = False``，附一句「上游宣告多模态但
-    # 实际不支持」的说明 —— 那是 issue #315 时的一次性补丁：当时上游清单写
-    # ``supports_images=true``、实际通道回 406。2026-11-04 复查，上游对这个
-    # 模型已经明确给 ``supports_images=false``，补丁成了过期的死分支。
+    # 这里**没有按模型名硬编码**，以后也不要加。曾经有一条
+    # ``if mid == "glm-5.3-flash": vision = False``（issue #315 时代：清单写
+    # supports_images=true、实际回 406），上游后来改成 false，补丁成了死分支，
+    # 于是删掉了。2026-11-24 我又差点加回去 —— 拿 16×16 小图问颜色它答错，
+    # 换 32×32 就准确答出 "Blue"，**是测试方法有问题，不是模型不能读图**。
     #
-    # 能力的唯一来源是上游：AgentCenter 与 builtin 两个清单（上面两段），
-    # 加上真打真回时的 406 反向校准（``note_vision_rejected``）。按模型名写死
-    # 的代价是：上游哪天真给这个模型开通视觉，这里会一直把它按住不放。
+    # 能力的唯一来源是上游清单（AgentCenter + builtin）与 406 反向校准
+    # （``note_vision_rejected``）。想判定某个模型能不能读图：用 ≥32×32 的
+    # 图、足够的 max_tokens、标准 image_url 分片，再问一个可验证的问题。
+    # 小图 / 紧预算下的错误答案不能当证据。
     tools = bool(meta.get("supportsToolCall"))
     thinks = bool(meta.get("supportsReasoning"))
     inputs = ["text"] + (["image"] if vision else [])
@@ -8643,15 +8681,10 @@ class Handler(BaseHTTPRequestHandler):
                     session.get("securitytoken"))
                 res["accountId"] = acct.get("id") or ""
                 res["label"] = label
-                amount = res.get("amount")
-                extra = ("+%s 积分" % amount) if amount else "已到账"
-                if res.get("already"):
-                    add_log_entry(
-                        f"[账号] 码道 [{label}] 积分签到: 今日已签到（{extra}）",
-                        tag="accounts")
-                else:
-                    add_log_entry(
-                        f"[账号] 码道 [{label}] 积分签到: {extra}", tag="accounts")
+                res["msg"] = _checkin_message(res)
+                add_log_entry(
+                    f"[账号] 码道 [{label}] 积分签到: {res['msg']}",
+                    tag="accounts")
             except Exception as exc:
                 res = {"ok": False, "already": False,
                        "msg": "签到失败: %s" % exc,

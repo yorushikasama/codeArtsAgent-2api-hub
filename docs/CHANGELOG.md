@@ -1,5 +1,74 @@
 ## Unreleased
 
+**2026-11-24：每日签到只领到一条；图片转写的两个 VLM 已全线下架**
+
+这次是按新版客户端（26.11.200）重新逆向，加上生产账号实测查出来的两个
+**正在发生的故障**，以及一处我自己差点写错的判定。
+
+**A. 每日签到每天只领一条，另一条期期漏领。**
+
+`/v1/ops/delivery?channel=IDE` 现在返回 6 条活动，其中 **3 条是 `USER_LOGIN`**：
+
+    campaignId=42  Skill创新赛报名礼    2000  一次性  CONFIRMED（早已到账）
+    campaignId=40  Skill创新赛每日签到礼 1000  每日    ELIGIBLE 可领
+    campaignId=34  每日签到领100积分      100  每日    ELIGIBLE 可领
+
+旧代码是 `next(it for it in items if it["type"] == "USER_LOGIN")` —— **只取第一条**，
+而清单按 campaignId 倒序，第一条恰好是**已领过的一次性报名礼 42**。于是每天判
+「今日已签到」直接返回：34 和 40 从来没被领过。生产日志里那一串
+
+    checkin: [hid_bgat...] 今日已签到（2000 积分）
+
+里的 2000 就是报名礼的额度 —— 一分没进账，数字却是别人的。用户会觉得
+「面板说签到了，积分没变」，根源在这。
+
+修法：`select_dailies()` 按三条同时判定（`type` 在 USER_LOGIN 里 + 未领 +
+`claimable` 为真），**逐条领取**；金额只累计这次真领到的。一条失败不影响其余
+（活动火爆秒光很常见），部分失败如实挂出。`daily`（面板展示用）与 `dailies`
+（可领用）分开：全部领完后前者仍要有值，但不能退回到报名礼。
+
+顺带修了 `displayConfig` 没解析的问题：标题/说明/按钮文案都藏在这个**嵌套 JSON
+字符串**里，顶层 `description` 一律是 null，面板上活动说明永远是空的。
+
+生产实测（hid_bgat）：修前 total=5600，领到 campaign 40 后 **5700 → 6700，
++1000 精确匹配**；再跑一次 `already=True amount=0`，幂等。
+
+**B. 图片转写用的两个 VLM 已经无权调用 —— 带图请求 100% 失败。**
+
+    kimi-k2.6-vl   → TM.000010051 您当前无权调用该模型
+    Qwen3-VL-235B  → TM.000010051 同上
+
+两个都已从 `/v1/model/builtin` 消失。`CODEARTS_VISION_DESCRIBERS` 换成本轮实测
+**真能读图**的四个（32×32 纯蓝图问颜色，全部答对）：
+
+    kimi-k3.1-pro → "Blue"    deepseek-v4.1-flash-1017 → "Blue"
+    kimi-k3       → "Blue"    deepseek-v4.1-flash      → "Blue"
+
+端到端验证：首选 kimi-k3.1-pro 失败后自动退到 kimi-k3，转写文本准确描述了
+「纯蓝色、高饱和度、无文字无组件」—— 退路机制真的在工作。
+
+**C. 我自己差点写错的一条判定（记录下来以免重犯）。**
+
+用 16×16 小图测 glm-5.3-flash，它答 "White"，我据此判定「上游宣告能读图是假的」，
+还准备按模型名写死 `vision=False`。换成 32×32 后同一个模型准确答出 "Blue"，
+标准 `image_url` 分片也正常 —— **是小图让模型看不清，不是它不能读图**。
+15 分钟的误判，和被删掉的那条 issue #315 补丁是同一个形状的错误。
+`tests/_test_codearts_models.py` 的「能力不能按模型名写死」守卫拦住了它。
+结论：判定视觉能力必须用 ≥32×32 的图 + 足够 max_tokens + 标准分片格式。
+
+**D. 新版客户端里还有的东西（已确认，不实现）。**
+
+- 三个 token 额度渠道 `benefit` / `education` / `examination`：`opengw` 上全部
+  `[4000] invalid channel`，gamma 分支指向的 `snapengine-apig.cn-north-7` 公网
+  DNS 解析不了。**整体已下线**，不是我们没实现。
+- `/v1/ops/events/trigger` 上报 `user.login`：实测回 `data: []`。现在清单里
+  `triggerMode` 全是 `MANUAL_CLAIM`，唯一 `AUTO_GRANT` 的（新用户注册礼）已
+  CONSUMED。客户端每天 00:05 上报是**防御性预留** —— 以后若上线「登录即自动
+  发放」的活动，它才有意义。
+- `/v1/ops/events/conversation`：对话结束时上报，返回 `data.benefits`，是另一条
+  发积分通道。实测 `tasks/conversation` 当前为空（无活跃任务），暂无可用活动。
+- `/v1/ops/invite/generate`：当前清单里没有邀请类活动，`campaignId` 无从获得。
+
 **2026-11-22：账号不再被 1806 误判判死（连累 25 个请求全 503）**
 
 11-22 09:27–09:33，25 个请求全 `503 no usable codearts account`，持续 6 分钟，
