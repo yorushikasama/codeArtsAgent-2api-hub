@@ -4518,19 +4518,22 @@ def _note_vision_rejection(model, code, detail):
 #: 两者都已从上游 /v1/model/builtin 消失（`enable=false` 之外是根本不再列出），
 #: 所以任何带图的请求都会在转写阶段失败 —— 这是一条**线上真实的故障路径**。
 #:
-#: 换成当前实测**真的能读图**的：用一张 16×16 纯蓝图问颜色，
-#:   deepseek-v4.1-flash       -> "Blue"   ✅
-#:   deepseek-v4.1-flash-1017  -> "Blue"   ✅
-#:   kimi-k3                   -> "Blue"   ✅
-#:   kimi-k3.1-pro             -> "Blue"   ✅
-#:   glm-5.3-flash             -> "White"  ✗  上游标了 supportsImages=true，
-#:                                            但实际没读图（纯瞎猜），**不能用**。
+#: 换成当前实测**真的能读图**的（32×32 纯蓝图问颜色，全部答 "Blue"）：
+#:   deepseek-v4.1-flash   deepseek-v4.1-flash-1017
+#:   kimi-k3               kimi-k3.1-pro
 #:
-#: 顺序按「回答质量 + 稳定性」：kimi-k3.1-pro 最新，deepseek 两个是稳态模型。
-#: 保持多候选，一个 1051/超时就换下一个 —— 单点依赖会让贴图功能再次整体挂掉。
-CODEARTS_VISION_DESCRIBERS = ("kimi-k3.1-pro", "kimi-k3",
+#: 顺序：**deepseek-v4.1-flash 打头**，它是这条通道上最稳的稳态模型；kimi-k3
+#: 系列随后（更新，但换版/权限调整更频繁，2026-11-24 就见过 kimi-k3.1-pro
+#: 回 1051）。保持多候选：一个 1051/超时就换下一个，单点依赖会让贴图功能再次
+#: 整体挂掉。
+#:
+#: **判视觉能力别用小图**：曾用 16×16 PNG 测 glm-5.3-flash 得到 "White"，
+#: 误判它不能读图；换 32×32 准确答 "Blue"。小图 / 紧 max_tokens 下的错误答案
+#: 是观测噪声，不是能力证据。
+CODEARTS_VISION_DESCRIBERS = ("deepseek-v4.1-flash",
+                              "kimi-k3",
                               "deepseek-v4.1-flash-1017",
-                              "deepseek-v4.1-flash")
+                              "kimi-k3.1-pro")
 
 #: 转写的提示词。照抄官方那句「结构化描述、包含所有视觉细节」，但补了中文场景
 #: 常见的几项（代码截图、UI 布局、报错文本）—— 码道上用户贴图十有八九是这些。

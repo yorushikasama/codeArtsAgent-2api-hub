@@ -39,12 +39,13 @@
     Qwen3-VL-235B  → TM.000010051 同上
 
 两个都已从 `/v1/model/builtin` 消失。`CODEARTS_VISION_DESCRIBERS` 换成本轮实测
-**真能读图**的四个（32×32 纯蓝图问颜色，全部答对）：
+**真能读图**的四个（32×32 纯蓝图问颜色，全部答对），**deepseek-v4.1-flash 打头**
+（这条通道上最稳的稳态模型），kimi-k3 系列随后：
 
-    kimi-k3.1-pro → "Blue"    deepseek-v4.1-flash-1017 → "Blue"
-    kimi-k3       → "Blue"    deepseek-v4.1-flash      → "Blue"
+    deepseek-v4.1-flash      → "Blue"    kimi-k3       → "Blue"
+    deepseek-v4.1-flash-1017 → "Blue"    kimi-k3.1-pro → "Blue"
 
-端到端验证：首选 kimi-k3.1-pro 失败后自动退到 kimi-k3，转写文本准确描述了
+端到端验证：首选失败会自动退到下一位，转写文本准确描述了
 「纯蓝色、高饱和度、无文字无组件」—— 退路机制真的在工作。
 
 **C. 我自己差点写错的一条判定（记录下来以免重犯）。**
