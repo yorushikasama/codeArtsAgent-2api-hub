@@ -73,12 +73,24 @@ fi
 
 # systemd 单元以仓库为准（deploy/ 目录）：与服务器上的不一致就装上去并
 # daemon-reload —— 内存护栏这类配置不能靠手工 remember 改。
-if [ -f deploy/codearts-hub.service ]; then
-  if ! sudo cmp -s deploy/codearts-hub.service /etc/systemd/system/codearts-hub.service; then
-    echo "deploy-full: systemd unit differs from deploy/codearts-hub.service — installing..."
-    sudo cp deploy/codearts-hub.service /etc/systemd/system/codearts-hub.service
+#
+# 路径必须走 $NEW：这段 remote 脚本跑在 ssh 的 `bash -s` 里，cwd 是登录目录
+# 而不是刚 clone 出来的新副本。第一版写成相对路径 deploy/…，[ -f ] 找不到
+# 文件就静默跳过，于是「同步成功」却 MemoryMax=infinity —— 护栏没生效而
+# 部署看起来是绿的。部署脚本里任何「找不到就跳过」的分支都要喊出来。
+UNIT_SRC="$NEW/deploy/codearts-hub.service"
+UNIT_DST=/etc/systemd/system/codearts-hub.service
+if [ -f "$UNIT_SRC" ]; then
+  if ! sudo cmp -s "$UNIT_SRC" "$UNIT_DST"; then
+    echo "deploy-full: systemd unit differs — installing $(dirname "$UNIT_SRC")/codearts-hub.service"
+    sudo cp "$UNIT_SRC" "$UNIT_DST"
     sudo systemctl daemon-reload
+    echo "deploy-full: unit installed + daemon-reload done"
+  else
+    echo "deploy-full: systemd unit already up to date"
   fi
+else
+  echo "deploy-full: WARNING no deploy/codearts-hub.service in $NEW — unit NOT synced" >&2
 fi
 
 sudo systemctl stop codearts-hub || true
