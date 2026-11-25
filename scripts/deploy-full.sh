@@ -118,10 +118,16 @@ done
 #
 # 只重搬 accounts：logs/usage 此时也已完整落盘，但没必要整包重搬（慢，且
 # 新进程马上要往里追加）。cp -a 保留 mtime，面板的「快照年龄」才不会错。
-if [ -d "$OLD/accounts" ]; then
+#
+# **源必须是 $DIR（旧目录还在原位）**：$OLD 只是「待会儿要改成什么名字」的
+# 路径变量，`mv $DIR $OLD` 在下面几行才执行。第一版写成 $OLD/accounts，
+# `[ -d ]` 在那时为假 → 整个分支被静默跳过，修复看起来部署了其实没跑。
+if [ -d "$DIR/accounts" ]; then
   rm -rf "$NEW/accounts"
-  cp -a "$OLD/accounts" "$NEW/accounts"
+  cp -a "$DIR/accounts" "$NEW/accounts"
   echo "deploy-full: accounts re-synced after stop (picks up the last STS renewal)"
+else
+  echo "deploy-full: WARNING no $DIR/accounts — accounts NOT re-synced after stop" >&2
 fi
 
 [ -d "$DIR" ] && mv "$DIR" "$OLD"
