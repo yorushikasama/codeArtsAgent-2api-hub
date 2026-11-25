@@ -94,6 +94,36 @@ else
 fi
 
 sudo systemctl stop codearts-hub || true
+
+# 等旧进程**真正退出**再搬账号文件。`systemctl stop` 返回时服务已停，但
+# SIGTERM 收尾（等在跑的请求 drain，TimeoutStopSec=45）里如果正好有一次
+# 续期在飞，它会把新 token 写盘 —— 那必须被下面这次同步看到。巡检线程自己
+# 会看 shutting_down() 不再发新续期，所以只剩「已在飞的那一次」要等。
+for _ in $(seq 1 20); do
+  systemctl is-active --quiet codearts-hub || break
+  sleep 1
+done
+
+# **停掉旧进程之后必须再同步一次 accounts**（2026-11-25 线上事故）。
+#
+# 为什么：refresh_token 是**一次性轮换**的，每次续期换一张、旧的当场作废
+# （ca_codearts.refresh_session）。上面的白名单搬运发生在跑测试闸门**之前**，
+# 闸门要 2-4 分钟；这段窗口里 STS 巡检（tick 30s，到期前 300s 就续）极可能
+# 续一次，结果写进**旧目录**。旧进程一停，新进程拿的是闸门开始前那份 token，
+# 而它在上游已经作废了 —— 于是每个请求都 503「no usable codearts account」，
+# 手动续期报 STS5.1806，只能重新登录。
+#
+# 2026-11-25 100% 复现：accounts 复制于 10:52，10:55:04 旧进程续了一次期，
+# 新进程 10:56:03 起来后立刻 1806，直到 11:00 用户手动重登录才恢复。
+#
+# 只重搬 accounts：logs/usage 此时也已完整落盘，但没必要整包重搬（慢，且
+# 新进程马上要往里追加）。cp -a 保留 mtime，面板的「快照年龄」才不会错。
+if [ -d "$OLD/accounts" ]; then
+  rm -rf "$NEW/accounts"
+  cp -a "$OLD/accounts" "$NEW/accounts"
+  echo "deploy-full: accounts re-synced after stop (picks up the last STS renewal)"
+fi
+
 [ -d "$DIR" ] && mv "$DIR" "$OLD"
 mv "$NEW" "$DIR"
 sudo systemctl start codearts-hub

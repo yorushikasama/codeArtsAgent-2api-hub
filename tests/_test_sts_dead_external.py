@@ -48,14 +48,19 @@ SESS = {
 OTHER_SESS = dict(SESS, refresh_token=_JWT_HEAD + "CHAIN-B.payload-b.sig-b")
 
 
-def _mark(sess=SESS, age_seconds=0.0):
-    """按线上结构打标记。"""
+def _mark(sess=SESS, age_seconds=0.0, probes=0):
+    """按线上结构打标记：标记表是 (指纹, 标记时刻)，再探次数在独立计数表里。"""
     P._STS_DEAD_EXTERNALLY["acct-1"] = (
         P._token_fingerprint(sess), P.time.time() - age_seconds)
+    if probes:
+        P._STS_REPROBE_COUNT["acct-1"] = probes
+    else:
+        P._STS_REPROBE_COUNT.pop("acct-1", None)
 
 
 def _reset():
     P._STS_DEAD_EXTERNALLY.clear()
+    P._STS_REPROBE_COUNT.clear()
 
 
 class FingerprintTests(unittest.TestCase):
@@ -116,7 +121,8 @@ class DeadExternalTests(unittest.TestCase):
     def test_reprobe_after_interval_retries_the_renewal(self):
         # 缺陷 B 的兜底：即使 token 没换，隔够久也要再试一次 ——
         # 「1806」未必是真的，可能只是我们自己把那张一次性 token 超时用掉了。
-        _mark(age_seconds=P._STS_DEAD_REPROBE_SECONDS + 1)
+        # probes>=1 表示已经探过一次，此时走长间隔。
+        _mark(age_seconds=P._STS_DEAD_REPROBE_SECONDS + 1, probes=1)
         self.assertFalse(P._sts_dead_by_external(SESS))
         with mock.patch.object(ca_codearts, "ensure_fresh_session",
                                return_value=SESS) as fresh:
@@ -124,8 +130,33 @@ class DeadExternalTests(unittest.TestCase):
         fresh.assert_called_once()
         self.assertTrue(any("再探" in l for l in self.logs), self.logs)
 
+    def test_first_reprobe_is_fast_not_an_hour(self):
+        # 2026-11-25 部署事故：新进程拿旧快照续期 → 1806 → 按 3600 秒兜着，
+        # 账号整整一小时不可用。首次再探必须短（默认 120 秒），因为刚被判死
+        # 时最可能是假死。
+        self.assertLess(P._STS_DEAD_FIRST_REPROBE_SECONDS,
+                        P._STS_DEAD_REPROBE_SECONDS)
+        _mark(age_seconds=P._STS_DEAD_FIRST_REPROBE_SECONDS + 1, probes=0)
+        self.assertFalse(P._sts_dead_by_external(SESS))
+
+    def test_marked_silent_then_probe_round_trips(self):
+        # 刚标记（probes=0）→ 未到 120 秒 → 静默；过了 → 再探；再失败 → 次数+1
+        # 且下一次走长间隔（不再 120 秒后又打一次上游）。
+        _mark()
+        self.assertTrue(P._sts_dead_by_external(SESS))
+        err = ca_codearts.CodeArtsError("[STS5.1806] the refresh token has been used")
+        _mark(age_seconds=P._STS_DEAD_FIRST_REPROBE_SECONDS + 1, probes=0)
+        with mock.patch.object(ca_codearts, "ensure_fresh_session",
+                               side_effect=err):
+            P._ensure_fresh(SESS)
+        state = P._STS_REPROBE_COUNT.get("acct-1", 0)
+        self.assertEqual(state, 1, P._STS_REPROBE_COUNT)   # 再探次数已 +1
+        # 刚重新标记、probes=1：即使过了 120 秒也还要等长间隔
+        _mark(age_seconds=P._STS_DEAD_FIRST_REPROBE_SECONDS + 1, probes=1)
+        self.assertTrue(P._sts_dead_by_external(SESS))
+
     def test_reprobe_that_fails_again_re_marks(self):
-        _mark(age_seconds=P._STS_DEAD_REPROBE_SECONDS + 1)
+        _mark(age_seconds=P._STS_DEAD_REPROBE_SECONDS + 1, probes=1)
         with mock.patch.object(
                 ca_codearts, "ensure_fresh_session",
                 side_effect=ca_codearts.CodeArtsError(

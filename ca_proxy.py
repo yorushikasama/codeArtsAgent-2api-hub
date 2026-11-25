@@ -3603,6 +3603,10 @@ def codearts_clear_cooldown_for(label_or_id):
         _CODEARTS_POOL.clear_cooldown(str(account.get("id") or ""))
         _CODEARTS_POOL.clear_cooldown(str(account.get("label") or ""))
         aid = str(account.get("id") or "")
+        # 重新登录/手动续期成功：标记与再探次数一起清掉。计数器留在表里会让
+        # 同一个账号下一次被判死时直接用长间隔（本该先快速再探一次）。
+        if aid:
+            _STS_REPROBE_COUNT.pop(aid, None)
         if aid and _STS_DEAD_EXTERNALLY.pop(aid, None):
             log("codearts: 账号 %s 已重新登录/换出 token，解除 1806 外部占用标记"
                 % (account.get("label") or aid))
@@ -5341,8 +5345,25 @@ _STS_DEAD_EXTERNALLY = {}
 #: 1806 —— 看上去和「被 IDE 抢占」一模一样（2026-11-19 23:26:47 超时 →
 #: 23:27:19 1806 就是这条路径）。探一次代价是 1 个注定失败的上游请求；永久
 #: 判死的代价是整个账号停摆，那次停了 2.5 天。
+#:
+#: 再探从**第一次失败**起算，而且第一次走短间隔（见下）——2026-11-25 的部署
+#: 事故里，新进程起来第一件事就是拿一份已被作废的 token 去续（部署脚本
+#: 在测试闸门之前搬的 accounts），标记后按 3600 秒兜着，账号整整一小时不可用。
 _STS_DEAD_REPROBE_SECONDS = ca_env.number("CODEARTS_STS_REPROBE", 3600.0,
                                           minimum=60.0)
+
+#: 第一次再探的间隔。刚被判死时最可能「其实是假的」（我们自己的请求把一次性
+#: token 用掉了、或部署搬来的是旧快照），值得尽快试一次；真死的话再试也还是
+#: 1806，代价只是一个上游请求。之后退化到 ``_STS_DEAD_REPROBE_SECONDS``。
+_STS_DEAD_FIRST_REPROBE_SECONDS = ca_env.number(
+    "CODEARTS_STS_FIRST_REPROBE", 120.0, minimum=30.0)
+
+#: 每个账号「已经再探过几次」。**必须独立于 _STS_DEAD_EXTERNALLY**：
+#: 再探前要把标记 pop 掉（让这一次续期真的发出去），如果计数也存在标记里，
+#: pop 就把计数一起丢了 —— 下一次重新标记又会当成「首次」，于是每 120 秒
+#: 打一次上游，对真死的号等于把当年 2800 条 WARN 的旧毛病请回来。
+#: 这个表只在 token 指纹变化或重新登录时清空。
+_STS_REPROBE_COUNT = {}
 
 
 def _token_fingerprint(sess):
@@ -5365,22 +5386,31 @@ def _sts_dead_by_external(sess):
       · **token 换了**（用户重新登录）→ 立刻解除，恢复续期；
       · **到了再探间隔** → 放回续期流程试一次。真死的会再标一次（时钟重置），
         假死的（我们自己超时把那一次性 token 用掉了）就此复活。
+
+    再探间隔是**先短后长**：第一次只等 ``_STS_DEAD_FIRST_REPROBE_SECONDS``
+    （默认 120 秒）。理由见常量的注释 —— 判死刚发生时最可能是假死，而真死
+    的话多试一次的代价只是一个必然失败的上游请求。
     """
     aid = (sess.get("account") or {}).get("id") or ""
     state = _STS_DEAD_EXTERNALLY.get(aid)
     if not state:
         return False
-    dead_fp, marked_at = state
+    dead_fp, marked_at = state[:2]
     current = _token_fingerprint(sess)
     if current and current != dead_fp:
         _STS_DEAD_EXTERNALLY.pop(aid, None)   # 巡检/面板/请求多线程都会调，用 pop
+        _STS_REPROBE_COUNT.pop(aid, None)     # 换了 token，再探次数从头算
         return False
-    if (time.time() - marked_at) >= _STS_DEAD_REPROBE_SECONDS:
+    probes = _STS_REPROBE_COUNT.get(aid, 0)
+    wait = (_STS_DEAD_FIRST_REPROBE_SECONDS if probes == 0
+            else _STS_DEAD_REPROBE_SECONDS)
+    if (time.time() - marked_at) >= wait:
         # 到期再探：先解除，让这一次续期真的发出去。失败就重新标记。
         if _STS_DEAD_EXTERNALLY.pop(aid, None):
-            log("codearts: 再探 1806 死号 %s（%.0f 分钟前标记）"
+            _STS_REPROBE_COUNT[aid] = probes + 1
+            log("codearts: 再探 1806 死号 %s（%.0f 分钟前标记，第 %d 次再探）"
                 % ((sess.get("account") or {}).get("label") or aid,
-                   (time.time() - marked_at) / 60.0))
+                   (time.time() - marked_at) / 60.0, probes + 1))
         return False
     return True
 
@@ -5413,11 +5443,18 @@ def _ensure_fresh(sess):
                 "token 可能已被我们这次请求用掉，存档里的已作废；需要重新登录"
                 % (label, exc), level="WARN")
         elif "1806" in str(exc):
+            # 保留已探次数：首次被判死 → 0（下一次隔 120 秒再试）；再探又
+            # 1806 → 累加，之后按长间隔（1 小时）兜着，不再频繁打上游。
+            # 再探次数由 _STS_REPROBE_COUNT 独立维护（pop 标记时不会丢）：这次若是
+            # 「再探又失败」，次数在 _sts_dead_by_external 里已经 +1 过了。
+            probes = _STS_REPROBE_COUNT.get(aid, 0)
             _STS_DEAD_EXTERNALLY[aid] = (_token_fingerprint(sess), time.time())
+            wait = (_STS_DEAD_FIRST_REPROBE_SECONDS if probes == 0
+                    else _STS_DEAD_REPROBE_SECONDS)
             log("codearts: STS 链被外部客户端轮换（1806）：%s —— 暂停自动续期 "
-                "%.0f 分钟后再探（重登录或 token 变化即恢复；官方 IDE 等同账号"
+                "%.0f 秒后再探（重登录或 token 变化即恢复；官方 IDE 等同账号"
                 "客户端会推进同一条链）"
-                % (label, _STS_DEAD_REPROBE_SECONDS / 60.0), level="WARN")
+                % (label, wait), level="WARN")
         else:
             log("codearts: STS renew failed for %s: %s" % (label, exc),
                 level="WARN")
