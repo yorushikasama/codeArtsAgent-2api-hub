@@ -54,6 +54,31 @@ class ReadmeTests(unittest.TestCase):
         self.assertIn(expected, read("README.md"))
 
 
+class SystemdUnitTests(unittest.TestCase):
+    """内存护栏钉在仓库里的单元文件上。
+
+    这台服务器只有 952MB 内存：没有 cgroup 上限时，一次泄漏（参考 2026-08-22
+    ugrep 33GB 拖死整机）就是 Kernel-Power 41 重演。护栏必须同时在两处成立：
+    仓库里的单元文件带上限（改它必须有意识），deploy 脚本负责把仓库版同步
+    到服务器（漂移会被发现）。
+    """
+
+    def test_unit_defines_memory_guards(self):
+        text = read("deploy", "codearts-hub.service")
+        self.assertIn("MemoryHigh=", text)
+        self.assertIn("MemoryMax=", text)
+        self.assertIn("MemorySwapMax=", text)
+        self.assertNotIn("MemoryMax=infinity", text)
+        self.assertIn("Restart=always", text)
+        self.assertIn("KillSignal=SIGTERM", text)
+
+    def test_deploy_script_syncs_the_unit(self):
+        text = read("scripts", "deploy-full.sh")
+        self.assertIn("deploy/codearts-hub.service", text)
+        self.assertIn("daemon-reload", text)
+        self.assertIn("MemoryMax", text)
+
+
 class RepoHygieneTests(unittest.TestCase):
     """解冲突没解干净的残留（冲突标记）不许留在仓库里。
 

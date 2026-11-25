@@ -203,6 +203,13 @@ export ANTHROPIC_AUTH_TOKEN="你在看板设置中添加的 API Key"
 **[docs/ENV.md](docs/ENV.md)**，由 `scripts/gen_env_doc.py` 从源码提取生成——
 改默认值后重跑该脚本同步文档。
 
+**内存护栏**：systemd 单元（`deploy/codearts-hub.service`）带 cgroup 上限
+`MemoryHigh=192M / MemoryMax=384M / MemorySwapMax=256M`。这台服务器只有
+952MB 内存，进程稳态约 94MB、峰值 160MB——上限不是按当前用量给的，是防
+「一次泄漏拖死整机」（2026-08-22 本机 ugrep 33GB 教训）。触线时被杀重启的
+只是这个秒级恢复的服务，而不是 Kernel-Power 41。`deploy-full.sh` 每次部署
+会把仓库版单元同步到服务器并 `daemon-reload`，护栏不会因手工改过而漂移。
+
 **部署同步一律全量**：本地改动推送后用 `scripts/deploy-full.sh` 部署——服务器端 git
 全新克隆 + 运行时数据白名单搬运（accounts/usage/logs/catalog 等）+ 原子换目录 + 自动
 留 3 份回滚。**不要增量 scp 单个文件**：2026-10-25 实测旧测试 + 新代码的漂移跑出过

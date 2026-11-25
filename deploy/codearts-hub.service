@@ -1,0 +1,48 @@
+# codearts-hub systemd 单元 —— 内存护栏从这里来，不在网关代码里重复造轮子。
+#
+# 为什么必须有上限：这台服务器只有 952MB 内存（+5GB swap）。进程本身稳态约
+# 94MB、历史峰值 160MB，看起来很安全；但 2026-08-22 本机的 ugrep 泄漏教训是
+# ——「看起来安全」的结构在泄漏面前毫无意义，三个进程 33GB 提交内存直接把
+# 机器拖死（Kernel-Power 41 / Resource-Exhaustion-Detector 2004）。cgroup
+# 上限是唯一在「进程疯长」与「整机拖死」之间生效的闸门：触线时被杀的只是
+# 这个可自动重启的服务（Restart=always），而不是整台机器。
+#
+# 数值怎么定的：
+#   MemoryHigh=192MB —— 软上限。约等于历史峰值 160MB 再留 20%；触线后内核
+#     开始回收/限速而不是杀，给泄漏一个「变慢、被注意到」的阶段。
+#   MemoryMax=384MB —— 硬上限。2 倍软上限，4 倍稳态。真实负载需要超过这个
+#     值时说明要么泄漏要么配置错了，杀掉重启（秒级恢复）比拖死整机好。
+#   MemorySwapMax=256MB —— swap 只兜突发，不兜泄漏：泄漏会把这个额度也吃满，
+#     然后 MemoryMax 照样生效。
+#
+# 改动这份文件后：scp 到服务器 /etc/systemd/system/ 并
+# `sudo systemctl daemon-reload && sudo systemctl restart codearts-hub`。
+# deploy-full.sh 不会覆盖它（它只管 /home/ubuntu/codearts-hub）。
+#
+# Type=simple / SIGTERM 收尾 / 45s 宽限保持原值；StandardOutput 双流仍指向
+# logs/gw.log（logrotate copytruncate 负责轮转）。
+
+[Unit]
+Description=CodeArts gateway (codearts-hub)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/codearts-hub
+ExecStart=/usr/bin/python3 ca_proxy.py --host 127.0.0.1 --port 9000
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=45
+StandardOutput=append:/home/ubuntu/codearts-hub/logs/gw.log
+StandardError=append:/home/ubuntu/codearts-hub/logs/gw.log
+
+# ---- 内存护栏（2026-11-25，见文件头注释）----
+MemoryHigh=192M
+MemoryMax=384M
+MemorySwapMax=256M
+
+[Install]
+WantedBy=multi-user.target

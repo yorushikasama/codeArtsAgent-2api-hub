@@ -71,6 +71,16 @@ if [ "${WB_DEPLOY_SKIP_TESTS:-0}" != "1" ]; then
   rm -f "$GATE_LOG"
 fi
 
+# systemd 单元以仓库为准（deploy/ 目录）：与服务器上的不一致就装上去并
+# daemon-reload —— 内存护栏这类配置不能靠手工 remember 改。
+if [ -f deploy/codearts-hub.service ]; then
+  if ! sudo cmp -s deploy/codearts-hub.service /etc/systemd/system/codearts-hub.service; then
+    echo "deploy-full: systemd unit differs from deploy/codearts-hub.service — installing..."
+    sudo cp deploy/codearts-hub.service /etc/systemd/system/codearts-hub.service
+    sudo systemctl daemon-reload
+  fi
+fi
+
 sudo systemctl stop codearts-hub || true
 [ -d "$DIR" ] && mv "$DIR" "$OLD"
 mv "$NEW" "$DIR"
@@ -78,6 +88,11 @@ sudo systemctl start codearts-hub
 sleep 4
 systemctl is-active codearts-hub
 curl -fsS -m 5 localhost:9000/health && echo
+# 内存护栏必须真的在位（MemoryMax 是硬闸）：上去了但没有生效就明说，别静默。
+if command -v systemctl-show >/dev/null 2>&1 || true; then
+  MM=$(systemctl show codearts-hub -p MemoryMax --value 2>/dev/null || echo "?")
+  echo "deploy-full: MemoryMax=${MM} (expect 384M; infinity means the guard did not load)"
+fi
 
 # 回滚保险：保留最近 3 份旧目录；再旧的清掉。
 ls -dt "$DIR".old-* 2>/dev/null | tail -n +4 | xargs -r rm -rf
