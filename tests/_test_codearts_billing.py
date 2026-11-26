@@ -464,8 +464,14 @@ _pool4.release(_pk4)
 P.codearts_concurrency = _saved_cap_fn
 
 # 故障转移：A 号报「并发会话已满」→ 给 A 打冷却、立刻换 B
+#
+# ``_codearts_extra`` 必须桩掉：它拿真凭据去查官方档位表/模型真值（各带 1h
+# 缓存，缓存空时真发网络请求）。本套件声明「不联网」，漏桩时假凭据会打上游：
+# 实测本地 3.2s、线上 7.9s —— 而这条冷却只晾 5 秒，等断言跑完冷却已经过期，
+# 「失败的账号被打上冷却」于是随机变红（线上部署闸门两次都栽在这）。
 _saved_pool, _saved_open, _saved_hb2 = P._CODEARTS_POOL, C.open_chat, C.heartbeat
 _saved_delays, _saved_err = P.CODEARTS_BUSY_DELAYS, P.record_error
+_saved_extra = P._codearts_extra
 try:
     _fx = P._CodeartsAccountPool()
     _fx._usable = lambda: [_sess("a"), _sess("b")]
@@ -473,6 +479,7 @@ try:
     P.CODEARTS_BUSY_DELAYS = (0.0,)
     P.record_error = lambda *a, **k: None
     C.heartbeat = lambda *a, **k: (True, "ok")
+    P._codearts_extra = lambda payload, cred=None: None
     _calls = []
 
     def _open_by_account(ak, sk, tk, model, messages, **kw):
@@ -505,6 +512,7 @@ finally:
     C.heartbeat = _saved_hb2
     P.CODEARTS_BUSY_DELAYS = _saved_delays
     P.record_error = _saved_err
+    P._codearts_extra = _saved_extra
 
 
 print()
