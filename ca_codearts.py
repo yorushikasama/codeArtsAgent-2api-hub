@@ -833,6 +833,9 @@ _EXTRA_MODELS = set()
 #: 自动收录进来的模型名（供面板/日志区分「种子表」与「上游发现」）。
 _EXTRA_MODELS_SEEN = set()
 
+#: 模型名集合与大小写索引需一起更新：目录刷新和聊天请求可能并发。
+_MODEL_REGISTRY_LOCK = threading.RLock()
+
 
 def known_models():
     """当前认得的全部可推理模型名（种子表 + 上游自动收录）。
@@ -840,11 +843,44 @@ def known_models():
     ``is_codearts_model`` / ``resolve_model`` / ``/v1/models`` 都走这里，
     不再直接读 ``CHAT_MODELS`` —— 那会让自动收录形同虚设。
     """
-    names = list(CHAT_MODELS)
-    for name in sorted(_EXTRA_MODELS):
-        if name not in names:
-            names.append(name)
-    return tuple(names)
+    with _MODEL_REGISTRY_LOCK:
+        names = list(CHAT_MODELS)
+        for name in sorted(_EXTRA_MODELS):
+            if name not in names:
+                names.append(name)
+        return tuple(names)
+
+
+def register_builtin_models(raw_list):
+    """收录 builtin 中启用的模型，并返回本次可展示目录及变更数。"""
+    enabled = []
+    added = 0
+    vision = 0
+    with _MODEL_REGISTRY_LOCK:
+        already = set(str(name).lower()
+                      for name in tuple(CHAT_MODELS) + tuple(_EXTRA_MODELS))
+        for raw in raw_list or []:
+            if not isinstance(raw, dict):
+                continue
+            mid = str(raw.get("model_id") or "").strip()
+            if not mid or raw.get("enable") is False:
+                continue
+            enabled.append(raw)
+            raw_vision = raw.get("supports_images")
+            if isinstance(raw_vision, bool):
+                if _MODEL_VISION.get(mid) is not raw_vision:
+                    vision += 1
+                _MODEL_VISION[mid] = raw_vision
+            folded = mid.lower()
+            if folded in already:
+                continue
+            _EXTRA_MODELS.add(mid)
+            _EXTRA_MODELS_SEEN.add(mid)
+            already.add(folded)
+            added += 1
+        if added:
+            _reset_model_index()
+    return enabled, added, vision
 
 
 # ---------------------------------------------------------------------------
@@ -1716,35 +1752,14 @@ def refresh_model_limits(access_key, secret_key, security_token,
         return
     try:
         # ---- 一、白名单 + 图片能力：以 builtin 目录为准 ----
-        added = 0
-        vision = 0
         try:
             listing = builtin_models(access_key, secret_key, security_token,
                                      timeout=timeout) or []
+            builtin_ok = True
         except Exception:                  # noqa: BLE001 —— 目录失败不影响限值
             listing = []
-        already = set(str(n).lower() for n in CHAT_MODELS)
-        for raw in listing:
-            mid = str((raw or {}).get("model_id") or "").strip()
-            if not mid:
-                continue
-            # enable 缺失时按「启用」处理：老版本目录没有这个字段，
-            # 一律当停用会让整份清单失效。只有明确的 false 才算停用。
-            if raw.get("enable") is False:
-                continue
-            raw_vision = raw.get("supports_images")
-            if isinstance(raw_vision, bool):
-                # builtin 的 supports_images 是权威（gpts 那份全是 false），
-                # 这里的值直接覆盖 —— 图片能力的真来源就是它。
-                if _MODEL_VISION.get(mid) is not raw_vision:
-                    vision += 1
-                _MODEL_VISION[mid] = raw_vision
-            if str(mid).lower() in already:
-                continue
-            _EXTRA_MODELS.add(mid)
-            _EXTRA_MODELS_SEEN.add(mid)
-            already.add(str(mid).lower())
-            added += 1
+            builtin_ok = False
+        _, added, vision = register_builtin_models(listing)
 
         # ---- 二、限值与元数据：gpts.models[] ----
         agents = agent_center_agents(access_key, secret_key, security_token,
@@ -1756,9 +1771,9 @@ def refresh_model_limits(access_key, secret_key, security_token,
                          and a.get("agent_id")),
                         agent_list[0].get("agent_id") if agent_list else None)
         if not agent_id:
-            if added:
+            if builtin_ok:
                 _MODEL_LIMITS_REFRESHED_AT[0] = now
-                _reset_model_index()
+            if added:
                 _qlog("model catalogue: +%d new model(s): %s"
                       % (added, ", ".join(sorted(_EXTRA_MODELS_SEEN))))
             return
@@ -2077,8 +2092,10 @@ def model_catalog(access_key, secret_key, security_token, timeout=DEFAULT_TIMEOU
     models = []
     errors = {}
     try:
-        models = normalize_builtin(
-            builtin_models(access_key, secret_key, security_token, timeout=timeout))
+        raw_listing = builtin_models(access_key, secret_key, security_token,
+                                     timeout=timeout)
+        enabled_listing, _, _ = register_builtin_models(raw_listing)
+        models = normalize_builtin(enabled_listing)
     except Exception as exc:
         errors[GROUP_BUILTIN] = str(exc)
 

@@ -1181,10 +1181,13 @@ check("头族：model-name 做了 URL 编码",
 check("kimi-k3 输入窗口已补全（kernel 真值 1044480）",
       C.BUILTIN_MODEL_LIMITS.get("kimi-k3") == (1044480, 65536), None)
 
-# refresh_model_limits：种子→活数据（stub 两个 agent-center 接口）
+# refresh_model_limits：种子→活数据（stub builtin + 两个 agent-center 接口）
+# builtin 也要封住：这条路径同样会去拉上游目录，漏桩就是真外联（本套件不联网）。
 _saved_agents = C.agent_center_agents
 _saved_detail = C.agent_center_agent_detail
+_saved_builtin = C.builtin_models
 try:
+    C.builtin_models = lambda *a, **k: []
     C.agent_center_agents = lambda *a, **k: {"agents": [
         {"agent_id": "other", "agent_name": "Other"},
         {"agent_id": "main", "agent_name": "CodeAgent"}]}
@@ -1217,6 +1220,7 @@ try:
 finally:
     C.agent_center_agents = _saved_agents
     C.agent_center_agent_detail = _saved_detail
+    C.builtin_models = _saved_builtin
     C._MODEL_LIMITS_REFRESHED_AT[0] = 0.0
 
 
@@ -1457,9 +1461,11 @@ try:
 except ValueError:
     check("设置：再写 model_fallbacks 按未知键拒绝", True, None)
 
-# tags/scenario 进 /v1/models 元数据（stub agent-center + 查 meta 组装）
+# tags/scenario 进 /v1/models 元数据（stub builtin + agent-center + 查 meta 组装）
 _saved_a, _saved_d = C.agent_center_agents, C.agent_center_agent_detail
+_saved_b = C.builtin_models
 try:
+    C.builtin_models = lambda *a, **k: []
     C._MODEL_META.clear()
     C.agent_center_agents = lambda *a, **k: {"agents": [
         {"agent_id": "m", "agent_name": "CodeAgent"}]}
@@ -1485,6 +1491,7 @@ try:
     C._MODEL_INDEX = None
 finally:
     C.agent_center_agents, C.agent_center_agent_detail = _saved_a, _saved_d
+    C.builtin_models = _saved_b
     C._MODEL_META.clear()
     C._MODEL_LIMITS_REFRESHED_AT[0] = 0.0
 

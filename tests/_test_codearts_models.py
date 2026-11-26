@@ -241,6 +241,51 @@ cat_t = with_catalog(variants_exc=RuntimeError("APIG.0613"))
 check("档位失败不影响清单", len(cat_t["models"]) == 3, len(cat_t["models"]))
 check("档位失败记进 errors", "thinking" in cat_t["errors"], cat_t["errors"])
 
+# 目录本身也必须完成白名单收录：重启后的第一次列表请求不能依赖先发一条聊天。
+_saved_registry = (set(C._EXTRA_MODELS), set(C._EXTRA_MODELS_SEEN),
+                   dict(C._MODEL_VISION), C._MODEL_INDEX,
+                   C.builtin_models, C.thinking_variants,
+                   C.agent_center_agents)
+try:
+    C._EXTRA_MODELS.clear()
+    C._EXTRA_MODELS_SEEN.clear()
+    C._MODEL_VISION.clear()
+    C._reset_model_index()
+    _agent_center_called = []
+    C.builtin_models = lambda *a, **k: [
+        {"model_id": "catalog-discovered", "model_name": "Catalog Discovered",
+         "enable": True, "supports_images": True},
+        {"model_id": "catalog-retired", "enable": False,
+         "supports_images": True},
+    ]
+    C.thinking_variants = lambda *a, **k: {}
+    C.agent_center_agents = lambda *a, **k: _agent_center_called.append(True)
+    _cold_cat = C.model_catalog("AK", "SK", "TOK")
+    _cold_ids = [m["id"] for m in _cold_cat["models"]]
+    check("首次目录请求立即收录新模型",
+          _cold_ids == ["catalog-discovered"], _cold_ids)
+    check("目录收录同步到模型准入与大小写解析",
+          "catalog-discovered" in C.known_models()
+          and C.resolve_model("CATALOG-DISCOVERED") == "catalog-discovered",
+          C.known_models())
+    check("目录不展示上游明确停用模型",
+          "catalog-retired" not in _cold_ids, _cold_ids)
+    check("目录收录不调用 AgentCenter",
+          _agent_center_called == [], _agent_center_called)
+finally:
+    (old_extra, old_seen, old_vision, old_index, old_builtin,
+     old_variants, old_agents) = _saved_registry
+    C._EXTRA_MODELS.clear()
+    C._EXTRA_MODELS.update(old_extra)
+    C._EXTRA_MODELS_SEEN.clear()
+    C._EXTRA_MODELS_SEEN.update(old_seen)
+    C._MODEL_VISION.clear()
+    C._MODEL_VISION.update(old_vision)
+    C._MODEL_INDEX = old_index
+    C.builtin_models = old_builtin
+    C.thinking_variants = old_variants
+    C.agent_center_agents = old_agents
+
 # 内置目录取不到：回空清单 + 原因，绝不抛异常（面板靠 errors 说明）。
 empty = with_catalog(builtin_exc=RuntimeError("PromptCenter 挂了"))
 check("内置取数挂了回空清单而不是抛异常", empty["models"] == [], empty["models"])

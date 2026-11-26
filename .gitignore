@@ -58,3 +58,6 @@ docker-compose.override.yml
 
 # 并发会话用的独立检出（不进仓库）
 .worktrees/
+
+# ZCode 会话的计划草稿目录（agent 工具生成的过程文件，不是源码）
+.zcode/
