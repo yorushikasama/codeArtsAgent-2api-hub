@@ -283,9 +283,16 @@ class _PoolSpy:
         self.keys = list(keys)
         self.penalized = []
         self.acquired = []
+        self.credit_exhausted = set()
+        self.cursor = 0
 
-    def acquire(self, _wait, session_key=None, model=None):
-        key = self.keys[len(self.acquired) % len(self.keys)]
+    def acquire(self, _wait, session_key=None, model=None, exclude=()):
+        available = [key for key in self.keys
+                     if key not in self.credit_exhausted and key not in exclude]
+        if not available:
+            return None, None
+        key = available[self.cursor % len(available)]
+        self.cursor += 1
         self.acquired.append(key)
         # 形状要与真实池子一致：调用方读 session["account"]["label"] 与三个凭据
         return ({"account": {"label": key}, "accessKey": "AK",
@@ -296,6 +303,13 @@ class _PoolSpy:
 
     def penalize(self, key, seconds, model=None):
         self.penalized.append((key, round(seconds, 1), model))
+
+    def mark_credit_exhausted(self, key):
+        self.credit_exhausted.add(key)
+
+    def all_credit_exhausted(self):
+        return bool(self.keys) and all(key in self.credit_exhausted
+                                       for key in self.keys)
 
     def _usable(self):
         return [{"account": {"id": k}} for k in self.keys]
@@ -317,17 +331,26 @@ def _run_aggregate(pool, status, body, model="glm-5.3"):
 
     # 聚合路径走 ca_codearts.chat_for_model（不是 open_chat）：它返回的是
     # (状态码, 原始响应体)，正好是这条路径要的形状。
+    responses = (list(zip(status, body))
+                 if isinstance(status, list) else [(status, body)])
+
     def _chat_for_model(*_a, **_k):
+        if responses:
+            return responses.pop(0)
+        if isinstance(status, list):
+            return status[-1], body[-1]
         return status, body
 
     saved_pool = P._CODEARTS_POOL
     saved_chat = C.chat_for_model
     saved_idle = P.codearts_session_idle
     saved_busy = P.codearts_session_busy
+    saved_extra = P._codearts_extra
     P._CODEARTS_POOL = pool
     C.chat_for_model = _chat_for_model
     P.codearts_session_idle = lambda *_a, **_k: None
     P.codearts_session_busy = lambda *_a, **_k: ("sid", True, "ok")
+    P._codearts_extra = lambda *_a, **_k: None
     try:
         out = h._codearts_chat_result(
             {"model": model, "messages": [{"role": "user", "content": "hi"}]})
@@ -336,6 +359,7 @@ def _run_aggregate(pool, status, body, model="glm-5.3"):
         C.chat_for_model = saved_chat
         P.codearts_session_idle = saved_idle
         P.codearts_session_busy = saved_busy
+        P._codearts_extra = saved_extra
     return h, out
 
 
@@ -403,6 +427,67 @@ check("429 仍然重试（修复没把限流重试一起关掉）",
       len(_pool429.acquired) > 1, _pool429.acquired)
 check("429 的冷却是按模型的（TPM 只影响这个模型）",
       any(p[2] == "glm-5.3" for p in _pool429.penalized), _pool429.penalized)
+
+
+# ---------------------------------------------------------------------------
+# 上游 TM.00001050：账号级隔离并立即换号
+# ---------------------------------------------------------------------------
+
+section("3b. 上游积分耗尽要隔离账号并换号")
+
+_credit_empty = json.dumps({"error_code": "TM.00001050",
+                             "error_msg": "account credits exhausted"})
+_credit_success = _frame({"choices": [{"delta": {"content": "ok"},
+                                       "finish_reason": "stop"}],
+                          "usage": {"prompt_tokens": 1,
+                                    "completion_tokens": 1}})
+check("精确识别 TM.00001050", S.account_credit_exhausted(400, _credit_empty), None)
+check("其他 400 不会被当成积分耗尽",
+      not S.account_credit_exhausted(
+          400, '{"error_code":"InferHub.001001005.400",'
+               '"error_msg":"The request param is invalid"}'), None)
+check("TM.00001050 允许快速换号重试",
+      S.retryable(400, _credit_empty)
+      and not S.slow_failure(400, _credit_empty), None)
+check("普通参数 400 仍不重试",
+      not S.retryable(400, '{"error_code":"InferHub.001001005.400"}'), None)
+check("上游积分错误回明确的配额错误类型",
+      S.fail_spec(400, "TM.00001050", "credits exhausted")
+      == (402, "insufficient_quota"), None)
+
+with _spy(), _NoSleep():
+    _credit_pool = _PoolSpy(["acct-empty", "acct-healthy"])
+    _credit_h, _credit_out = _run_aggregate(
+        _credit_pool, [400, 200], [_credit_empty, _credit_success])
+check("聚合请求首号积分耗尽后同一请求改走另一个账号",
+      _credit_pool.acquired == ["acct-empty", "acct-healthy"]
+      and _credit_out[0] is None
+      and _credit_out[1]["content"] == "ok",
+      (_credit_pool.acquired, _credit_out))
+check("耗尽状态按账号隔离（非模型冷却）",
+      _credit_pool.credit_exhausted == {"acct-empty"}
+      and not _credit_pool.penalized, (_credit_pool.credit_exhausted,
+                                       _credit_pool.penalized))
+
+with _spy(), _NoSleep():
+    _single_credit_pool = _PoolSpy(["acct-empty"])
+    _single_h, _single_out = _run_aggregate(
+        _single_credit_pool, 400, _credit_empty)
+check("唯一账号耗尽时不重复打同一账号，返回积分耗尽",
+      _single_credit_pool.acquired == ["acct-empty"]
+      and _single_out[0][0] == 402,
+      (_single_credit_pool.acquired, _single_out))
+
+with _spy(), _NoSleep():
+    _ordinary_400_pool = _PoolSpy(["acct-a", "acct-b"])
+    _ordinary_400_h, _ordinary_400_out = _run_aggregate(
+        _ordinary_400_pool, 400,
+        '{"error_code":"InferHub.001001005.400",'
+        '"error_msg":"The request param is invalid"}')
+check("普通参数错误不会换号或隔离账号",
+      _ordinary_400_pool.acquired == ["acct-a"]
+      and not _ordinary_400_pool.credit_exhausted,
+      (_ordinary_400_pool.acquired, _ordinary_400_pool.credit_exhausted))
 
 
 # ---------------------------------------------------------------------------

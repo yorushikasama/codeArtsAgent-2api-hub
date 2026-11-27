@@ -472,7 +472,10 @@ P.codearts_concurrency = _saved_cap_fn
 _saved_pool, _saved_open, _saved_hb2 = P._CODEARTS_POOL, C.open_chat, C.heartbeat
 _saved_delays, _saved_err = P.CODEARTS_BUSY_DELAYS, P.record_error
 _saved_extra = P._codearts_extra
+_saved_credit_snapshot = P.ca_account_snapshot.load_snapshot
+_snapshot = None
 try:
+    P.ca_account_snapshot.load_snapshot = lambda _path: _snapshot
     _fx = P._CodeartsAccountPool()
     _fx._usable = lambda: [_sess("a"), _sess("b")]
     P._CODEARTS_POOL = _fx
@@ -506,7 +509,105 @@ try:
         _lease.close()
     check("租约关闭后名额归还",
           _fx.snapshot().get("b", {}).get("in_flight") == 0, _fx.snapshot())
+
+    _h.headers = {"X-Conversation-Id": "credit-test"}
+    _payload = {"model": "glm-5.3", "messages": [], "stream": True}
+    _sticky = P.codearts_session_key(_h.headers, _payload)
+    _empty = '{"error_code":"TM.00001050","error_msg":"credits exhausted"}'
+
+    def _open_with_credits(ak, sk, tk, model, messages, **kw):
+        _calls.append(ak)
+        return ((400, None, _empty) if ak == "AK-a"
+                else (200, _FakeResp([b""]), ""))
+
+    _fx = P._CodeartsAccountPool()
+    _fx._usable = lambda: [_sess("a"), _sess("b")]
+    check("测试请求确实有会话粘性键", bool(_sticky), _sticky)
+    _fx.remember(_sticky, "a")
+    P._CODEARTS_POOL = _fx
+    C.open_chat = _open_with_credits
+    _calls.clear()
+    _err, _lease = _h._codearts_open_lease(_payload, "glm-5.3", [], 64)
+    check("流式建连：首号积分耗尽后换号成功",
+          _err is None and getattr(_lease, "account_key", None) == "b"
+          and _calls == ["AK-a", "AK-b"], _calls)
+    if _lease is not None:
+        _lease.close()
+    check("换号成功后会话粘到 B", _fx._sticky(_sticky) == "b")
+    _fx.remember(_sticky, "a")
+    _key = _fx.acquire(0, session_key=_sticky, model="GLM-5.2")[1]
+    check("即使会话仍粘在 A，换模型也不会选回耗尽账号", _key == "b", _key)
+    if _key:
+        _fx.release(_key)
+
+    def _balance(remaining, captured_at):
+        return {"at": captured_at, "accounts": {
+            "a": {"credit": {"remaining": remaining}}}}
+
+    _now = time.time()
+    _snapshot = _balance(20, _now)
+    _snapshot["credit_started_at"] = _now - 10
+    _key = _fx.acquire(0)[1]
+    check("报错后才写入的快照，若采集更早，不能解除隔离", _key == "b", _key)
+    if _key:
+        _fx.release(_key)
+    _snapshot = _balance(0, _now)
+    _cold = P._CodeartsAccountPool()
+    _cold._usable = lambda: [_sess("a")]
+    check("新账号池从有效快照避开零余额且能正确归因",
+          _cold.acquire(0) == (None, None) and _cold.all_credit_exhausted())
+    P._CODEARTS_POOL = _cold
+    P.codearts_clear_cooldown_for("a")
+    _key = _cold.acquire(0)[1]
+    check("重新授权后旧零余额快照不再拦截", _key == "a", _key)
+    if _key:
+        _cold.release(_key)
+
+    P._CODEARTS_POOL = _fx
+    _fx._usable = lambda: [_sess("a")]
+    _snapshot = _balance(20, time.time())
+    _key = _fx.acquire(0)[1]
+    check("新快照确认正余额后账号重新参与调度", _key == "a", _key)
+    if _key:
+        _fx.release(_key)
+    _snapshot = None
+    _fx._usable = lambda: [_sess("a"), _sess("b")]
+    _calls.clear()
+
+    def _open_all_empty(ak, *_args, **_kwargs):
+        _calls.append(ak)
+        return 400, None, _empty
+
+    C.open_chat = _open_all_empty
+    _err, _lease = _h._codearts_open_lease(_payload, "glm-5.3", [], 64)
+    check("流式建连：全池积分耗尽时每个账号只试一次并报 402",
+          _lease is None and _h.status == 402
+          and sorted(_calls) == ["AK-a", "AK-b"], (_h.status, _calls))
+
+    _fx = P._CodeartsAccountPool()
+    # Round-robin advances after A, so B is next once A is removed by cooldown.
+    _fx._usable = lambda: [_sess("a"), _sess("c"), _sess("b")]
+    P._CODEARTS_POOL = _fx
+    _h.headers = {}
+    _calls.clear()
+
+    def _open_mixed(ak, *_args, **kw):
+        _calls.append((ak, kw["session_retry"]))
+        if ak == "AK-a":
+            return 400, None, '{"error_code":"TM.00001041"}'
+        if ak == "AK-b":
+            return 400, None, _empty
+        return 200, _FakeResp([b""]), ""
+
+    C.open_chat = _open_mixed
+    _err, _lease = _h._codearts_open_lease(_payload, "glm-5.3", [], 64)
+    check("普通重试次数用完后仍可因积分耗尽换号",
+          _err is None and getattr(_lease, "account_key", None) == "c"
+          and _calls == [("AK-a", 0), ("AK-b", 1), ("AK-c", 2)], _calls)
+    if _lease is not None:
+        _lease.close()
 finally:
+    P.ca_account_snapshot.load_snapshot = _saved_credit_snapshot
     P._CODEARTS_POOL = _saved_pool
     C.open_chat = _saved_open
     C.heartbeat = _saved_hb2

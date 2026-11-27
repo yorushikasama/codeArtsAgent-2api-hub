@@ -3128,6 +3128,8 @@ class _CodeartsAccountPool:
         self._state_dir = state_dir or ACCOUNTS_DIR
         self._semaphores = {}     # 账号 id -> Semaphore（每号独立容量）
         self._cool_until = {}     # 账号 id -> 冷却到期时间戳
+        self._credit_exhausted = {}  # 账号 id -> 最近一次确认耗尽的快照时间
+        self._credit_snapshot_cleared_at = {}  # 重新授权时间，忽略此前的余额快照
         # (账号 id, 模型) -> 冷却到期时间戳。TPM 限流是**按模型**的：glm-5.3
         # 撞满不该把同一个号上的 deepseek 一起晾 20 秒（2026-10-22 补）。
         self._model_cool = {}
@@ -3154,6 +3156,42 @@ class _CodeartsAccountPool:
             else:
                 sem.retune(want)
             return sem
+
+    def _credit_ready(self, sessions):
+        """Filter fresh zero balances and explicit upstream credit rejections."""
+        raw = ca_account_snapshot.load_snapshot(self._state_dir)
+        age = ca_account_snapshot.snapshot_age(raw)
+        fresh = age is not None and age <= ca_account_snapshot.ACCOUNT_SNAPSHOT_STALE
+        stamp = raw.get("credit_started_at", raw["at"]) if fresh else 0.0
+        if type(stamp) not in (int, float) or not 0 < stamp <= time.time():
+            fresh = False
+        ready = []
+        with self._lock:
+            for session in sessions:
+                key = self.key_of(session)
+                remaining = ca_account_snapshot.credit_remaining(raw, key) if fresh else None
+                cleared_at = self._credit_snapshot_cleared_at.get(key, 0.0)
+                marked_at = self._credit_exhausted.get(key)
+                if remaining is not None and stamp > cleared_at:
+                    if remaining <= 0:
+                        continue
+                    if marked_at is not None and stamp > marked_at:
+                        self._credit_exhausted.pop(key, None)
+                        marked_at = None
+                if marked_at is None:
+                    ready.append(session)
+        return ready
+
+    def mark_credit_exhausted(self, key):
+        """Park an account after the upstream explicitly reports no credits."""
+        if key:
+            with self._lock:
+                self._credit_exhausted[str(key)] = time.time()
+
+    def all_credit_exhausted(self):
+        """Whether every otherwise usable account is known to have zero credits."""
+        sessions = self._usable()
+        return bool(sessions) and not self._credit_ready(sessions)
 
     @staticmethod
     def _usable():
@@ -3247,12 +3285,12 @@ class _CodeartsAccountPool:
             return False
         if not stats:
             return False
-        sessions = self._usable()
+        sessions = self._credit_ready(self._usable())
         return bool(sessions) and all(
             self._limit_blocked(sess, model, limits, stats)
             for sess in sessions)
 
-    def acquire(self, timeout=None, session_key=None, model=None):
+    def acquire(self, timeout=None, session_key=None, model=None, exclude=()):
         """要一个名额。返回 ``(session, key)``；拿不到时 ``(None, None)``。
 
         先试「不等待」的：谁有空位给谁。全都忙才在**第一个候选**上等一小会
@@ -3275,8 +3313,9 @@ class _CodeartsAccountPool:
             log("codearts daily limits unavailable: %s" % exc)
             limits, stats = {}, None
         while True:
-            sessions = [s for s in self._usable()
-                        if not self._limit_blocked(s, model, limits, stats)]
+            sessions = [s for s in self._credit_ready(self._usable())
+                        if self.key_of(s) not in exclude
+                        and not self._limit_blocked(s, model, limits, stats)]
             if not sessions:
                 return None, None
             now = time.time()
@@ -3467,7 +3506,7 @@ class _CodeartsAccountPool:
         429，把真实原因（还在晾着）藏掉了。
         """
         now = time.time()
-        sessions = self._usable()
+        sessions = self._credit_ready(self._usable())
         if not sessions:
             return 0.0
         with self._lock:
@@ -3486,20 +3525,18 @@ class _CodeartsAccountPool:
             return max(0.0, min(waits) if waits else 0.0)
 
     def clear_cooldown(self, key=None, model=None):
-        """把冷却表清掉（``key`` 为空时清全部）。
-
-        凭据失效（401/403）的 300 秒冷却必须能被「重新登录」清掉：用户在面板
-        里重新授权之后，那个号明明已经能用了，冷却表却还在拦它 —— 表现就是
-        「刚登录还是 429」。码道每次登录都会写一份新的会话文件，所以登录成功
-        时按账号 id 清一次就够。
-        """
+        """Clear account cooldown and credit-exhaustion state after re-auth."""
         with self._lock:
             if key is None:
                 self._cool_until.clear()
                 self._model_cool.clear()
+                self._credit_exhausted.clear()
+                self._credit_snapshot_cleared_at.clear()
                 return
             if model is None:
                 self._cool_until.pop(key, None)
+                self._credit_exhausted.pop(key, None)
+                self._credit_snapshot_cleared_at[key] = time.time()
                 for mk in [k for k in self._model_cool if k[0] == key]:
                     self._model_cool.pop(mk, None)
                 return
@@ -9661,7 +9698,8 @@ class Handler(BaseHTTPRequestHandler):
         except (OSError, ValueError):
             return True
 
-    def _codearts_no_slot(self, fail, model, t_start, anthropic=False):
+    def _codearts_no_slot(self, fail, model, t_start, anthropic=False,
+                          *, retry_cooling=True):
         """拿不到名额时的统一答复：**先分清是哪种「没有」**。
 
         以前只有一条兜底：``gateway busy: every codearts account is at
@@ -9687,6 +9725,13 @@ class Handler(BaseHTTPRequestHandler):
                          elapsed_ms=int((time.time() - t_start) * 1000),
                          key=self._key_id())
             return fail(429, msg, "rate_limit_error")
+        if getattr(_CODEARTS_POOL, "all_credit_exhausted", lambda: False)():
+            msg = "all usable CodeArts accounts have exhausted upstream package credits"
+            status, err_type = ca_stream.fail_spec(400, "TM.00001050", msg, anthropic)
+            record_error(model, status, msg,
+                         elapsed_ms=int((time.time() - t_start) * 1000),
+                         key=self._key_id())
+            return fail(status, msg, err_type)
         if not _CODEARTS_POOL._usable():
             # 记账与响应同源：这条以前只回 503、**一行账都不落**，
             # 统计里看不到「没有账号」这个最常见的部署问题。
@@ -9702,7 +9747,7 @@ class Handler(BaseHTTPRequestHandler):
             # 预算（1041 = 5 秒 vs 首轮 20 秒其实等得到；这里是预算被压到
             # 2 秒之后的那种情况），所以交给调用方退避再试 —— 只要退避总时
             # 长还够，就不该把用户挡在门外。
-            if cooling <= sum(CODEARTS_RETRY_DELAYS):
+            if retry_cooling and cooling <= sum(CODEARTS_RETRY_DELAYS):
                 log("codearts all accounts cooling: model=%s next ready in "
                     "%.1fs; backing off" % (model, cooling))
                 return None
@@ -9762,6 +9807,7 @@ class Handler(BaseHTTPRequestHandler):
         delays = CODEARTS_BUSY_DELAYS
         delay_kind = "busy"
         attempt = 0
+        credit_excluded = set()
         while True:
             if self._client_disconnected():
                 log("codearts aborted before retry: client gone model=%s" % model)
@@ -9769,12 +9815,14 @@ class Handler(BaseHTTPRequestHandler):
                               "usage": {}, "tool_calls": [], "raw": "",
                               "want_stream": bool(payload.get("stream")),
                               "aborted": True}
-            wait = (CODEARTS_SLOT_WAIT if attempt == 0
+            wait = (CODEARTS_SLOT_WAIT if not attempt and not credit_excluded
                     else min(2.0, CODEARTS_SLOT_WAIT))
             session, account_key = _CODEARTS_POOL.acquire(
-                wait, session_key=sticky_key, model=model)
+                wait, session_key=sticky_key, model=model,
+                **({"exclude": credit_excluded} if credit_excluded else {}))
             if session is None:
-                err = self._codearts_no_slot(fail, model, t_start, anthropic)
+                err = self._codearts_no_slot(fail, model, t_start, anthropic,
+                                             retry_cooling=attempt < len(delays))
                 if err is not None:
                     return err, None
                 # 池里其实有可用号，只是都在冷却、而这次预算等不到 ——
@@ -9806,7 +9854,8 @@ class Handler(BaseHTTPRequestHandler):
                     tools=payload.get("tools"),
                     tool_choice=payload.get("tool_choice"),
                     abort_check=self._client_disconnected,
-                    session_id=session_id, session_retry=attempt)
+                    session_id=session_id,
+                    session_retry=attempt + len(credit_excluded))
                 last_exc = None
                 if status in (200, 201):
                     # 真的服务成功了才绑定会话：失败的那一轮可能刚被上游拒绝，
@@ -9829,6 +9878,13 @@ class Handler(BaseHTTPRequestHandler):
                 codearts_session_idle(cred, session_id)
                 # 名额只包住「向上游要结果」这一段，读完了立刻还。
                 _CODEARTS_POOL.release(account_key)
+            if last_exc is None and ca_stream.account_credit_exhausted(status, text):
+                _CODEARTS_POOL.mark_credit_exhausted(account_key)
+                credit_excluded.add(account_key)
+                if time.time() - t_start + CODEARTS_FAST_RETRY_COST > CODEARTS_TOTAL_BUDGET:
+                    break
+                log("codearts credit failover: model=%s acct=%.8s" % (model, account_label or ""))
+                continue
             retryable = last_exc is not None or ca_stream.retryable(status, text)
             if last_exc is None and status in (401, 403):
                 # 凭据失效（STS 被吊销 / 过期没续上）**不是可重试错误** ——
@@ -10036,6 +10092,7 @@ class Handler(BaseHTTPRequestHandler):
         delays = CODEARTS_BUSY_DELAYS      # 先按「名额满」的短节奏
         delay_kind = "busy"
         attempt = 0
+        credit_excluded = set()
         while True:
             if self._client_disconnected():
                 log("codearts aborted before open: client gone model=%s" % model)
@@ -10043,12 +10100,14 @@ class Handler(BaseHTTPRequestHandler):
 
             # 首轮等满（可能是真排队），后续轮等短一点：重试阶段要的是「快点
             # 换个号试试」，不是继续占着排队位置。
-            wait = CODEARTS_SLOT_WAIT if attempt == 0 else min(
-                2.0, CODEARTS_SLOT_WAIT)
+            wait = (CODEARTS_SLOT_WAIT if not attempt and not credit_excluded
+                    else min(2.0, CODEARTS_SLOT_WAIT))
             session, key = _CODEARTS_POOL.acquire(
-                wait, session_key=sticky_key, model=model)
+                wait, session_key=sticky_key, model=model,
+                **({"exclude": credit_excluded} if credit_excluded else {}))
             if session is None:
-                err = self._codearts_no_slot(_reply, model, t_start, anthropic)
+                err = self._codearts_no_slot(_reply, model, t_start, anthropic,
+                                             retry_cooling=attempt < len(delays))
                 if err is not None:
                     return err, None
                 # 有号、都在冷却，且冷却比这次预算短：退避一轮再看（与聚合
@@ -10080,7 +10139,8 @@ class Handler(BaseHTTPRequestHandler):
                     extra=extra,
                     tools=payload.get("tools"),
                     tool_choice=payload.get("tool_choice"),
-                    session_id=session_id, session_retry=attempt)
+                    session_id=session_id,
+                    session_retry=attempt + len(credit_excluded))
                 last_exc = None
             except Exception as exc:            # noqa: BLE001
                 status, resp, text, last_exc = None, None, "", exc
@@ -10104,6 +10164,14 @@ class Handler(BaseHTTPRequestHandler):
             # 这一轮失败：先把名额还掉，再决定是换号重试还是放弃。
             _CODEARTS_POOL.release(key)
 
+            if last_exc is None and ca_stream.account_credit_exhausted(status, text):
+                _CODEARTS_POOL.mark_credit_exhausted(key)
+                credit_excluded.add(key)
+                open_budget, _ = _codearts_open_budget_for(payload, messages)
+                if time.time() - t_start + CODEARTS_FAST_RETRY_COST > open_budget:
+                    break
+                log("codearts credit failover: model=%s acct=%.8s" % (model, account_label or ""))
+                continue
             retryable = last_exc is not None or ca_stream.retryable(status, text)
             if last_exc is None and status in (401, 403):
                 # 见上一条注释（聚合路径同口径）：凭据失效冷却与「这一条要不要

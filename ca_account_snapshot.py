@@ -111,7 +111,19 @@ def account_entry(raw, account_id):
     return entry if isinstance(entry, dict) else None
 
 
-def write_snapshot(accounts_dir, entries, now=None):
+def credit_remaining(raw, account_id):
+    """Return a snapshot's numeric upstream package-credit balance, if known."""
+    entry = account_entry(raw, account_id)
+    credit = entry.get("credit") if entry else None
+    if not isinstance(credit, dict):
+        return None
+    remaining = credit.get("remaining")
+    if isinstance(remaining, bool) or not isinstance(remaining, (int, float)):
+        return None
+    return float(remaining)
+
+
+def write_snapshot(accounts_dir, entries, now=None, credit_started_at=None):
     """原子写快照。`entries` 是 {account_id: {credit, welfare}}。
 
     返回写出的 dict；写盘失败也不抛 —— 调用方是后台线程，坏一次不影响服务
@@ -119,6 +131,8 @@ def write_snapshot(accounts_dir, entries, now=None):
     """
     stamp = now if now is not None else time.time()
     payload = {"schema": SNAPSHOT_SCHEMA, "at": stamp,
+               "credit_started_at": (stamp if credit_started_at is None
+                                     else credit_started_at),
                "accounts": entries or {}}
     path = snapshot_path(accounts_dir)
     with _state["lock"]:
@@ -192,6 +206,8 @@ def refresh_once(accounts_dir=None, log=None):
     if not sessions:
         return write_snapshot(accounts_dir, {})
 
+    # A refresh can finish after a rejection while still holding an older balance.
+    credit_started_at = time.time()
     workers = min(8, max(1, len(sessions) * 2))
     try:
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -205,7 +221,8 @@ def refresh_once(accounts_dir=None, log=None):
         account_id = str(acct.get("id") or "")
         if account_id:
             entries[account_id] = extra
-    return write_snapshot(accounts_dir, entries)
+    return write_snapshot(accounts_dir, entries,
+                          credit_started_at=credit_started_at)
 
 
 def _loop(accounts_dir, log):

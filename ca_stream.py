@@ -308,6 +308,8 @@ def fail_spec(status, code, detail, anthropic=False):
     """
     text = "%s %s" % (code or "", detail or "")
     low = text.lower()
+    if str(code or "").strip().upper() == ACCOUNT_CREDIT_EXHAUSTED:
+        return 402, ("rate_limit_error" if anthropic else "insufficient_quota")
     # 1041 在 HTTP 上是 400，但语义是「等会儿再来」，所以先于参数错判断
     if (status == 429 or "tm.00001041" in low or "modelarts.811" in low
             or "rate limit" in low or "too many requests" in low
@@ -374,6 +376,17 @@ def frame_status(text, anthropic=False):
     return fail_spec(200, code or body, detail or body, anthropic)
 
 
+ACCOUNT_CREDIT_EXHAUSTED = "TM.00001050"
+
+
+def account_credit_exhausted(status, text):
+    """Match the upstream error code, never a mention in the message."""
+    if status != 400:
+        return False
+    code, _detail = error_detail(text)
+    return code.strip().upper() == ACCOUNT_CREDIT_EXHAUSTED
+
+
 def slow_failure(status, text, exc=None):
     """这次失败会不会「耗掉一整个首字节窗口」？
 
@@ -391,6 +404,8 @@ def slow_failure(status, text, exc=None):
         return True
     body = str(text or "")
     low = body.lower()
+    if account_credit_exhausted(status, body):
+        return False
     # flow-control 429 是 APIG 毫秒级回的（不是等首字节超时），按快失败估。
     if flow_control_from(body) is not None:
         return False
@@ -504,6 +519,8 @@ def retryable(status, text):
     RPM/TPM 值得退避重试；小时/日配额（RPH/RP6H/RPD/TPH/TP6H/TPD）重试一
     万次也不会变，官方直接终止并展示配额文案。
     """
+    if account_credit_exhausted(status, text):
+        return True
     fc = flow_control_from(text)
     if fc is not None and fc["type"] not in FLOW_CONTROL_RETRYABLE:
         return False
@@ -559,13 +576,17 @@ def error_detail(text):
     """从码道的错误体里抠出 (错误码, 人能看的说明)。"""
     try:
         d = json.loads(text or "")
+        inner = d.get("error")
+        inner = inner if isinstance(inner, dict) else {}
         detail = (d.get("error_msg") or d.get("message")
-                  or (d.get("error") or {}).get("message") or "")
-        code = (d.get("error_code")
-                or (d.get("error") or {}).get("code") or "")
+                  or inner.get("error_msg") or inner.get("message") or "")
+        code = d.get("error_code") or inner.get("error_code") or inner.get("code") or ""
         return str(code), _clarify_msg(code, detail)
     except Exception:
         raw = (text or "")[:200]
+        parts = raw.strip().split(None, 1)
+        if parts and parts[0].upper() == ACCOUNT_CREDIT_EXHAUSTED:
+            return ACCOUNT_CREDIT_EXHAUSTED, parts[1] if len(parts) > 1 else ""
         return "", _clarify_msg("", raw)
 
 
