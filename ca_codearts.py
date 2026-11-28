@@ -3472,6 +3472,12 @@ def welfare_activities(access_key, secret_key, security_token,
     return result
 
 
+def _is_daily_checkin(item):
+    return (item.get("type") in WELFARE_DAILY_TYPES
+            and "签到" in ((item.get("title") or "")
+                        + (item.get("description") or "")))
+
+
 def _representative_daily(items, dailies):
     """面板要显示的那一条「每日签到」。
 
@@ -3488,13 +3494,7 @@ def _representative_daily(items, dailies):
     """
     if dailies:
         return dailies[0]
-    candidates = []
-    for it in items:
-        if it.get("type") not in WELFARE_DAILY_TYPES:
-            continue
-        text = (it.get("title") or "") + (it.get("description") or "")
-        if "签到" in text:
-            candidates.append(it)
+    candidates = [it for it in items if _is_daily_checkin(it)]
     if not candidates:
         return None
     # 都领完了：展示最近领的那条（claimed_at 是上游给的 ISO 串，可直接字典序比）。
@@ -3591,7 +3591,8 @@ def welfare_claim_daily(access_key, secret_key, security_token,
                         timeout=DEFAULT_TIMEOUT):
     """签到：把清单里**所有还能领的每日签到**逐条领掉（claim + confirm）。
 
-    返回 ``{"ok", "already", "amount", "claimed": [...], "activity", ...}``，
+    返回 ``{"ok", "already", "pending", "amount", "claimed": [...], ...}``。
+    ``pending`` 表示还有签到条目暂不可领，不等于已领取。
     其中 ``claimed`` 是这次真正领到的条目（可能多条，见 ``select_dailies``），
     ``amount`` 是它们的额度之和。面板据此直接显示「今日已领 N 积分」，不靠猜。
 
@@ -3606,15 +3607,14 @@ def welfare_claim_daily(access_key, secret_key, security_token,
     listing = welfare_activities(access_key, secret_key, security_token,
                                  timeout=timeout, use_cache=False)
     picked = listing.get("dailies") or []
+    # A daily that isn't claimable yet must not count as already collected.
+    pending = any(_is_daily_checkin(it) and not welfare_claimed(it)
+                  and not it.get("claimable") for it in listing.get("items", ()))
     if not picked:
-        # 没有可领的。三种情况要分清，否则会把「今天全领完了」报成部署故障：
-        #   · 清单里有签到条目、且都处于已领状态 → 正常，already=True；
-        #   · 清单里有签到条目但都没到可领时间（未开始/已过期）→ 也如实返回，
-        #     不能报「没有每日签到」；
-        #   · 清单里压根没有签到条目 → 才是真没有（渠道下线/活动结束）。
         done = listing.get("daily")
         if done:
-            return {"ok": True, "already": True,
+            already = welfare_claimed(done) and not pending
+            return {"ok": True, "already": already, "pending": not already,
                     "campaign_id": done.get("campaign_id"),
                     "status": done.get("status"),
                     "title": done.get("title") or "",
@@ -3650,6 +3650,7 @@ def welfare_claim_daily(access_key, secret_key, security_token,
     result = {
         "ok": True,
         "already": False,
+        "pending": pending,
         "campaign_id": claimed[0]["campaign_id"] if claimed else None,
         "title": claimed[0]["title"] if claimed else "",
         "status": claimed[0]["status"] if claimed else "",

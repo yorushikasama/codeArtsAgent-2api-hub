@@ -16,6 +16,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const vm = require('vm');
 
 const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard.html'), 'utf8');
 
@@ -72,4 +73,53 @@ assert.ok(!/onclick="startLogin\(\)"/.test(html),
 assert.ok(/onclick="openCodeartsLogin\(\)"/.test(html),
   'the account entry must call openCodeartsLogin()');
 
-console.log(`dashboard handler assertions passed (${referenced.size} handlers checked)`);
+async function checkCheckinControls(){
+  const page = html.match(/<section>\s*<div[^>]*>\s*<h2[^>]*>码道账号<\/h2>[\s\S]*?<\/section>/)[0];
+  assert.match(page, /id="caClaimAllBtn" onclick="claimCodeartsWelfareAll\(this\)"/);
+  assert.match(page, /onclick="openCodeartsLogin\(\)"/);
+  assert.strictEqual((html.match(/id="caClaimAllBtn"/g) || []).length, 1);
+
+  // The built dashboard joins several fragments into one script. Don't run
+  // unrelated dashboard bootstrap when checking the account controls.
+  const script = fs.readFileSync(path.join(__dirname, '..', 'dashboard_src', '60-codearts.js'), 'utf8')
+    .replace(/^<script>\s*/, '');
+  const boxes = [{id: 'codeartsPageList'}, {id: 'codeartsList'}];
+  const calls = [], notices = [];
+  let reads = 0;
+  const ui = vm.createContext({
+    window: {},
+    document: {querySelectorAll: () => boxes, getElementById: () => null, addEventListener: () => {}},
+    console,
+    getJSON: async url => {
+      assert.strictEqual(url, '/accounts/codearts');
+      reads++;
+      return {accounts: [{account_id: 'a', welfare: {claimable: true}}]};
+    },
+    postJSON: async (url, payload) => {
+      calls.push([url, JSON.stringify(payload)]);
+      return {results: payload.accountId
+        ? [{ok: true, partial: true, amount: 100}]
+        : [{ok: true, pending: true}, {ok: true, already: true}]};
+    },
+    toast: (message, kind) => notices.push([message, kind]),
+  });
+  vm.runInContext(script, ui);
+  await ui.loadCodeartsAccounts();
+  assert.match(boxes[0].innerHTML, /data-ca-id="a" onclick="claimCodeartsWelfare\(this\)"/);
+  assert.doesNotMatch(boxes[1].innerHTML, /onclick="claimCodeartsWelfare/);
+  const single = {textContent: '积分签到', getAttribute: () => 'a'};
+  const all = {textContent: '一键签到全部账号'};
+  await ui.claimCodeartsWelfare(single);
+  await ui.claimCodeartsWelfareAll(all);
+  const route = '/accounts/codearts/welfare/claim';
+  assert.deepStrictEqual(calls, [[route, '{"accountId":"a"}'], [route, '{}']]);
+  assert.strictEqual(reads, 3);
+  assert.ok(!single.disabled && !all.disabled);
+  assert.match(notices[0][0], /部分签到成功.*100/);
+  assert.match(notices[1][0], /1 户暂无可领/);
+  assert.ok(notices.every(([, kind]) => kind === 'warn'));
+}
+
+checkCheckinControls().then(() => {
+  console.log(`dashboard handler assertions passed (${referenced.size} handlers checked, check-in controls verified)`);
+}).catch(error => { console.error(error); process.exitCode = 1; });

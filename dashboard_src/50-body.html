@@ -119,19 +119,13 @@
        空白），区块现在静态放在这里——控制栏之后、最近请求之前，与拆分前一致。 -->
   <section>
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px">
-      <div>
-        <h2 style="margin:0">码道账号</h2>
-        <div style="font-size:12px;color:var(--dim);margin-top:4px">
-          华为云码道走 PKCE + DPoP 授权，会话存放在 <code>accounts/codearts/</code>；
-          积分签到与 STS 续期都在账号弹窗里。
-        </div>
+      <h2 style="margin:0">码道账号</h2>
+      <div style="display:flex;flex-wrap:wrap;gap:8px">
+        <button type="button" class="sec" id="caClaimAllBtn" onclick="claimCodeartsWelfareAll(this)">一键签到全部账号</button>
+        <button onclick="openCodeartsLogin()">添加 / 管理码道账号</button>
       </div>
-      <button onclick="openCodeartsLogin()">添加 / 管理码道账号</button>
     </div>
     <div id="codeartsPageList" data-codearts-list><p class="hint">正在读取…</p></div>
-    <p class="hint" style="margin:12px 0 0">
-      点上方按钮打开账号弹窗：可积分签到、手动续期、重新授权或删除账号。
-    </p>
   </section>
 
   <!-- 融合后的：模型性能与用量矩阵 -->
@@ -826,7 +820,6 @@
       <p class="hint" id="codeartsStatus" style="font-weight:500"></p>
     </div>
     <div class="modal-ft">
-      <button class="sec" id="caClaimAllBtn" onclick="claimCodeartsWelfareAll(this)">一键签到全部账号</button>
       <button class="sec" onclick="loadCodeartsAccounts()">刷新列表</button>
       <button class="sec" onclick="closeCodeartsLogin()">关闭</button>
       <button onclick="restartCodeartsLogin()">重新生成链接</button>

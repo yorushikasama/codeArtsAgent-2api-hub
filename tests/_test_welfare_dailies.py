@@ -35,6 +35,7 @@ from _isolated_dirs import isolated_data_dirs  # noqa: E402
 _TMP = isolated_data_dirs("wb-welfare-daily-")
 
 import ca_codearts as C  # noqa: E402
+import ca_proxy as P  # noqa: E402
 
 
 def _raw(campaign_id, title, type_, amount, status, claimable, unit="CREDIT",
@@ -253,6 +254,70 @@ class ClaimDailyTests(unittest.TestCase):
         with self._patch(items_after=only_other):
             with self.assertRaises(C.CodeArtsError):
                 C.welfare_claim_daily("AK", "SK", "ST")
+
+
+class CheckinSchedulerTests(unittest.TestCase):
+    def setUp(self):
+        self.day = "2026-11-28"
+        self.items = []
+        self.attempted = []
+        self.fail_once = set()
+        sess = {"account": {"id": "test", "label": "test"}}
+        self.enterContext(mock.patch.multiple(
+            P, _CHECKIN_STATE={}, _checkin_local_day=lambda: self.day,
+            _sts_dead_by_external=lambda _: False, log=mock.Mock()))
+        self.activity = self.enterContext(mock.patch.object(P.ca_activity, "record"))
+        self.enterContext(mock.patch.multiple(
+            C, load_sessions=lambda _: [sess], ensure_fresh_session=lambda *_: sess,
+            welfare_activities=self.delivery, welfare_claim=self.claim))
+
+    def delivery(self, *_args, **_kwargs):
+        items = [C._welfare_item(raw) for raw in self.items]
+        dailies = C.select_dailies(items)
+        return {"items": items, "dailies": dailies,
+                "daily": C._representative_daily(items, dailies)}
+
+    def claim(self, _ak, _sk, _tok, campaign_id, **_kwargs):
+        self.attempted.append(campaign_id)
+        if campaign_id in self.fail_once:
+            self.fail_once.remove(campaign_id)
+            raise C.CodeArtsError("temporary failure")
+        item = next(raw for raw in self.items if raw["campaignId"] == campaign_id)
+        item.update(status="CONFIRMED", claimable=False)
+        return {"status": "CONFIRMED"}
+
+    def test_partial_retries_only_unclaimed_and_resets_next_day(self):
+        self.items = [dict(LIVE_ITEMS[1]), dict(LIVE_ITEMS[3])]
+        self.fail_once = {40}
+        P._checkin_once()
+        self.assertEqual(self.attempted, [40, 34])
+        self.assertIn("+100 积分", self.activity.call_args.args[6])
+        self.assertIn("下轮补试", self.activity.call_args.args[6])
+        P._checkin_once()
+        self.assertEqual(self.attempted, [40, 34, 40])
+        self.assertIn("+1000 积分", self.activity.call_args.args[6])
+        P._checkin_once()
+        self.assertEqual(self.attempted, [40, 34, 40])
+        self.day = "2026-11-29"
+        self.items = [dict(LIVE_ITEMS[3])]
+        P._checkin_once()
+        self.assertEqual(self.attempted, [40, 34, 40, 34])
+
+    def test_pending_not_already_even_with_another_claimed_campaign(self):
+        self.items = [dict(LIVE_ITEMS[1], claimable=False),
+                      dict(LIVE_ITEMS[3], status="CONFIRMED", claimable=False)]
+        result = C.welfare_claim_daily("AK", "SK", "ST")
+        self.assertTrue(result["pending"])
+        self.assertFalse(result["already"])
+        self.assertEqual(result["amount"], 0)
+        P._checkin_once()
+        self.assertEqual(self.attempted, [])
+        self.assertIn("当前暂无可领签到", self.activity.call_args.args[6])
+        self.items[0]["claimable"] = True
+        P._checkin_once()
+        self.assertEqual(self.attempted, [40])
+        P._checkin_once()
+        self.assertEqual(self.attempted, [40])
 
 
 if __name__ == "__main__":

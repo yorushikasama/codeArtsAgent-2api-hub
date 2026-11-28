@@ -1369,7 +1369,7 @@ CHECKIN_TICK_SECONDS = ca_env.number("CODEARTS_CHECKIN_TICK", 1800.0,
 #: 每天第一次尝试的本地时刻（时:分）。放在零点过 5 分钟，避开上游的日切。
 CHECKIN_AT = os.environ.get("CODEARTS_CHECKIN_AT", "00:05")
 
-_CHECKIN_STATE = {}          # uid -> "YYYY-MM-DD"（当天已尝试，无论成败）
+_CHECKIN_STATE = {}          # uid -> "YYYY-MM-DD"（进行中或当天无需再试）
 _CHECKIN_LOCK = threading.Lock()
 
 
@@ -1396,6 +1396,8 @@ def _checkin_message(res):
                 len(failed), "、".join(f.get("title") or str(f.get("campaign_id"))
                                        for f in failed))
         return msg
+    if res.get("pending"):
+        return "当前暂无可领签到"
     if res.get("already"):
         return "今日无可领签到（全部已领过）"
     return "已签到"
@@ -1448,27 +1450,35 @@ def _checkin_once():
             ca_activity.record(uid, label, "cn", ca_activity.TASK_CHECKIN,
                                "scheduler", False, "续期失败: %s" % str(exc)[:120],
                                usage_dir=USAGE_DIR)
-            _CHECKIN_STATE[uid] = None           # 失败了允许本周期内再试
+            with _CHECKIN_LOCK:
+                if _CHECKIN_STATE.get(uid) == today:
+                    _CHECKIN_STATE.pop(uid, None)
             continue
+        retry = False
         try:
             res = ca_codearts.welfare_claim_daily(
                 session.get("accessKey"), session.get("secretKey"),
                 session.get("securitytoken"))
+            retry = bool(res.get("partial") or res.get("pending") or res.get("remaining"))
             msg = _checkin_message(res)
+            if retry:
+                msg += "；下轮补试"
             log("checkin    : [%s] %s" % (label, msg))
             ca_activity.record(uid, label, "cn", ca_activity.TASK_CHECKIN,
-                               "scheduler", True, msg, usage_dir=USAGE_DIR)
+                               "scheduler", not res.get("pending") or bool(res.get("claimed")),
+                               msg, usage_dir=USAGE_DIR)
         except Exception as exc:                 # noqa: BLE001
+            # 永久失败当天不再试，次日仍会重探。
+            retry = not ca_codearts.welfare_permanent_failure(exc)
             msg = str(exc)[:160]
             log("checkin    : [%s] 失败: %s" % (label, msg), level="WARN")
             ca_activity.record(uid, label, "cn", ca_activity.TASK_CHECKIN,
                                "scheduler", False, msg, usage_dir=USAGE_DIR)
-            if ca_codearts.welfare_permanent_failure(exc):
-                # 永久失败（渠道下线/活动消失）：当天不再试，但次日仍会重探
-                # —— 上游哪天恢复，第二天自然签上。
-                continue
-            _CHECKIN_STATE[uid] = None           # 可重试失败：本周期内再补
-        # 成功或"已签"：状态保持 today，今天不再打扰
+        finally:
+            if retry:
+                with _CHECKIN_LOCK:
+                    if _CHECKIN_STATE.get(uid) == today:
+                        _CHECKIN_STATE.pop(uid, None)
 
 
 def _checkin_loop():

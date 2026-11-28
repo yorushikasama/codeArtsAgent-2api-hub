@@ -236,7 +236,9 @@ async function loadCodeartsAccounts(){
   // 而不是只认弹窗里那个 —— 之前只渲染弹窗，页面上就看不到已添加的账号。
   const boxes = Array.from(document.querySelectorAll('[data-codearts-list]'));
   if(!boxes.length) return;
-  const set = function(html){ boxes.forEach(function(b){ b.innerHTML = html; }); };
+  const set = function(html, pageHtml = html){
+    boxes.forEach(function(b){ b.innerHTML = b.id === 'codeartsPageList' ? pageHtml : html; });
+  };
   let r;
   try{ r = await getJSON("/accounts/codearts"); }
   catch(e){ caUpdateCardSummary(null); set('<p class="hint">读取失败：' + esc(e.message) + '</p>'); return; }
@@ -265,9 +267,8 @@ async function loadCodeartsAccounts(){
   }
   // 渲染放进 try：一旦某一项抛错，之前的表现是 set() 永远不执行、页面就一直
   // 停在「正在读取…」，看不出任何线索（fmtTime 那次就是这么被藏住的）。
-  let html;
-  try{
-    html = list.map(function(a){
+  function render(showCheckin){
+    return list.map(function(a){
       let badge = '<span class="ca-badge ok">有效</span>';
       let when = a.expires_at ? ("STS 到期 " + caStamp(Date.parse(a.expires_at) / 1000)) : "STS 到期时间未知";
       if(a.sts_expired){
@@ -313,8 +314,7 @@ async function loadCodeartsAccounts(){
       const quotaHtml = caCreditHtml(a.credit);
       // 每日签到是活动系统（/v1/ops）的积分体系，与已下线的福利渠道无关。
       const daily = a.welfare || null;
-      const wStatus = daily ? String(daily.status || "").toUpperCase() : "";
-      const canSign = !!daily && (daily.claimable || !wStatus || wStatus === "ELIGIBLE");
+      const canSign = showCheckin && !!daily && daily.claimable;
       return '<div class="ca-row"><div class="ca-main">'
         + '<span class="ca-name">' + esc(a.account || "(未命名)") + badge + '</span>'
         + '<span class="ca-sub">' + esc(when) + " · " + esc(renew) + esc(refreshText)
@@ -331,11 +331,12 @@ async function loadCodeartsAccounts(){
         + '<button class="sec mini" data-ca-id="' + id + '" onclick="deleteCodeartsAccount(this)">删除</button>'
         + '</div></div>';
     }).join("");
+  }
+  try{
+    set(snapNote + render(false), snapNote + render(true));
   }catch(e){
     set('<p class="hint">账号列表渲染失败：' + esc(e && e.message ? e.message : e) + '</p>');
-    return;
   }
-  set(snapNote + html);
 }
 
 /* 每日签到（活动页「每日签到领 1000 积分」）的状态行。它是 /v1/ops 的
@@ -345,9 +346,9 @@ function caWelfareHtml(w, err){
   if(!w) return '';
   const amount = w.amount ? (' ' + fmt(w.amount) + ' 积分') : '';
   const st = String(w.status || '').toUpperCase();
-  let text = '积分签到：可领' + amount;
+  let text = '积分签到：当前暂无可领';
   if(st === 'CLAIMED' || st === 'CONFIRMED' || st === 'CONSUMED') text = '积分签到：今日已领' + amount;
-  else if(st && st !== 'ELIGIBLE') text = '积分签到：' + st;
+  else if(w.claimable) text = '积分签到：可领' + amount;
   return '<span class="ca-sub">' + esc(text) + '</span>';
 }
 
@@ -372,6 +373,11 @@ function caCreditHtml(c){
   return '<span class="ca-sub">' + esc(bits.join(' · ')) + '</span>';
 }
 
+function caWelfareIncomplete(res){
+  return !!(res.partial || (res.remaining || []).length
+    || (res.pending && (res.claimed || []).length));
+}
+
 async function claimCodeartsWelfare(btn){
   const id = btn && btn.getAttribute("data-ca-id");
   if(!id) return;
@@ -382,13 +388,20 @@ async function claimCodeartsWelfare(btn){
     const res = (r && r.results && r.results[0]) || {};
     if(res.ok){
       const amount = res.amount ? (" +" + fmt(res.amount) + " 积分") : "";
-      toast(res.already ? ("今日已签到" + amount) : ("签到成功" + amount), "ok");
+      if(caWelfareIncomplete(res)){
+        toast("部分签到成功" + amount, "warn");
+      }else if(res.pending){
+        toast("当前暂无可领签到", "warn");
+      }else{
+        toast(res.already ? "今日已签到" : ("签到成功" + amount), "ok");
+      }
     }else{
       toast("签到失败：" + caWelfareErrText(res.msg || "未知原因"), "bad");
     }
     await loadCodeartsAccounts();
   }catch(e){
     toast("签到失败：" + caWelfareErrText(e.message), "bad");
+  }finally{
     btn.disabled = false; btn.textContent = old;
   }
 }
@@ -402,22 +415,27 @@ async function claimCodeartsWelfareAll(btn){
     const r = await postJSON("/accounts/codearts/welfare/claim", {});
     const results = (r && r.results) || [];
     if(!results.length){ toast("没有可签到的账号", "bad"); return; }
-    let fresh = 0, already = 0, failed = 0, gained = 0;
+    let fresh = 0, partial = 0, already = 0, pending = 0, failed = 0, gained = 0;
     const fails = [];
     results.forEach(function(res){
       if(res.ok){
-        if(res.already){ already += 1; }
-        else{ fresh += 1; gained += Number(res.amount || 0); }
+        gained += Number(res.amount || 0);
+        if(caWelfareIncomplete(res)) partial += 1;
+        else if(res.pending) pending += 1;
+        else if(res.already) already += 1;
+        else fresh += 1;
       }else{
         failed += 1;
         fails.push((res.label || res.accountId || "账号") + "：" + caWelfareErrText(res.msg || "未知原因"));
       }
     });
-    let msg = "签到完成：" + fresh + " 户新增";
+    let msg = "签到结果：" + fresh + " 户新增";
     if(gained) msg += " +" + fmt(gained) + " 积分";
+    if(partial) msg += " · " + partial + " 户部分领到";
     if(already) msg += " · " + already + " 户已签过";
+    if(pending) msg += " · " + pending + " 户暂无可领";
     if(failed) msg += " · " + failed + " 户失败";
-    toast(msg, failed ? "warn" : "ok");
+    toast(msg, failed || partial || pending ? "warn" : "ok");
     if(fails.length && failed <= 3) console.warn("[claim-all]", fails.join("；"));
     await loadCodeartsAccounts();
   }catch(e){
