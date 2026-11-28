@@ -98,7 +98,39 @@ def finish_error(choice):
     以前只有 WorkBuddy 路径认（#389），码道这侧会把它原样转发并记成完成。
     """
     return (isinstance(choice, dict)
-            and str(choice.get("finish_reason") or "").lower() == "error")
+            and str(choice.get("finish_reason") or "").strip().lower() == "error")
+
+
+MISSING_TERMINAL = "upstream stream ended without a completion marker"
+
+
+class IncompleteStream(Exception):
+    """A clean transport EOF without protocol-level completion."""
+
+
+class StreamTail:
+    """Track protocol completion while callers retain their own error handling."""
+
+    def __init__(self):
+        self.done = False
+        self.finish_reason = None
+
+    def observe(self, piece):
+        bad = frame_error(piece)
+        if bad or not isinstance(piece, dict):
+            return bad
+        choices = piece.get("choices") or []
+        if any(finish_error(choice) for choice in choices):
+            return "upstream finished with finish_reason=error"
+        for choice in choices:
+            reason = choice.get("finish_reason") if isinstance(choice, dict) else None
+            if isinstance(reason, str) and reason.strip():
+                self.finish_reason = reason
+        return ""
+
+    @property
+    def complete(self):
+        return self.done or self.finish_reason is not None
 
 
 def tail_kind(frame_err="", truncated=""):
@@ -181,34 +213,39 @@ def collect_sse(text, sink=None):
     """
     content, reasoning, usage, err = "", "", {}, ""
     tool_calls = []
+    tail = StreamTail()
     for line in (text or "").splitlines():
         if not line.startswith("data:"):
             continue
         chunk = line[5:].strip()
-        if not chunk or chunk == "[DONE]":
+        if chunk == "[DONE]":
+            tail.done = True
+            continue
+        if not chunk:
             continue
         try:
             piece = json.loads(chunk)
-        except Exception:
+        except ValueError:
             continue
-        bad = frame_error(piece)
+        if not isinstance(piece, dict):
+            continue
+        bad = tail.observe(piece)
         if bad:
-            err = bad
+            err = err or bad
             continue
         u = frame_usage(piece)
         if u is not None:
             usage = u
         for choice in piece.get("choices") or []:
-            if finish_error(choice):
-                err = err or "upstream finished with finish_reason=error"
-            elif sink is not None and choice.get("finish_reason"):
-                # error 已经进了 err，不该同时当成一个正常收尾原因。
-                sink["finish_reason"] = choice["finish_reason"]
             delta = choice.get("delta") or {}
             content += delta.get("content") or ""
             reasoning += delta.get("reasoning_content") or ""
             for call in delta.get("tool_calls") or []:
                 merge_tool_call(tool_calls, call)
+    if sink is not None:
+        sink["complete"] = tail.complete and not err
+        if tail.finish_reason is not None:
+            sink["finish_reason"] = tail.finish_reason
     return content, reasoning, usage, err, tool_calls
 
 
@@ -226,43 +263,45 @@ def tap_lines(lines, sink, keepalive=None, keepalive_frame=b": keepalive\n\n"):
     翻译器毫不知情地补了 ``response.completed`` / ``message_stop`` —— 客户端
     看到的就是「半截回答 + 正常结束」。
     """
+    tail = StreamTail()
+    done_line = None
     for line in lines:
         if keepalive is not None and line is keepalive:
             yield keepalive_frame
             continue
         text = line.decode("utf-8", "replace") if isinstance(line, bytes) else line
         if not isinstance(text, str):
-            # 不是文本也不是已登记的哨兵：原样透传，解析不了就别猜。
             yield line
             continue
         stripped = text.strip()
         if stripped.startswith("data:"):
             raw = stripped[5:].strip()
-            if raw and raw != "[DONE]":
+            if raw == "[DONE]":
+                # Messages stops reading at [DONE]. Hold it until EOF so a
+                # later error still takes priority over a normal terminal.
+                tail.done = True
+                done_line = line
+                continue
+            if raw:
                 try:
                     piece = json.loads(raw)
-                except Exception:
+                except ValueError:
                     piece = None
                 if isinstance(piece, dict):
                     u = frame_usage(piece)
                     if u is not None:
                         sink["usage"] = u
-                    bad = frame_error(piece)
-                    if not bad:
-                        # **finish_reason=error 也算失败**，而且必须在这里
-                        # 拦下来：它不带任何错误码，翻译器只会把它当成一个
-                        # 普通的收尾原因，于是 Messages 补 message_stop
-                        # （Claude Code 看到 end_turn）、Responses 补
-                        # response.completed（Codex 看到 completed）—— 半截
-                        # 回答被当成完整结果。Chat 那条路自己判了，这两条没有。
-                        for choice in piece.get("choices") or []:
-                            if finish_error(choice):
-                                bad = "upstream finished with finish_reason=error"
-                                break
+                    bad = tail.observe(piece)
                     if bad:
                         sink["error"] = bad
                         raise UpstreamErrorFrame(bad)
+                elif piece is not None:
+                    continue
         yield line
+    if not tail.complete:
+        raise IncompleteStream(MISSING_TERMINAL)
+    if done_line is not None:
+        yield done_line
 
 
 def break_hint(stats):

@@ -217,12 +217,12 @@ try:
     except Exception:
         resp = b""
     sock.close()
-    # 2026-10-22 起：这个部署没有任何 WorkBuddy 账号时，非码道模型不再回
-    # 503「没有可用账号」（那读起来像网关坏了），而是 404 + 可用清单。
-    # 本用例真正要钉的是「有干净 JSON 回答、没有挂住」，状态码按这条口径。
-    check("no accounts + unknown model -> clean JSON 404, not a hang",
-          resp.startswith(b"HTTP/1.1 404") and b"model_not_found" in resp
-          and b"is not served by this gateway" in resp,
+    # 2026-11-28 冷启动准入：无账号时目录够不着、无法确认「不存在」，
+    # 回 503（可重试），不再冒充 404。本用例真正要钉的是「有干净 JSON
+    # 回答、没有挂住」，状态码按这条新口径。
+    check("no accounts + unknown model -> clean JSON 503, not a hang",
+          resp.startswith(b"HTTP/1.1 503") and b"server_error" in resp
+          and b"unavailable" in resp,
           resp.split(b"\r\n", 1)[0].decode("latin-1", "replace"))
 
     print("[4] an over-long request line answers JSON, not stdlib HTML")

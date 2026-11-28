@@ -4918,6 +4918,81 @@ def codearts_catalog(force=False):
     return _CODEARTS_CATALOG
 
 
+# POST misses share a builtin-only lookup. A successful snapshot settles all
+# misses briefly; an unavailable directory gets a shorter retry cooldown.
+_CODEARTS_ADMISSION_TIMEOUT = 4.0
+_CODEARTS_ADMISSION_NEGATIVE_TTL = 60.0
+_CODEARTS_ADMISSION_FAILURE_TTL = 10.0
+_CODEARTS_ADMISSION_LOCK = threading.Lock()
+_CODEARTS_ADMISSION = {"flight": None, "until": 0.0, "ok": False}
+_CODEARTS_ADMISSION_ERROR_TYPES = {
+    400: "invalid_request_error", 404: "model_not_found", 503: "server_error",
+}
+
+
+def _fetch_builtin_for_admission(deadline):
+    # Renewal and catalog enrichment belong to their existing paths. Discovery
+    # makes at most one network call and needs an already usable STS session.
+    for sess in ca_codearts.load_sessions(ACCOUNTS_DIR):
+        ak, sk, token = (sess.get(k) for k in ("accessKey", "secretKey", "securitytoken"))
+        if not (ak and sk and token) or _codearts_left(sess)[1]:
+            continue
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            return ca_codearts.builtin_models(ak, sk, token, timeout=remaining)
+        break
+    return None
+
+
+def _run_codearts_admission_refresh(result, deadline):
+    ok = False
+    try:
+        listing = _fetch_builtin_for_admission(deadline)
+        if isinstance(listing, list) and time.monotonic() < deadline:
+            ca_codearts.register_builtin_models(listing)
+            ok = True
+    except Exception:
+        # Don't disclose the upstream error or credentials in a route response.
+        pass
+    finally:
+        with _CODEARTS_ADMISSION_LOCK:
+            ttl = (_CODEARTS_ADMISSION_NEGATIVE_TTL if ok
+                   else _CODEARTS_ADMISSION_FAILURE_TTL)
+            _CODEARTS_ADMISSION.update(flight=None, ok=ok, until=time.monotonic() + ttl)
+            result.set_result(ok)
+
+
+def _refresh_codearts_admission(model):
+    """Return False if the directory is unavailable within this flight's budget."""
+    with _CODEARTS_ADMISSION_LOCK:
+        if is_codearts_model(model):
+            return True
+        now = time.monotonic()
+        if now < _CODEARTS_ADMISSION["until"]:
+            return _CODEARTS_ADMISSION["ok"]
+        flight = _CODEARTS_ADMISSION["flight"]
+        if flight is None:
+            result = concurrent.futures.Future()
+            deadline = now + _CODEARTS_ADMISSION_TIMEOUT
+            # Socket timeouts are per operation, not a wall-clock deadline.
+            # Keep the single worker even if callers exhaust their wait budget.
+            worker = threading.Thread(target=_run_codearts_admission_refresh,
+                                      args=(result, deadline), daemon=True,
+                                      name="codearts-model-admission")
+            try:
+                worker.start()
+            except RuntimeError:
+                _CODEARTS_ADMISSION.update(ok=False, until=now + _CODEARTS_ADMISSION_FAILURE_TTL)
+                return False
+            _CODEARTS_ADMISSION["flight"] = (result, deadline)
+        else:
+            result, deadline = flight
+    try:
+        return result.result(timeout=max(0.0, deadline - time.monotonic()))
+    except concurrent.futures.TimeoutError:
+        return False
+
+
 #: 模型别名表文件名（放在 accounts/ 下，与 settings.json 同级）。
 #:
 #: 为什么需要：Claude Code 默认发 `claude-sonnet-4-5-20250929`、Codex CLI 发
@@ -5312,26 +5387,49 @@ def canonicalize_model(payload):
     if not isinstance(payload, dict):
         return payload
     given = payload.get("model")
-    real = alias_target(given) or ca_codearts.resolve_model(given)
-    real = ca_codearts.resolve_model(real) if real else real
+    real = ca_codearts.resolve_model(alias_target(given) or given)
     if real != given:
         payload["model"] = real
     return payload
 
 
-def is_codearts_model(model_id):
-    """这个模型名是不是码道的（**大小写无关**）。
+def _registered_codearts_model(canonical):
+    return (canonical in ca_codearts.known_models()
+            and canonical not in ca_codearts.BUILTIN_UNROUTABLE)
 
-    上游模型 id 的大小写是混的（``GLM-5.2`` / ``glm-5.3`` / ``Qwen3-VL-235B``），
-    客户端却习惯一律小写。精确比较会让 ``glm-5.2`` 判成「不是码道模型」，
-    请求于是走进 ``_dispatch_chat_post`` 末尾那条 404 分支，
-    回 ``model 'glm-5.2' is not served by this gateway`` —— 看起来像「网关不
-    支持这个模型」，实际只是大小写没对上。见 ca_codearts.resolve_model。
-    """
-    # 查 known_models()（种子表 + 上游自动收录），不是 CHAT_MODELS ——
-    # 后者是手写白名单，上游新上的模型永远进不来，请求会被判成「不是码道
-    # 模型」而落到 404（见 ca_codearts._EXTRA_MODELS 的说明）。
-    return ca_codearts.resolve_model(model_id) in ca_codearts.known_models()
+
+def is_codearts_model(model_id):
+    """Check the local CodeArts registry, ignoring case."""
+    return _registered_codearts_model(ca_codearts.resolve_model(model_id))
+
+
+def codearts_admission_error(handler, payload):
+    """Resolve the model in place and return (status, message), or None."""
+    def policy_error(model):
+        return handler._banned_model_error(model) or handler._key_model_error(model)
+
+    canonicalize_model(payload)
+    model = payload.get("model")
+    blocked = policy_error(model)
+    if blocked:
+        return 400, blocked
+    if _registered_codearts_model(model):
+        return None
+    if not model:
+        return 404, unserved_model_message(model)
+
+    directory_ok = _refresh_codearts_admission(model)
+    # The registry may now know the upstream spelling. Resolve the same alias
+    # target again, without treating that target as a second alias.
+    model = payload["model"] = ca_codearts.resolve_model(model)
+    blocked = policy_error(model)
+    if blocked:
+        return 400, blocked
+    if _registered_codearts_model(model):
+        return None
+    if directory_ok:
+        return 404, unserved_model_message(model)
+    return 503, "CodeArts model directory is unavailable; retry shortly"
 
 
 def codearts_deployed():
@@ -9441,6 +9539,10 @@ class Handler(BaseHTTPRequestHandler):
                 "store response state. Send the full conversation in 'input' "
                 "instead, or use a stateless client.",
                 "invalid_request_error")
+        admission = codearts_admission_error(self, payload)
+        if admission:
+            status, message = admission
+            return self._error(status, message, _CODEARTS_ADMISSION_ERROR_TYPES[status])
         # 工具可能在顶层，也可能整份在 input 的 additional_tools 条目里。回程
         # 的两处取值（custom_names 判定条目类型、request_meta 回显工具清单）
         # 必须和 responses_to_chat() 出站合并后的清单一致，否则两边看到的
@@ -9466,21 +9568,10 @@ class Handler(BaseHTTPRequestHandler):
                len(chat_req.get("tools") or []), len(all_tools),
                sorted(custom_names) or "-")
         )
-        banned = self._banned_model_error(chat_req.get("model"))
-        if banned:
-            return self._error(400, banned, "invalid_request_error")
-        key_blocked = self._key_model_error(chat_req.get("model"))
-        if key_blocked:
-            return self._error(400, key_blocked, "invalid_request_error")
         # 码道没有原生 Responses 端点（逆向本地客户端确认它只发
         # chat/completions 形状），这里用同一套翻译层桥接。
-        if is_codearts_model(chat_req.get("model")):
-            return self._responses_codearts(
-                chat_req, want_stream, custom_names, request_meta, ns_map)
-        # 网关只服务码道：别的名字一律 404，不回 503「没有可用账号」——
-        # 那看起来像网关坏了，实际是这个部署不提供这个名字。
-        return self._error(404, unserved_model_message(chat_req.get("model")),
-                           "model_not_found")
+        return self._responses_codearts(
+            chat_req, want_stream, custom_names, request_meta, ns_map)
 
 
     def _handle_messages_count_tokens(self, payload):
@@ -9503,24 +9594,18 @@ class Handler(BaseHTTPRequestHandler):
             chat_req = messages_to_chat(payload)
         except ValueError as exc:
             return self._anthropic_error(400, str(exc), "invalid_request_error")
-        # Claude Code 发的模型名往往带日期后缀（claude-sonnet-4-5-20250929）
-        # 或大小写与上游不同；归一只对认得出的码道模型生效。
-        canonicalize_model(chat_req)
+        admission = codearts_admission_error(self, chat_req)
+        if admission:
+            status, message = admission
+            error_type = {400: "invalid_request_error", 404: "not_found_error",
+                          503: "api_error"}[status]
+            return self._anthropic_error(status, message, error_type)
         model = chat_req.get("model") or "unknown"
         want_stream = bool(chat_req.get("stream"))
         log("messages: model=%s stream=%s msgs=%d effort=%r tools=%d"
             % (model, want_stream, len(chat_req.get("messages") or []),
                chat_req.get("reasoning_effort"), len(chat_req.get("tools") or [])))
-        banned = self._banned_model_error(chat_req.get("model"))
-        if banned:
-            return self._anthropic_error(400, banned, "invalid_request_error")
-        key_blocked = self._key_model_error(chat_req.get("model"))
-        if key_blocked:
-            return self._anthropic_error(400, key_blocked, "invalid_request_error")
-        if is_codearts_model(chat_req.get("model")):
-            return self._messages_codearts(chat_req, want_stream)
-        return self._anthropic_error(
-            404, unserved_model_message(chat_req.get("model")), "not_found_error")
+        return self._messages_codearts(chat_req, want_stream)
 
 
     def do_POST(self):
@@ -10015,6 +10100,15 @@ class Handler(BaseHTTPRequestHandler):
                          outcome="upstream_aborted", key=self._key_id())
             return fail(_st, "codearts error: %s" % frame_err, _et), None
 
+        if not _tail["complete"]:
+            reason = ca_stream.MISSING_TERMINAL
+            record_error(model, 502, reason,
+                         elapsed_ms=int((time.time() - t_start) * 1000),
+                         account=account_label, usage=usage, stream=want_stream,
+                         outcome="upstream_aborted", key=self._key_id())
+            return fail(502, "codearts error: %s" % reason,
+                        "api_error" if anthropic else "upstream_error"), None
+
         elapsed_ms = int((time.time() - t_start) * 1000)
         try:
             # 聚合路径没有「首帧」概念（整条上游流读完才聚合），ttft/gen 留空
@@ -10428,6 +10522,7 @@ class Handler(BaseHTTPRequestHandler):
             # 发出去、socket 拿没拿到」一起打出来 —— 这四项能区分「上游好好的
             # 被中间层掐了」「上游自己回收了会话」和「我们根本没在续期」。
             stream_stats = {}
+            tail = ca_stream.StreamTail()
             try:
                 try:
                     for line in lease.lines(self._client_disconnected,
@@ -10447,20 +10542,23 @@ class Handler(BaseHTTPRequestHandler):
                         if not line.startswith("data:"):
                             continue
                         raw = line[5:].strip()
-                        if not raw or raw == "[DONE]":
+                        if raw == "[DONE]":
+                            tail.done = True
+                            continue
+                        if not raw:
                             continue
                         try:
                             piece = json.loads(raw)
-                        except Exception:
+                        except ValueError:
                             continue
-                        # 两种错误形状都认：error_code（码道）与 {"error":…}
-                        # （OpenAI 兼容层）。判据只有一个 —— 这一轮已经废了。
-                        frame_bad = ca_stream.frame_error(piece)
+                        if not isinstance(piece, dict):
+                            continue
+                        if isinstance(piece.get("usage"), dict):
+                            usage = piece["usage"]
+                        frame_bad = tail.observe(piece)
                         if frame_bad:
                             frame_err = frame_bad
                             break
-                        if isinstance(piece.get("usage"), dict):
-                            usage = piece["usage"]
                         if not headers_sent:
                             # 收到上游第一帧才提交 200 + SSE 头。在这之前失败，
                             # 还能回一个干净的错误码让客户端自己重试 —— Go 版
@@ -10477,44 +10575,28 @@ class Handler(BaseHTTPRequestHandler):
                             except (BrokenPipeError, ConnectionResetError,
                                     ConnectionAbortedError):
                                 return None
-                        bad_finish = False
                         for choice in piece.get("choices") or []:
+                            if not isinstance(choice, dict):
+                                continue
                             delta = choice.get("delta") or {}
                             if delta.get("content"):
                                 content_parts.append(delta["content"])
                             if delta.get("reasoning_content"):
                                 reasoning_parts.append(delta["reasoning_content"])
-                            # 工具调用也是「已经给客户端的东西」，而且是最不能
-                            # 拼的那种：客户端按 index 归并同一个调用的参数分片。
-                            # 断在半路后重开，新流又从 index=0 发同一个调用，
-                            # 两段参数首尾相接 —— 半截 {"path": "a"} 接上重开的
-                            # {"path": "a"} 就是坏 JSON，客户端解析失败。
-                            # 以前这里只数 content / reasoning，重开条件对工具
-                            # 调用视而不见（2026-10-23 复现）。
+                            # 工具调用碎片也算已输出，不能和重开的流拼接。
                             if delta.get("tool_calls"):
                                 tool_parts.append(delta["tool_calls"])
-                            # finish_reason=error 也是失败。以前只有 WorkBuddy
-                            # 那条路认（#389），码道这侧会把它原样转发、再补一个
-                            # 同样的 finish_reason 并记成 completed。
-                            choice_finish = choice.get("finish_reason")
-                            if ca_stream.finish_error(choice):
-                                bad_finish = True
-                                choice_finish = None
-                            elif choice_finish:
-                                finish_reason = choice_finish
                             if delta:
-                                # 原样转发 delta：reasoning_content 与
-                                # tool_calls（含各自的 index）都在里面，
-                                # 自己重拼反而容易漏字段。
-                                emit(frame(delta, choice_finish))
-                        if bad_finish:
-                            frame_err = frame_err or \
-                                "upstream finished with finish_reason=error"
-                            break
+                                emit(frame(delta))
+                    # 读循环正常走完才判「有没有结束标记」：逐帧判会把普通流
+                    # 的第一个 delta 误当成断流（finish_reason 在最后一帧）。
+                    if not frame_err and not tail.complete:
+                        truncated = ca_stream.MISSING_TERMINAL
+                    finish_reason = tail.finish_reason
                 except ca_codearts.ChatAborted:
                     log("codearts stream aborted: client gone model=%s" % model)
                     return None
-                except ca_codearts.UpstreamBroken as exc:
+                except (ca_codearts.UpstreamBroken, ca_stream.IncompleteStream) as exc:
                     # 上游把 chunked 流掐了（没写终止块）。**绝不能让它冒出去**：
                     # 头已经是 200，异常会一路冒到 socketserver，客户端拿到的就是
                     # 「半截回答 + 连接凭空消失」—— 既没有 finish_reason 也没有
@@ -10951,7 +11033,7 @@ class Handler(BaseHTTPRequestHandler):
                 # ERROR，而「用户自己关掉了」不该出现在错误日志里。
                 self._record_aborted(model, lease, tap, holder, self._key_id())
                 return None
-            except ca_codearts.UpstreamBroken as exc:
+            except (ca_codearts.UpstreamBroken, ca_stream.IncompleteStream) as exc:
                 # 上游把 chunked 流掐了：补一个 response.failed 再收尾，别让
                 # Codex 只看到「流没了」而摸不着头脑。
                 log("responses/codearts upstream broken: model=%s after %dms %s"
@@ -11279,7 +11361,7 @@ class Handler(BaseHTTPRequestHandler):
                 # 客户端取消也要落一行（见 _record_aborted 的注释）。
                 self._record_aborted(model, lease, tap, holder, self._key_id())
                 return None
-            except ca_codearts.UpstreamBroken as exc:
+            except (ca_codearts.UpstreamBroken, ca_stream.IncompleteStream) as exc:
                 # Claude Code 认 event: error，收到它会按可重试错误处理；
                 # 静默断连反而会被当成「回答就这么短」。
                 log("messages/codearts upstream broken: model=%s after %dms %s"
@@ -11342,14 +11424,12 @@ class Handler(BaseHTTPRequestHandler):
             lease.close()
 
     def _dispatch_chat_post(self, path, payload):
-        # 模型名先归一到上游真名（大小写无关）。必须排在封锁 / 限模型判定
-        # 之前：面板里配的是真名，客户端发小写时不能绕过封禁。
-        canonicalize_model(payload)
         # 先挡背景请求：Codex 自己发的（记忆整理／环境建议／自动复核）
         # 不算「使用者实际使用」，一律本地拒绝，不碰上游。
         if BLOCK_BACKGROUND_REQUESTS:
             reason = background_request_reason(payload)
             if reason:
+                canonicalize_model(payload)
                 try:
                     log("background request blocked: model=%s trigger=(%s)"
                         % (payload.get("model"), reason), level="INFO")
@@ -11359,21 +11439,11 @@ class Handler(BaseHTTPRequestHandler):
                                    "invalid_request_error")
         if path in ("/v1/responses", "/responses"):
             return self._handle_responses(payload)
-        # 模型封锁和 per-key 限模型在分流之前判：码道走的也是这个入口，
-        # 漏判的话面板里的封禁 / 按 key 限模型会被码道这条路绕过去
-        #（/v1/responses 和 /v1/messages 都是在分流前判的，三个入口必须一致）。
-        banned = self._banned_model_error(payload.get("model"))
-        if banned:
-            return self._error(400, banned, "invalid_request_error")
-        key_blocked = self._key_model_error(payload.get("model"))
-        if key_blocked:
-            return self._error(400, key_blocked, "invalid_request_error")
-        # 码道模型走另一套凭证体系，先按模型名分流。
-        if is_codearts_model(payload.get("model")):
-            return self._handle_codearts_chat(payload)
-        # 网关只服务码道：非码道模型一律 404，不回 503（那看起来像网关坏了）。
-        return self._error(404, unserved_model_message(payload.get("model")),
-                           "model_not_found")
+        admission = codearts_admission_error(self, payload)
+        if admission:
+            status, message = admission
+            return self._error(status, message, _CODEARTS_ADMISSION_ERROR_TYPES[status])
+        return self._handle_codearts_chat(payload)
 
 
 def running_version():

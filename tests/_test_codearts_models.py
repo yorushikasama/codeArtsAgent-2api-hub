@@ -5,6 +5,8 @@
 _codearts_fixtures.py。跑法：python tests/_test_codearts_models.py
 """
 import calendar
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 import hashlib
 import io
 import json
@@ -12,8 +14,10 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import time
 import urllib.parse
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -566,6 +570,207 @@ _ok_out = P.Handler._dispatch_chat_post(
 check("没被封的码道模型照常走码道",
       _ban3.reached and isinstance(_ok_out, dict)
       and _ok_out.get("code") == 200, (_ban3.reached, _ok_out))
+
+
+section("== Cold POST model admission ==")
+
+
+class _AdmissionHandler(Handler):
+    def __init__(self, key_entry=None):
+        self.key_entry = key_entry
+
+    def _error(self, code, message, err_type=None):
+        return code, err_type, message
+
+    _anthropic_error = _error
+
+    def _handle_codearts_chat(self, payload, *args):
+        return 200, payload["model"]
+
+    _responses_codearts = _messages_codearts = _handle_codearts_chat
+
+    def _authorized(self):
+        return True
+
+    _key_ok = _authorized
+
+    def _payload_or_error(self, allow_list=False):
+        return self._test_payload
+
+    def post(self, route, model):
+        self.path = route
+        self._test_payload = {"model": model, "input": "hi", "max_tokens": 16,
+                              "messages": [{"role": "user", "content": "hi"}]}
+        return self.do_POST()
+
+
+_POST_CHAT = "/v1/chat/completions"
+_POST_RESPONSES = "/v1/responses"
+_POST_MESSAGES = "/v1/messages"
+_POST_ROUTES = (_POST_CHAT, _POST_RESPONSES, _POST_MESSAGES)
+_DYNAMIC = "Cold-MixedCase"
+
+
+@contextmanager
+def _cold_admission(http, sessions=None):
+    # The shared fixture has a fixed historical STS expiry. Make only this copy
+    # current so the test never renews it or relies on the wall-clock date.
+    if sessions is None:
+        sessions = [dict(_session, expires_at="2099-01-01T00:00:00.000Z")]
+    with patch.multiple(C, _EXTRA_MODELS=set(), _EXTRA_MODELS_SEEN=set(),
+                        _MODEL_VISION={}, _MODEL_INDEX=None):
+        with patch.multiple(P, _CODEARTS_ADMISSION={"flight": None, "until": 0.0, "ok": False},
+                            _chat_slots=threading.BoundedSemaphore(3),
+                            _anthropic_messages_enabled=lambda: True,
+                            BLOCK_BACKGROUND_REQUESTS=False):
+            with patch.object(C, "load_sessions", return_value=sessions) as loads, \
+                    patch.object(C, "_http", side_effect=http) as upstream, \
+                    patch.object(P, "model_aliases", return_value={"cold-alias": _DYNAMIC.lower()}), \
+                    patch.object(P, "codearts_catalog", side_effect=AssertionError("full catalog called")) as catalog:
+                yield upstream, loads, catalog
+
+
+def _builtin_response(*args, **kwargs):
+    return {"builtinModels": [{"model_id": _DYNAMIC, "display_enabled": False},
+                              {"model_id": "Cold-Disabled", "enable": False}]}
+
+
+for _route in _POST_ROUTES:
+    with _cold_admission(_builtin_response) as (_upstream, _loads, _catalog):
+        _handler = _AdmissionHandler({"models": [_DYNAMIC]})
+        _out = _handler.post(_route, "COLD-ALIAS")
+        check("cold POST %s resolves alias to discovered upstream ID" % _route,
+              _out == (200, _DYNAMIC), _out)
+        check("admission calls only builtin with a bounded socket timeout",
+              _upstream.call_count == 1 and not _catalog.called
+              and _upstream.call_args.args == ("GET", C.SNAP_HOST + C.BUILTIN_MODELS_PATH)
+              and 0 < _upstream.call_args.kwargs["timeout"] <= P._CODEARTS_ADMISSION_TIMEOUT,
+              _upstream.call_count)
+        _loads.reset_mock()
+        _warm = _handler.post(_route, _DYNAMIC.upper())
+        check("warm dynamic and seed models both stay local",
+              _warm == (200, _DYNAMIC)
+              and _AdmissionHandler().post(_route, "glm-5.2") == (200, "GLM-5.2")
+              and not _loads.called and _upstream.call_count == 1, _warm)
+
+
+_started, _release, _joined = threading.Event(), threading.Event(), threading.Event()
+
+
+def _slow_builtin(*args, **kwargs):
+    _started.set()
+    if not _release.wait(8):
+        raise TimeoutError("test did not release the directory")
+    return _builtin_response()
+
+
+with _cold_admission(_slow_builtin) as (_upstream, _loads, _catalog):
+    with ThreadPoolExecutor(max_workers=3) as _pool:
+        _leader = _pool.submit(_AdmissionHandler().post, _POST_CHAT, _DYNAMIC.lower())
+        try:
+            if not _started.wait(2):
+                raise AssertionError("directory worker did not start")
+            with P._CODEARTS_ADMISSION_LOCK:
+                _shared = P._CODEARTS_ADMISSION["flight"][0]
+            _real_result = _shared.result
+
+            def _joined_result(*args, **kwargs):
+                _joined.set()
+                return _real_result(*args, **kwargs)
+
+            with patch.object(_shared, "result", side_effect=_joined_result):
+                _follower = _pool.submit(_AdmissionHandler().post, _POST_RESPONSES, "not-in-builtin")
+                check("distinct concurrent POST miss waits on the same refresh",
+                      _joined.wait(2))
+            _local = _pool.submit(_AdmissionHandler().post, _POST_MESSAGES, "glm-5.2")
+            check("known model does not wait for the inflight directory",
+                  _local.result(timeout=2) == (200, "GLM-5.2"))
+        finally:
+            _release.set()
+        _results = (_leader.result(timeout=2), _follower.result(timeout=2))
+        check("shared snapshot admits present model and rejects distinct absent miss",
+              _results[0] == (200, _DYNAMIC)
+              and _results[1][:2] == (404, "model_not_found")
+              and _upstream.call_count == 1, _results)
+
+
+with _cold_admission(_builtin_response) as (_upstream, _loads, _catalog):
+    _handler = _AdmissionHandler()
+    _disabled = _handler.post(_POST_MESSAGES, "Cold-Disabled")
+    _absent = _handler.post(_POST_CHAT, "not-in-builtin")
+    check("disabled and absent models get 404, sharing snapshot freshness",
+          _disabled[:2] == (404, "not_found_error")
+          and _absent[:2] == (404, "model_not_found")
+          and _upstream.call_count == 1, (_disabled, _absent))
+    P._CODEARTS_ADMISSION["until"] = 0
+    check("negative freshness expires and permits a new refresh",
+          _handler.post(_POST_CHAT, "still-absent")[0] == 404
+          and _upstream.call_count == 2)
+
+
+for _failure in (RuntimeError("directory down"), {"unexpected": []}):
+    with _cold_admission(_failure if isinstance(_failure, Exception) else lambda *a, **k: _failure
+                         ) as (_upstream, _loads, _catalog):
+        _unavailable = [_AdmissionHandler().post(_route, "missing-" + str(i))
+                        for i, _route in enumerate(_POST_ROUTES)]
+        check("failed or malformed directory reports protocol 503 and cools down",
+              [out[:2] for out in _unavailable] == [(503, "server_error"),
+                                                    (503, "server_error"), (503, "api_error")]
+              and _upstream.call_count == 1, _unavailable)
+        P._CODEARTS_ADMISSION["until"] = 0
+        _upstream.side_effect = _builtin_response
+        check("an expired failure cooldown permits recovery",
+              _AdmissionHandler().post(_POST_CHAT, "cold-alias") == (200, _DYNAMIC)
+              and _upstream.call_count == 2)
+
+with _cold_admission(lambda *a, **k: {"builtinModels": []}) as (_upstream, _, _catalog):
+    check("explicitly empty builtin response is an authoritative 404",
+          _AdmissionHandler().post(_POST_CHAT, "absent")[0] == 404 and _upstream.called)
+
+with _cold_admission(_builtin_response, sessions=[]) as (_upstream, _, _catalog):
+    check("no credentials means unavailable, without a builtin request",
+          _AdmissionHandler().post(_POST_CHAT, "cold-alias")[0] == 503 and not _upstream.called)
+
+_started.clear()
+_release.clear()
+with _cold_admission(_slow_builtin) as (_upstream, _loads, _catalog):
+    with patch.object(P, "_CODEARTS_ADMISSION_TIMEOUT", 0.5), ThreadPoolExecutor(1) as _pool:
+        _timed = _pool.submit(_AdmissionHandler().post, _POST_CHAT, "cold-alias")
+        try:
+            if not _started.wait(2):
+                raise AssertionError("directory worker did not start")
+            with P._CODEARTS_ADMISSION_LOCK:
+                _shared = P._CODEARTS_ADMISSION["flight"][0]
+            check("deadline returns 503 without spawning a second worker for late callers",
+                  _timed.result(timeout=2)[0] == 503
+                  and _AdmissionHandler().post(_POST_MESSAGES, "other-missing")[0] == 503
+                  and _upstream.call_count == 1)
+        finally:
+            _release.set()
+        check("late directory response does not publish registry or successful freshness",
+              _shared.result(timeout=2) is False and not P.is_codearts_model(_DYNAMIC))
+
+for _route in _POST_ROUTES:
+    with _cold_admission(_builtin_response) as (_upstream, _loads, _catalog):
+        with patch.object(P, "EXTRA_BANNED", {_DYNAMIC.lower()}):
+            _banned = _AdmissionHandler().post(_route, "COLD-ALIAS")
+        _key_denied = _AdmissionHandler({"models": ["cold-alias"]}).post(_route, "cold-alias")
+        check("%s applies ban and key policy to the alias target before discovery" % _route,
+              _banned[0] == _key_denied[0] == 400 and not _loads.called and not _upstream.called,
+              (_banned, _key_denied))
+
+    for _policy in ("_banned_model_error", "_key_model_error"):
+        with _cold_admission(_builtin_response) as (_upstream, _loads, _catalog):
+            _handler = _AdmissionHandler()
+            # Make a case-sensitive spy so the provisional lowercase alias
+            # target passes, but the canonical ID must be checked to block it.
+            with patch.object(_handler, _policy, side_effect=lambda model: (
+                    "canonical model denied" if model == _DYNAMIC else "")) as _policy_check:
+                _denied = _handler.post(_route, "cold-alias")
+            check("%s rechecks canonical model via %s after refresh" % (_route, _policy),
+                  _denied[0] == 400 and _upstream.call_count == 1
+                  and [call.args[0] for call in _policy_check.call_args_list]
+                  == [_DYNAMIC.lower(), _DYNAMIC], _denied)
 
 print()
 print("== 上游新模型自动收录（2026-11-03）==")

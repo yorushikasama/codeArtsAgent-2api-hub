@@ -90,6 +90,9 @@ def _settings_dir(header=None, idle=None):
 
 PAYLOAD = {"model": "glm-5.3", "messages": [{"role": "user", "content": "hi"}]}
 
+# 聚合路径现在要求上游流带结束标记（[DONE] / finish_reason），桩也要照实给。
+OK_SSE = 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+
 
 class AggregateTimeoutTests(unittest.TestCase):
     def test_chat_for_model_receives_the_panel_timeouts(self):
@@ -98,14 +101,15 @@ class AggregateTimeoutTests(unittest.TestCase):
 
         def fake_chat_for_model(*args, **kwargs):
             seen.append(kwargs)
-            return 200, ""
+            return 200, OK_SSE
 
         with mock.patch.object(P, "ACCOUNTS_DIR", directory), \
              mock.patch.object(P, "_CODEARTS_POOL", _Pool()), \
              mock.patch.object(ca_codearts, "heartbeat",
                                lambda *a, **k: (True, "ok")), \
              mock.patch.object(ca_codearts, "chat_for_model", fake_chat_for_model), \
-             mock.patch.object(P, "record_usage", lambda *a, **k: None):
+             mock.patch.object(P, "record_usage", lambda *a, **k: None), \
+             mock.patch.object(P, "_codearts_extra", lambda *a, **k: None):
             error, result = P.Handler._codearts_chat_result(
                 _Handler(), dict(PAYLOAD))
 
@@ -121,14 +125,15 @@ class AggregateTimeoutTests(unittest.TestCase):
 
         def fake_chat_for_model(*args, **kwargs):
             seen.append(kwargs)
-            return 200, ""
+            return 200, OK_SSE
 
         with mock.patch.object(P, "ACCOUNTS_DIR", directory), \
              mock.patch.object(P, "_CODEARTS_POOL", _Pool()), \
              mock.patch.object(ca_codearts, "heartbeat",
                                lambda *a, **k: (True, "ok")), \
              mock.patch.object(ca_codearts, "chat_for_model", fake_chat_for_model), \
-             mock.patch.object(P, "record_usage", lambda *a, **k: None):
+             mock.patch.object(P, "record_usage", lambda *a, **k: None), \
+             mock.patch.object(P, "_codearts_extra", lambda *a, **k: None):
             P.Handler._codearts_chat_result(_Handler(), dict(PAYLOAD))
 
         self.assertEqual(seen[0]["timeout"], 120.0)
@@ -149,7 +154,8 @@ class OpenLeaseTimeoutTests(unittest.TestCase):
              mock.patch.object(P, "_CODEARTS_POOL", _Pool()), \
              mock.patch.object(ca_codearts, "heartbeat",
                                lambda *a, **k: (True, "ok")), \
-             mock.patch.object(ca_codearts, "open_chat", fake_open_chat):
+             mock.patch.object(ca_codearts, "open_chat", fake_open_chat), \
+             mock.patch.object(P, "_codearts_extra", lambda *a, **k: None):
             error, lease = P.Handler._codearts_open_lease(
                 _Handler(), dict(PAYLOAD), "glm-5.3",
                 PAYLOAD["messages"], 128)

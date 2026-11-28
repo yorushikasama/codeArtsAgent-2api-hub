@@ -347,11 +347,12 @@ for _name in ("_handle_codearts_chat_stream", "_responses_codearts_stream",
     _k = _src.find("def " + _name)
     _nxt = _src.find("\n    def ", _k + 10)
     _body = _src[_k:_nxt if _nxt > 0 else len(_src)]
-    # Chat 入口不用 tap_lines，自己逐帧解 JSON 并判 frame_error；另外两个
-    # 走 tap_lines，靠 UpstreamErrorFrame 打断翻译器。两者都必须让错误压过
-    # 完成 —— 判据是「这条路径认得帧内错误」。
+    # Chat 入口不用 tap_lines，自己逐帧解 JSON，经 StreamTail.observe 走
+    # 同一张错误表；另外两个走 tap_lines，靠 UpstreamErrorFrame 打断翻译器。
+    # 两者都必须让错误压过完成 —— 判据是「这条路径认得帧内错误」。
     check("%s 认得帧内错误" % _name,
-          ("UpstreamErrorFrame" in _body or "frame_error(" in _body), None)
+          ("UpstreamErrorFrame" in _body or "frame_error(" in _body
+           or "tail.observe(" in _body), None)
 
 
 # ---------------------------------------------------------------------------

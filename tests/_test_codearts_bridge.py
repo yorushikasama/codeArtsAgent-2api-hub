@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 import urllib.parse
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -203,9 +204,12 @@ check("Responses 入口能返回码道正文",
 _h404 = _FakeResponsesHandler()
 _h404.headers = {}
 _h404.key_entry = None
-_h404._handle_responses({"model": "no-such-model", "input": "hi"})
-check("Responses 对非码道模型回 404",
-      _h404.status == 404, (_h404.status, _h404.payload))
+# 2026-11-28 冷启动准入：目录确认「不存在」才回 404；目录够不着是 503。
+# 本套件不联网，桩一个成功且为空的目录，钉住的仍是 404 这条语义。
+with mock.patch.object(P, "_refresh_codearts_admission", lambda model: True):
+    _h404._handle_responses({"model": "no-such-model", "input": "hi"})
+    check("Responses 对非码道模型回 404",
+          _h404.status == 404, (_h404.status, _h404.payload))
 
 
 # ---------------------------------------------------------------------------
@@ -285,11 +289,12 @@ check("Messages 入口能返回码道正文",
 _h404 = _FakeResponsesHandler()
 _h404.headers = {}
 _h404.key_entry = None
-_h404._handle_messages({"model": "no-such-model",
-                        "messages": [{"role": "user", "content": "hi"}],
-                        "max_tokens": 16})
-check("Messages 对非码道模型回 404",
-      _h404.status == 404, (_h404.status, _h404.payload))
+with mock.patch.object(P, "_refresh_codearts_admission", lambda model: True):
+    _h404._handle_messages({"model": "no-such-model",
+                            "messages": [{"role": "user", "content": "hi"}],
+                            "max_tokens": 16})
+    check("Messages 对非码道模型回 404",
+          _h404.status == 404, (_h404.status, _h404.payload))
 
 
 # ---------------------------------------------------------------------------

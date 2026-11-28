@@ -98,6 +98,9 @@ class _Clock(object):
 PAYLOAD = {"model": "glm-5.3", "messages": [{"role": "user", "content": "hi"}]}
 EGRESS_KEY = ca_upstream_pool.egress_key(ca_codearts.CHAT_PATH)
 
+# 聚合路径要求结束标记；(200, "") 在新契约下是断流，不是成功。
+OK_SSE = 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'
+
 
 def settings_dir(enabled):
     directory = tempfile.mkdtemp(prefix="codearts-egress-")
@@ -130,6 +133,7 @@ class AggregateEgressTests(unittest.TestCase):
                                lambda *a, **k: (True, "ok")), \
              mock.patch.object(ca_codearts, "chat_for_model",
                                fake_chat_for_model), \
+             mock.patch.object(P, "_codearts_extra", lambda *a, **k: None), \
              mock.patch.object(P.ca_egress, "note_transient",
                                lambda key: (seen["transient"].append(key), 2.5)[1]), \
              mock.patch.object(P.ca_egress, "note_success",
@@ -140,7 +144,7 @@ class AggregateEgressTests(unittest.TestCase):
 
     def test_transport_error_waits_on_the_egress_then_succeeds(self):
         error, result, clock, seen = self._run(
-            True, [OSError("link blip"), (200, "")])
+            True, [OSError("link blip"), (200, OK_SSE)])
         self.assertIsNone(error)
         self.assertIsNotNone(result)
         self.assertEqual(seen["transient"], [egress_key()])
@@ -150,12 +154,12 @@ class AggregateEgressTests(unittest.TestCase):
 
     def test_502_charges_the_egress_but_500_stays_on_the_account(self):
         error, result, clock, seen = self._run(
-            True, [(502, '{"error_code":"BadGateway"}'), (200, "")])
+            True, [(502, '{"error_code":"BadGateway"}'), (200, OK_SSE)])
         self.assertIsNone(error)
         self.assertEqual(seen["transient"], [egress_key()])
 
         error, result, clock, seen = self._run(
-            True, [(500, '{"error_code":"InternalError"}'), (200, "")])
+            True, [(500, '{"error_code":"InternalError"}'), (200, OK_SSE)])
         self.assertIsNone(error)
         self.assertEqual(seen["transient"], [], "500 不算出口抖动")
         self.assertEqual(seen["success"], [egress_key()])
@@ -163,7 +167,7 @@ class AggregateEgressTests(unittest.TestCase):
 
     def test_switch_off_makes_no_egress_calls(self):
         error, result, clock, seen = self._run(
-            False, [OSError("link blip"), (200, "")])
+            False, [OSError("link blip"), (200, OK_SSE)])
         self.assertIsNone(error)
         self.assertEqual(seen, {"transient": [], "success": []})
         self.assertEqual(clock.sleeps, [2.0])
@@ -188,6 +192,7 @@ class OpenLeaseEgressTests(unittest.TestCase):
              mock.patch.object(ca_codearts, "heartbeat",
                                lambda *a, **k: (True, "ok")), \
              mock.patch.object(ca_codearts, "open_chat", fake_open_chat), \
+             mock.patch.object(P, "_codearts_extra", lambda *a, **k: None), \
              mock.patch.object(P.ca_egress, "note_transient",
                                lambda key: (seen["transient"].append(key), 2.5)[1]), \
              mock.patch.object(P.ca_egress, "note_success",

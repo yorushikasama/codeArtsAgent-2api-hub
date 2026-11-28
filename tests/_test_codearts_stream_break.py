@@ -758,13 +758,28 @@ check("拿不到 fileno 的对象 → None（调用方退回阻塞读）",
 
 # 哨兵在 tap_lines 里翻成 SSE 注释行
 _sink725 = {}
-_tapped = list(S2.tap_lines([C.KEEPALIVE, b'data: {"usage":{"total_tokens":7}}\n\n'],
-                             _sink725, keepalive=C.KEEPALIVE))
+_tapped = list(S2.tap_lines(
+    [C.KEEPALIVE, b'data: {"usage":{"total_tokens":7}}\n\n',
+     b'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n'],
+    _sink725, keepalive=C.KEEPALIVE))
 check("哨兵翻成 SSE 注释行", _tapped[0] == b": keepalive\n\n", _tapped[:1])
 check("tap 顺手记下 usage", _sink725.get("usage", {}).get("total_tokens") == 7,
       _sink725)
 check("不传 keepalive 时哨兵按普通行透传（旧调用点不会凭空多一帧）",
-      list(S2.tap_lines([C.KEEPALIVE], {})) == [C.KEEPALIVE], None)
+      next(S2.tap_lines([C.KEEPALIVE], {})) == C.KEEPALIVE, None)
+try:
+    list(S2.tap_lines([C.KEEPALIVE], {}))
+    check("非 SSE 行透传完同样要求结束标记", False, "no exception")
+except S2.IncompleteStream:
+    check("非 SSE 行透传完同样要求结束标记", True)
+# 2026-11-28 新契约：干净 EOF 但没有结束标记（[DONE] / finish_reason）时，
+# tap_lines 必须抛 IncompleteStream —— 翻译器不能把半截回答补成正常终态。
+try:
+    list(S2.tap_lines([b'data: {"usage":{"total_tokens":7}}\n\n'], {},
+                      keepalive=C.KEEPALIVE))
+    check("无结束标记的 EOF 要抛 IncompleteStream", False, "no exception")
+except S2.IncompleteStream:
+    check("无结束标记的 EOF 要抛 IncompleteStream", True)
 
 
 # ---------------------------------------------------------------------------

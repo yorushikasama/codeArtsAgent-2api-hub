@@ -36,6 +36,16 @@ STAMP=$(date +%Y%m%d-%H%M%S)
 NEW="$DIR.new-$STAMP"
 OLD="$DIR.old-$STAMP"
 
+deploy_failed() {
+  printf 'deploy-full: %s\n  live: %s\n  staged: %s\n  backup: %s\n  No automatic rollback performed.\n' \
+    "$1" "$DIR" "$NEW" "$OLD" >&2
+  exit 1
+}
+
+if [[ -e "$NEW" || -L "$NEW" || -e "$OLD" || -L "$OLD" ]]; then
+  deploy_failed "staging or backup path already exists; refusing to overwrite it"
+fi
+
 git clone -q --depth 1 -b "$BRANCH" "$REPO_URL" "$NEW"
 
 # 运行时数据白名单搬运：只有这些从旧目录过来，其余一律以仓库为准。
@@ -55,7 +65,7 @@ if [ -d "$DIR" ]; then
 fi
 
 # 部署前测试闸门：新克隆先在服务器上跑完全部套件，绿了才碰在跑的服务。
-# 挂了就删掉新目录退出 —— 旧目录与在跑的网关毫发无损；这套 103 个套件
+# 挂了就保留新目录和日志退出 —— 旧目录与在跑的网关毫发无损；这套 103 个套件
 # 全程离线（~40s），应急可用 WB_DEPLOY_SKIP_TESTS=1 旁路（写明原因再绕）。
 if [ "${WB_DEPLOY_SKIP_TESTS:-0}" != "1" ]; then
   echo "deploy-full: test gate — running the suite in the fresh clone..."
@@ -65,8 +75,7 @@ if [ "${WB_DEPLOY_SKIP_TESTS:-0}" != "1" ]; then
     echo "  the running service keeps the old revision. Fix, push, redeploy." >&2
     echo "  failing suites:" >&2
     grep "^  failed:" "$GATE_LOG" >&2 || tail -40 "$GATE_LOG" >&2
-    rm -rf "$NEW"
-    exit 1
+    deploy_failed "test gate failed; see $GATE_LOG"
   fi
   rm -f "$GATE_LOG"
 fi
@@ -93,14 +102,26 @@ else
   echo "deploy-full: WARNING no deploy/codearts-hub.service in $NEW — unit NOT synced" >&2
 fi
 
-sudo systemctl stop codearts-hub || true
+if ! timeout 60s sudo systemctl stop codearts-hub; then
+  deploy_failed "systemctl stop failed; live directory was not moved"
+fi
 
-# 等旧进程**真正退出**再搬账号文件。`systemctl stop` 返回时服务已停，但
-# SIGTERM 收尾（等在跑的请求 drain，TimeoutStopSec=45）里如果正好有一次
-# 续期在飞，它会把新 token 写盘 —— 那必须被下面这次同步看到。巡检线程自己
-# 会看 shutting_down() 不再发新续期，所以只剩「已在飞的那一次」要等。
-for _ in $(seq 1 20); do
-  systemctl is-active --quiet codearts-hub || break
+# SIGTERM 收尾仍可能把最后一次续期写盘。只有明确 inactive 且无进程才允许重搬。
+# is-active 的非零退出码不能区分 deactivating、failed 和查询错误。
+unit_stopped() {
+  local state
+  state=$(timeout 2s systemctl show codearts-hub -p ActiveState -p MainPID -p ControlPID) || return 1
+  state=$'\n'"$state"$'\n'
+  [[ $state == *$'\nActiveState=inactive\n'* &&
+     $state == *$'\nMainPID=0\n'* &&
+     $state == *$'\nControlPID=0\n'* ]]
+}
+
+for ((attempt = 1; ; attempt++)); do
+  if unit_stopped; then break; fi
+  if ((attempt == 10)); then
+    deploy_failed "could not confirm codearts-hub is inactive with no main or control PID; live directory was not moved"
+  fi
   sleep 1
 done
 
@@ -130,19 +151,57 @@ else
   echo "deploy-full: WARNING no $DIR/accounts — accounts NOT re-synced after stop" >&2
 fi
 
-[ -d "$DIR" ] && mv "$DIR" "$OLD"
-mv "$NEW" "$DIR"
-sudo systemctl start codearts-hub
-sleep 4
-systemctl is-active codearts-hub
-curl -fsS -m 5 localhost:9000/health && echo
-# 内存护栏必须真的在位（MemoryMax 是硬闸）：上去了但没有生效就明说，别静默。
-if command -v systemctl-show >/dev/null 2>&1 || true; then
-  MM=$(systemctl show codearts-hub -p MemoryMax --value 2>/dev/null || echo "?")
-  echo "deploy-full: MemoryMax=${MM} (expect 384M; infinity means the guard did not load)"
+if [ -d "$DIR" ] && ! mv -T -- "$DIR" "$OLD"; then
+  deploy_failed "could not move live directory to backup"
+fi
+if ! mv -T -- "$NEW" "$DIR"; then
+  deploy_failed "could not move staged directory into place"
+fi
+if ! timeout 30s sudo systemctl start codearts-hub; then
+  deploy_failed "systemctl start failed; inspect systemctl status and journalctl -u codearts-hub"
 fi
 
-# 回滚保险：保留最近 3 份旧目录；再旧的清掉。
-ls -dt "$DIR".old-* 2>/dev/null | tail -n +4 | xargs -r rm -rf
-echo "DEPLOYED $(git -C "$DIR" rev-parse --short HEAD) ($BRANCH)"
+# Ten attempts, each with a 2s HTTP timeout and a 2s systemd query timeout.
+# Check the unit after the HTTP probe so a response alone never marks it ready.
+health_ok() {
+  curl -q --silent --noproxy '*' --connect-timeout 1 --max-time 2 \
+    --max-filesize 65536 --write-out '\n%{http_code}' http://127.0.0.1:9000/health |
+    python3 -I -c '
+import json
+import sys
+
+body, _, status = sys.stdin.buffer.read().rpartition(b"\n")
+try:
+    response = json.loads(body) if status == b"200" else None
+except (ValueError, RecursionError):
+    response = None
+sys.exit(not (isinstance(response, dict) and response.get("ok") is True
+              and response.get("service") == "codearts-hub"))
+'
+}
+
+for ((attempt = 1; ; attempt++)); do
+  if health_ok && state=$(timeout 2s systemctl is-active codearts-hub) && [[ $state == active ]]; then
+    break
+  fi
+  if ((attempt == 10)); then
+    deploy_failed "readiness timed out: expected HTTP 200 with JSON ok=true and service=codearts-hub while the unit is active; inspect systemctl status and journalctl -u codearts-hub"
+  fi
+  sleep 1
+done
+
+# 内存护栏必须真的在位（MemoryMax 是硬闸）：上去了但没有生效就明说，别静默。
+MM=$(timeout 2s systemctl show codearts-hub -p MemoryMax --value 2>/dev/null || echo "?")
+echo "deploy-full: MemoryMax=${MM} (expect 384M; infinity means the guard did not load)"
+REV=$(git -C "$DIR" rev-parse --short HEAD) || deploy_failed "could not read deployed revision"
+
+# 只在就绪后清理旧目录，按目录名中的时间戳保留最近 3 份。
+backups=()
+for backup in "$DIR".old-*; do
+  if [ -d "$backup" ] && [ ! -L "$backup" ]; then backups+=("$backup"); fi
+done
+for ((i = 0; i + 3 < ${#backups[@]}; i++)); do
+  rm -rf -- "${backups[i]}" || echo "deploy-full: WARNING could not prune ${backups[i]}" >&2
+done
+echo "DEPLOYED $REV ($BRANCH)"
 REMOTE

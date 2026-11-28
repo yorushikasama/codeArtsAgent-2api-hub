@@ -1085,9 +1085,10 @@ def resolve_model(model_id):
     if not text:
         return text
     global _MODEL_INDEX
-    if _MODEL_INDEX is None:
-        _MODEL_INDEX = _model_index()
-    return _MODEL_INDEX.get(text.lower(), text)
+    with _MODEL_REGISTRY_LOCK:
+        if _MODEL_INDEX is None:
+            _MODEL_INDEX = _model_index()
+        return _MODEL_INDEX.get(text.lower(), text)
 
 
 def clamp_max_tokens(model_id, max_tokens):
@@ -1141,7 +1142,10 @@ def builtin_models(access_key, secret_key, security_token, timeout=DEFAULT_TIMEO
         headers["X-Security-Token"] = security_token
     headers = aksk_sign(access_key, secret_key, "GET", url, {}, headers)
     payload = _http("GET", url, headers=headers, timeout=timeout)
-    return payload.get("builtinModels") or []
+    listing = payload.get("builtinModels")
+    if not isinstance(listing, list):
+        raise CodeArtsError("invalid builtin model directory response")
+    return listing
 
 
 #: 积分余额与活动清单一样变化不快：面板每 5 秒轮询一次账号列表，每个账号都要
